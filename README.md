@@ -27,8 +27,8 @@ Copy-Item .env.example .env
 
 ```powershell
 cd backend
-python -m uv sync
-python -m uv run python -m app.run
+python3 -m uv sync
+python3 -m uv run python3 -m app.run
 ```
 
 详见 [backend/README.md](./backend/README.md)。

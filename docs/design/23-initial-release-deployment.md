@@ -120,15 +120,15 @@ LOG_SLOW_REQUEST_MS=1000
 
 ```bash
 cd /opt/api-key-admin/backend
-python -m uv sync
-python -m uv run python -m app.check_mongo
-python -m uv run python -m compileall app
+python3 -m uv sync
+python3 -m uv run python3 -m app.check_mongo
+python3 -m uv run python3 -m compileall app
 ```
 
 启动：
 
 ```bash
-python -m uv run python -m app.run
+python3 -m uv run python3 -m app.run
 ```
 
 `app.run` 会读取根目录 `.env`：
@@ -146,7 +146,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=/opt/api-key-admin/backend
-ExecStart=/usr/bin/python3 -m uv run python -m app.run
+ExecStart=/usr/bin/python3 -m uv run python3 -m app.run
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
@@ -334,8 +334,8 @@ mongorestore --uri="mongodb://user:password@host:27017/api_key_admin" /backup/ap
 
 ```bash
 cd backend
-python -m uv sync
-python -m uv run python -m compileall app
+python3 -m uv sync
+python3 -m uv run python3 -m compileall app
 ```
 
 6. 前端执行：

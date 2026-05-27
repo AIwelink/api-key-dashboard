@@ -78,7 +78,7 @@ npm run build
 
 ```powershell
 cd backend
-python -m uv run python -m compileall app
+python3 -m uv run python3 -m compileall app
 ```
 
 结果：通过。后端 `app` 包基础语法编译成功。
@@ -171,8 +171,8 @@ sub2api 删除回退：
 - 确认 `APP_ENV=production`。
 - 确认 `LOG_PROFILE=production`。
 - 执行 MongoDB 备份。
-- 执行 `python -m uv sync`。
-- 执行 `python -m uv run python -m compileall app`。
+- 执行 `python3 -m uv sync`。
+- 执行 `python3 -m uv run python3 -m compileall app`。
 - 执行 `npm install`。
 - 执行 `npm run build`。
 - 用 Nginx 托管 `frontend/dist`，并把 `/api` 反向代理到 FastAPI。

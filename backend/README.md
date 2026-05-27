@@ -15,11 +15,11 @@ Python/FastAPI 后端初版，实现当前设计里的简化存储模型：
 
 ```powershell
 cd backend
-python -m uv sync
-python -m uv run uvicorn app.main:app --reload
+python3 -m uv sync
+python3 -m uv run uvicorn app.main:app --reload
 ```
 
-这里使用 `python -m uv`，避免 VS Code 终端没有刷新 PATH 时找不到 `uv.exe`。
+这里使用 `python3 -m uv`，避免 VS Code 终端没有刷新 PATH 时找不到 `uv.exe`。
 
 后端读取项目根目录的 `.env`。如果还没有根目录 `.env`，可以从根目录 `.env.example` 复制一份再填写。当前项目不会自动覆盖已有 `.env`。
 
@@ -34,13 +34,13 @@ FRONTEND_ORIGIN=http://127.0.0.1:5173
 推荐用项目启动入口，直接读取 `.env`：
 
 ```powershell
-python -m uv run python -m app.run
+python3 -m uv run python3 -m app.run
 ```
 
 也可以手动传给 uvicorn：
 
 ```powershell
-python -m uv run uvicorn app.main:app --reload --host $env:BACKEND_HOST --port $env:BACKEND_PORT
+python3 -m uv run uvicorn app.main:app --reload --host $env:BACKEND_HOST --port $env:BACKEND_PORT
 ```
 
 需要本地或远程 MongoDB：
@@ -59,7 +59,7 @@ MONGODB_DB=api_key_admin
 检查 MongoDB 连接：
 
 ```powershell
-python -m uv run python -m app.check_mongo
+python3 -m uv run python3 -m app.check_mongo
 ```
 
 如果出现 `Authentication failed`，优先检查：

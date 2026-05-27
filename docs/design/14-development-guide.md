@@ -300,7 +300,7 @@ purchased_jinyao
 每次改后端：
 
 ```powershell
-python -m compileall backend\app
+python3 -m compileall backend\app
 ```
 
 每次改前端：
@@ -312,7 +312,7 @@ npm.cmd --prefix frontend run build
 本地运行：
 
 ```powershell
-python -m uv run python -m app.run
+python3 -m uv run python3 -m app.run
 npm.cmd --prefix frontend run dev
 ```
 

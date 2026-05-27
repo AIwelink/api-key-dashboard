@@ -172,7 +172,7 @@ codex_usage_synced_at    # 本系统同步 sub2api 缓存的时间
 ## 已验证结果
 
 - `npm run build` 通过。
-- `python -m compileall app` 曾用于后端验证。
+- `python3 -m compileall app` 曾用于后端验证。
 - 对测试站点完成过真实刷新，缓存中 groups 为 3，accounts 为 751。
 - 浏览器实测 `同步账号池数据` 会显示同步中、完成反馈，并恢复按钮。
 - 浏览器实测切换 `free 账户池 01`、`plus 账号池 01`、`plus 账号池 02` 时，标题、总体容量和账号表不再错配闪烁。

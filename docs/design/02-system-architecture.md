@@ -221,8 +221,8 @@ sub2api_cache_meta
 
 ```powershell
 cd backend
-python -m uv sync
-python -m uv run python -m app.run
+python3 -m uv sync
+python3 -m uv run python3 -m app.run
 ```
 
 前端：
@@ -235,7 +235,7 @@ npm.cmd --prefix frontend run dev
 验证：
 
 ```powershell
-python -m compileall backend\app
+python3 -m compileall backend\app
 npm.cmd --prefix frontend run build
 ```
 
