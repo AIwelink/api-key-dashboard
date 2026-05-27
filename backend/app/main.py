@@ -11,7 +11,7 @@ from app.config import PROJECT_ROOT, get_settings
 from app.database import close_mongo_connection, connect_to_mongo, get_db
 from app.logging_config import RequestLoggingMiddleware, cleanup_old_logs, log_cleanup_loop, setup_logging
 from app.routers import accounts, api_pools, audit, auth, import_batches, imports, settings, sub2api_sites, sync, todo_items, users
-from app.services.bootstrap import ensure_indexes, ensure_initial_owner
+from app.services.bootstrap import ensure_bootstrap_data, ensure_indexes
 from app.services.sub2api_cache import refresh_scheduler_loop
 
 
@@ -29,7 +29,7 @@ async def lifespan(_: FastAPI):
     await connect_to_mongo()
     db = get_db()
     await ensure_indexes(db)
-    await ensure_initial_owner(db)
+    await ensure_bootstrap_data(db)
     refresh_task = asyncio.create_task(refresh_scheduler_loop(db))
     cleanup_task = asyncio.create_task(log_cleanup_loop(settings_obj))
     try:

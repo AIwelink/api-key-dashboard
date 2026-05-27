@@ -18,6 +18,8 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.accounts.create_index("metadata.priority")
     await db.accounts.create_index("metadata.upload_intent")
     await db.accounts.create_index("metadata.sub2api_account_id")
+    await db.accounts.create_index("metadata.sub2api_site_id")
+    await db.accounts.create_index([("metadata.sub2api_site_id", 1), ("metadata.pool_id", 1), ("metadata.pool_status", 1)])
     await db.accounts.create_index("metadata.push_lock")
     await db.accounts.create_index("metadata.sub2api_return_lock")
     await db.accounts.create_index("metadata.sub2api_delete_status")
@@ -49,6 +51,10 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.sub2api_groups_cache.create_index([("site_id", 1), ("group_id", 1)], unique=True)
     await db.sub2api_accounts_cache.create_index([("site_id", 1), ("group_ids", 1), ("status", 1)])
     await db.sub2api_accounts_cache.create_index([("site_id", 1), ("sub2api_account_id", 1)])
+    await db.sub2api_accounts_cache.create_index([("site_id", 1), ("plan_type", 1), ("status", 1)])
+    await db.sub2api_accounts_cache.create_index([("site_id", 1), ("email", 1)])
+    await db.sub2api_accounts_cache.create_index([("site_id", 1), ("subscription_expires_at", 1)])
+    await db.sub2api_accounts_cache.create_index([("site_id", 1), ("codex_7d_used_percent", -1), ("codex_5h_used_percent", -1)])
     await db.sub2api_cache_meta.create_index("fetched_at")
 
 
@@ -76,3 +82,7 @@ async def ensure_initial_owner(db: AsyncIOMotorDatabase) -> None:
             "updated_at": now,
         }
     )
+
+
+async def ensure_bootstrap_data(db: AsyncIOMotorDatabase) -> None:
+    await ensure_initial_owner(db)

@@ -1,4 +1,5 @@
 import json
+import asyncio
 import time
 from typing import Any
 
@@ -6,15 +7,18 @@ import httpx
 from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.config import get_settings
 from app.utils import now_utc
 
 
+TRANSIENT_STATUS_CODES = {502, 503, 504}
+REQUEST_RETRY_ATTEMPTS = 3
+REQUEST_RETRY_BASE_DELAY_SECONDS = 0.8
+
+
 class Sub2ApiClient:
-    def __init__(self) -> None:
-        settings = get_settings()
-        self.base_url = (settings.sub2api_base_url or "").rstrip("/")
-        self.token = settings.sub2api_token
+    def __init__(self, *, base_url: str | None = None, token: str | None = None) -> None:
+        self.base_url = (base_url or "").rstrip("/")
+        self.token = token or ""
 
     @property
     def configured(self) -> bool:
@@ -40,15 +44,26 @@ class Sub2ApiClient:
         if not self.configured:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="SUB2API_BASE_URL is not configured",
+                detail="sub2api site base_url is not configured",
             )
+        response: httpx.Response | None = None
         async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.request(
-                method,
-                self.admin_url(path),
-                headers=self.headers(),
-                params=params,
-                json=json,
+            for attempt in range(REQUEST_RETRY_ATTEMPTS):
+                response = await client.request(
+                    method,
+                    self.admin_url(path),
+                    headers=self.headers(),
+                    params=params,
+                    json=json,
+                )
+                if response.status_code not in TRANSIENT_STATUS_CODES:
+                    break
+                if attempt < REQUEST_RETRY_ATTEMPTS - 1:
+                    await asyncio.sleep(REQUEST_RETRY_BASE_DELAY_SECONDS * (attempt + 1))
+        if response is None:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="sub2api request did not return a response",
             )
         try:
             payload = response.json()
@@ -74,16 +89,31 @@ class Sub2ApiClient:
         response = await self.request_admin("GET", f"/accounts/{account_id}")
         return response.get("data", response)
 
+    async def get_account_usage(self, account_id: int | str, *, timezone: str = "Asia/Shanghai") -> dict[str, Any]:
+        response = await self.request_admin("GET", f"/accounts/{account_id}/usage", params={"timezone": timezone})
+        return response.get("data", response)
+
     async def delete_account(self, account_id: int | str) -> dict[str, Any]:
         if not self.configured:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="SUB2API_BASE_URL is not configured",
+                detail="sub2api site base_url is not configured",
             )
+        response: httpx.Response | None = None
         async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.delete(
-                self.admin_url(f"/accounts/{account_id}"),
-                headers=self.headers(),
+            for attempt in range(REQUEST_RETRY_ATTEMPTS):
+                response = await client.delete(
+                    self.admin_url(f"/accounts/{account_id}"),
+                    headers=self.headers(),
+                )
+                if response.status_code not in TRANSIENT_STATUS_CODES:
+                    break
+                if attempt < REQUEST_RETRY_ATTEMPTS - 1:
+                    await asyncio.sleep(REQUEST_RETRY_BASE_DELAY_SECONDS * (attempt + 1))
+        if response is None:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="sub2api delete did not return a response",
             )
         if response.status_code >= 400:
             message = response.text[:300]
@@ -115,7 +145,7 @@ class Sub2ApiClient:
         if not self.configured:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="SUB2API_BASE_URL is not configured",
+                detail="sub2api site base_url is not configured",
             )
 
         started = time.perf_counter()
@@ -155,6 +185,14 @@ class Sub2ApiClient:
         *,
         group_id: int | None = None,
         status_filter: str | None = None,
+        platform: str | None = None,
+        account_type: str | None = None,
+        privacy_mode: str | None = None,
+        group: str | int | None = None,
+        search: str | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
+        timezone: str | None = None,
         page: int = 1,
         page_size: int = 50,
     ) -> dict[str, Any]:
@@ -166,8 +204,18 @@ class Sub2ApiClient:
                 page_size=page_size,
             )
         params: dict[str, Any] = {"page": page, "page_size": page_size}
-        if status_filter:
-            params["status"] = status_filter
+        optional_params = {
+            "platform": platform,
+            "type": account_type,
+            "status": status_filter,
+            "privacy_mode": privacy_mode,
+            "group": group,
+            "search": search,
+            "sort_by": sort_by,
+            "sort_order": sort_order,
+            "timezone": timezone,
+        }
+        params.update({key: value for key, value in optional_params.items() if value not in (None, "")})
         payload = await self.request_admin("GET", "/accounts", params=params)
         return payload.get("data", payload)
 
@@ -216,7 +264,7 @@ class Sub2ApiClient:
 
     async def test_connection(self) -> dict[str, Any]:
         if not self.configured:
-            return {"ok": False, "message": "SUB2API_BASE_URL is not configured"}
+            return {"ok": False, "message": "sub2api site base_url is not configured"}
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.get(
                 self.admin_url("/accounts"),

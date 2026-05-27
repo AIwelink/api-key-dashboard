@@ -119,6 +119,7 @@ ManualPoolStatus = Literal["library", "available", "reserve", "active", "problem
 class ManualTransferRequest(BaseModel):
     target_status: ManualPoolStatus
     pool_id: str | None = None
+    site_id: str | None = None
     priority: int | None = None
     reason: str | None = None
     last_error: str | None = None

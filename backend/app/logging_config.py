@@ -27,7 +27,6 @@ SENSITIVE_KEYS = {
     "password",
     "password_hash",
     "app_secret_key",
-    "sub2api_token",
     "token",
     "credentials",
     "account_json",

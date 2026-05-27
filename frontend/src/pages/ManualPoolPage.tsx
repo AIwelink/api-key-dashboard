@@ -58,6 +58,11 @@ type PushToSub2ApiResponse = {
   };
 };
 
+type BatchResult = {
+  failed: number;
+  succeeded: number;
+};
+
 type ManualPoolMode = "todos" | "available" | "reserve";
 
 type PageConfig = {
@@ -138,6 +143,7 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
   const somePageSelected = selectedOnPage.length > 0 && !allPageSelected;
 
   const loadAccounts = async () => {
+    if (mode === "reserve" && !selectedSiteId) return;
     const params = new URLSearchParams({
       pool_status: config.poolStatus,
       sort_by: "updated_at",
@@ -146,6 +152,7 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
       limit: String(limit),
     });
     if (query) params.set("q", query);
+    if (mode === "reserve" && selectedSiteId) params.set("site_id", selectedSiteId);
     const data = await api<AccountListResponse>(`/accounts?${params.toString()}`, token);
     setAccounts(data.items);
     setTotal(data.total);
@@ -195,12 +202,26 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
 
   useEffect(() => {
     loadAccounts().catch((error) => showToast(errorMessage(error), true));
-  }, [mode, skip, limit]);
+  }, [mode, skip, limit, selectedSiteId]);
 
   useEffect(() => {
     const pageIds = new Set(accounts.map((account) => account.id));
     setSelectedIds((current) => new Set([...current].filter((id) => pageIds.has(id))));
   }, [accounts]);
+
+  const removeAccountFromPage = (accountId: string) => {
+    setAccounts((current) => current.filter((item) => item.id !== accountId));
+    setTotal((current) => Math.max(0, current - 1));
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      next.delete(accountId);
+      return next;
+    });
+  };
+
+  const replaceAccountOnPage = (updated: AccountDocument) => {
+    setAccounts((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+  };
 
   const transfer = async (account: AccountDocument, targetStatus: PoolStatus, label: string, extra: Record<string, unknown> = {}) => {
     setBusyId(account.id);
@@ -214,12 +235,7 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
         }),
       });
       showToast(label);
-      setSelectedIds((current) => {
-        const next = new Set(current);
-        next.delete(account.id);
-        return next;
-      });
-      await loadAccounts();
+      removeAccountFromPage(account.id);
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
@@ -272,18 +288,44 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
       } else {
         showToast(`已推送，但测试失败：${verification?.error || "请查看账号状态"}`, true);
       }
-      setSelectedIds((current) => {
-        const next = new Set(current);
-        next.delete(account.id);
-        return next;
-      });
-      await loadAccounts();
+      removeAccountFromPage(account.id);
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
       pushingIdsRef.current.delete(account.id);
       setBusyId(null);
     }
+  };
+
+  const unbindSub2api = (account: AccountDocument) => {
+    const remoteId = text(account.metadata.sub2api_account_id);
+    if (!remoteId) {
+      showToast("这个账号没有本地 sub2api 绑定", true);
+      return;
+    }
+    setConfirmState({
+      title: "确认解除绑定",
+      message: "只清除本地绑定记录，不会删除 sub2api 里的远端账号。解除后可以重新推送并绑定新的远端账号。",
+      details: [
+        ["账号", accountEmail(account)],
+        ["当前远端账号", `#${remoteId}`],
+        ["目标分组", targetGroupLabel(account) || "-"],
+      ],
+      confirmText: "解除绑定",
+      tone: "danger",
+      onConfirm: async () => {
+        setBusyId(account.id);
+        try {
+          const updated = await api<AccountDocument>(`/accounts/${account.id}/unbind-sub2api`, token, { method: "POST" });
+          showToast("已解除本地 sub2api 绑定");
+          replaceAccountOnPage(updated);
+        } catch (error) {
+          showToast(errorMessage(error), true);
+        } finally {
+          setBusyId(null);
+        }
+      },
+    });
   };
 
   const pushToSub2api = (account: AccountDocument) => {
@@ -341,26 +383,109 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
     }
     setBulkBusy(true);
     try {
-      await Promise.all(
-        selectedOnPage.map((account) =>
-          api<AccountDocument>(`/accounts/${account.id}/manual-transfer`, token, {
+      const targets = [...selectedOnPage];
+      const succeededIds = new Set<string>();
+      const result = await runLimited(targets, 6, async (account) => {
+        await api<AccountDocument>(`/accounts/${account.id}/manual-transfer`, token, {
             method: "POST",
             body: JSON.stringify({
               target_status: targetStatus,
               reason: label,
               ...extra,
             }),
-          }),
-        ),
-      );
-      showToast(`${label}：${selectedOnPage.length} 个账号`);
+          });
+        succeededIds.add(account.id);
+      });
+      showToast(`${label}：成功 ${result.succeeded}，失败 ${result.failed}`, result.failed > 0);
       setSelectedIds(new Set());
-      await loadAccounts();
+      setAccounts((current) => current.filter((account) => !succeededIds.has(account.id)));
+      setTotal((current) => Math.max(0, current - succeededIds.size));
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
       setBulkBusy(false);
     }
+  };
+
+  const bulkUnbindSub2api = () => {
+    const targets = selectedOnPage.filter((account) => text(account.metadata.sub2api_account_id));
+    if (!targets.length) {
+      showToast("请选择已有远端绑定的账号", true);
+      return;
+    }
+    setConfirmState({
+      title: "确认批量解除绑定",
+      message: "只清除本地绑定记录，不会删除 sub2api 里的远端账号。",
+      details: [
+        ["账号数", targets.length],
+      ],
+      confirmText: "批量解除绑定",
+      tone: "danger",
+      onConfirm: async () => {
+        setBulkBusy(true);
+        try {
+          const result = await runLimited(targets, 5, async (account) => {
+            const updated = await api<AccountDocument>(`/accounts/${account.id}/unbind-sub2api`, token, { method: "POST" });
+            replaceAccountOnPage(updated);
+          });
+          showToast(`批量解除绑定完成：成功 ${result.succeeded}，失败 ${result.failed}`, result.failed > 0);
+          setSelectedIds(new Set());
+        } finally {
+          setBulkBusy(false);
+        }
+      },
+    });
+  };
+
+  const bulkPushToSub2api = () => {
+    const targets = selectedOnPage.filter((account) => accountTargetGroupId(account));
+    if (!targets.length) {
+      showToast("请选择已有目标分组的账号", true);
+      return;
+    }
+    const concurrency = positiveInt(pushConcurrency, 10);
+    const loadFactor = positiveInt(pushLoadFactor, 10);
+    const remotePriority = nonNegativeInt(pushPriority, 100);
+    setConfirmState({
+      title: "确认批量推送并测试",
+      message: "会按每个账号保存的目标分组推送到 sub2api，并执行测试。批量操作会限制并发，避免压垮 sub2api。",
+      details: [
+        ["账号数", targets.length],
+        ["并发", concurrency],
+        ["负载因子", loadFactor],
+        ["远端优先级", remotePriority],
+      ],
+      confirmText: "批量推送并测试",
+      onConfirm: async () => {
+        setBulkBusy(true);
+        try {
+          const result = await runLimited(targets, 3, async (account) => {
+            const targetGroupId = accountTargetGroupId(account);
+            if (!targetGroupId) throw new Error("missing target group");
+            const targetSiteId = accountTargetSiteId(account) || selectedSiteId || "default";
+            const response = await api<PushToSub2ApiResponse>(`/accounts/${account.id}/push-to-sub2api`, token, {
+              method: "POST",
+              body: JSON.stringify({
+                site_id: targetSiteId,
+                group_id: targetGroupId,
+                run_verification: true,
+                model_id: "gpt-5.4-mini",
+                prompt: "",
+                concurrency,
+                load_factor: loadFactor,
+                priority: remotePriority,
+                reason: "bulk push from reserve pool",
+              }),
+            });
+            if (response.account) removeAccountFromPage(account.id);
+          });
+          showToast(`批量推送完成：成功 ${result.succeeded}，失败 ${result.failed}`, result.failed > 0);
+          setSelectedIds(new Set());
+        } finally {
+          setBulkBusy(false);
+        }
+      },
+    });
   };
 
   return (
@@ -530,7 +655,13 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
                   className="ghost compact-button"
                   disabled={bulkBusy || !selectedOnPage.length}
                   onClick={() => {
-                    if (requireGroup()) bulkTransfer("reserve", "已批量加入使用备选池", { pool_id: selectedGroupId, priority: Number(priority) || 0 });
+                    if (requireGroup()) {
+                      bulkTransfer("reserve", "已批量加入使用备选池", {
+                        pool_id: selectedGroupId,
+                        site_id: selectedSiteId,
+                        priority: Number(priority) || 0,
+                      });
+                    }
                   }}
                   type="button"
                 >
@@ -543,6 +674,17 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
             )}
             {mode === "reserve" && (
               <>
+                <button className="ghost compact-button" disabled={bulkBusy || !selectedOnPage.length} onClick={bulkPushToSub2api} type="button">
+                  批量推送并测试
+                </button>
+                <button
+                  className="ghost compact-button danger-button"
+                  disabled={bulkBusy || !selectedOnPage.some((account) => text(account.metadata.sub2api_account_id))}
+                  onClick={bulkUnbindSub2api}
+                  type="button"
+                >
+                  批量解除绑定
+                </button>
                 <button className="ghost compact-button" disabled={bulkBusy || !selectedOnPage.length} onClick={() => bulkTransfer("available", "已批量退回可用池")} type="button">
                   退回可用池
                 </button>
@@ -645,7 +787,11 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
                             disabled={busyId === account.id}
                             onClick={() => {
                               if (requireGroup()) {
-                                transfer(account, "reserve", "已加入使用备选池", { pool_id: selectedGroupId, priority: Number(priority) || 0 });
+                                transfer(account, "reserve", "已加入使用备选池", {
+                                  pool_id: selectedGroupId,
+                                  site_id: selectedSiteId,
+                                  priority: Number(priority) || 0,
+                                });
                               }
                             }}
                             type="button"
@@ -672,6 +818,16 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
                           >
                             推送并测试
                           </button>
+                          {text(account.metadata.sub2api_account_id) && (
+                            <button
+                              className="ghost compact-button danger-button"
+                              disabled={busyId === account.id}
+                              onClick={() => unbindSub2api(account)}
+                              type="button"
+                            >
+                              解除绑定
+                            </button>
+                          )}
                           <button
                             className="ghost compact-button"
                             disabled={busyId === account.id}
@@ -847,6 +1003,26 @@ function verificationLabel(value: string) {
     not_tested: "未测试",
   };
   return labels[value] || value;
+}
+
+async function runLimited<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>): Promise<BatchResult> {
+  let index = 0;
+  let succeeded = 0;
+  let failed = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (index < items.length) {
+      const item = items[index];
+      index += 1;
+      try {
+        await worker(item);
+        succeeded += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+  });
+  await Promise.all(workers);
+  return { succeeded, failed };
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

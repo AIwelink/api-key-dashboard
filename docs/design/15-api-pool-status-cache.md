@@ -128,6 +128,7 @@ group 区域展示：
 
 ```text
 capacity_summary.available_accounts
+capacity_summary.available_5h_accounts
 capacity_summary.used_5h_percent
 capacity_summary.available_5h_percent
 capacity_summary.used_7d_percent
@@ -135,6 +136,8 @@ capacity_summary.available_7d_percent
 capacity_summary.total_accounts
 capacity_summary.calculated_at
 ```
+
+`5h 总体容量` 的计算需要排除 `codex_7d_used_percent >= 100` 的账号，因为这些账号即使 5h 窗口看起来有余量，也已经被 7d 窗口封顶，不能继续作为 5h 可用容量计算。`7d 总体容量` 仍按完整可用账号集合正常计算。
 
 账号行用量窗口保持紧凑展示，只显示百分比和剩余时间：
 

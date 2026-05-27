@@ -223,8 +223,10 @@ async def list_accounts(
     phone_bound: bool | None = None,
     uploader_name: str | None = None,
     manual_status_label: str | None = None,
+    account_scope: str | None = None,
     pool_status: str | None = None,
     pool_id: str | None = None,
+    site_id: str | None = None,
     sort_by: str = "updated_at",
     sort_dir: str = "desc",
     skip: int = 0,
@@ -243,10 +245,16 @@ async def list_accounts(
         query["metadata.uploader_name"] = {"$regex": uploader_name, "$options": "i"}
     if manual_status_label:
         query["metadata.manual_status_label"] = {"$regex": manual_status_label, "$options": "i"}
-    if pool_status:
+    if account_scope == "problem":
+        query["metadata.pool_status"] = "problem"
+    elif account_scope == "normal":
+        query["metadata.pool_status"] = pool_status if pool_status and pool_status not in {"problem", "discarded"} else {"$nin": ["problem", "discarded"]}
+    elif pool_status:
         query["metadata.pool_status"] = pool_status
     if pool_id:
         query["metadata.pool_id"] = pool_id
+    if site_id:
+        query["metadata.sub2api_site_id"] = site_id
     if q:
         query["$or"] = [
             {"metadata.email": {"$regex": q, "$options": "i"}},

@@ -1,6 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -29,9 +29,6 @@ class Settings(BaseSettings):
     initial_owner_name: str = "Admin"
     initial_owner_password: str | None = None
 
-    sub2api_base_url: str | None = None
-    sub2api_token: str | None = None
-
     log_profile: str = "development"
     log_level: str = "DEBUG"
     log_dir: str = "logs"
@@ -56,10 +53,17 @@ def get_settings() -> Settings:
 def get_mongodb_uri() -> str:
     settings = get_settings()
     if settings.mongodb_uri:
-        return settings.mongodb_uri
+        return _with_retry_writes_disabled(settings.mongodb_uri)
     if settings.mongodb_user and settings.mongodb_password:
         user = quote_plus(settings.mongodb_user)
         password = quote_plus(settings.mongodb_password)
         db_name = quote_plus(settings.mongodb_db)
-        return f"mongodb://{user}:{password}@{settings.mongodb_host}:{settings.mongodb_port}/{db_name}"
-    return f"mongodb://{settings.mongodb_host}:{settings.mongodb_port}/{quote_plus(settings.mongodb_db)}"
+        return f"mongodb://{user}:{password}@{settings.mongodb_host}:{settings.mongodb_port}/{db_name}?retryWrites=false"
+    return f"mongodb://{settings.mongodb_host}:{settings.mongodb_port}/{quote_plus(settings.mongodb_db)}?retryWrites=false"
+
+
+def _with_retry_writes_disabled(uri: str) -> str:
+    parts = urlsplit(uri)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["retryWrites"] = "false"
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))

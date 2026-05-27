@@ -14,6 +14,7 @@ from app.services.accounts import (
 from app.services.audit import write_audit_log
 from app.services.json_parser import extract_account_objects
 from app.services.pool_lifecycle import enter_reserve, manual_transfer_account
+from app.services.sub2api_binding import manually_unbind_sub2api_account
 from app.services.sub2api_push import push_account_to_sub2api
 from app.services.sub2api_verify import verify_account_via_sub2api_group
 from app.utils import serialize_doc
@@ -31,8 +32,10 @@ async def get_accounts(
     phone_bound: bool | None = None,
     uploader_name: str | None = None,
     manual_status_label: str | None = None,
+    account_scope: str | None = None,
     pool_status: str | None = None,
     pool_id: str | None = None,
+    site_id: str | None = None,
     sort_by: str = Query(default="updated_at"),
     sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
     skip: int = 0,
@@ -49,8 +52,10 @@ async def get_accounts(
         phone_bound=phone_bound,
         uploader_name=uploader_name,
         manual_status_label=manual_status_label,
+        account_scope=account_scope,
         pool_status=pool_status,
         pool_id=pool_id,
+        site_id=site_id,
         sort_by=sort_by,
         sort_dir=sort_dir,
         skip=skip,
@@ -138,6 +143,7 @@ async def post_manual_transfer(
         account_id=account_id,
         target_status=payload.target_status,
         pool_id=payload.pool_id,
+        site_id=payload.site_id,
         priority=payload.priority,
         reason=payload.reason,
         last_error=payload.last_error,
@@ -152,6 +158,7 @@ async def post_manual_transfer(
         after={
             "target_status": payload.target_status,
             "pool_id": payload.pool_id,
+            "site_id": payload.site_id,
             "priority": payload.priority,
             "reason": payload.reason,
             "last_error": payload.last_error,
@@ -199,6 +206,24 @@ async def post_push_to_sub2api(
         },
     )
     return result
+
+
+@router.post("/{account_id}/unbind-sub2api")
+async def post_unbind_sub2api(
+    account_id: str,
+    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    updated = await manually_unbind_sub2api_account(db, account_id=account_id, actor=actor)
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="account.unbind_sub2api",
+        resource_type="account",
+        resource_id=account_id,
+        after={"sub2api_account_id": None},
+    )
+    return updated
 
 
 @router.post("/{account_id}/verify-via-sub2api")

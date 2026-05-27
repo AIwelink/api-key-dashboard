@@ -6,7 +6,6 @@ from typing import Any
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReplaceOne, UpdateOne
 
-from app.config import get_settings
 from app.services.sub2api import Sub2ApiClient
 from app.utils import now_utc, serialize_doc
 
@@ -16,50 +15,114 @@ logger = logging.getLogger("app.sub2api_cache")
 DEFAULT_SITE_ID = "default"
 DEFAULT_REFRESH_INTERVAL_MINUTES = 5
 REFRESH_DEBOUNCE_SECONDS = 3
+ACCOUNT_USAGE_CONCURRENCY = 8
+ACCOUNT_USAGE_BATCH_SIZE = 50
+ACCOUNT_USAGE_REFRESH_INTERVAL = timedelta(hours=6)
+ACCOUNT_USAGE_FIELDS = (
+    "codex_5h_used_percent",
+    "codex_7d_used_percent",
+    "codex_5h_reset_after_seconds",
+    "codex_7d_reset_after_seconds",
+    "codex_5h_request_count",
+    "codex_7d_request_count",
+    "codex_5h_token_count",
+    "codex_7d_token_count",
+    "codex_5h_actual_cost",
+    "codex_7d_actual_cost",
+    "codex_5h_total_cost",
+    "codex_7d_total_cost",
+    "codex_5h_user_cost",
+    "codex_7d_user_cost",
+    "codex_5h_reset_at",
+    "codex_7d_reset_at",
+    "codex_usage_updated_at",
+    "codex_usage_synced_at",
+    "codex_usage_snapshot",
+)
 
 _refresh_tasks: dict[str, asyncio.Task] = {}
 _refresh_tasks_lock = asyncio.Lock()
 _site_locks: dict[str, asyncio.Lock] = {}
 
 
-def _default_site_base() -> dict[str, Any]:
-    settings = get_settings()
-    return {
-        "_id": DEFAULT_SITE_ID,
-        "id": DEFAULT_SITE_ID,
-        "name": "sub2api 5002",
-        "base_url": settings.sub2api_base_url,
-        "status": "active" if settings.sub2api_base_url else "disabled",
-        "token_configured": bool(settings.sub2api_token),
-        "source": "env",
-    }
+def public_site(site: dict[str, Any]) -> dict[str, Any]:
+    result = dict(site)
+    result["token_configured"] = bool(result.get("token"))
+    result.pop("token", None)
+    return result
 
 
-async def get_site(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SITE_ID) -> dict[str, Any] | None:
-    if site_id != DEFAULT_SITE_ID:
+async def get_site(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SITE_ID, *, include_token: bool = False) -> dict[str, Any] | None:
+    doc = await db.sub2api_sites.find_one({"_id": site_id, "status": {"$ne": "deleted"}})
+    if doc is None:
         return None
-    doc = await db.sub2api_sites.find_one({"_id": site_id}) or {}
-    site = _default_site_base()
-    site.update(doc)
+    site = dict(doc)
     site.setdefault("refresh_interval_minutes", DEFAULT_REFRESH_INTERVAL_MINUTES)
+    site.setdefault("auto_remove_abnormal_accounts", False)
+    site.setdefault("status", "active")
+    site.setdefault("source", "database")
     site["id"] = site["_id"]
+    if not include_token:
+        site = public_site(site)
     return serialize_doc(site)
 
 
 async def list_sites(db: AsyncIOMotorDatabase) -> dict[str, Any]:
-    site = await get_site(db, DEFAULT_SITE_ID)
-    return {"items": [site] if site else [], "total": 1 if site else 0}
+    cursor = db.sub2api_sites.find({"status": {"$ne": "deleted"}}).sort([("created_at", 1), ("_id", 1)])
+    items = [public_site(doc | {"id": doc["_id"]}) async for doc in cursor]
+    return {"items": items, "total": len(items)}
 
 
 async def update_site_config(db: AsyncIOMotorDatabase, site_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    if site_id != DEFAULT_SITE_ID:
+    current = await db.sub2api_sites.find_one({"_id": site_id, "status": {"$ne": "deleted"}})
+    if current is None:
         return {}
     updates: dict[str, Any] = {"updated_at": now_utc()}
+    if "name" in payload:
+        updates["name"] = str(payload["name"] or site_id).strip() or site_id
+    if "base_url" in payload:
+        updates["base_url"] = str(payload["base_url"] or "").strip().rstrip("/")
+    if "token" in payload:
+        updates["token"] = str(payload["token"] or "").strip()
+    if "status" in payload:
+        updates["status"] = str(payload["status"] or "active")
     if "refresh_interval_minutes" in payload:
         interval = int(payload["refresh_interval_minutes"])
         updates["refresh_interval_minutes"] = max(1, min(interval, 1440))
-    await db.sub2api_sites.update_one({"_id": site_id}, {"$set": updates, "$setOnInsert": {"created_at": now_utc()}}, upsert=True)
+    if "auto_remove_abnormal_accounts" in payload:
+        updates["auto_remove_abnormal_accounts"] = bool(payload["auto_remove_abnormal_accounts"])
+    await db.sub2api_sites.update_one({"_id": site_id}, {"$set": updates})
     return await get_site(db, site_id) or {}
+
+
+async def create_site_config(db: AsyncIOMotorDatabase, payload: dict[str, Any]) -> dict[str, Any]:
+    site_id = str(payload.get("id") or "").strip()
+    base_url = str(payload.get("base_url") or "").strip().rstrip("/")
+    if not site_id or not base_url:
+        return {}
+    now = now_utc()
+    doc = {
+        "_id": site_id,
+        "name": str(payload.get("name") or site_id).strip() or site_id,
+        "base_url": base_url,
+        "token": str(payload.get("token") or "").strip(),
+        "status": str(payload.get("status") or "active"),
+        "refresh_interval_minutes": max(1, min(int(payload.get("refresh_interval_minutes") or DEFAULT_REFRESH_INTERVAL_MINUTES), 1440)),
+        "auto_remove_abnormal_accounts": bool(payload.get("auto_remove_abnormal_accounts", False)),
+        "source": "database",
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.sub2api_sites.replace_one({"_id": site_id}, doc, upsert=True)
+    return await get_site(db, site_id) or {}
+
+
+async def delete_site_config(db: AsyncIOMotorDatabase, site_id: str) -> bool:
+    result = await db.sub2api_sites.update_one(
+        {"_id": site_id, "status": {"$ne": "deleted"}},
+        {"$set": {"status": "deleted", "deleted_at": now_utc(), "updated_at": now_utc()}},
+    )
+    return result.modified_count > 0
 
 
 async def get_cache_meta(db: AsyncIOMotorDatabase, site_id: str) -> dict[str, Any]:
@@ -119,8 +182,38 @@ async def list_cached_group_accounts(
     }
 
 
+async def upsert_cached_account_snapshot(
+    db: AsyncIOMotorDatabase,
+    site_id: str,
+    account: dict[str, Any],
+    *,
+    fetched_at: datetime | None = None,
+) -> dict[str, Any]:
+    normalized = _normalize_account_snapshot(account)
+    remote_id = normalized.get("id")
+    if remote_id is None:
+        return normalized
+    fetched_at = fetched_at or now_utc()
+    await db.sub2api_accounts_cache.replace_one(
+        {"_id": f"{site_id}:{remote_id}"},
+        {
+            "_id": f"{site_id}:{remote_id}",
+            "site_id": site_id,
+            "sub2api_account_id": remote_id,
+            "group_ids": _extract_group_ids(normalized),
+            "status": normalized.get("status"),
+            "schedulable": normalized.get("schedulable"),
+            **_account_cache_fields(normalized),
+            "account": normalized,
+            "fetched_at": fetched_at,
+        },
+        upsert=True,
+    )
+    return normalized
+
+
 async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SITE_ID) -> dict[str, Any]:
-    site = await get_site(db, site_id)
+    site = await get_site(db, site_id, include_token=True)
     if not site:
         logger.warning("sub2api_refresh_skipped site_id=%s reason=site_not_found", site_id)
         return {"ok": False, "message": "sub2api site not found"}
@@ -136,13 +229,12 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                 upsert=True,
             )
 
-            client = Sub2ApiClient()
+            client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
             groups_data = await client.list_groups(page=1, page_size=500)
             groups = groups_data.get("items", [])
             accounts = [_normalize_account_snapshot(account) for account in await _fetch_all_accounts(client)]
-            usage_records = await _fetch_all_usage_records(client)
             fetched_at = now_utc()
-            _apply_usage_aggregates(accounts, usage_records, fetched_at)
+            await _apply_account_usage_windows(db, site_id, client, accounts, fetched_at)
             group_capacity_summaries = _group_capacity_summaries(accounts)
 
             group_ops = []
@@ -175,6 +267,7 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                         "group_ids": _extract_group_ids(account),
                         "status": account.get("status"),
                         "schedulable": account.get("schedulable"),
+                        **_account_cache_fields(account),
                         "account": account,
                         "fetched_at": fetched_at,
                     },
@@ -193,12 +286,20 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
             await db.sub2api_groups_cache.delete_many({"site_id": site_id, "group_id": {"$nin": group_ids}})
             await db.sub2api_accounts_cache.delete_many({"site_id": site_id, "sub2api_account_id": {"$nin": account_ids}})
 
+            auto_remove_summary: dict[str, Any] | None = None
+            if site.get("auto_remove_abnormal_accounts") is True:
+                from app.services.sub2api_abnormal import auto_remove_abnormal_accounts
+
+                auto_remove_summary = await auto_remove_abnormal_accounts(db, site_id=site_id, accounts=accounts)
+
             summary = {
                 "ok": True,
                 "site_id": site_id,
                 "status": "succeeded",
                 "groups": len(groups),
                 "accounts": len(accounts),
+                "auto_removed_abnormal_accounts": auto_remove_summary.get("removed", 0) if auto_remove_summary else 0,
+                "auto_remove_abnormal_failed": auto_remove_summary.get("failed", 0) if auto_remove_summary else 0,
                 "started_at": started_at,
                 "finished_at": now_utc(),
             }
@@ -233,13 +334,15 @@ async def request_debounced_refresh(db: AsyncIOMotorDatabase, site_id: str = DEF
 async def refresh_scheduler_loop(db: AsyncIOMotorDatabase) -> None:
     while True:
         try:
-            site = await get_site(db, DEFAULT_SITE_ID)
-            if site and site.get("status") == "active":
+            for site in (await list_sites(db)).get("items", []):
+                if not site or site.get("status") != "active":
+                    continue
+                site_id = str(site.get("id"))
                 interval = int(site.get("refresh_interval_minutes") or DEFAULT_REFRESH_INTERVAL_MINUTES)
-                meta = await get_cache_meta(db, DEFAULT_SITE_ID)
+                meta = await get_cache_meta(db, site_id)
                 last_refreshed_at = meta.get("last_refreshed_at")
                 if _is_due(last_refreshed_at, interval):
-                    await request_debounced_refresh(db, DEFAULT_SITE_ID)
+                    await request_debounced_refresh(db, site_id)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -264,7 +367,13 @@ async def _fetch_all_accounts(client: Sub2ApiClient) -> list[dict[str, Any]]:
     accounts: list[dict[str, Any]] = []
     total: int | None = None
     while page <= 100:
-        data = await client.list_accounts(page=page, page_size=page_size)
+        data = await client.list_accounts(
+            page=page,
+            page_size=page_size,
+            sort_by="last_used_at",
+            sort_order="asc",
+            timezone="Asia/Shanghai",
+        )
         items = data.get("items", [])
         if total is None:
             total_value = data.get("total")
@@ -278,91 +387,135 @@ async def _fetch_all_accounts(client: Sub2ApiClient) -> list[dict[str, Any]]:
     return accounts
 
 
-async def _fetch_all_usage_records(client: Sub2ApiClient) -> list[dict[str, Any]]:
-    page = 1
-    page_size = 200
-    records: list[dict[str, Any]] = []
-    total: int | None = None
-    while page <= 100:
-        try:
-            payload = await client.request_admin("GET", "/usage", params={"page": page, "page_size": page_size})
-        except Exception:
-            logger.exception("sub2api_usage_fetch_failed page=%s", page)
-            return records
-        data = payload.get("data", payload)
-        items = data.get("items", []) if isinstance(data, dict) else []
-        if total is None and isinstance(data, dict):
-            total_value = data.get("total")
-            total = int(total_value) if isinstance(total_value, int) else None
-        records.extend(item for item in items if isinstance(item, dict))
-        if not items:
-            break
-        if total is not None and page * page_size >= total:
-            break
-        page += 1
-    return records
+async def _apply_account_usage_windows(
+    db: AsyncIOMotorDatabase,
+    site_id: str,
+    client: Sub2ApiClient,
+    accounts: list[dict[str, Any]],
+    synced_at: datetime,
+) -> None:
+    await _restore_cached_usage_snapshots(db, site_id, accounts)
+    candidates = [account for account in accounts if _usage_refresh_due(account, synced_at)]
+    candidates.sort(key=lambda account: _usage_synced_at(account) or datetime.min.replace(tzinfo=UTC))
+    selected_accounts = candidates[:ACCOUNT_USAGE_BATCH_SIZE]
+    if not selected_accounts:
+        return
+    logger.info(
+        "sub2api_account_usage_refresh_start site_id=%s selected=%s stale=%s total=%s",
+        site_id,
+        len(selected_accounts),
+        len(candidates),
+        len(accounts),
+    )
+    semaphore = asyncio.Semaphore(ACCOUNT_USAGE_CONCURRENCY)
+
+    async def fetch_and_apply(account: dict[str, Any]) -> None:
+        account_id = account.get("id")
+        if account_id is None:
+            return
+        async with semaphore:
+            try:
+                usage = await client.get_account_usage(account_id, timezone="Asia/Shanghai")
+            except Exception:
+                logger.exception("sub2api_account_usage_fetch_failed account_id=%s", account_id)
+                return
+        _apply_account_usage_snapshot(account, usage, synced_at)
+
+    await asyncio.gather(*(fetch_and_apply(account) for account in selected_accounts))
 
 
-def _apply_usage_aggregates(accounts: list[dict[str, Any]], usage_records: list[dict[str, Any]], synced_at: datetime) -> None:
-    accounts_by_id = {account.get("id"): account for account in accounts if account.get("id") is not None}
-    windows = {
-        "5h": synced_at - timedelta(hours=5),
-        "7d": synced_at - timedelta(days=7),
-    }
-    empty = {
-        "request_count": 0,
-        "token_count": 0,
-        "actual_cost": 0.0,
-        "total_cost": 0.0,
-    }
-    aggregates: dict[Any, dict[str, dict[str, float]]] = {
-        account_id: {window: dict(empty) for window in windows}
-        for account_id in accounts_by_id
-    }
+async def _restore_cached_usage_snapshots(db: AsyncIOMotorDatabase, site_id: str, accounts: list[dict[str, Any]]) -> None:
+    account_ids = [account.get("id") for account in accounts if account.get("id") is not None]
+    if not account_ids:
+        return
+    cached_by_remote_id: dict[Any, dict[str, Any]] = {}
+    cursor = db.sub2api_accounts_cache.find(
+        {"site_id": site_id, "sub2api_account_id": {"$in": account_ids}},
+        {"sub2api_account_id": 1, "account": 1},
+    )
+    async for doc in cursor:
+        cached_by_remote_id[doc.get("sub2api_account_id")] = doc.get("account", {})
+    for account in accounts:
+        cached = cached_by_remote_id.get(account.get("id"))
+        if isinstance(cached, dict):
+            _copy_cached_usage(account, cached)
 
-    for record in usage_records:
-        account_id = record.get("account_id")
-        if account_id not in accounts_by_id:
+
+def _copy_cached_usage(account: dict[str, Any], cached: dict[str, Any]) -> None:
+    extra = dict(account.get("extra") if isinstance(account.get("extra"), dict) else {})
+    cached_extra = cached.get("extra") if isinstance(cached.get("extra"), dict) else {}
+    for key in ACCOUNT_USAGE_FIELDS:
+        cached_value = cached.get(key) if cached.get(key) is not None else cached_extra.get(key)
+        if cached_value is None:
             continue
-        created_at = _parse_datetime(record.get("created_at"))
-        if created_at is None:
-            continue
-        for window, starts_at in windows.items():
-            if created_at < starts_at:
-                continue
-            aggregate = aggregates.setdefault(account_id, {name: dict(empty) for name in windows})[window]
-            aggregate["request_count"] += 1
-            aggregate["token_count"] += _usage_record_tokens(record)
-            aggregate["actual_cost"] += float(_number_or_none(record.get("actual_cost")) or 0)
-            aggregate["total_cost"] += float(_number_or_none(record.get("total_cost")) or 0)
+        if account.get(key) is None:
+            account[key] = cached_value
+        if extra.get(key) is None:
+            extra[key] = cached_value
+    account["extra"] = extra
 
-    for account_id, account in accounts_by_id.items():
-        extra = dict(account.get("extra") if isinstance(account.get("extra"), dict) else {})
-        account["codex_usage_synced_at"] = synced_at
-        extra["codex_usage_synced_at"] = synced_at
-        for window in windows:
-            aggregate = aggregates.get(account_id, {}).get(window, dict(empty))
-            prefix = f"codex_{window}"
-            values = {
-                f"{prefix}_request_count": int(aggregate["request_count"]),
-                f"{prefix}_token_count": int(aggregate["token_count"]),
-                f"{prefix}_actual_cost": round(float(aggregate["actual_cost"]), 6),
-                f"{prefix}_total_cost": round(float(aggregate["total_cost"]), 6),
-            }
-            for key, value in values.items():
+
+def _usage_refresh_due(account: dict[str, Any], now: datetime) -> bool:
+    if not _has_account_usage_snapshot(account):
+        return True
+    synced_at = _usage_synced_at(account)
+    if synced_at is None:
+        return True
+    return now - synced_at >= ACCOUNT_USAGE_REFRESH_INTERVAL
+
+
+def _has_account_usage_snapshot(account: dict[str, Any]) -> bool:
+    extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+    snapshot = account.get("codex_usage_snapshot") or extra.get("codex_usage_snapshot")
+    if not isinstance(snapshot, dict):
+        return False
+    seven_day = snapshot.get("seven_day")
+    return isinstance(seven_day, dict) and isinstance(seven_day.get("window_stats"), dict)
+
+
+def _usage_synced_at(account: dict[str, Any]) -> datetime | None:
+    extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+    return _parse_datetime(account.get("codex_usage_synced_at") or extra.get("codex_usage_synced_at"))
+
+
+def _apply_account_usage_snapshot(account: dict[str, Any], usage: dict[str, Any], synced_at: datetime) -> None:
+    if not isinstance(usage, dict):
+        return
+    extra = dict(account.get("extra") if isinstance(account.get("extra"), dict) else {})
+    account["codex_usage_synced_at"] = synced_at
+    extra["codex_usage_synced_at"] = synced_at
+    updated_at = usage.get("updated_at")
+    if updated_at is not None:
+        account["codex_usage_updated_at"] = updated_at
+        extra["codex_usage_updated_at"] = updated_at
+
+    window_map = {
+        "5h": usage.get("five_hour"),
+        "7d": usage.get("seven_day"),
+    }
+    for window, window_data in window_map.items():
+        if not isinstance(window_data, dict):
+            continue
+        prefix = f"codex_{window}"
+        stats = window_data.get("window_stats") if isinstance(window_data.get("window_stats"), dict) else {}
+        values = {
+            f"{prefix}_used_percent": window_data.get("utilization"),
+            f"{prefix}_reset_at": window_data.get("resets_at"),
+            f"{prefix}_reset_after_seconds": window_data.get("remaining_seconds"),
+            f"{prefix}_request_count": stats.get("requests"),
+            f"{prefix}_token_count": stats.get("tokens"),
+            f"{prefix}_actual_cost": stats.get("cost"),
+            f"{prefix}_total_cost": stats.get("standard_cost", stats.get("cost")),
+            f"{prefix}_user_cost": stats.get("user_cost"),
+        }
+        for key, value in values.items():
+            if value is not None:
                 account[key] = value
                 extra[key] = value
-        account["extra"] = extra
 
-
-def _usage_record_tokens(record: dict[str, Any]) -> int:
-    token_fields = (
-        "input_tokens",
-        "output_tokens",
-        "cache_creation_tokens",
-        "cache_read_tokens",
-    )
-    return int(sum(_number_or_none(record.get(field)) or 0 for field in token_fields))
+    account["codex_usage_snapshot"] = usage
+    extra["codex_usage_snapshot"] = usage
+    account["extra"] = extra
 
 
 async def _get_or_update_group_capacity_summary(db: AsyncIOMotorDatabase, site_id: str, group_id: int) -> dict[str, Any]:
@@ -415,12 +568,41 @@ def _group_with_capacity_summary(group: dict[str, Any], capacity_summary: dict[s
     return snapshot
 
 
+def _account_cache_fields(account: dict[str, Any]) -> dict[str, Any]:
+    fields = (
+        "email",
+        "plan_type",
+        "privacy_mode",
+        "subscription_expires_at",
+        "credential_expires_at",
+        "created_at",
+        "updated_at",
+        "last_used_at",
+        "rate_limited_at",
+        "rate_limit_reset_at",
+        "codex_5h_used_percent",
+        "codex_7d_used_percent",
+        "codex_5h_request_count",
+        "codex_7d_request_count",
+        "codex_total_request_count",
+        "codex_total_token_count",
+        "codex_5h_total_cost",
+        "codex_7d_total_cost",
+        "codex_total_actual_cost",
+        "codex_total_cost",
+        "codex_usage_updated_at",
+    )
+    return {field: account.get(field) for field in fields if account.get(field) is not None}
+
+
 def _capacity_summary_for_accounts(accounts: list[dict[str, Any]]) -> dict[str, Any]:
     capacity_accounts = [account for account in accounts if _is_capacity_account(account)]
-    used_5h = _average_percent(_usage_number(account, "codex_5h_used_percent") for account in capacity_accounts)
+    five_hour_capacity_accounts = [account for account in capacity_accounts if not _is_7d_exhausted(account)]
+    used_5h = _average_percent(_usage_number(account, "codex_5h_used_percent") for account in five_hour_capacity_accounts)
     used_7d = _average_percent(_usage_number(account, "codex_7d_used_percent") for account in capacity_accounts)
     return {
         "available_accounts": len(capacity_accounts),
+        "available_5h_accounts": len(five_hour_capacity_accounts),
         "used_5h_percent": used_5h,
         "available_5h_percent": _clamp_percent(100 - used_5h),
         "used_7d_percent": used_7d,
@@ -428,6 +610,11 @@ def _capacity_summary_for_accounts(accounts: list[dict[str, Any]]) -> dict[str, 
         "total_accounts": len(accounts),
         "calculated_at": now_utc(),
     }
+
+
+def _is_7d_exhausted(account: dict[str, Any]) -> bool:
+    used_7d = _usage_number(account, "codex_7d_used_percent")
+    return isinstance(used_7d, (int, float)) and used_7d >= 100
 
 
 def _is_capacity_account(account: dict[str, Any]) -> bool:
@@ -488,19 +675,46 @@ def _extract_group_ids(account: dict[str, Any]) -> list[int]:
 
 def _account_snapshot_with_cache_sync(doc: dict[str, Any]) -> dict[str, Any]:
     account = _normalize_account_snapshot(doc.get("account", {}))
-    if account.get("codex_usage_synced_at") is None and doc.get("fetched_at") is not None:
-        extra = dict(account.get("extra") if isinstance(account.get("extra"), dict) else {})
-        account["codex_usage_synced_at"] = doc.get("fetched_at")
-        extra["codex_usage_synced_at"] = doc.get("fetched_at")
-        account["extra"] = extra
     return account
 
 
 def _normalize_account_snapshot(account: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(account)
+    credentials = dict(normalized.get("credentials") if isinstance(normalized.get("credentials"), dict) else {})
     extra = dict(normalized.get("extra") if isinstance(normalized.get("extra"), dict) else {})
 
     normalized["group_ids"] = _extract_group_ids(normalized)
+    for field in (
+        "email",
+        "plan_type",
+        "privacy_mode",
+        "organization_id",
+        "chatgpt_account_id",
+        "chatgpt_user_id",
+    ):
+        value = _first_present(normalized, credentials, extra, field)
+        if value is not None:
+            normalized[field] = value
+
+    credential_expires_at = _first_present(credentials, extra, "expires_at", "credential_expires_at")
+    if credential_expires_at is not None:
+        normalized["credential_expires_at"] = credential_expires_at
+
+    subscription_expires_at = _first_present(
+        normalized,
+        credentials,
+        extra,
+        "subscription_expires_at",
+        "chatgpt_subscription_active_until",
+        "subscription_active_until",
+    )
+    if subscription_expires_at is not None:
+        normalized["subscription_expires_at"] = subscription_expires_at
+
+    credentials_status = normalized.get("credentials_status")
+    if isinstance(credentials_status, dict):
+        normalized["credentials_status"] = dict(credentials_status)
+
     normalized["status"] = _first_present(
         normalized,
         extra,
@@ -530,14 +744,26 @@ def _normalize_account_snapshot(account: dict[str, Any]) -> dict[str, Any]:
     normalized["concurrency"] = _number_or_none(_first_present(normalized, extra, "concurrency", "max_concurrency"))
     normalized["load_factor"] = _number_or_none(_first_present(normalized, extra, "load_factor"))
     normalized["priority"] = _number_or_none(_first_present(normalized, extra, "priority"))
+    normalized["rate_multiplier"] = _number_or_none(_first_present(normalized, extra, "rate_multiplier"))
+    auto_pause_on_expired = _bool_or_none(_first_present(normalized, extra, "auto_pause_on_expired"))
+    if auto_pause_on_expired is not None:
+        normalized["auto_pause_on_expired"] = auto_pause_on_expired
 
     for field in (
+        "notes",
+        "created_at",
+        "updated_at",
         "last_used_at",
         "rate_limited_at",
         "rate_limit_reset_at",
+        "overload_until",
         "temp_unschedulable_until",
         "temp_unschedulable_reason",
+        "session_window_start",
+        "session_window_end",
+        "session_window_status",
         "expires_at",
+        "proxy_id",
     ):
         value = _first_present(normalized, extra, field)
         if value is not None:
@@ -556,8 +782,21 @@ def _normalize_account_snapshot(account: dict[str, Any]) -> dict[str, Any]:
         "codex_7d_actual_cost": _usage_value(normalized, extra, "codex_7d_actual_cost", "7d", "actual_cost"),
         "codex_5h_total_cost": _usage_value(normalized, extra, "codex_5h_total_cost", "5h", "total_cost"),
         "codex_7d_total_cost": _usage_value(normalized, extra, "codex_7d_total_cost", "7d", "total_cost"),
+        "codex_total_request_count": _total_usage_value(normalized, extra, "codex_total_request_count", "request_count"),
+        "codex_total_token_count": _total_usage_value(normalized, extra, "codex_total_token_count", "token_count"),
+        "codex_total_actual_cost": _total_usage_value(normalized, extra, "codex_total_actual_cost", "actual_cost"),
+        "codex_total_cost": _total_usage_value(normalized, extra, "codex_total_cost", "total_cost"),
+        "codex_primary_used_percent": _first_present(normalized, extra, "codex_primary_used_percent"),
+        "codex_primary_reset_after_seconds": _first_present(normalized, extra, "codex_primary_reset_after_seconds"),
+        "codex_primary_window_minutes": _first_present(normalized, extra, "codex_primary_window_minutes"),
+        "codex_secondary_used_percent": _first_present(normalized, extra, "codex_secondary_used_percent"),
+        "codex_secondary_reset_after_seconds": _first_present(normalized, extra, "codex_secondary_reset_after_seconds"),
+        "codex_secondary_window_minutes": _first_present(normalized, extra, "codex_secondary_window_minutes"),
+        "codex_primary_over_secondary_percent": _first_present(normalized, extra, "codex_primary_over_secondary_percent"),
         "codex_5h_reset_at": _first_present(normalized, extra, "codex_5h_reset_at", "5h_reset_at"),
         "codex_7d_reset_at": _first_present(normalized, extra, "codex_7d_reset_at", "7d_reset_at"),
+        "codex_5h_window_minutes": _first_present(normalized, extra, "codex_5h_window_minutes"),
+        "codex_7d_window_minutes": _first_present(normalized, extra, "codex_7d_window_minutes"),
         "codex_usage_updated_at": _first_present(normalized, extra, "codex_usage_updated_at", "usage_updated_at"),
         "codex_usage_synced_at": _first_present(normalized, extra, "codex_usage_synced_at", "usage_synced_at"),
     }
@@ -649,6 +888,34 @@ def _usage_value(account: dict[str, Any], extra: dict[str, Any], canonical_key: 
                     value = window_data.get(key)
                     if value is not None:
                         return value
+    return None
+
+
+def _total_usage_value(account: dict[str, Any], extra: dict[str, Any], canonical_key: str, metric: str) -> Any:
+    direct = _first_present(
+        account,
+        extra,
+        canonical_key,
+        f"total_{metric}",
+        f"{metric}_total",
+        f"all_time_{metric}",
+        f"lifetime_{metric}",
+    )
+    if direct is not None:
+        return direct
+
+    for container in (account, extra):
+        usage = container.get("usage") or container.get("usage_summary") or container.get("usage_totals")
+        if isinstance(usage, dict):
+            for key in ("total", "all_time", "lifetime"):
+                usage_data = usage.get(key)
+                if isinstance(usage_data, dict):
+                    value = usage_data.get(metric)
+                    if value is not None:
+                        return value
+            value = usage.get(metric)
+            if value is not None:
+                return value
     return None
 
 

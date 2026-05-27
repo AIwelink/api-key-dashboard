@@ -9,7 +9,7 @@ from pymongo import ReturnDocument
 
 from app.services.pool_lifecycle import actor_name, write_pool_action
 from app.services.sub2api import Sub2ApiClient
-from app.services.sub2api_cache import DEFAULT_SITE_ID, refresh_site_cache
+from app.services.sub2api_cache import get_site, refresh_site_cache
 from app.services.sub2api_push import build_sub2api_account_payload
 from app.utils import extract_email, now_utc, object_id, serialize_doc
 
@@ -27,7 +27,8 @@ async def test_remote_sub2api_account(
     reason: str | None,
     actor: dict[str, Any],
 ) -> dict[str, Any]:
-    if site_id != DEFAULT_SITE_ID:
+    site = await get_site(db, site_id, include_token=True)
+    if not site:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
 
     remote_snapshot = await _load_cached_remote(db, site_id=site_id, remote_account_id=remote_account_id)
@@ -41,7 +42,7 @@ async def test_remote_sub2api_account(
         remote_snapshot=remote_snapshot or {},
         before={"sub2api_account_id": remote_account_id, "model_id": model_id},
     )
-    client = Sub2ApiClient()
+    client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
     try:
         verification = await client.test_account(remote_account_id, model_id=model_id, prompt=prompt)
         status_value = "succeeded" if verification.get("success") is True else "failed"
@@ -54,6 +55,7 @@ async def test_remote_sub2api_account(
         )
         await _write_local_remote_test_if_bound(
             db,
+            site_id=site_id,
             remote_account_id=remote_account_id,
             verification=verification,
             actor=actor,
@@ -94,6 +96,7 @@ async def test_remote_sub2api_account(
         )
         await _write_local_remote_test_if_bound(
             db,
+            site_id=site_id,
             remote_account_id=remote_account_id,
             verification=verification,
             actor=actor,
@@ -117,7 +120,8 @@ async def verify_account_via_sub2api_group(
     reason: str | None,
     actor: dict[str, Any],
 ) -> dict[str, Any]:
-    if site_id != DEFAULT_SITE_ID:
+    site = await get_site(db, site_id, include_token=True)
+    if not site:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
     group_doc = await db.sub2api_groups_cache.find_one({"site_id": site_id, "group_id": verification_group_id})
     if group_doc is None:
@@ -147,13 +151,14 @@ async def verify_account_via_sub2api_group(
         await _finish_action(db, action_id=action["id"], status_value="failed", error="Account JSON is missing credentials")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Account JSON is missing credentials")
 
-    client = Sub2ApiClient()
+    client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
     remote_account: dict[str, Any] | None = None
     verification: dict[str, Any] | None = None
     cleanup: dict[str, Any] = {"status": "not_needed"}
     try:
         payload = build_sub2api_account_payload(
             account_json,
+            metadata=locked.get("metadata", {}) if isinstance(locked.get("metadata"), dict) else {},
             group_id=verification_group_id,
             concurrency=concurrency,
             load_factor=load_factor,
@@ -381,6 +386,7 @@ async def _write_remote_test_cache(
 async def _write_local_remote_test_if_bound(
     db: AsyncIOMotorDatabase,
     *,
+    site_id: str,
     remote_account_id: int,
     verification: dict[str, Any],
     actor: dict[str, Any],
@@ -388,7 +394,11 @@ async def _write_local_remote_test_if_bound(
     now = now_utc()
     status_value = "passed" if verification.get("success") is True else "failed"
     await db.accounts.update_many(
-        {"metadata.deleted_at": {"$exists": False}, "metadata.sub2api_account_id": remote_account_id},
+        {
+            "metadata.deleted_at": {"$exists": False},
+            "metadata.sub2api_site_id": site_id,
+            "metadata.sub2api_account_id": remote_account_id,
+        },
         {
             "$set": {
                 "metadata.remote_test_status": status_value,

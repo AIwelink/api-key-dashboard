@@ -95,12 +95,20 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   const loadReserveSummary = async () => {
     setLoadingReserveSummary(true);
     try {
+      const targetParams = new URLSearchParams({ pool_status: "reserve", limit: "1" });
+      if (selectedSiteId) targetParams.set("site_id", selectedSiteId);
+      if (selectedGroupId !== null) targetParams.set("pool_id", String(selectedGroupId));
+      const withFilter = (key?: string, value?: string) => {
+        const params = new URLSearchParams(targetParams);
+        if (key && value) params.set(key, value);
+        return `/accounts?${params.toString()}`;
+      };
       const [allData, plusData, freeData, proData, phoneData] = await Promise.all([
-        api<AccountsResponse>("/accounts?pool_status=reserve&limit=1", token),
-        api<AccountsResponse>("/accounts?pool_status=reserve&account_type=plus&limit=1", token),
-        api<AccountsResponse>("/accounts?pool_status=reserve&account_type=free&limit=1", token),
-        api<AccountsResponse>("/accounts?pool_status=reserve&account_type=pro&limit=1", token),
-        api<AccountsResponse>("/accounts?pool_status=reserve&phone_bound=true&limit=1", token),
+        api<AccountsResponse>(withFilter(), token),
+        api<AccountsResponse>(withFilter("account_type", "plus"), token),
+        api<AccountsResponse>(withFilter("account_type", "free"), token),
+        api<AccountsResponse>(withFilter("account_type", "pro"), token),
+        api<AccountsResponse>(withFilter("phone_bound", "true"), token),
       ]);
       setReserveTotal(allData.total);
       setReserveSummary({
@@ -167,6 +175,10 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     setSelectedGroupId(null);
     loadGroups(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
   }, [selectedSiteId]);
+
+  useEffect(() => {
+    loadReserveSummary().catch((error) => showToast(errorMessage(error), true));
+  }, [selectedSiteId, selectedGroupId]);
 
   return (
     <section className="view accounts-page">

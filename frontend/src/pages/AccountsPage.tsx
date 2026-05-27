@@ -27,6 +27,8 @@ type Filters = {
   limit: number;
 };
 
+type AccountScope = "normal" | "problem";
+
 type EditFields = {
   email_session: string;
   account_type: AccountType;
@@ -64,6 +66,7 @@ const initialFilters: Filters = {
 export function AccountsPage({ token, showToast }: Props) {
   const [accounts, setAccounts] = useState<AccountDocument[]>([]);
   const [filters, setFilters] = useState<Filters>(initialFilters);
+  const [accountScope, setAccountScope] = useState<AccountScope>("normal");
   const [draftQuery, setDraftQuery] = useState(initialFilters.q);
   const [skip, setSkip] = useState(0);
   const [total, setTotal] = useState(0);
@@ -83,6 +86,7 @@ export function AccountsPage({ token, showToast }: Props) {
     Object.entries(filters).forEach(([key, value]) => {
       if (value !== "" && value !== undefined && value !== null) params.set(key, String(value));
     });
+    params.set("account_scope", accountScope);
     params.set("skip", String(skip));
     const data = await api<AccountListResponse>(`/accounts?${params.toString()}`, token);
     setAccounts(data.items);
@@ -91,7 +95,7 @@ export function AccountsPage({ token, showToast }: Props) {
 
   useEffect(() => {
     loadAccounts().catch((error) => showToast(errorMessage(error), true));
-  }, [filters, skip]);
+  }, [filters, skip, accountScope]);
 
   useEffect(() => {
     const pageIds = new Set(accounts.map((account) => account.id));
@@ -101,6 +105,17 @@ export function AccountsPage({ token, showToast }: Props) {
   const setFilter = <K extends keyof Filters>(key: K, value: Filters[K]) => {
     setSkip(0);
     setFilters((current) => ({ ...current, [key]: value }));
+  };
+
+  const selectAccountScope = (nextScope: AccountScope) => {
+    setAccountScope(nextScope);
+    setSkip(0);
+    setSelectedIds(new Set());
+    setFilters((current) => {
+      if (nextScope === "problem") return { ...current, pool_status: "" };
+      if (current.pool_status === "problem" || current.pool_status === "discarded") return { ...current, pool_status: "" };
+      return current;
+    });
   };
 
   const applySearch = () => {
@@ -232,7 +247,7 @@ export function AccountsPage({ token, showToast }: Props) {
     <section className="view accounts-page">
       <div className="topbar">
         <div>
-          <h2>账号列表</h2>
+          <h2>{accountScope === "problem" ? "问题账号" : "正常账号"}</h2>
           <p>账号总库负责筛选、查看和编辑。账号进入可用池、问题账号、弃用等状态都由人工按钮触发。</p>
         </div>
         <div className="button-row">
@@ -241,6 +256,25 @@ export function AccountsPage({ token, showToast }: Props) {
           </button>
         </div>
       </div>
+
+      <aside className="account-view-menu" aria-label="账号列表视图">
+        <button
+          className={`account-view-menu-item ${accountScope === "normal" ? "active" : ""}`}
+          onClick={() => selectAccountScope("normal")}
+          type="button"
+        >
+          <strong>正常账号</strong>
+          <span>不含问题和弃用</span>
+        </button>
+        <button
+          className={`account-view-menu-item ${accountScope === "problem" ? "active" : ""}`}
+          onClick={() => selectAccountScope("problem")}
+          type="button"
+        >
+          <strong>问题账号</strong>
+          <span>只查看 problem</span>
+        </button>
+      </aside>
 
       <CompactStats
         items={[
@@ -295,14 +329,17 @@ export function AccountsPage({ token, showToast }: Props) {
             <span className="field-label">
               <strong>本地状态</strong>
             </span>
-            <select value={filters.pool_status} onChange={(event) => setFilter("pool_status", event.target.value)}>
+            <select
+              value={accountScope === "problem" ? "problem" : filters.pool_status}
+              disabled={accountScope === "problem"}
+              onChange={(event) => setFilter("pool_status", event.target.value)}
+            >
               <option value="">全部</option>
               <option value="library">总库</option>
               <option value="available">可用池</option>
               <option value="reserve">使用备选池</option>
               <option value="active">实际使用池</option>
-              <option value="problem">问题账号</option>
-              <option value="discarded">弃用</option>
+              {accountScope === "problem" && <option value="problem">问题账号</option>}
             </select>
           </label>
           <label>

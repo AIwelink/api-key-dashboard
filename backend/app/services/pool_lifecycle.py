@@ -172,6 +172,7 @@ async def manual_transfer_account(
     account_id: str,
     target_status: str,
     pool_id: str | None,
+    site_id: str | None,
     priority: int | None,
     reason: str | None,
     last_error: str | None,
@@ -192,7 +193,7 @@ async def manual_transfer_account(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="pool_id is required for reserve or active")
     pool_ref: dict[str, Any] | None = None
     if pool_id:
-        pool_ref = await resolve_pool_reference(db, pool_id)
+        pool_ref = await resolve_pool_reference(db, pool_id, site_id=site_id)
 
     metadata = dict(account.get("metadata", {}))
     before = {
@@ -271,7 +272,7 @@ async def manual_transfer_account(
     return serialize_doc(updated)
 
 
-async def resolve_pool_reference(db: AsyncIOMotorDatabase, pool_id: str) -> dict[str, Any]:
+async def resolve_pool_reference(db: AsyncIOMotorDatabase, pool_id: str, *, site_id: str | None = None) -> dict[str, Any]:
     try:
         pool_oid = object_id(pool_id)
     except ValueError:
@@ -292,7 +293,10 @@ async def resolve_pool_reference(db: AsyncIOMotorDatabase, pool_id: str) -> dict
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target group not found") from exc
 
-    group_doc = await db.sub2api_groups_cache.find_one({"group_id": group_id})
+    group_query: dict[str, Any] = {"group_id": group_id}
+    if site_id:
+        group_query["site_id"] = site_id
+    group_doc = await db.sub2api_groups_cache.find_one(group_query)
     if group_doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target group not found")
     group = group_doc.get("group", {})

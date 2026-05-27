@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -9,7 +10,7 @@ from pymongo import ReturnDocument
 
 from app.services.pool_lifecycle import actor_name, write_pool_action
 from app.services.sub2api import Sub2ApiClient, account_in_group
-from app.services.sub2api_cache import DEFAULT_SITE_ID, refresh_site_cache
+from app.services.sub2api_cache import get_site, upsert_cached_account_snapshot
 from app.utils import extract_email, now_utc, object_id, serialize_doc
 
 
@@ -56,7 +57,8 @@ async def push_account_to_sub2api(
     reason: str | None,
     actor: dict[str, Any],
 ) -> dict[str, Any]:
-    if site_id != DEFAULT_SITE_ID:
+    site = await get_site(db, site_id, include_token=True)
+    if not site:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
 
     account_oid = _account_oid(account_id)
@@ -118,7 +120,7 @@ async def push_account_to_sub2api(
         )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account is locked, already pushing, or already bound to sub2api")
 
-    client = Sub2ApiClient()
+    client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
     remote_account: dict[str, Any] | None = None
     verification: dict[str, Any] | None = None
     try:
@@ -157,6 +159,7 @@ async def push_account_to_sub2api(
         else:
             payload = build_sub2api_account_payload(
                 account_json,
+                metadata=metadata,
                 group_id=target_group_id,
                 concurrency=concurrency,
                 load_factor=load_factor,
@@ -168,13 +171,8 @@ async def push_account_to_sub2api(
         if remote_id is None:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="sub2api did not return remote account id")
 
-        await refresh_site_cache(db, site_id)
-        remote_snapshot = await _load_remote_snapshot(db, site_id=site_id, remote_id=remote_id) or remote_account
-        if not account_in_group(remote_snapshot, target_group_id):
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"sub2api created account #{remote_id}, but it is not in target group #{target_group_id}",
-            )
+        _ensure_remote_group(remote_account, target_group_id)
+        remote_snapshot = await upsert_cached_account_snapshot(db, site_id, remote_account)
 
         if run_verification:
             try:
@@ -297,12 +295,15 @@ async def push_account_to_sub2api(
 def build_sub2api_account_payload(
     account_json: dict[str, Any],
     *,
+    metadata: dict[str, Any] | None = None,
     group_id: int,
     concurrency: int,
     load_factor: int,
     priority: int,
 ) -> dict[str, Any]:
     payload = {key: value for key, value in account_json.items() if key not in REMOTE_STRIP_FIELDS}
+    push_name = build_sub2api_account_name(account_json, metadata or {})
+    payload["name"] = push_name
     payload["group_id"] = group_id
     payload["group_ids"] = [group_id]
     payload["concurrency"] = concurrency
@@ -312,6 +313,71 @@ def build_sub2api_account_payload(
     payload["schedulable"] = True
     payload["confirm_mixed_channel_risk"] = True
     return payload
+
+
+def _ensure_remote_group(remote_account: dict[str, Any], group_id: int) -> None:
+    group_ids = remote_account.get("group_ids")
+    if not isinstance(group_ids, list):
+        remote_account["group_ids"] = [group_id]
+    elif group_id not in group_ids:
+        remote_account["group_ids"] = [*group_ids, group_id]
+
+
+def build_sub2api_account_name(account_json: dict[str, Any], metadata: dict[str, Any]) -> str:
+    date_part = _name_date(metadata)
+    source_part = "自产" if metadata.get("self_produced") is True else "购买"
+    account_type = _name_account_type(account_json, metadata)
+    payment_part = _name_payment_type(metadata.get("payment_type"))
+    return f"{date_part}-{source_part}{account_type}-{payment_part}"
+
+
+def _name_date(metadata: dict[str, Any]) -> str:
+    value = (
+        metadata.get("upgrade_completed_at")
+        or metadata.get("purchased_at")
+        or metadata.get("purchase_at")
+        or metadata.get("created_at")
+    )
+    parsed = _parse_datetime(value)
+    if parsed is None:
+        return now_utc().strftime("%m%d")
+    return parsed.strftime("%m%d")
+
+
+def _name_account_type(account_json: dict[str, Any], metadata: dict[str, Any]) -> str:
+    credentials = account_json.get("credentials") if isinstance(account_json.get("credentials"), dict) else {}
+    value = metadata.get("account_type") or credentials.get("plan_type") or "unknown"
+    normalized = str(value).strip().lower()
+    if normalized in {"plus", "free", "pro"}:
+        return normalized
+    return str(value).strip() or "unknown"
+
+
+def _name_payment_type(value: Any) -> str:
+    mapping = {
+        "paypal_multi": "PayPal一卡多号",
+        "paypal_single": "PayPal一卡一号",
+        "no_card": "无卡",
+        "gopay": "gopay",
+        "other": "其他",
+    }
+    normalized = str(value or "").strip()
+    return mapping.get(normalized, normalized or "未知绑卡")
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def resolve_target_group_id(metadata: dict[str, Any], *, requested_group_id: int | None) -> int:
@@ -478,6 +544,8 @@ async def _mark_push_completed(
 ) -> dict[str, Any]:
     now = now_utc()
     remote_id = remote_account.get("id")
+    remote_name = remote_account.get("name") or build_sub2api_account_name(remote_account, {})
+    remote_account["name"] = remote_name
     verification_status = "skipped" if verification.get("status") == "skipped" else ("passed" if verification_passed else "failed")
     pool_status = "active" if verification_passed else "problem"
     error = None if verification_passed else str(verification.get("error") or "sub2api account test failed")
@@ -490,6 +558,7 @@ async def _mark_push_completed(
         "metadata.sub2api_group_id": group_id,
         "metadata.sub2api_group_ids": _remote_group_ids(remote_account, fallback_group_id=group_id),
         "metadata.sub2api_group_name": group_name,
+        "metadata.sub2api_account_name": remote_name,
         "metadata.sub2api_push_status": "succeeded",
         "metadata.sub2api_pushed_at": now,
         "metadata.sub2api_last_sync_at": now,
@@ -508,6 +577,7 @@ async def _mark_push_completed(
         "metadata.updated_at": now,
         "metadata.updated_by_user_id": actor.get("_id"),
         "metadata.updated_by_name": actor_name(actor),
+        "account_json.name": remote_name,
     }
     if not verification_passed:
         updates["metadata.problem_snapshot"] = remote_account

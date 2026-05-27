@@ -16,6 +16,8 @@ type Site = {
   token_configured: boolean;
   source?: string;
   refresh_interval_minutes?: number;
+  auto_remove_abnormal_accounts?: boolean;
+  auto_remove_refresh?: RefreshResponse;
 };
 
 type Group = {
@@ -33,6 +35,7 @@ type Group = {
 
 type CapacitySummary = {
   available_accounts?: number;
+  available_5h_accounts?: number;
   used_5h_percent?: number;
   available_5h_percent?: number;
   used_7d_percent?: number;
@@ -47,11 +50,17 @@ type RemoteAccount = {
   platform?: string;
   type?: string;
   credentials?: Record<string, unknown>;
+  credentials_status?: Record<string, unknown>;
   extra?: Record<string, unknown>;
+  email?: string;
+  plan_type?: string;
+  privacy_mode?: string;
+  notes?: string | null;
   concurrency?: number;
   current_concurrency?: number;
   load_factor?: number;
   priority?: number;
+  rate_multiplier?: number;
   status?: string;
   error_message?: string;
   codex_5h_used_percent?: unknown;
@@ -70,11 +79,21 @@ type RemoteAccount = {
   codex_7d_actual_cost?: unknown;
   codex_5h_total_cost?: unknown;
   codex_7d_total_cost?: unknown;
+  codex_total_request_count?: unknown;
+  codex_total_token_count?: unknown;
+  codex_total_actual_cost?: unknown;
+  codex_total_cost?: unknown;
+  codex_primary_used_percent?: unknown;
+  codex_secondary_used_percent?: unknown;
   codex_remote_test_status?: string;
   codex_remote_tested_at?: string;
   last_used_at?: string;
+  created_at?: string;
   updated_at?: string;
   expires_at?: string | number | null;
+  credential_expires_at?: string | number | null;
+  subscription_expires_at?: string | number | null;
+  auto_pause_on_expired?: boolean;
   schedulable?: boolean;
   rate_limited_at?: string | null;
   rate_limit_reset_at?: string | null;
@@ -110,6 +129,8 @@ type RefreshResponse = {
   status?: string;
   groups?: number;
   accounts?: number;
+  auto_removed_abnormal_accounts?: number;
+  auto_remove_abnormal_failed?: number;
   finished_at?: string;
   message?: string;
 };
@@ -136,7 +157,24 @@ type ConfirmState = {
   tone?: "default" | "danger";
 };
 
+type SiteForm = {
+  id: string;
+  name: string;
+  base_url: string;
+  token: string;
+  status: string;
+  refresh_interval_minutes: number;
+};
+
 const DEFAULT_ACCOUNT_PAGE_SIZE = 50;
+const emptySiteForm: SiteForm = {
+  id: "",
+  name: "",
+  base_url: "",
+  token: "",
+  status: "active",
+  refresh_interval_minutes: 5,
+};
 
 type CacheMeta = {
   status?: string;
@@ -160,6 +198,7 @@ type ApiPoolPageCache = {
   statusFilter: string;
   lastLoadedAt: string | null;
   refreshIntervalMinutes: number;
+  autoRemoveAbnormalAccounts: boolean;
   cachedAt: number;
   accountPages: Record<string, CachedAccounts>;
 };
@@ -192,7 +231,11 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   const [loadingAccountsKey, setLoadingAccountsKey] = useState<string | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(() => initialCache?.lastLoadedAt || null);
   const [refreshIntervalMinutes, setRefreshIntervalMinutes] = useState(() => initialCache?.refreshIntervalMinutes || 5);
+  const [autoRemoveAbnormalAccounts, setAutoRemoveAbnormalAccounts] = useState(() => initialCache?.autoRemoveAbnormalAccounts || false);
   const [savingSite, setSavingSite] = useState(false);
+  const [savingAutoRemove, setSavingAutoRemove] = useState(false);
+  const [editingSiteId, setEditingSiteId] = useState<string | null>(() => initialCache?.selectedSiteId || null);
+  const [siteForm, setSiteForm] = useState<SiteForm>(emptySiteForm);
   const [refreshingRemote, setRefreshingRemote] = useState(false);
   const [refreshingFrontend, setRefreshingFrontend] = useState(false);
   const [remoteRefreshFeedback, setRemoteRefreshFeedback] = useState<InlineFeedback | null>(null);
@@ -216,10 +259,15 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   const accountSummary = useMemo(() => summarizeRemoteAccounts(visibleAccounts), [visibleAccounts]);
   const usageSummary = useMemo(() => usageSummaryFromCapacity(selectedGroup?.capacity_summary), [selectedGroup?.capacity_summary]);
   const usageSummaryLoading = accountViewLoading || (selectedGroupId !== null && !selectedGroup?.capacity_summary);
+  const poolHealth = useMemo(
+    () => poolHealthOverview(accountSummary, usageSummary, visibleAccounts.length, visibleAccountsTotal, selectedGroup ?? undefined),
+    [accountSummary, usageSummary, visibleAccounts.length, visibleAccountsTotal, selectedGroup],
+  );
   const selectedVisibleAccounts = useMemo(() => visibleAccounts.filter((account) => selectedRemoteIds.has(account.id)), [visibleAccounts, selectedRemoteIds]);
   const allPageSelected = visibleAccounts.length > 0 && selectedVisibleAccounts.length === visibleAccounts.length;
   const somePageSelected = selectedVisibleAccounts.length > 0 && !allPageSelected;
   const totalPages = Math.max(1, Math.ceil(visibleAccountsTotal / accountPageSize));
+  const autoRemoveOverridesRef = useRef<Record<string, boolean>>({});
 
   useEffect(() => {
     currentAccountKeyRef.current = currentAccountKey;
@@ -232,7 +280,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
 
   const loadSites = async () => {
     const data = await api<SitesResponse>("/sub2api-sites", token);
-    setSites(data.items);
+    setSites(mergeSitesWithAutoRemoveOverrides(data.items, autoRemoveOverridesRef.current));
     if (!selectedSiteId && data.items[0]) {
       setSelectedSiteId(data.items[0].id);
     }
@@ -454,7 +502,11 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   useEffect(() => {
     if (!selectedSiteId) return;
     const site = sites.find((item) => item.id === selectedSiteId);
+    if (!site) return;
+    setEditingSiteId(site.id);
+    setSiteForm(siteToForm(site));
     setRefreshIntervalMinutes(site?.refresh_interval_minutes || 5);
+    setAutoRemoveAbnormalAccounts(autoRemoveOverridesRef.current[selectedSiteId] ?? site?.auto_remove_abnormal_accounts === true);
     if (getApiPoolPageCache()?.selectedSiteId === selectedSiteId && groups.length) return;
     setGroups([]);
     setAccounts([]);
@@ -462,7 +514,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     setSelectedGroupId(null);
     setAccountPage(1);
     loadGroups(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
-  }, [selectedSiteId]);
+  }, [selectedSiteId, sites]);
 
   useEffect(() => {
     if (!selectedSiteId || selectedGroupId === null) return;
@@ -494,10 +546,11 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
       statusFilter,
       lastLoadedAt,
       refreshIntervalMinutes,
+      autoRemoveAbnormalAccounts,
       cachedAt: Date.now(),
       accountPages: apiPoolPageCache?.accountPages || {},
     };
-  }, [sites, selectedSiteId, groups, selectedGroupId, accounts, accountsTotal, accountsDataKey, accountPage, accountPageSize, statusFilter, lastLoadedAt, refreshIntervalMinutes]);
+  }, [sites, selectedSiteId, groups, selectedGroupId, accounts, accountsTotal, accountsDataKey, accountPage, accountPageSize, statusFilter, lastLoadedAt, refreshIntervalMinutes, autoRemoveAbnormalAccounts]);
 
   useEffect(() => {
     const handleCacheUpdated = () => {
@@ -603,7 +656,9 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     try {
       const updated = await api<Site>(`/sub2api-sites/${selectedSiteId}`, token, {
         method: "PATCH",
-        body: JSON.stringify({ refresh_interval_minutes: refreshIntervalMinutes }),
+        body: JSON.stringify({
+          refresh_interval_minutes: refreshIntervalMinutes,
+        }),
       });
       setSites((current) => current.map((site) => (site.id === updated.id ? { ...site, ...updated } : site)));
       showToast("站点刷新间隔已保存");
@@ -611,6 +666,134 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
       showToast(errorMessage(error), true);
     } finally {
       setSavingSite(false);
+    }
+  };
+
+  const startCreateSite = () => {
+    setEditingSiteId(null);
+    setSiteForm(emptySiteForm);
+  };
+
+  const saveSiteForm = async () => {
+    const payload = {
+      id: siteForm.id.trim(),
+      name: siteForm.name.trim(),
+      base_url: siteForm.base_url.trim(),
+      status: siteForm.status,
+      refresh_interval_minutes: siteForm.refresh_interval_minutes,
+      ...(siteForm.token.trim() ? { token: siteForm.token.trim() } : {}),
+    };
+    if (!payload.id || !payload.base_url) {
+      showToast("站点 ID 和 Base URL 必填", true);
+      return;
+    }
+    setSavingSite(true);
+    try {
+      const saved = editingSiteId
+        ? await api<Site>(`/sub2api-sites/${editingSiteId}`, token, {
+            method: "PATCH",
+            body: JSON.stringify(payload),
+          })
+        : await api<Site>("/sub2api-sites", token, {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+      const data = await api<SitesResponse>("/sub2api-sites", token);
+      setSites(mergeSitesWithAutoRemoveOverrides(data.items, autoRemoveOverridesRef.current));
+      setSelectedSiteId(saved.id);
+      setEditingSiteId(saved.id);
+      setSiteForm(siteToForm(saved));
+      setRefreshIntervalMinutes(saved.refresh_interval_minutes || 5);
+      setAutoRemoveAbnormalAccounts(saved.auto_remove_abnormal_accounts === true);
+      showToast("站点配置已保存");
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setSavingSite(false);
+    }
+  };
+
+  const deleteCurrentSite = () => {
+    if (!editingSiteId) return;
+    setConfirmState({
+      title: "确认删除站点",
+      message: "删除后该站点不会再出现在切换列表中，历史缓存和本地账号记录不会被删除。",
+      details: [
+        ["站点", siteForm.name || editingSiteId],
+        ["Base URL", siteForm.base_url],
+      ],
+      confirmText: "删除站点",
+      tone: "danger",
+      onConfirm: async () => {
+        setSavingSite(true);
+        try {
+          await api<null>(`/sub2api-sites/${editingSiteId}`, token, { method: "DELETE" });
+          const data = await api<SitesResponse>("/sub2api-sites", token);
+          setSites(data.items);
+          const nextSiteId = data.items[0]?.id || "";
+          setSelectedSiteId(nextSiteId);
+          setEditingSiteId(nextSiteId || null);
+          setSiteForm(data.items[0] ? siteToForm(data.items[0]) : emptySiteForm);
+          showToast("站点已删除");
+        } catch (error) {
+          showToast(errorMessage(error), true);
+        } finally {
+          setSavingSite(false);
+        }
+      },
+    });
+  };
+
+  const toggleAutoRemoveAbnormal = async (nextValue: boolean) => {
+    if (!selectedSiteId) return;
+    const siteId = selectedSiteId;
+    const previousValue = autoRemoveAbnormalAccounts;
+    autoRemoveOverridesRef.current[siteId] = nextValue;
+    setAutoRemoveAbnormalAccounts(nextValue);
+    setSavingAutoRemove(true);
+    try {
+      const updated = await api<Site>(`/sub2api-sites/${siteId}`, token, {
+        method: "PATCH",
+        body: JSON.stringify({ auto_remove_abnormal_accounts: nextValue }),
+      });
+      if (updated.auto_remove_abnormal_accounts !== nextValue) {
+        const verified = await api<SitesResponse>("/sub2api-sites", token);
+        const verifiedSite = verified.items.find((site) => site.id === siteId);
+        if (verifiedSite?.auto_remove_abnormal_accounts !== nextValue) {
+          throw new Error("自动移除异常账号保存未生效，请重启后端后再试");
+        }
+        setSites(mergeSitesWithAutoRemoveOverrides(verified.items, autoRemoveOverridesRef.current));
+      } else {
+        setSites((current) => current.map((site) => (site.id === siteId ? { ...site, ...updated } : site)));
+      }
+      setAutoRemoveAbnormalAccounts(nextValue);
+      if (nextValue && updated.auto_remove_refresh) {
+        clearAccountCacheForSite(siteId);
+        const nextGroups = await loadGroups(siteId);
+        const nextGroupId =
+          selectedGroupId !== null && nextGroups.some((group) => group.id === selectedGroupId)
+            ? selectedGroupId
+            : nextGroups[0]?.id ?? null;
+        if (nextGroupId !== null) {
+          setSelectedGroupId(nextGroupId);
+          await loadAccounts(siteId, nextGroupId, accountPage);
+        }
+        if (updated.auto_remove_refresh.ok === false) {
+          showToast(`自动移除异常账号已开启，但扫描失败：${updated.auto_remove_refresh.message || "请查看后端日志"}`, true);
+        } else {
+          showToast(`自动移除异常账号已开启，已扫描并移除 ${numberValue(updated.auto_remove_refresh.auto_removed_abnormal_accounts)} 个异常账号`);
+        }
+      } else {
+        showToast(nextValue ? "自动移除异常账号已开启" : "自动移除异常账号已关闭");
+      }
+    } catch (error) {
+      if (autoRemoveOverridesRef.current[siteId] === nextValue) {
+        delete autoRemoveOverridesRef.current[siteId];
+      }
+      setAutoRemoveAbnormalAccounts(previousValue);
+      showToast(errorMessage(error), true);
+    } finally {
+      setSavingAutoRemove(false);
     }
   };
 
@@ -656,6 +839,23 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
             保存
           </button>
         </div>
+        <label className="switch-field">
+          <input
+            type="checkbox"
+            checked={autoRemoveAbnormalAccounts}
+            disabled={savingAutoRemove || !selectedSiteId}
+            onChange={(event) => {
+              void toggleAutoRemoveAbnormal(event.target.checked);
+            }}
+          />
+          <span className="switch-track" aria-hidden="true">
+            <span className="switch-thumb" />
+          </span>
+          <span className="switch-copy">
+            <strong>自动移除异常账号</strong>
+            <em>{savingAutoRemove ? "保存中" : autoRemoveAbnormalAccounts ? "已开启" : "已关闭"}</em>
+          </span>
+        </label>
         <div className="pool-toolbar-actions">
           <button className="ghost compact-button" type="button" onClick={testConnection} disabled={!selectedSiteId}>
             测试连接
@@ -668,6 +868,92 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
               {remoteRefreshFeedback.message}
             </span>
           )}
+        </div>
+      </section>
+
+      <section className="panel site-config-panel">
+        <div className="panel-header">
+          <div>
+            <h3>站点配置</h3>
+          </div>
+          <div className="button-row">
+            <button className="ghost compact-button" type="button" onClick={startCreateSite}>
+              新增站点
+            </button>
+            <button className="ghost compact-button danger-button" type="button" onClick={deleteCurrentSite} disabled={!editingSiteId || savingSite}>
+              删除站点
+            </button>
+          </div>
+        </div>
+        <div className="site-config-grid">
+          <label>
+            <span className="field-label">
+              <strong>站点 ID</strong>
+            </span>
+            <input
+              value={siteForm.id}
+              disabled={Boolean(editingSiteId)}
+              onChange={(event) => setSiteForm((current) => ({ ...current, id: event.target.value }))}
+              placeholder="api-5001"
+            />
+          </label>
+          <label>
+            <span className="field-label">
+              <strong>显示名称</strong>
+            </span>
+            <input
+              value={siteForm.name}
+              onChange={(event) => setSiteForm((current) => ({ ...current, name: event.target.value }))}
+              placeholder="sub2api 5001"
+            />
+          </label>
+          <label className="span-2">
+            <span className="field-label">
+              <strong>Base URL</strong>
+            </span>
+            <input
+              value={siteForm.base_url}
+              onChange={(event) => setSiteForm((current) => ({ ...current, base_url: event.target.value }))}
+              placeholder="http://216.167.70.204:5001"
+            />
+          </label>
+          <label>
+            <span className="field-label">
+              <strong>API Key</strong>
+            </span>
+            <input
+              value={siteForm.token}
+              onChange={(event) => setSiteForm((current) => ({ ...current, token: event.target.value }))}
+              placeholder={editingSiteId ? "留空不修改" : "x-api-key"}
+              type="password"
+            />
+          </label>
+          <label>
+            <span className="field-label">
+              <strong>状态</strong>
+            </span>
+            <select value={siteForm.status} onChange={(event) => setSiteForm((current) => ({ ...current, status: event.target.value }))}>
+              <option value="active">active</option>
+              <option value="disabled">disabled</option>
+            </select>
+          </label>
+          <label>
+            <span className="field-label">
+              <strong>刷新间隔</strong>
+            </span>
+            <input
+              min={1}
+              max={1440}
+              type="number"
+              value={siteForm.refresh_interval_minutes}
+              onChange={(event) => setSiteForm((current) => ({ ...current, refresh_interval_minutes: Number(event.target.value) }))}
+            />
+          </label>
+          <div className="site-config-actions">
+            <button className="compact-button" type="button" onClick={saveSiteForm} disabled={savingSite}>
+              {savingSite ? "保存中..." : editingSiteId ? "保存站点" : "创建站点"}
+            </button>
+          </div>
         </div>
       </section>
 
@@ -684,41 +970,23 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
             <MiniMetric label="限流" value={summary.rateLimitedAccounts} />
           </section>
         </div>
-        <div className="group-strip-right">
-          <label className="group-picker">
-            <span className="field-label">
-              <strong>账号池</strong>
-            </span>
-            <select
-              value={selectedGroupId ?? ""}
-              onChange={(event) => {
-                selectGroup(Number(event.target.value));
-              }}
-            >
-              {groups.map((group) => (
-                <option key={group.id} value={group.id}>
-                  {group.name} · {numberValue(group.active_account_count)}/{numberValue(group.account_count)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="group-tabs">
+        <label className="group-picker group-picker-wide">
+          <span className="field-label">
+            <strong>账号池</strong>
+          </span>
+          <select
+            value={selectedGroupId ?? ""}
+            onChange={(event) => {
+              selectGroup(Number(event.target.value));
+            }}
+          >
             {groups.map((group) => (
-              <button
-                className={`group-tab ${selectedGroupId === group.id ? "active" : ""}`}
-                key={group.id}
-                type="button"
-                onClick={() => {
-                  selectGroup(group.id);
-                }}
-              >
-                <strong>{group.name}</strong>
-                <span>#{group.id} · {numberValue(group.active_account_count)}/{numberValue(group.account_count)}</span>
-              </button>
+              <option key={group.id} value={group.id}>
+                {group.name} · active {numberValue(group.active_account_count)} / {numberValue(group.account_count)} · 限流 {numberValue(group.rate_limited_account_count)}
+              </option>
             ))}
-            {!groups.length && <span className="muted">暂无分组</span>}
-          </div>
-        </div>
+          </select>
+        </label>
       </section>
 
       <section className="panel account-pool-panel">
@@ -765,14 +1033,27 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
             </div>
           </div>
 
-          <CompactStats
-            items={[
-              ["当前页", `${visibleAccounts.length} / ${visibleAccountsTotal}`],
-              ["健康", accountSummary.healthy],
-              ["警告", accountSummary.warning],
-              ["异常", accountSummary.error],
-            ]}
-          />
+          <section className={`pool-health-card ${poolHealth.tone}`}>
+            <div className="pool-health-main">
+              <span>账号池健康度</span>
+              <strong>{poolHealth.score}%</strong>
+              <em>{poolHealth.label}</em>
+            </div>
+            <div className="pool-health-track">
+              <div className="pool-health-fill" style={{ width: `${poolHealth.score}%` }} />
+            </div>
+            <div className="pool-health-grid">
+              <MiniMetric label="当前页" value={visibleAccounts.length} />
+              <MiniMetric label="总账号" value={visibleAccountsTotal} />
+              <MiniMetric label="健康" value={accountSummary.healthy} />
+              <MiniMetric label="限流中" value={accountSummary.rateLimited} />
+              <MiniMetric label="限流重置" value={accountSummary.rateLimitResetting} />
+              <MiniMetric label="临时不可调度" value={accountSummary.tempUnschedulable} />
+              <MiniMetric label="警告" value={accountSummary.warning} />
+              <MiniMetric label="异常" value={accountSummary.error} />
+            </div>
+            <p>{poolHealth.message}</p>
+          </section>
 
           <section className="overall-usage">
             <OverallUsageBar label="5h 总体容量" usedPercent={usageSummary.used5h} availablePercent={usageSummary.available5h} count={usageSummary.availableAccounts} loading={usageSummaryLoading} />
@@ -816,8 +1097,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
                   <th className="col-capacity">容量</th>
                   <th className="col-status">状态</th>
                   <th className="col-schedule">调度</th>
-                  <th className="col-groups">分组</th>
-                  <th className="col-usage">用量窗口</th>
+                  <th className="col-usage">用量/总计</th>
                   <th className="col-time">最近使用</th>
                   <th className="col-expire">过期时间</th>
                   <th className="col-action">操作</th>
@@ -837,7 +1117,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
                 ))}
                 {!visibleAccounts.length && (
                   <tr>
-                    <td colSpan={11} className="muted">
+                    <td colSpan={10} className="muted">
                       {accountViewLoading ? "加载中..." : "暂无账号"}
                     </td>
                   </tr>
@@ -908,12 +1188,13 @@ function RemoteAccountRow({
 }) {
   const credentials = account.credentials || {};
   const extra = account.extra || {};
-  const email = text(credentials.email) || text(account.extra?.email) || text(account.name);
+  const email = text(account.email) || text(credentials.email) || text(account.extra?.email) || text(account.name);
   const accountName = text(account.name) || email || `#${account.id}`;
-  const health = accountHealth(account);
-  const planType = text(credentials.plan_type);
-  const privacyMode = text(extra.privacy_mode);
-  const expiresAt = account.expires_at ?? credentials.expires_at;
+  const planType = text(account.plan_type) || text(credentials.plan_type);
+  const privacyMode = text(account.privacy_mode) || text(extra.privacy_mode);
+  const credentialExpiresAt = account.credential_expires_at ?? account.expires_at ?? credentials.expires_at;
+  const subscriptionExpiresAt = account.subscription_expires_at ?? credentials.subscription_expires_at;
+  const statusView = accountStatusView(account);
 
   return (
     <tr>
@@ -944,13 +1225,13 @@ function RemoteAccountRow({
         <div className="cell-sub">load {numberValue(account.load_factor)}</div>
       </td>
       <td>
-        <StatusPill value={displayStatus(account.status)} tone={statusTone(account.status)} />
+        <StatusPill value={statusView.label} tone={statusView.tone} />
         {account.error_message && (
           <div className={`cell-sub truncate ${isTemporaryRateLimit(account) ? "warning-text" : "danger"}`} title={account.error_message}>
             {account.error_message}
           </div>
         )}
-        {health !== "healthy" && <div className="cell-sub">health: {health}</div>}
+        {statusView.detail && <div className="cell-sub warning-text">{statusView.detail}</div>}
         {account.codex_remote_test_status && (
           <div className="cell-sub">
             测试 {remoteTestLabel(account.codex_remote_test_status)}
@@ -962,18 +1243,20 @@ function RemoteAccountRow({
         <StatusPill value={account.schedulable ? "可调度" : "不可调度"} tone={account.schedulable ? "success" : "warning"} />
         <div className="cell-sub">priority {numberValue(account.priority)}</div>
       </td>
-      <td className="groups-cell">
-        <div className="truncate" title={groupNames(account)}>{groupNames(account) || "-"}</div>
-      </td>
       <td>
+        <AccountSevenDayUsage account={account} />
         <UsageWindow account={account} label="5h" windowKey="5h" />
         <UsageWindow account={account} label="7d" windowKey="7d" />
       </td>
       <td>
         <div>{formatOptionalDate(account.last_used_at)}</div>
+        <div className="cell-sub">添加 {formatOptionalDate(account.created_at)}</div>
         {isTemporaryRateLimit(account) && account.rate_limited_at && <div className="cell-sub danger">限流 {formatOptionalDate(account.rate_limited_at)}</div>}
       </td>
-      <td>{formatOptionalDate(expiresAt)}</td>
+      <td>
+        <div>订阅 {formatOptionalDate(subscriptionExpiresAt)}</div>
+        <div className="cell-sub">凭证 {formatOptionalDate(credentialExpiresAt)}</div>
+      </td>
       <td>
         <div className="button-row action-wrap">
           <button className="ghost compact-button" disabled={busy} onClick={onTest} type="button">
@@ -1007,6 +1290,14 @@ function UsageWindow({ account, label, windowKey }: { account: RemoteAccount; la
       </div>
     </div>
   );
+}
+
+function AccountSevenDayUsage({ account }: { account: RemoteAccount }) {
+  const requestCount = usageValue(account, "codex_7d_request_count");
+  const totalCost = usageValue(account, "codex_7d_total_cost");
+  const requestLabel = requestCount === null ? "-" : `${numberValue(requestCount)} 次`;
+  const costLabel = totalCost === null ? "$-" : `$${numberValue(totalCost).toFixed(4)}`;
+  return <div className="cell-sub total-usage-line">7天 {requestLabel} / {costLabel}</div>;
 }
 
 function OverallUsageBar({
@@ -1080,9 +1371,12 @@ function summarizeRemoteAccounts(accounts: RemoteAccount[]) {
       if (health === "healthy") summary.healthy += 1;
       if (health === "warning") summary.warning += 1;
       if (health === "error") summary.error += 1;
+      if (isRateLimited(account)) summary.rateLimited += 1;
+      if (isFutureDate(account.rate_limit_reset_at)) summary.rateLimitResetting += 1;
+      if (isFutureDate(account.temp_unschedulable_until)) summary.tempUnschedulable += 1;
       return summary;
     },
-    { healthy: 0, warning: 0, error: 0 },
+    { healthy: 0, warning: 0, error: 0, rateLimited: 0, rateLimitResetting: 0, tempUnschedulable: 0 },
   );
 }
 
@@ -1098,6 +1392,30 @@ function usageSummaryFromCapacity(capacitySummary?: CapacitySummary) {
   };
 }
 
+function poolHealthOverview(
+  accountSummary: ReturnType<typeof summarizeRemoteAccounts>,
+  usageSummary: ReturnType<typeof usageSummaryFromCapacity>,
+  pageCount: number,
+  totalCount: number,
+  group?: Group,
+) {
+  const pageBase = Math.max(1, pageCount);
+  const pageHealthScore = clampPercent((accountSummary.healthy / pageBase) * 100);
+  const groupTotal = numberValue(group?.account_count) || totalCount;
+  const groupActive = numberValue(group?.active_account_count);
+  const groupRateLimited = numberValue(group?.rate_limited_account_count);
+  const groupBase = Math.max(1, groupTotal);
+  const groupHealthyEstimate = Math.max(0, groupActive - groupRateLimited);
+  const groupHealthScore = groupTotal > 0 ? clampPercent((groupHealthyEstimate / groupBase) * 100) : pageHealthScore;
+  const capacityPressure = Math.max(usageSummary.used5h, usageSummary.used7d);
+  const score = clampPercent(Math.min(pageHealthScore, groupHealthScore, 100 - Math.max(0, capacityPressure - 70)));
+  const rateLimited = accountSummary.rateLimited;
+  const label = score >= 80 && accountSummary.error === 0 ? "良好" : score >= 55 ? "需关注" : "压力较高";
+  const tone = score >= 80 && accountSummary.error === 0 ? "success" : score >= 55 ? "warning" : "danger";
+  const message = `整体 active ${groupActive}/${groupTotal}，整体限流 ${groupRateLimited}；当前页 ${pageCount}/${totalCount}，限流中 ${rateLimited}，异常 ${accountSummary.error}；容量压力 ${capacityPressure}%。`;
+  return { score, label, tone, message };
+}
+
 function accountHealth(account: RemoteAccount): "healthy" | "warning" | "error" | "unknown" {
   const status = (account.status || "").toLowerCase();
   if (!status) return "unknown";
@@ -1110,8 +1428,12 @@ function accountHealth(account: RemoteAccount): "healthy" | "warning" | "error" 
   return "unknown";
 }
 
+function isRateLimited(account: RemoteAccount): boolean {
+  return isFutureDate(account.rate_limit_reset_at) || isTemporaryRateLimit(account);
+}
+
 function isTemporaryRateLimit(account: RemoteAccount): boolean {
-  const hasActiveUntil = isFutureDate(account.rate_limit_reset_at) || isFutureDate(account.temp_unschedulable_until);
+  const hasActiveUntil = isFutureDate(account.rate_limit_reset_at);
   const combined = [
     account.status,
     account.error_message,
@@ -1119,7 +1441,7 @@ function isTemporaryRateLimit(account: RemoteAccount): boolean {
   ]
     .map((value) => text(value).toLowerCase())
     .join(" ");
-  return hasActiveUntil || /\b(429|529)\b/.test(combined);
+  return hasActiveUntil || combined.includes("rate limit") || combined.includes("限流");
 }
 
 function isFutureDate(value: unknown): boolean {
@@ -1128,6 +1450,31 @@ function isFutureDate(value: unknown): boolean {
     ? new Date(value > 10_000_000_000 ? value : value * 1000)
     : new Date(String(value));
   return Number.isFinite(date.getTime()) && date.getTime() > Date.now();
+}
+
+function accountStatusView(account: RemoteAccount): { label: string; tone: "accent" | "success" | "warning" | "danger" | "muted"; detail?: string } {
+  const status = (account.status || "").toLowerCase();
+  if (isFutureDate(account.temp_unschedulable_until)) {
+    return {
+      label: "临时不可调度",
+      tone: "warning",
+      detail: account.temp_unschedulable_reason ? text(account.temp_unschedulable_reason) : `恢复 ${formatOptionalDate(account.temp_unschedulable_until)}`,
+    };
+  }
+  if (isRateLimited(account)) {
+    return {
+      label: "限流中",
+      tone: "warning",
+      detail: account.rate_limit_reset_at ? `重置 ${formatOptionalDate(account.rate_limit_reset_at)}` : undefined,
+    };
+  }
+  if (status === "active" && account.schedulable === false) {
+    return { label: "不可调度", tone: "warning", detail: "schedulable=false" };
+  }
+  if (account.error_message) {
+    return { label: "异常", tone: "danger" };
+  }
+  return { label: displayStatus(account.status), tone: statusTone(account.status) };
 }
 
 function statusTone(value?: string): "accent" | "success" | "warning" | "danger" | "muted" {
@@ -1188,12 +1535,6 @@ function privacyTagTone(value: string): string {
   return "privacy-other";
 }
 
-function groupNames(account: RemoteAccount): string {
-  const names = account.groups?.map((group) => group.name).filter(Boolean);
-  if (names?.length) return names.join(", ");
-  return account.group_ids?.join(", ") || "";
-}
-
 function formatOptionalDate(value: unknown): string {
   if (typeof value === "number" && Number.isFinite(value)) {
     const milliseconds = value > 10_000_000_000 ? value : value * 1000;
@@ -1250,6 +1591,29 @@ function getApiPoolPageCache(): ApiPoolPageCache | null {
   return apiPoolPageCache.cacheVersion === getSub2apiCacheVersion() ? apiPoolPageCache : null;
 }
 
+function siteToForm(site: Site): SiteForm {
+  return {
+    id: site.id,
+    name: site.name || site.id,
+    base_url: site.base_url || "",
+    token: "",
+    status: site.status || "active",
+    refresh_interval_minutes: site.refresh_interval_minutes || 5,
+  };
+}
+
+function mergeSitesWithAutoRemoveOverrides(sites: Site[], overrides: Record<string, boolean>): Site[] {
+  return sites.map((site) => {
+    const override = overrides[site.id];
+    if (override === undefined) return site;
+    if (site.auto_remove_abnormal_accounts === override) {
+      delete overrides[site.id];
+      return site;
+    }
+    return { ...site, auto_remove_abnormal_accounts: override };
+  });
+}
+
 function getCachedAccounts(siteId: string, groupId: number, page: number, pageSize: number, statusFilter: string): CachedAccounts | null {
   return getApiPoolPageCache()?.accountPages?.[accountCacheKey(siteId, groupId, page, pageSize, statusFilter)] || null;
 }
@@ -1275,6 +1639,7 @@ function cacheAccounts(siteId: string, groupId: number, page: number, pageSize: 
       statusFilter,
       lastLoadedAt: value.lastLoadedAt,
       refreshIntervalMinutes: 5,
+      autoRemoveAbnormalAccounts: false,
       cachedAt: Date.now(),
     }),
     cacheVersion: getSub2apiCacheVersion(),
