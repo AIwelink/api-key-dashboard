@@ -33,7 +33,7 @@ python3 -m uv run python3 -m app.run
 
 详见 [backend/README.md](./backend/README.md)。
 
-前端使用 Vite 启动，默认连接 `http://127.0.0.1:8000/api`：
+前端使用 Vite 启动，构建后默认通过同源 `/api` 连接后端：
 
 ```powershell
 npm.cmd --prefix frontend install

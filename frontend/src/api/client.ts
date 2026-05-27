@@ -1,5 +1,5 @@
 export const API_BASE =
-  localStorage.getItem("apiBase") || import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000/api";
+  localStorage.getItem("apiBase") || import.meta.env.VITE_API_BASE_URL || "/api";
 
 function notifyAuthExpired() {
   window.dispatchEvent(new CustomEvent("auth-expired"));
