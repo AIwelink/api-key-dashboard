@@ -1,0 +1,176 @@
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from motor.motor_asyncio import AsyncIOMotorDatabase
+
+from app.config import get_settings
+from app.database import db_dependency
+from app.schemas import Sub2ApiAccountTestRequest, Sub2ApiManualDeleteRequest
+from app.security import require_roles
+from app.services.audit import write_audit_log
+from app.services.sub2api import Sub2ApiClient
+from app.services.sub2api_cache import (
+    DEFAULT_SITE_ID,
+    list_cached_group_accounts,
+    list_cached_groups,
+    list_sites as list_cached_sites,
+    request_debounced_refresh,
+    update_site_config,
+)
+from app.services.sub2api_return import manual_delete_sub2api_account
+from app.services.sub2api_verify import test_remote_sub2api_account
+
+
+router = APIRouter(prefix="/sub2api-sites", tags=["sub2api-sites"])
+
+
+def _default_site() -> dict[str, Any]:
+    settings = get_settings()
+    return {
+        "id": DEFAULT_SITE_ID,
+        "name": "sub2api 5002",
+        "base_url": settings.sub2api_base_url,
+        "status": "active" if settings.sub2api_base_url else "disabled",
+        "token_configured": bool(settings.sub2api_token),
+        "source": "env",
+    }
+
+
+def _client_for_site(site_id: str) -> Sub2ApiClient:
+    if site_id != DEFAULT_SITE_ID:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
+    return Sub2ApiClient()
+
+
+@router.get("")
+async def list_sites(
+    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    return await list_cached_sites(db)
+
+
+@router.patch("/{site_id}")
+async def update_site(
+    site_id: str,
+    payload: dict[str, Any],
+    _: dict = Depends(require_roles("owner", "admin")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    updated = await update_site_config(db, site_id, payload)
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
+    return updated
+
+
+@router.post("/{site_id}/test")
+async def test_site(
+    site_id: str,
+    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+) -> dict:
+    return await _client_for_site(site_id).test_connection()
+
+
+@router.post("/{site_id}/refresh")
+async def refresh_site(
+    site_id: str,
+    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    if site_id != DEFAULT_SITE_ID:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
+    return await request_debounced_refresh(db, site_id)
+
+
+@router.get("/{site_id}/groups")
+async def list_site_groups(
+    site_id: str,
+    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    if site_id != DEFAULT_SITE_ID:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
+    data = await list_cached_groups(db, site_id, page=page, page_size=page_size)
+    return {"site": _default_site(), **data}
+
+
+@router.get("/{site_id}/groups/{group_id}/accounts")
+async def list_site_group_accounts(
+    site_id: str,
+    group_id: int,
+    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+    status_filter: str | None = Query(default=None, alias="status"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=500),
+) -> dict:
+    if site_id != DEFAULT_SITE_ID:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
+    return await list_cached_group_accounts(db, site_id, group_id, status_filter=status_filter, page=page, page_size=page_size)
+
+
+@router.post("/{site_id}/accounts/{account_id}/manual-delete")
+async def post_manual_delete_remote_account(
+    site_id: str,
+    account_id: int,
+    payload: Sub2ApiManualDeleteRequest,
+    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    result = await manual_delete_sub2api_account(
+        db,
+        site_id=site_id,
+        remote_account_id=account_id,
+        target_status=payload.target_status,
+        reason=payload.reason,
+        actor=actor,
+    )
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="sub2api.account.manual_delete",
+        resource_type="sub2api_account",
+        resource_id=str(account_id),
+        after={
+            "site_id": site_id,
+            "target_status": payload.target_status,
+            "reason": payload.reason,
+            "local_account_id": result.get("account", {}).get("id"),
+            "delete_result": result.get("delete_result", {}),
+        },
+    )
+    return result
+
+
+@router.post("/{site_id}/accounts/{account_id}/test")
+async def post_test_remote_account(
+    site_id: str,
+    account_id: int,
+    payload: Sub2ApiAccountTestRequest,
+    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    result = await test_remote_sub2api_account(
+        db,
+        site_id=site_id,
+        remote_account_id=account_id,
+        model_id=payload.model_id,
+        prompt=payload.prompt,
+        reason=payload.reason,
+        actor=actor,
+    )
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="sub2api.account.test",
+        resource_type="sub2api_account",
+        resource_id=str(account_id),
+        after={
+            "site_id": site_id,
+            "model_id": payload.model_id,
+            "verification": result.get("verification", {}),
+        },
+    )
+    return result

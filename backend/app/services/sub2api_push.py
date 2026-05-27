@@ -1,0 +1,589 @@
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from fastapi import HTTPException, status
+from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo import ReturnDocument
+
+from app.services.pool_lifecycle import actor_name, write_pool_action
+from app.services.sub2api import Sub2ApiClient, account_in_group
+from app.services.sub2api_cache import DEFAULT_SITE_ID, refresh_site_cache
+from app.utils import extract_email, now_utc, object_id, serialize_doc
+
+
+logger = logging.getLogger("app.sub2api_push")
+
+ALLOWED_PUSH_STATUSES = {"available", "reserve", "problem"}
+BLOCKED_PUSH_STATUSES = {"library", "active", "discarded"}
+REMOTE_STRIP_FIELDS = {
+    "id",
+    "created_at",
+    "updated_at",
+    "last_used_at",
+    "error_message",
+    "credentials_status",
+    "current_concurrency",
+    "rate_limited_at",
+    "rate_limit_reset_at",
+    "overload_until",
+    "temp_unschedulable_until",
+    "temp_unschedulable_reason",
+    "session_window_start",
+    "session_window_end",
+    "session_window_status",
+    "account_groups",
+    "groups",
+    "group",
+    "group_id",
+    "group_ids",
+}
+
+
+async def push_account_to_sub2api(
+    db: AsyncIOMotorDatabase,
+    *,
+    account_id: str,
+    site_id: str,
+    group_id: int | None,
+    run_verification: bool,
+    model_id: str,
+    prompt: str,
+    concurrency: int,
+    load_factor: int,
+    priority: int,
+    reason: str | None,
+    actor: dict[str, Any],
+) -> dict[str, Any]:
+    if site_id != DEFAULT_SITE_ID:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
+
+    account_oid = _account_oid(account_id)
+    account = await db.accounts.find_one({"_id": account_oid, "metadata.deleted_at": {"$exists": False}})
+    if account is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
+
+    metadata = dict(account.get("metadata", {}))
+    target_group_id = resolve_target_group_id(metadata, requested_group_id=group_id)
+    _ensure_push_can_start(metadata, target_group_id=target_group_id)
+    group_doc = await db.sub2api_groups_cache.find_one({"site_id": site_id, "group_id": target_group_id})
+    if group_doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target sub2api group not found")
+    group = group_doc.get("group", {}) if isinstance(group_doc.get("group"), dict) else {}
+    group_name = group.get("name")
+
+    current_status = metadata.get("pool_status", "library")
+    if current_status in BLOCKED_PUSH_STATUSES or current_status not in ALLOWED_PUSH_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Only available, reserve, or problem accounts can be pushed. Current status: {current_status}",
+        )
+
+    account_json = account.get("account_json") if isinstance(account.get("account_json"), dict) else {}
+    credentials = account_json.get("credentials") if isinstance(account_json.get("credentials"), dict) else None
+    if not credentials:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Account JSON is missing credentials")
+
+    push_action = await write_pool_action(
+        db,
+        action_type="push_to_sub2api_group",
+        actor=actor,
+        account_id=account_id,
+        pool_id=str(target_group_id),
+        status_value="running",
+        reason=reason,
+        before={
+            "pool_status": current_status,
+            "sub2api_account_id": metadata.get("sub2api_account_id"),
+            "sub2api_group_ids": metadata.get("sub2api_group_ids"),
+            "sha256": metadata.get("sha256"),
+            "email": metadata.get("email") or extract_email(account_json),
+        },
+    )
+    action_id = push_action["id"]
+
+    locked = await _acquire_push_lock(db, account_oid, action_id, target_group_id, actor)
+    if locked is None:
+        await _finish_pool_action(db, action_id=action_id, status_value="failed", error="Account is locked or already bound")
+        await write_pool_action(
+            db,
+            action_type="push_to_sub2api_group_failed",
+            actor=actor,
+            account_id=account_id,
+            pool_id=str(target_group_id),
+            status_value="failed",
+            reason=reason,
+            error="Account is locked or status changed",
+        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account is locked, already pushing, or already bound to sub2api")
+
+    client = Sub2ApiClient()
+    remote_account: dict[str, Any] | None = None
+    verification: dict[str, Any] | None = None
+    try:
+        duplicate = await find_remote_duplicate(db, site_id=site_id, group_id=target_group_id, account=locked)
+        if duplicate and account_in_group(duplicate, target_group_id):
+            remote_account = duplicate
+            await write_pool_action(
+                db,
+                action_type="remote_duplicate_bound",
+                actor=actor,
+                account_id=account_id,
+                pool_id=str(target_group_id),
+                reason="matched existing remote account in target group",
+                after={"sub2api_account_id": remote_account.get("id"), "group_id": target_group_id},
+            )
+        elif duplicate:
+            await _mark_push_failed(
+                db,
+                account_oid=account_oid,
+                original_status=current_status,
+                error="Remote duplicate exists outside target group",
+                unset_lock=True,
+            )
+            await write_pool_action(
+                db,
+                action_type="push_to_sub2api_group_failed",
+                actor=actor,
+                account_id=account_id,
+                pool_id=str(target_group_id),
+                status_value="failed",
+                reason=reason,
+                remote_snapshot=duplicate,
+                error="Remote duplicate exists outside target group",
+            )
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Remote duplicate exists outside target group")
+        else:
+            payload = build_sub2api_account_payload(
+                account_json,
+                group_id=target_group_id,
+                concurrency=concurrency,
+                load_factor=load_factor,
+                priority=priority,
+            )
+            remote_account = await client.create_account(payload)
+
+        remote_id = remote_account.get("id")
+        if remote_id is None:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="sub2api did not return remote account id")
+
+        await refresh_site_cache(db, site_id)
+        remote_snapshot = await _load_remote_snapshot(db, site_id=site_id, remote_id=remote_id) or remote_account
+        if not account_in_group(remote_snapshot, target_group_id):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"sub2api created account #{remote_id}, but it is not in target group #{target_group_id}",
+            )
+
+        if run_verification:
+            try:
+                verification = await client.test_account(remote_id, model_id=model_id, prompt=prompt)
+            except HTTPException as exc:
+                verification = {
+                    "success": False,
+                    "model": model_id,
+                    "prompt": prompt,
+                    "latency_ms": None,
+                    "response_preview": "",
+                    "error": str(exc.detail),
+                }
+        else:
+            verification = {
+                "success": None,
+                "model": model_id,
+                "prompt": prompt,
+                "latency_ms": None,
+                "response_preview": "",
+                "status": "skipped",
+            }
+
+        succeeded = verification.get("success") is True if run_verification else True
+        updated = await _mark_push_completed(
+            db,
+            account_oid=account_oid,
+            site_id=site_id,
+            group_id=target_group_id,
+            group_name=group_name,
+            remote_account=remote_snapshot,
+            verification=verification,
+            verification_passed=succeeded,
+            actor=actor,
+        )
+        await _finish_pool_action(
+            db,
+            action_id=action_id,
+            status_value="succeeded" if succeeded else "failed",
+            after={
+                "pool_status": updated.get("metadata", {}).get("pool_status"),
+                "sub2api_account_id": remote_id,
+                "verification_status": updated.get("metadata", {}).get("verification_status"),
+                "target_group_id": target_group_id,
+            },
+            error=None if succeeded else updated.get("metadata", {}).get("verification_error"),
+        )
+
+        await write_pool_action(
+            db,
+            action_type="verify_sub2api_account" if run_verification else "push_to_sub2api_group",
+            actor=actor,
+            account_id=account_id,
+            pool_id=str(target_group_id),
+            status_value="succeeded" if succeeded else "failed",
+            reason=reason,
+            remote_snapshot=remote_snapshot,
+            after={
+                "pool_status": updated.get("metadata", {}).get("pool_status"),
+                "sub2api_account_id": remote_id,
+                "sub2api_group_ids": updated.get("metadata", {}).get("sub2api_group_ids"),
+                "sub2api_push_status": updated.get("metadata", {}).get("sub2api_push_status"),
+                "verification_status": updated.get("metadata", {}).get("verification_status"),
+            },
+            error=None if succeeded else updated.get("metadata", {}).get("verification_error"),
+        )
+        logger.info(
+            "push_to_sub2api_finished account_id=%s remote_id=%s group_id=%s verification=%s actor=%s",
+            account_id,
+            remote_id,
+            target_group_id,
+            updated.get("metadata", {}).get("verification_status"),
+            actor.get("_id"),
+        )
+        return {
+            "account": serialize_doc(updated),
+            "remote_account": serialize_doc(remote_snapshot),
+            "push_action": push_action,
+            "verification": serialize_doc(verification),
+        }
+    except HTTPException as exc:
+        await _mark_push_failed(
+            db,
+            account_oid=account_oid,
+            original_status=current_status,
+            error=str(exc.detail),
+            unset_lock=True,
+        )
+        await _finish_pool_action(db, action_id=action_id, status_value="failed", error=str(exc.detail))
+        await write_pool_action(
+            db,
+            action_type="push_to_sub2api_group_failed",
+            actor=actor,
+            account_id=account_id,
+            pool_id=str(target_group_id),
+            status_value="failed",
+            reason=reason,
+            remote_snapshot=remote_account or {},
+            error=str(exc.detail),
+        )
+        raise
+    except Exception as exc:
+        logger.exception("push_to_sub2api_uncertain account_id=%s group_id=%s", account_id, target_group_id)
+        await _mark_push_uncertain(db, account_oid=account_oid, original_status=current_status, error=str(exc))
+        await _finish_pool_action(db, action_id=action_id, status_value="failed", error=str(exc))
+        await write_pool_action(
+            db,
+            action_type="remote_state_uncertain",
+            actor=actor,
+            account_id=account_id,
+            pool_id=str(target_group_id),
+            status_value="failed",
+            reason=reason,
+            remote_snapshot=remote_account or {},
+            error=str(exc),
+        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"sub2api push state uncertain: {str(exc)}") from exc
+
+
+def build_sub2api_account_payload(
+    account_json: dict[str, Any],
+    *,
+    group_id: int,
+    concurrency: int,
+    load_factor: int,
+    priority: int,
+) -> dict[str, Any]:
+    payload = {key: value for key, value in account_json.items() if key not in REMOTE_STRIP_FIELDS}
+    payload["group_id"] = group_id
+    payload["group_ids"] = [group_id]
+    payload["concurrency"] = concurrency
+    payload["load_factor"] = load_factor
+    payload["priority"] = priority
+    payload["status"] = payload.get("status") or "active"
+    payload["schedulable"] = True
+    payload["confirm_mixed_channel_risk"] = True
+    return payload
+
+
+def resolve_target_group_id(metadata: dict[str, Any], *, requested_group_id: int | None) -> int:
+    stored_group_id = _int_or_none(metadata.get("sub2api_group_id"))
+    if stored_group_id is None:
+        stored_group_id = _int_or_none(metadata.get("pool_id"))
+    if stored_group_id is not None and requested_group_id is not None and stored_group_id != requested_group_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Selected group #{requested_group_id} does not match account target group #{stored_group_id}",
+        )
+    target_group_id = stored_group_id if stored_group_id is not None else requested_group_id
+    if target_group_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Account has no target sub2api group")
+    return target_group_id
+
+
+def _ensure_push_can_start(metadata: dict[str, Any], *, target_group_id: int) -> None:
+    if metadata.get("push_lock"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account is already being pushed")
+    if metadata.get("sub2api_push_status") == "pushing":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account is already being pushed")
+    remote_id = metadata.get("sub2api_account_id")
+    existing_group_id = _int_or_none(metadata.get("sub2api_group_id"))
+    deleted_remote = metadata.get("sub2api_delete_status") == "succeeded"
+    if remote_id is not None and not deleted_remote:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Account is already bound to sub2api account #{remote_id}",
+        )
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+async def _finish_pool_action(
+    db: AsyncIOMotorDatabase,
+    *,
+    action_id: str,
+    status_value: str,
+    after: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> None:
+    try:
+        action_oid = object_id(action_id)
+    except ValueError:
+        return
+    updates: dict[str, Any] = {"status": status_value, "finished_at": now_utc()}
+    if after is not None:
+        updates["after"] = after
+    if error is not None:
+        updates["error"] = error
+    await db.pool_actions.update_one({"_id": action_oid}, {"$set": updates})
+
+
+async def find_remote_duplicate(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    group_id: int,
+    account: dict[str, Any],
+) -> dict[str, Any] | None:
+    metadata = dict(account.get("metadata", {}))
+    account_json = account.get("account_json") if isinstance(account.get("account_json"), dict) else {}
+    credentials = account_json.get("credentials") if isinstance(account_json.get("credentials"), dict) else {}
+    extra = account_json.get("extra") if isinstance(account_json.get("extra"), dict) else {}
+
+    remote_id = metadata.get("sub2api_account_id")
+    if remote_id is not None:
+        doc = await db.sub2api_accounts_cache.find_one({"site_id": site_id, "sub2api_account_id": remote_id})
+        if doc:
+            return doc.get("account", {})
+
+    values = {
+        "chatgpt_account_id": credentials.get("chatgpt_account_id") or metadata.get("chatgpt_account_id"),
+        "email": metadata.get("email") or extract_email(account_json),
+        "name": account_json.get("name"),
+    }
+    candidates: list[dict[str, Any]] = []
+    async for doc in db.sub2api_accounts_cache.find({"site_id": site_id}):
+        remote = doc.get("account", {}) if isinstance(doc.get("account"), dict) else {}
+        if _remote_matches(remote, values):
+            candidates.append(remote)
+
+    in_group = [remote for remote in candidates if account_in_group(remote, group_id)]
+    if in_group:
+        return in_group[0]
+    return candidates[0] if candidates else None
+
+
+def _remote_matches(remote: dict[str, Any], values: dict[str, Any]) -> bool:
+    credentials = remote.get("credentials") if isinstance(remote.get("credentials"), dict) else {}
+    extra = remote.get("extra") if isinstance(remote.get("extra"), dict) else {}
+    if values.get("chatgpt_account_id") and credentials.get("chatgpt_account_id") == values["chatgpt_account_id"]:
+        return True
+    email = values.get("email")
+    if email and email in {credentials.get("email"), extra.get("email")}:
+        return True
+    name = values.get("name")
+    return bool(name and remote.get("name") == name)
+
+
+async def _acquire_push_lock(
+    db: AsyncIOMotorDatabase,
+    account_oid: Any,
+    action_id: str,
+    group_id: int,
+    actor: dict[str, Any],
+) -> dict[str, Any] | None:
+    now = now_utc()
+    return await db.accounts.find_one_and_update(
+        {
+            "_id": account_oid,
+            "metadata.deleted_at": {"$exists": False},
+            "metadata.pool_status": {"$in": list(ALLOWED_PUSH_STATUSES)},
+            "metadata.push_lock": {"$exists": False},
+            "metadata.sub2api_push_status": {"$ne": "pushing"},
+            "$or": [
+                {"metadata.sub2api_account_id": {"$exists": False}},
+                {"metadata.sub2api_account_id": None},
+                {"metadata.sub2api_delete_status": "succeeded"},
+            ],
+        },
+        {
+            "$set": {
+                "metadata.push_lock": {
+                    "action_id": action_id,
+                    "locked_at": now,
+                    "locked_by_user_id": actor.get("_id"),
+                    "locked_by_name": actor_name(actor),
+                    "target_group_id": group_id,
+                },
+                "metadata.sub2api_push_status": "pushing",
+                "metadata.updated_at": now,
+                "metadata.updated_by_user_id": actor.get("_id"),
+                "metadata.updated_by_name": actor_name(actor),
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+async def _mark_push_completed(
+    db: AsyncIOMotorDatabase,
+    *,
+    account_oid: Any,
+    site_id: str,
+    group_id: int,
+    group_name: str | None,
+    remote_account: dict[str, Any],
+    verification: dict[str, Any],
+    verification_passed: bool,
+    actor: dict[str, Any],
+) -> dict[str, Any]:
+    now = now_utc()
+    remote_id = remote_account.get("id")
+    verification_status = "skipped" if verification.get("status") == "skipped" else ("passed" if verification_passed else "failed")
+    pool_status = "active" if verification_passed else "problem"
+    error = None if verification_passed else str(verification.get("error") or "sub2api account test failed")
+    updates: dict[str, Any] = {
+        "metadata.pool_status": pool_status,
+        "metadata.pool_id": str(group_id),
+        "metadata.pool_ref_type": "sub2api_group",
+        "metadata.sub2api_site_id": site_id,
+        "metadata.sub2api_account_id": remote_id,
+        "metadata.sub2api_group_id": group_id,
+        "metadata.sub2api_group_ids": _remote_group_ids(remote_account, fallback_group_id=group_id),
+        "metadata.sub2api_group_name": group_name,
+        "metadata.sub2api_push_status": "succeeded",
+        "metadata.sub2api_pushed_at": now,
+        "metadata.sub2api_last_sync_at": now,
+        "metadata.sub2api_last_error": None,
+        "metadata.sub2api_manual_deleted": False,
+        "metadata.sub2api_delete_status": None,
+        "metadata.sub2api_delete_error": None,
+        "metadata.verification_status": verification_status,
+        "metadata.verification_model": verification.get("model"),
+        "metadata.verification_prompt": verification.get("prompt"),
+        "metadata.verification_response_preview": verification.get("response_preview"),
+        "metadata.verification_latency_ms": verification.get("latency_ms"),
+        "metadata.verification_checked_at": now,
+        "metadata.verification_error": error,
+        "metadata.last_error": error,
+        "metadata.updated_at": now,
+        "metadata.updated_by_user_id": actor.get("_id"),
+        "metadata.updated_by_name": actor_name(actor),
+    }
+    if not verification_passed:
+        updates["metadata.problem_snapshot"] = remote_account
+    result = await db.accounts.find_one_and_update(
+        {"_id": account_oid},
+        {"$set": updates, "$unset": {"metadata.push_lock": "", "metadata.analysis.remote_uncertain": ""}},
+        return_document=ReturnDocument.AFTER,
+    )
+    return result
+
+
+async def _mark_push_failed(
+    db: AsyncIOMotorDatabase,
+    *,
+    account_oid: Any,
+    original_status: str,
+    error: str,
+    unset_lock: bool,
+) -> None:
+    now = now_utc()
+    update_doc: dict[str, Any] = {
+        "$set": {
+            "metadata.pool_status": original_status,
+            "metadata.sub2api_push_status": "failed",
+            "metadata.sub2api_last_error": error,
+            "metadata.last_error": error,
+            "metadata.updated_at": now,
+        }
+    }
+    if unset_lock:
+        update_doc["$unset"] = {"metadata.push_lock": ""}
+    await db.accounts.update_one({"_id": account_oid}, update_doc)
+
+
+async def _mark_push_uncertain(db: AsyncIOMotorDatabase, *, account_oid: Any, original_status: str, error: str) -> None:
+    now = now_utc()
+    await db.accounts.update_one(
+        {"_id": account_oid},
+        {
+            "$set": {
+                "metadata.pool_status": original_status,
+                "metadata.sub2api_push_status": "uncertain",
+                "metadata.sub2api_last_error": error,
+                "metadata.last_error": "push remote state unknown",
+                "metadata.analysis.remote_uncertain": True,
+                "metadata.updated_at": now,
+            },
+            "$unset": {"metadata.push_lock": ""},
+        },
+    )
+
+
+async def _load_remote_snapshot(db: AsyncIOMotorDatabase, *, site_id: str, remote_id: Any) -> dict[str, Any] | None:
+    doc = await db.sub2api_accounts_cache.find_one({"site_id": site_id, "sub2api_account_id": remote_id})
+    if doc and isinstance(doc.get("account"), dict):
+        return doc["account"]
+    return None
+
+
+def _remote_group_ids(remote_account: dict[str, Any], *, fallback_group_id: int) -> list[int]:
+    ids: set[int] = set()
+    group_ids = remote_account.get("group_ids")
+    if isinstance(group_ids, list):
+        ids.update(item for item in group_ids if isinstance(item, int))
+    groups = remote_account.get("groups")
+    if isinstance(groups, list):
+        ids.update(group.get("id") for group in groups if isinstance(group, dict) and isinstance(group.get("id"), int))
+    account_groups = remote_account.get("account_groups")
+    if isinstance(account_groups, list):
+        ids.update(item.get("group_id") for item in account_groups if isinstance(item, dict) and isinstance(item.get("group_id"), int))
+    ids.add(fallback_group_id)
+    return sorted(ids)
+
+
+def _account_oid(account_id: str) -> Any:
+    try:
+        return object_id(account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found") from exc
