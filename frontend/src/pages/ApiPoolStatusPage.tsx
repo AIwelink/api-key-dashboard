@@ -66,6 +66,12 @@ type CapacitySummary = {
   current_speed_multiple?: number | null;
   current_speed_days?: number | null;
   five_x_speed_days?: number | null;
+  recent_day_five_hour_peak_daily_cost?: number;
+  seven_day_five_hour_peak_daily_cost?: number;
+  recent_day_five_hour_peak_speed_days?: number | null;
+  five_x_recent_day_five_hour_peak_speed_days?: number | null;
+  seven_day_five_hour_peak_speed_days?: number | null;
+  five_x_seven_day_five_hour_peak_speed_days?: number | null;
   seven_day_peak_speed_days?: number | null;
   five_x_peak_speed_days?: number | null;
   ten_x_speed_days?: number | null;
@@ -1275,7 +1281,11 @@ function RemoteAccountRow({
       <td>
         <div>{formatOptionalDate(account.last_used_at)}</div>
         <div className="cell-sub">添加 {formatOptionalDate(account.created_at)}</div>
-        {isTemporaryRateLimit(account) && account.rate_limited_at && <div className="cell-sub danger">限流 {formatOptionalDate(account.rate_limited_at)}</div>}
+        {isTemporaryRateLimit(account) && (
+          <div className="cell-sub danger">
+            {account.rate_limit_reset_at ? `限流到 ${formatOptionalDate(account.rate_limit_reset_at)}` : `限流记录 ${formatOptionalDate(account.rate_limited_at)}`}
+          </div>
+        )}
       </td>
       <td>
         <div>订阅 {formatOptionalDate(subscriptionExpiresAt)}</div>
@@ -1327,13 +1337,14 @@ function AccountSevenDayUsage({ account }: { account: RemoteAccount }) {
 function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary; loading: boolean }) {
   const tone = summary?.health_tone || "muted";
   const accountType = summary?.account_type ? displayPlan(summary.account_type) : "未知";
+  const sevenDayFiveHourPeak = summary?.seven_day_five_hour_peak_cost ?? summary?.five_hour_peak_cost;
+  const sevenDayFiveHourPeakMultiple = summary?.five_hour_peak_multiple;
   const recentDayFiveHourPeak = summary?.recent_day_five_hour_peak_cost;
   const recentDayFiveHourPeakMultiple = summary?.recent_day_five_hour_peak_multiple;
-  const dailyPeakMultiple = summary?.twenty_four_hour_peak_multiple;
-  const currentSpeedDays = summary?.current_speed_days;
-  const fiveXSpeedDays = summary?.five_x_speed_days ?? summary?.ten_x_speed_days;
-  const sevenDayPeakSpeedDays = summary?.seven_day_peak_speed_days;
-  const fiveXPeakSpeedDays = summary?.five_x_peak_speed_days;
+  const recentDayPeakSpeedDays = summary?.recent_day_five_hour_peak_speed_days ?? summary?.current_speed_days;
+  const fiveXRecentDayPeakSpeedDays = summary?.five_x_recent_day_five_hour_peak_speed_days ?? summary?.five_x_speed_days ?? summary?.ten_x_speed_days;
+  const sevenDayPeakSpeedDays = summary?.seven_day_five_hour_peak_speed_days ?? summary?.seven_day_peak_speed_days;
+  const fiveXPeakSpeedDays = summary?.five_x_seven_day_five_hour_peak_speed_days ?? summary?.five_x_peak_speed_days;
   const fiveHourUsedPercent = summary?.used_5h_percent;
   const sevenDayUsedPercent = summary?.used_7d_percent;
   return (
@@ -1348,14 +1359,14 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
       </div>
       <div className="capacity-runway-grid">
         <CapacityMetric
-          label="5h总容量"
+          label="总容量：5h"
           value={formatUsd(summary?.five_hour_capacity_usd)}
           sub={`可用额度：当前已用 ${formatUsd(summary?.five_hour_used_estimated_usd)}，预估可用 ${formatUsd(summary?.five_hour_remaining_estimated_usd)}`}
           percent={fiveHourUsedPercent}
           tone={usagePercentTone(fiveHourUsedPercent)}
         />
         <CapacityMetric
-          label="7d总容量"
+          label="总容量：7d"
           value={formatUsd(summary?.seven_day_capacity_usd)}
           sub={`可用额度：当前已用 ${formatUsd(summary?.seven_day_used_estimated_usd)}，预估可用 ${formatUsd(summary?.seven_day_remaining_estimated_usd)}`}
           percent={sevenDayUsedPercent}
@@ -1363,46 +1374,46 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
         />
 
         <CapacityMetric
-          label="最近一天5h峰值容量"
+          label="峰值容量：最近一天5h"
           value={formatMultiple(recentDayFiveHourPeakMultiple)}
-          sub={`峰值 ${formatUsd(recentDayFiveHourPeak)}，5h容量 ${formatUsd(summary?.five_hour_capacity_usd)}`}
+          sub={`峰值 ${formatUsd(recentDayFiveHourPeak)}，总容量：5h ${formatUsd(summary?.five_hour_capacity_usd)}`}
           percent={multipleScalePercent(recentDayFiveHourPeakMultiple)}
           tone={multipleScaleTone(recentDayFiveHourPeakMultiple)}
         />
         <CapacityMetric
-          label="7天最高24h峰值容量"
-          value={formatMultiple(dailyPeakMultiple)}
-          sub={`峰值 ${formatUsd(summary?.seven_day_24h_peak_cost)}，24h折算容量 ${formatUsd(summary?.twenty_four_hour_capacity_usd)}`}
-          percent={multipleScalePercent(dailyPeakMultiple)}
-          tone={multipleScaleTone(dailyPeakMultiple)}
+          label="峰值容量：7天最高5h"
+          value={formatMultiple(sevenDayFiveHourPeakMultiple)}
+          sub={`峰值 ${formatUsd(sevenDayFiveHourPeak)}，总容量：5h ${formatUsd(summary?.five_hour_capacity_usd)}`}
+          percent={multipleScalePercent(sevenDayFiveHourPeakMultiple)}
+          tone={multipleScaleTone(sevenDayFiveHourPeakMultiple)}
         />
 
         <CapacityMetric
-          label="最近一天预估"
-          value={formatDays(currentSpeedDays)}
-          sub={`按最近24h消耗速度，5倍速度 ${formatDays(fiveXSpeedDays)}`}
-          percent={daysScalePercent(currentSpeedDays)}
-          tone={daysScaleTone(currentSpeedDays)}
+          label="预估天数：最近一天5h"
+          value={formatDays(recentDayPeakSpeedDays)}
+          sub={`按5h峰值折算日消耗 ${formatUsd(summary?.recent_day_five_hour_peak_daily_cost)}，5倍 ${formatDays(fiveXRecentDayPeakSpeedDays)}`}
+          percent={daysScalePercent(recentDayPeakSpeedDays)}
+          tone={daysScaleTone(recentDayPeakSpeedDays)}
         />
         <CapacityMetric
-          label="7天最高24h预估"
+          label="预估天数：7天最高5h"
           value={formatDays(sevenDayPeakSpeedDays)}
-          sub={`按7天最高24h消耗速度，5倍速度 ${formatDays(fiveXPeakSpeedDays)}`}
+          sub={`按5h峰值折算日消耗 ${formatUsd(summary?.seven_day_five_hour_peak_daily_cost)}，5倍 ${formatDays(fiveXPeakSpeedDays)}`}
           percent={daysScalePercent(sevenDayPeakSpeedDays)}
           tone={daysScaleTone(sevenDayPeakSpeedDays)}
         />
 
         <CapacityMetric
-          label="最近一天5倍预估"
-          value={formatDays(fiveXSpeedDays)}
-          sub="按最近24h消耗速度 * 5"
-          percent={daysScalePercent(fiveXSpeedDays)}
-          tone={daysScaleTone(fiveXSpeedDays)}
+          label="5倍预估：最近一天5h"
+          value={formatDays(fiveXRecentDayPeakSpeedDays)}
+          sub="按最近一天5h峰值折算日消耗 * 5"
+          percent={daysScalePercent(fiveXRecentDayPeakSpeedDays)}
+          tone={daysScaleTone(fiveXRecentDayPeakSpeedDays)}
         />
         <CapacityMetric
-          label="7天最高24h 5倍预估"
+          label="5倍预估：7天最高5h"
           value={formatDays(fiveXPeakSpeedDays)}
-          sub="按7天最高24h消耗速度 * 5"
+          sub="按7天最高5h峰值折算日消耗 * 5"
           percent={daysScalePercent(fiveXPeakSpeedDays)}
           tone={daysScaleTone(fiveXPeakSpeedDays)}
         />

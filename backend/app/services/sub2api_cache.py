@@ -671,6 +671,18 @@ async def _capacity_summary_for_accounts(db: AsyncIOMotorDatabase, site_id: str,
     current_speed_multiple = _ratio_or_none(seven_day_capacity_usd, recent_24h_cost * 7 if recent_24h_cost > 0 else 0)
     current_speed_days = _ratio_or_none(seven_day_capacity_usd, recent_24h_cost)
     five_x_speed_days = _ratio_or_none(seven_day_capacity_usd, recent_24h_cost * 5 if recent_24h_cost > 0 else 0)
+    recent_day_five_hour_peak_daily_cost = recent_day_five_hour_peak_cost / 5 * 24 if recent_day_five_hour_peak_cost > 0 else 0
+    seven_day_five_hour_peak_daily_cost = five_hour_peak_cost / 5 * 24 if five_hour_peak_cost > 0 else 0
+    recent_day_five_hour_peak_speed_days = _ratio_or_none(seven_day_capacity_usd, recent_day_five_hour_peak_daily_cost)
+    five_x_recent_day_five_hour_peak_speed_days = _ratio_or_none(
+        seven_day_capacity_usd,
+        recent_day_five_hour_peak_daily_cost * 5 if recent_day_five_hour_peak_daily_cost > 0 else 0,
+    )
+    seven_day_five_hour_peak_speed_days = _ratio_or_none(seven_day_capacity_usd, seven_day_five_hour_peak_daily_cost)
+    five_x_seven_day_five_hour_peak_speed_days = _ratio_or_none(
+        seven_day_capacity_usd,
+        seven_day_five_hour_peak_daily_cost * 5 if seven_day_five_hour_peak_daily_cost > 0 else 0,
+    )
     seven_day_peak_speed_days = _ratio_or_none(seven_day_capacity_usd, seven_day_24h_peak_cost)
     five_x_peak_speed_days = _ratio_or_none(seven_day_capacity_usd, seven_day_24h_peak_cost * 5 if seven_day_24h_peak_cost > 0 else 0)
     five_x_peak_multiple = _ratio_or_none(five_hour_capacity_usd, five_hour_peak_cost * 5 if five_hour_peak_cost > 0 else 0)
@@ -726,6 +738,12 @@ async def _capacity_summary_for_accounts(db: AsyncIOMotorDatabase, site_id: str,
         "current_speed_multiple": _round_optional(current_speed_multiple),
         "current_speed_days": _round_optional(current_speed_days),
         "five_x_speed_days": _round_optional(five_x_speed_days),
+        "recent_day_five_hour_peak_daily_cost": round(recent_day_five_hour_peak_daily_cost, 4),
+        "seven_day_five_hour_peak_daily_cost": round(seven_day_five_hour_peak_daily_cost, 4),
+        "recent_day_five_hour_peak_speed_days": _round_optional(recent_day_five_hour_peak_speed_days),
+        "five_x_recent_day_five_hour_peak_speed_days": _round_optional(five_x_recent_day_five_hour_peak_speed_days),
+        "seven_day_five_hour_peak_speed_days": _round_optional(seven_day_five_hour_peak_speed_days),
+        "five_x_seven_day_five_hour_peak_speed_days": _round_optional(five_x_seven_day_five_hour_peak_speed_days),
         "seven_day_peak_speed_days": _round_optional(seven_day_peak_speed_days),
         "five_x_peak_speed_days": _round_optional(five_x_peak_speed_days),
         "health_status": health["status"],
@@ -874,11 +892,11 @@ def _capacity_health(
 ) -> dict[str, str]:
     if available_accounts <= 0 or five_hour_capacity_usd <= 0 or seven_day_capacity_usd <= 0:
         return {"status": "exhausted", "label": "耗尽", "tone": "danger", "reason": "可用账号或理论容量为 0"}
-    if five_hour_peak_multiple is None and twenty_four_hour_peak_multiple is None and current_speed_multiple is None:
+    if five_hour_peak_multiple is None and current_speed_multiple is None:
         return {"status": "pending", "label": "等待数据", "tone": "muted", "reason": "dashboard cost 数据尚未同步"}
-    if _lt(five_hour_peak_multiple, 1) or _lt(twenty_four_hour_peak_multiple, 1) or _lt(current_speed_days, 1):
+    if _lt(five_hour_peak_multiple, 1) or _lt(current_speed_days, 1):
         return {"status": "danger", "label": "危险", "tone": "danger", "reason": "7天峰值或当前速度已压到容量线"}
-    if _lt(five_hour_peak_multiple, 1.5) or _lt(twenty_four_hour_peak_multiple, 1.5) or _lt(current_speed_multiple, 1) or _lt(five_x_speed_days, 1):
+    if _lt(five_hour_peak_multiple, 1.5) or _lt(current_speed_multiple, 1) or _lt(five_x_speed_days, 1):
         return {"status": "tight", "label": "偏紧", "tone": "warning", "reason": "容量有余量，但高峰或 5 倍增量会偏紧"}
     return {"status": "healthy", "label": "健康", "tone": "success", "reason": "7天峰值和当前速度都有余量"}
 

@@ -773,22 +773,23 @@ legend {
 }
 
 .capacity-runway-head span,
-.capacity-runway-head em,
-.capacity-metric span,
-.capacity-metric em {
+.capacity-runway-head em {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   font-style: normal;
+  font-weight: 700;
 }
 
 .capacity-runway-head strong {
-  font-size: 22px;
+  font-size: 26px;
   line-height: 1.1;
+  font-weight: 800;
 }
 
 .capacity-runway-type {
   color: var(--accent-strong);
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 800;
   white-space: nowrap;
 }
 
@@ -803,14 +804,30 @@ legend {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fcfafb;
-  padding: 11px 12px;
+  padding: 13px 14px;
   display: grid;
-  gap: 7px;
+  gap: 8px;
+}
+
+.capacity-metric span {
+  color: var(--muted);
+  font-size: 14px;
+  font-style: normal;
+  font-weight: 800;
 }
 
 .capacity-metric strong {
-  font-size: 18px;
+  font-size: 24px;
   line-height: 1.1;
+  font-weight: 850;
+}
+
+.capacity-metric em {
+  color: var(--muted);
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1.35;
 }
 
 .capacity-meter {
