@@ -848,7 +848,6 @@ legend {
 .capacity-metric-value-row {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
   gap: 12px;
   min-width: 0;
 }
@@ -865,12 +864,19 @@ legend {
   font-weight: 700;
 }
 
+.capacity-metric-inline-sub {
+  flex: 1 1 auto;
+  min-width: 120px;
+  text-align: left;
+}
+
 .capacity-metric-side-value {
   display: flex;
   align-items: baseline;
   gap: 6px;
   min-width: 0;
   color: var(--muted);
+  margin-left: auto;
   white-space: nowrap;
 }
 
@@ -967,6 +973,11 @@ legend {
   gap: 10px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.capacity-meter-legend-value {
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .capacity-meter-legend strong {

@@ -1501,6 +1501,7 @@ function CapacityMetric({
             </>
           ) : value}
         </strong>
+        {overlay && <small className="capacity-metric-inline-sub">{sub}</small>}
         {sideValue && (
           <span className="capacity-metric-side-value">
             <em>{sideValue.label}</em>
@@ -1508,7 +1509,7 @@ function CapacityMetric({
           </span>
         )}
       </div>
-      <small>{sub}</small>
+      {!overlay && <small>{sub}</small>}
       {percent !== undefined && percent !== null && (
         <div className="capacity-primary-meter">
           {showMeterHead && (
