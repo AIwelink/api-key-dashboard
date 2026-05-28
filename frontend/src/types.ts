@@ -1,6 +1,7 @@
 export type ViewName =
   | "upload"
   | "todos"
+  | "push-error-todos"
   | "accounts"
   | "available-pool"
   | "reserve-pool"

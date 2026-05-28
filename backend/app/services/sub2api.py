@@ -10,9 +10,10 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.utils import now_utc
 
 
-TRANSIENT_STATUS_CODES = {502, 503, 504}
+TRANSIENT_STATUS_CODES = {500, 502, 503, 504}
 REQUEST_RETRY_ATTEMPTS = 3
 REQUEST_RETRY_BASE_DELAY_SECONDS = 0.8
+SERVER_ERROR_STATUS_CODES = {500, 502, 503, 504}
 
 
 class Sub2ApiClient:
@@ -47,19 +48,29 @@ class Sub2ApiClient:
                 detail="sub2api site base_url is not configured",
             )
         response: httpx.Response | None = None
+        last_error: httpx.RequestError | None = None
         async with httpx.AsyncClient(timeout=15) as client:
             for attempt in range(REQUEST_RETRY_ATTEMPTS):
-                response = await client.request(
-                    method,
-                    self.admin_url(path),
-                    headers=self.headers(),
-                    params=params,
-                    json=json,
-                )
-                if response.status_code not in TRANSIENT_STATUS_CODES:
-                    break
+                try:
+                    response = await client.request(
+                        method,
+                        self.admin_url(path),
+                        headers=self.headers(),
+                        params=params,
+                        json=json,
+                    )
+                    last_error = None
+                    if response.status_code not in TRANSIENT_STATUS_CODES:
+                        break
+                except httpx.RequestError as exc:
+                    last_error = exc
                 if attempt < REQUEST_RETRY_ATTEMPTS - 1:
                     await asyncio.sleep(REQUEST_RETRY_BASE_DELAY_SECONDS * (attempt + 1))
+        if last_error is not None:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"sub2api request failed after retries: {last_error}",
+            ) from last_error
         if response is None:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -68,6 +79,11 @@ class Sub2ApiClient:
         try:
             payload = response.json()
         except ValueError as exc:
+            if response.status_code >= 400:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"sub2api request failed with status {response.status_code}: {response.text[:200]}",
+                ) from exc
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"sub2api returned non-JSON response: {response.text[:200]}",
@@ -85,6 +101,22 @@ class Sub2ApiClient:
         response = await self.request_admin("POST", "/accounts", json=payload)
         return response.get("data", response)
 
+    async def update_account(self, account_id: int | str, payload: dict[str, Any]) -> dict[str, Any]:
+        response = await self._request_admin_response_with_retries(
+            "PATCH",
+            f"/accounts/{account_id}",
+            json=payload,
+            timeout=15,
+        )
+        if response.status_code == status.HTTP_405_METHOD_NOT_ALLOWED:
+            response = await self._request_admin_response_with_retries(
+                "PUT",
+                f"/accounts/{account_id}",
+                json=payload,
+                timeout=15,
+            )
+        return self._admin_response_payload(response, operation="update")
+
     async def get_account(self, account_id: int | str) -> dict[str, Any]:
         response = await self.request_admin("GET", f"/accounts/{account_id}")
         return response.get("data", response)
@@ -99,22 +131,11 @@ class Sub2ApiClient:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="sub2api site base_url is not configured",
             )
-        response: httpx.Response | None = None
-        async with httpx.AsyncClient(timeout=15) as client:
-            for attempt in range(REQUEST_RETRY_ATTEMPTS):
-                response = await client.delete(
-                    self.admin_url(f"/accounts/{account_id}"),
-                    headers=self.headers(),
-                )
-                if response.status_code not in TRANSIENT_STATUS_CODES:
-                    break
-                if attempt < REQUEST_RETRY_ATTEMPTS - 1:
-                    await asyncio.sleep(REQUEST_RETRY_BASE_DELAY_SECONDS * (attempt + 1))
-        if response is None:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="sub2api delete did not return a response",
-            )
+        response = await self._request_admin_response_with_retries(
+            "DELETE",
+            f"/accounts/{account_id}",
+            timeout=15,
+        )
         if response.status_code >= 400:
             message = response.text[:300]
             try:
@@ -149,14 +170,19 @@ class Sub2ApiClient:
             )
 
         started = time.perf_counter()
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                self.admin_url(f"/accounts/{account_id}/test"),
-                headers=self.headers(),
-                json={"model_id": model_id, "prompt": prompt},
-            )
+        response = await self._request_admin_response_with_retries(
+            "POST",
+            f"/accounts/{account_id}/test",
+            json={"model_id": model_id, "prompt": prompt},
+            timeout=60,
+        )
 
         latency_ms = round((time.perf_counter() - started) * 1000)
+        if response.status_code in SERVER_ERROR_STATUS_CODES:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"sub2api account test server error {response.status_code}: {response.text[:300]}",
+            )
         if response.status_code >= 400:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -175,6 +201,73 @@ class Sub2ApiClient:
             "response_preview": content[:500],
             "events": events[-20:],
         }
+
+    async def _request_admin_response_with_retries(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+        timeout: float,
+    ) -> httpx.Response:
+        if not self.configured:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="sub2api site base_url is not configured",
+            )
+        response: httpx.Response | None = None
+        last_error: httpx.RequestError | None = None
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            for attempt in range(REQUEST_RETRY_ATTEMPTS):
+                try:
+                    response = await client.request(
+                        method,
+                        self.admin_url(path),
+                        headers=self.headers(),
+                        params=params,
+                        json=json,
+                    )
+                    last_error = None
+                    if response.status_code not in TRANSIENT_STATUS_CODES:
+                        return response
+                except httpx.RequestError as exc:
+                    last_error = exc
+                if attempt < REQUEST_RETRY_ATTEMPTS - 1:
+                    await asyncio.sleep(REQUEST_RETRY_BASE_DELAY_SECONDS * (attempt + 1))
+        if last_error is not None:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"sub2api {method} {path} failed after retries: {last_error}",
+            ) from last_error
+        if response is None:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"sub2api {method} {path} did not return a response",
+            )
+        return response
+
+    def _admin_response_payload(self, response: httpx.Response, *, operation: str) -> dict[str, Any]:
+        if response.status_code >= 400:
+            message = response.text[:300]
+            try:
+                payload = response.json()
+                if isinstance(payload, dict):
+                    message = str(payload.get("message") or payload.get("detail") or message)
+            except ValueError:
+                pass
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"sub2api {operation} failed with status {response.status_code}: {message}",
+            )
+        if response.status_code == 204 or not response.text.strip():
+            return {"ok": True, "status_code": response.status_code}
+        try:
+            payload = response.json()
+        except ValueError:
+            return {"ok": True, "status_code": response.status_code, "text": response.text[:300]}
+        data = payload if isinstance(payload, dict) else {"data": payload}
+        return data.get("data", data)
 
     async def list_groups(self, *, page: int = 1, page_size: int = 100) -> dict[str, Any]:
         payload = await self.request_admin("GET", "/groups", params={"page": page, "page_size": page_size})

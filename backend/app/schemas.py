@@ -171,3 +171,13 @@ class FreeToPlusCompleteRequest(BaseModel):
 class FreeToPlusFailRequest(BaseModel):
     error: str
     note: str | None = None
+
+
+class PushErrorTestRequest(BaseModel):
+    model_id: str = "gpt-5.4-mini"
+    prompt: str = ""
+
+
+class PushErrorDecisionRequest(BaseModel):
+    decision: Literal["plus_reprocess", "problem_library"]
+    note: str | None = None

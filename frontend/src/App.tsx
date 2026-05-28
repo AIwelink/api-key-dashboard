@@ -6,7 +6,7 @@ import { ApiPoolStatusPage } from "./pages/ApiPoolStatusPage";
 import { AuditPage } from "./pages/AuditPage";
 import { IntroPage } from "./pages/IntroPage";
 import { AvailablePoolPage, ReservePoolPage } from "./pages/ManualPoolPage";
-import { TodoPage } from "./pages/TodoPage";
+import { PushErrorTodoPage, TodoPage } from "./pages/TodoPage";
 import { LoginPage } from "./pages/LoginPage";
 import { UploadPage } from "./pages/UploadPage";
 import { UsersPage } from "./pages/UsersPage";
@@ -20,6 +20,7 @@ type ToastState = {
 const navItems: Array<[ViewName, string]> = [
   ["upload", "上传账号"],
   ["todos", "待办与处理"],
+  ["push-error-todos", "错误账号处理"],
   ["accounts", "账号列表"],
 ];
 
@@ -127,6 +128,7 @@ function App() {
           <>
             {view === "upload" && <UploadPage token={token} showToast={showToast} />}
             {view === "todos" && <TodoPage token={token} showToast={showToast} />}
+            {view === "push-error-todos" && <PushErrorTodoPage token={token} showToast={showToast} />}
             {view === "accounts" && <AccountsPage token={token} showToast={showToast} />}
             {view === "available-pool" && <AvailablePoolPage token={token} showToast={showToast} />}
             {view === "reserve-pool" && <ReservePoolPage token={token} showToast={showToast} />}

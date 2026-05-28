@@ -8,6 +8,7 @@ from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 
+from app.services.account_records import write_account_operation, write_account_problem
 from app.services.pool_lifecycle import actor_name, write_pool_action
 from app.services.sub2api import Sub2ApiClient, account_in_group
 from app.services.sub2api_cache import get_site, upsert_cached_account_snapshot
@@ -18,6 +19,11 @@ logger = logging.getLogger("app.sub2api_push")
 
 ALLOWED_PUSH_STATUSES = {"available", "reserve", "problem"}
 BLOCKED_PUSH_STATUSES = {"library", "active", "discarded"}
+PUSH_PROBLEM_GROUP_NAME = "推送问题账户池"
+PUSH_PROBLEM_GROUP_FALLBACK_ID = 4
+VERIFICATION_RETRY_ATTEMPTS = 3
+PUSH_ERROR_TASK_TYPE = "push_use_pool_error"
+PROBLEM_CLASS_PUSH_TOKEN_EXPIRED = "push_token_expired"
 REMOTE_STRIP_FIELDS = {
     "id",
     "created_at",
@@ -175,17 +181,7 @@ async def push_account_to_sub2api(
         remote_snapshot = await upsert_cached_account_snapshot(db, site_id, remote_account)
 
         if run_verification:
-            try:
-                verification = await client.test_account(remote_id, model_id=model_id, prompt=prompt)
-            except HTTPException as exc:
-                verification = {
-                    "success": False,
-                    "model": model_id,
-                    "prompt": prompt,
-                    "latency_ms": None,
-                    "response_preview": "",
-                    "error": str(exc.detail),
-                }
+            verification = await _test_pushed_account_with_retries(client, remote_id, model_id=model_id, prompt=prompt)
         else:
             verification = {
                 "success": None,
@@ -197,15 +193,44 @@ async def push_account_to_sub2api(
             }
 
         succeeded = verification.get("success") is True if run_verification else True
+        problem_group_id: int | None = None
+        problem_group_name: str | None = None
+        failed_task_updates: dict[str, Any] | None = None
+        if run_verification and not succeeded:
+            if not _verification_requires_problem_group(verification):
+                error = str(verification.get("error") or "sub2api account verification failed")
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=error)
+            problem_group_id, problem_group_name = await _resolve_push_problem_group(db, site_id)
+            remote_snapshot = await _move_remote_to_problem_group(
+                db,
+                client=client,
+                site_id=site_id,
+                remote_account=remote_snapshot,
+                problem_group_id=problem_group_id,
+            )
+            failed_task_updates = await _build_push_error_task_updates(
+                db,
+                client=client,
+                site_id=site_id,
+                account_id=account_id,
+                account_json=account_json,
+                metadata=metadata,
+                remote_account=remote_snapshot,
+                verification=verification,
+                problem_group_id=problem_group_id,
+                problem_group_name=problem_group_name,
+                actor=actor,
+            )
         updated = await _mark_push_completed(
             db,
             account_oid=account_oid,
             site_id=site_id,
-            group_id=target_group_id,
-            group_name=group_name,
+            group_id=problem_group_id if problem_group_id is not None else target_group_id,
+            group_name=problem_group_name if problem_group_name is not None else group_name,
             remote_account=remote_snapshot,
             verification=verification,
             verification_passed=succeeded,
+            failed_task_updates=failed_task_updates,
             actor=actor,
         )
         await _finish_pool_action(
@@ -217,6 +242,7 @@ async def push_account_to_sub2api(
                 "sub2api_account_id": remote_id,
                 "verification_status": updated.get("metadata", {}).get("verification_status"),
                 "target_group_id": target_group_id,
+                "problem_group_id": problem_group_id,
             },
             error=None if succeeded else updated.get("metadata", {}).get("verification_error"),
         )
@@ -236,6 +262,7 @@ async def push_account_to_sub2api(
                 "sub2api_group_ids": updated.get("metadata", {}).get("sub2api_group_ids"),
                 "sub2api_push_status": updated.get("metadata", {}).get("sub2api_push_status"),
                 "verification_status": updated.get("metadata", {}).get("verification_status"),
+                "problem_group_id": problem_group_id,
             },
             error=None if succeeded else updated.get("metadata", {}).get("verification_error"),
         )
@@ -321,6 +348,248 @@ def _ensure_remote_group(remote_account: dict[str, Any], group_id: int) -> None:
         remote_account["group_ids"] = [group_id]
     elif group_id not in group_ids:
         remote_account["group_ids"] = [*group_ids, group_id]
+
+
+async def _test_pushed_account_with_retries(
+    client: Sub2ApiClient,
+    remote_id: Any,
+    *,
+    model_id: str,
+    prompt: str,
+) -> dict[str, Any]:
+    last_verification: dict[str, Any] | None = None
+    for attempt in range(VERIFICATION_RETRY_ATTEMPTS):
+        try:
+            verification = await client.test_account(remote_id, model_id=model_id, prompt=prompt)
+        except HTTPException as exc:
+            detail = str(exc.detail)
+            if _is_server_error_detail(detail):
+                raise
+            verification = {
+                "success": False,
+                "model": model_id,
+                "prompt": prompt,
+                "latency_ms": None,
+                "response_preview": "",
+                "error": detail,
+            }
+        verification["attempt"] = attempt + 1
+        last_verification = verification
+        if verification.get("success") is True:
+            return verification
+        if not _is_401_verification_failure(verification):
+            return verification
+    if last_verification is not None:
+        last_verification["error"] = last_verification.get("error") or "remote account test failed with 401 after retries"
+        last_verification["retry_exhausted"] = True
+        return last_verification
+    return {
+        "success": False,
+        "model": model_id,
+        "prompt": prompt,
+        "latency_ms": None,
+        "response_preview": "",
+        "error": "remote account test failed",
+        "retry_exhausted": True,
+    }
+
+
+def _is_server_error_detail(detail: str) -> bool:
+    normalized = detail.lower()
+    return (
+        any(str(code) in normalized for code in (500, 502, 503, 504))
+        or "server error" in normalized
+        or "failed after retries" in normalized
+        or "did not return a response" in normalized
+        or "non-json response" in normalized
+    )
+
+
+def _is_401_verification_failure(verification: dict[str, Any]) -> bool:
+    haystack = " ".join(
+        str(value)
+        for value in (
+            verification.get("error"),
+            verification.get("response_preview"),
+            verification.get("events"),
+        )
+        if value is not None
+    ).lower()
+    return any(
+        marker in haystack
+        for marker in (
+            "401",
+            "unauthorized",
+            "token_expired",
+            "authentication token is expired",
+            "provided authentication token is expired",
+        )
+    )
+
+
+def _verification_requires_problem_group(verification: dict[str, Any]) -> bool:
+    return bool(verification.get("retry_exhausted") and _is_401_verification_failure(verification))
+
+
+async def _build_push_error_task_updates(
+    db: AsyncIOMotorDatabase,
+    *,
+    client: Sub2ApiClient,
+    site_id: str,
+    account_id: str,
+    account_json: dict[str, Any],
+    metadata: dict[str, Any],
+    remote_account: dict[str, Any],
+    verification: dict[str, Any],
+    problem_group_id: int,
+    problem_group_name: str | None,
+    actor: dict[str, Any],
+) -> dict[str, Any]:
+    now = now_utc()
+    account_type = _account_type(account_json, metadata)
+    remote_id = remote_account.get("id")
+    error = str(verification.get("error") or "推送测试返回 401，凭证过期")
+    details = {
+        "site_id": site_id,
+        "remote_account_id": remote_id,
+        "problem_group_id": problem_group_id,
+        "problem_group_name": problem_group_name,
+        "verification": verification,
+        "account_type": account_type,
+    }
+    await write_account_problem(
+        db,
+        problem_class=PROBLEM_CLASS_PUSH_TOKEN_EXPIRED,
+        problem_name="推送测试凭证过期",
+        remark_zh="推送到使用池后测试返回 401/token_expired，账号凭证已过期。",
+        account_id=account_id,
+        severity="error",
+        status_value="open",
+        site_id=site_id,
+        remote_account_id=remote_id,
+        details=details,
+        actor=actor,
+    )
+    await write_account_operation(
+        db,
+        operation_class="push_error_detected",
+        operation_name="推送错误识别",
+        remark_zh="推送测试识别到 401 凭证过期错误。",
+        actor=actor,
+        account_id=account_id,
+        status_value="failed",
+        details=details,
+    )
+
+    base_updates: dict[str, Any] = {
+        "metadata.problem_task_type": PUSH_ERROR_TASK_TYPE,
+        "metadata.problem_class": PROBLEM_CLASS_PUSH_TOKEN_EXPIRED,
+        "metadata.problem_name": "推送测试凭证过期",
+        "metadata.problem_status": "open",
+        "metadata.problem_remark_zh": "推送到使用池后测试返回 401/token_expired，账号凭证已过期。",
+        "metadata.problem_detected_at": now,
+        "metadata.problem_source": "push_verification",
+        "metadata.problem_error": error,
+        "metadata.problem_remote_account_id": remote_id,
+        "metadata.problem_site_id": site_id,
+        "metadata.problem_group_id": problem_group_id,
+        "metadata.problem_group_name": problem_group_name,
+        "metadata.problem_last_test_status": "failed",
+        "metadata.problem_last_test_at": now,
+        "metadata.problem_last_test_error": error,
+        "metadata.problem_last_test_result": verification,
+    }
+    if account_type == "free":
+        delete_result = await client.delete_account(remote_id) if remote_id is not None else {"ok": False, "error": "missing remote id"}
+        if remote_id is not None:
+            await db.sub2api_accounts_cache.delete_one({"site_id": site_id, "sub2api_account_id": remote_id})
+        await write_account_operation(
+            db,
+            operation_class="free_push_error_auto_archive",
+            operation_name="free 推送错误自动归档",
+            remark_zh="free 账号推送测试 401，无需人工判断，已归档到错误库并从远端错误池删除。",
+            actor=actor,
+            account_id=account_id,
+            details={**details, "delete_result": delete_result},
+        )
+        base_updates.update(
+            {
+                "metadata.problem_task_status": "archived",
+                "metadata.problem_status": "closed",
+                "metadata.problem_resolution": "free_auto_archived",
+                "metadata.problem_resolved_at": now,
+                "metadata.problem_resolved_by_user_id": actor.get("_id"),
+                "metadata.problem_resolved_by_name": actor_name(actor),
+                "metadata.problem_remote_delete_status": "succeeded",
+                "metadata.problem_remote_deleted_at": now,
+                "metadata.sub2api_manual_deleted": True,
+                "metadata.sub2api_delete_status": "succeeded",
+                "metadata.sub2api_delete_error": None,
+            }
+        )
+    else:
+        base_updates.update(
+            {
+                "metadata.problem_task_status": "pending",
+                "metadata.problem_status": "open",
+                "metadata.problem_resolution": None,
+                "metadata.problem_remote_delete_status": None,
+            }
+        )
+    return base_updates
+
+
+async def _resolve_push_problem_group(db: AsyncIOMotorDatabase, site_id: str) -> tuple[int, str | None]:
+    doc = await db.sub2api_groups_cache.find_one({"site_id": site_id, "group.name": PUSH_PROBLEM_GROUP_NAME})
+    if doc and isinstance(doc.get("group_id"), int):
+        group = doc.get("group") if isinstance(doc.get("group"), dict) else {}
+        return doc["group_id"], group.get("name")
+    doc = await db.sub2api_groups_cache.find_one({"site_id": site_id, "group_id": PUSH_PROBLEM_GROUP_FALLBACK_ID})
+    if doc and isinstance(doc.get("group_id"), int):
+        group = doc.get("group") if isinstance(doc.get("group"), dict) else {}
+        return doc["group_id"], group.get("name") or PUSH_PROBLEM_GROUP_NAME
+    return PUSH_PROBLEM_GROUP_FALLBACK_ID, PUSH_PROBLEM_GROUP_NAME
+
+
+async def _move_remote_to_problem_group(
+    db: AsyncIOMotorDatabase,
+    *,
+    client: Sub2ApiClient,
+    site_id: str,
+    remote_account: dict[str, Any],
+    problem_group_id: int,
+) -> dict[str, Any]:
+    remote_id = remote_account.get("id")
+    if remote_id is None:
+        return remote_account
+    updated_remote = await client.update_account(
+        remote_id,
+        {
+            "group_id": problem_group_id,
+            "group_ids": [problem_group_id],
+            "status": remote_account.get("status") or "active",
+            "schedulable": remote_account.get("schedulable", True),
+        },
+    )
+    if not isinstance(updated_remote, dict) or updated_remote.get("id") is None:
+        updated_remote = {**remote_account, "group_id": problem_group_id, "group_ids": [problem_group_id]}
+    _ensure_single_remote_group(updated_remote, problem_group_id)
+    return await upsert_cached_account_snapshot(db, site_id, updated_remote)
+
+
+def _ensure_single_remote_group(remote_account: dict[str, Any], group_id: int) -> None:
+    remote_account["group_id"] = group_id
+    remote_account["group_ids"] = [group_id]
+    if isinstance(remote_account.get("account_groups"), list):
+        remote_account["account_groups"] = [
+            item for item in remote_account["account_groups"] if isinstance(item, dict) and item.get("group_id") == group_id
+        ]
+
+
+def _account_type(account_json: dict[str, Any], metadata: dict[str, Any]) -> str:
+    credentials = account_json.get("credentials") if isinstance(account_json.get("credentials"), dict) else {}
+    value = metadata.get("account_type") or credentials.get("plan_type") or ""
+    return str(value).strip().lower()
 
 
 def build_sub2api_account_name(account_json: dict[str, Any], metadata: dict[str, Any]) -> str:
@@ -540,6 +809,7 @@ async def _mark_push_completed(
     remote_account: dict[str, Any],
     verification: dict[str, Any],
     verification_passed: bool,
+    failed_task_updates: dict[str, Any] | None,
     actor: dict[str, Any],
 ) -> dict[str, Any]:
     now = now_utc()
@@ -581,6 +851,8 @@ async def _mark_push_completed(
     }
     if not verification_passed:
         updates["metadata.problem_snapshot"] = remote_account
+    if failed_task_updates:
+        updates.update(failed_task_updates)
     result = await db.accounts.find_one_and_update(
         {"_id": account_oid},
         {"$set": updates, "$unset": {"metadata.push_lock": "", "metadata.analysis.remote_uncertain": ""}},

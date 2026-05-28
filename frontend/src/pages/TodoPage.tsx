@@ -24,6 +24,24 @@ type FreeToPlusResponse = {
   };
 };
 
+type PushErrorStatus = "open" | "pending" | "processing" | "archived" | "resolved" | "all";
+type PushErrorAccountType = "all" | "plus" | "free";
+
+type PushErrorResponse = {
+  items: AccountDocument[];
+  total: number;
+  skip: number;
+  limit: number;
+  stats: {
+    pending: number;
+    processing: number;
+    archived: number;
+    resolved: number;
+    free: number;
+    plus: number;
+  };
+};
+
 const paymentOptions = [
   ["paypal_multi", "PayPal 一卡多号"],
   ["paypal_single", "PayPal 一卡一号"],
@@ -360,6 +378,305 @@ export function TodoPage({ token, showToast }: Props) {
   );
 }
 
+export function PushErrorTodoPage({ token, showToast }: Props) {
+  const [accounts, setAccounts] = useState<AccountDocument[]>([]);
+  const [total, setTotal] = useState(0);
+  const [stats, setStats] = useState<PushErrorResponse["stats"]>({ pending: 0, processing: 0, archived: 0, resolved: 0, free: 0, plus: 0 });
+  const [status, setStatus] = useState<PushErrorStatus>("open");
+  const [accountType, setAccountType] = useState<PushErrorAccountType>("plus");
+  const [query, setQuery] = useState("");
+  const [skip, setSkip] = useState(0);
+  const [limit, setLimit] = useState(50);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const currentUserId = useMemo(() => {
+    const raw = localStorage.getItem("user");
+    if (!raw) return "";
+    try {
+      const parsed = JSON.parse(raw) as { id?: string; email?: string };
+      return parsed.id || parsed.email || "";
+    } catch {
+      return "";
+    }
+  }, []);
+
+  const loadAccounts = async () => {
+    const params = new URLSearchParams({
+      status,
+      account_type: accountType,
+      skip: String(skip),
+      limit: String(limit),
+    });
+    if (query.trim()) params.set("q", query.trim());
+    const data = await api<PushErrorResponse>(`/todo-items/push-errors/accounts?${params.toString()}`, token);
+    setAccounts(data.items);
+    setTotal(data.total);
+    setStats(data.stats);
+  };
+
+  useEffect(() => {
+    loadAccounts().catch((error) => showToast(errorMessage(error), true));
+  }, [status, accountType, skip, limit]);
+
+  const refresh = () => {
+    if (skip === 0) loadAccounts().catch((error) => showToast(errorMessage(error), true));
+    else setSkip(0);
+  };
+
+  const runPushErrorAction = async (account: AccountDocument, action: "start" | "release" | "test" | "plus_reprocess" | "problem_library") => {
+    setBusyId(account.id);
+    try {
+      if (action === "test") {
+        const result = await api<{ account: AccountDocument; verification: Record<string, unknown> }>(`/todo-items/push-errors/accounts/${account.id}/test`, token, {
+          method: "POST",
+          body: JSON.stringify({ model_id: "gpt-5.4-mini", prompt: "" }),
+        });
+        showToast(result.verification?.success === true ? "继续测试通过" : `继续测试失败：${text(result.verification?.error) || "请查看错误状态"}`, result.verification?.success !== true);
+      } else if (action === "plus_reprocess" || action === "problem_library") {
+        const note = window.prompt(action === "plus_reprocess" ? "备注：为什么进入 plus 重新处理待办" : "备注：为什么归档进问题库") || "";
+        await api<AccountDocument>(`/todo-items/push-errors/accounts/${account.id}/decide`, token, {
+          method: "POST",
+          body: JSON.stringify({ decision: action, note }),
+        });
+        showToast(action === "plus_reprocess" ? "已加入 plus 重新处理待办" : "已归档进问题库");
+      } else {
+        await api<AccountDocument>(`/todo-items/push-errors/accounts/${account.id}/${action}`, token, { method: "POST" });
+        showToast(action === "start" ? "已开始处理" : "已取消处理");
+      }
+      await loadAccounts();
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <section className="view accounts-page">
+      <div className="topbar">
+        <div>
+          <h2>错误账号处理</h2>
+          <p>这里处理推送到使用池后测试失败的账号。当前先接入 401/token_expired 类型，后续可以继续追加其他错误类型。</p>
+        </div>
+        <div className="button-row">
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱、错误、备注、处理人" />
+          <button className="ghost" onClick={refresh} type="button">
+            搜索/刷新
+          </button>
+        </div>
+      </div>
+
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h3>推送使用池错误</h3>
+            <p>free 的 401 错误会自动归档；plus 需要人工继续测试后决定进入重新处理待办，或归档进问题库。</p>
+          </div>
+          <div className="button-row">
+            <select
+              value={accountType}
+              onChange={(event) => {
+                setAccountType(event.target.value as PushErrorAccountType);
+                setSkip(0);
+              }}
+            >
+              <option value="plus">plus</option>
+              <option value="free">free</option>
+              <option value="all">全部</option>
+            </select>
+            <select
+              value={status}
+              onChange={(event) => {
+                setStatus(event.target.value as PushErrorStatus);
+                setSkip(0);
+              }}
+            >
+              <option value="open">待处理 + 处理中</option>
+              <option value="pending">待处理</option>
+              <option value="processing">处理中</option>
+              <option value="archived">已归档</option>
+              <option value="resolved">已转重新处理</option>
+              <option value="all">全部</option>
+            </select>
+            <label className="inline-select">
+              <span>每页</span>
+              <select
+                value={limit}
+                onChange={(event) => {
+                  setLimit(Number(event.target.value));
+                  setSkip(0);
+                }}
+              >
+                <option value={50}>50</option>
+                <option value={200}>200</option>
+                <option value={500}>500</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <CompactStats
+          items={[
+            ["待处理", stats.pending],
+            ["处理中", stats.processing],
+            ["已归档", stats.archived],
+            ["已转处理", stats.resolved],
+            ["plus", stats.plus],
+            ["free", stats.free],
+          ]}
+        />
+
+        <div className="table-wrap account-table-wrap">
+          <table className="account-table">
+            <thead>
+              <tr>
+                <th>账号</th>
+                <th>类型</th>
+                <th>错误状态</th>
+                <th>远端信息</th>
+                <th>本地状态</th>
+                <th>处理人</th>
+                <th>时间</th>
+                <th>备注/错误</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {accounts.map((account) => {
+                const taskStatus = pushErrorStatus(account);
+                const lock = problemLockInfo(account);
+                const isMine = lock.lockedByUserId && lock.lockedByUserId === currentUserId;
+                const isLockedByOther = taskStatus === "processing" && !isMine;
+                return (
+                  <Fragment key={account.id}>
+                    <tr>
+                      <td>
+                        <div className="cell-main">{accountEmail(account)}</div>
+                        <div className="cell-sub">{text(account.account_json.name)}</div>
+                      </td>
+                      <td>{text(account.metadata.account_type) || "-"}</td>
+                      <td>
+                        <StatusPill value={pushErrorStatusLabel(taskStatus)} tone={pushErrorStatusTone(taskStatus)} />
+                        <div className="cell-sub">{text(account.metadata.problem_class) || "-"}</div>
+                        <div className="cell-sub">测试 {text(account.metadata.problem_last_test_status) || "-"}</div>
+                      </td>
+                      <td>
+                        <div className="cell-sub">站点 {text(account.metadata.problem_site_id) || text(account.metadata.sub2api_site_id) || "-"}</div>
+                        <div className="cell-sub">远端 #{text(account.metadata.problem_remote_account_id) || text(account.metadata.sub2api_account_id) || "-"}</div>
+                        <div className="cell-sub">错误池 {text(account.metadata.problem_group_name) || text(account.metadata.problem_group_id) || "-"}</div>
+                      </td>
+                      <td>
+                        <StatusPill value={poolStatusLabel(text(account.metadata.pool_status) || "problem")} tone="warning" />
+                      </td>
+                      <td>
+                        <div>
+                          {text(account.metadata.problem_assignee_name) ? (
+                            <>
+                              <span className="muted">{taskStatus === "processing" ? "当前 " : "历史 "}</span>
+                              {text(account.metadata.problem_assignee_name)}
+                            </>
+                          ) : (
+                            <span className="muted">未领取</span>
+                          )}
+                        </div>
+                        {lock.expiresAt && <div className="cell-sub">锁至 {formatDateTime(lock.expiresAt)}</div>}
+                      </td>
+                      <td>
+                        <div className="cell-sub">发现 {formatDateTime(account.metadata.problem_detected_at)}</div>
+                        <div className="cell-sub">测试 {formatDateTime(account.metadata.problem_last_test_at)}</div>
+                      </td>
+                      <td className="remark-cell">
+                        {text(account.metadata.problem_error) || text(account.metadata.problem_remark_zh) || text(account.metadata.last_error) || <span className="muted">-</span>}
+                      </td>
+                      <td>
+                        <div className="button-row action-wrap todo-action-wrap">
+                          {taskStatus === "pending" && (
+                            <button className="ghost compact-button" disabled={busyId === account.id} onClick={() => runPushErrorAction(account, "start")} type="button">
+                              开始处理
+                            </button>
+                          )}
+                          {taskStatus === "processing" && isMine && <span className="muted">处理面板已展开</span>}
+                          {isLockedByOther && (
+                            <button className="ghost compact-button" disabled type="button">
+                              他人处理中
+                            </button>
+                          )}
+                          {taskStatus !== "pending" && taskStatus !== "processing" && <span className="muted">{pushErrorResolution(account)}</span>}
+                        </div>
+                      </td>
+                    </tr>
+                    {taskStatus === "processing" && isMine && (
+                      <tr className="task-detail-row">
+                        <td colSpan={9}>
+                          <div className="task-detail-panel">
+                            <section>
+                              <h4>错误信息</h4>
+                              <div className="login-info">
+                                <div>
+                                  <span className="muted">错误类 </span>
+                                  <span>{text(account.metadata.problem_class) || "-"}</span>
+                                </div>
+                                <div>
+                                  <span className="muted">中文备注 </span>
+                                  <span>{text(account.metadata.problem_remark_zh) || "-"}</span>
+                                </div>
+                                <div>
+                                  <span className="muted">最后错误 </span>
+                                  <span>{text(account.metadata.problem_last_test_error) || text(account.metadata.problem_error) || "-"}</span>
+                                </div>
+                              </div>
+                            </section>
+                            <section>
+                              <h4>处理动作</h4>
+                              <div className="task-action-panel">
+                                <button className="ghost compact-button" disabled={busyId === account.id} onClick={() => runPushErrorAction(account, "test")} type="button">
+                                  继续测试账号
+                                </button>
+                                <button className="ghost compact-button" disabled={busyId === account.id} onClick={() => runPushErrorAction(account, "plus_reprocess")} type="button">
+                                  加入 plus 重新处理
+                                </button>
+                                <button className="ghost compact-button danger-button" disabled={busyId === account.id} onClick={() => runPushErrorAction(account, "problem_library")} type="button">
+                                  进问题库
+                                </button>
+                                <button className="ghost compact-button" disabled={busyId === account.id} onClick={() => runPushErrorAction(account, "release")} type="button">
+                                  取消处理
+                                </button>
+                              </div>
+                            </section>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+              {!accounts.length && (
+                <tr>
+                  <td className="muted" colSpan={9}>
+                    暂无推送错误账号
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="pagination">
+          <button className="ghost" type="button" disabled={skip <= 0} onClick={() => setSkip(Math.max(0, skip - limit))}>
+            上一页
+          </button>
+          <span className="muted">
+            {total ? skip + 1 : 0}-{Math.min(skip + limit, total)} / {total}
+          </span>
+          <button className="ghost" type="button" disabled={skip + limit >= total} onClick={() => setSkip(skip + limit)}>
+            下一页
+          </button>
+        </div>
+      </section>
+    </section>
+  );
+}
+
 function LoginInfo({ account }: { account: AccountDocument }) {
   const info = accountLoginInfo(account);
   return (
@@ -459,6 +776,46 @@ function lockInfo(account: AccountDocument) {
     lockedByName: text(lock.locked_by_name),
     expiresAt: text(lock.expires_at),
   };
+}
+
+function problemLockInfo(account: AccountDocument) {
+  const lock = asRecord(account.metadata.problem_lock);
+  return {
+    lockedByUserId: text(lock.locked_by_user_id),
+    lockedByName: text(lock.locked_by_name),
+    expiresAt: text(lock.expires_at),
+  };
+}
+
+function pushErrorStatus(account: AccountDocument) {
+  return text(account.metadata.problem_task_status) || "pending";
+}
+
+function pushErrorStatusLabel(value: string) {
+  const labels: Record<string, string> = {
+    pending: "待处理",
+    processing: "处理中",
+    archived: "已归档",
+    resolved: "已转处理",
+  };
+  return labels[value] || value;
+}
+
+function pushErrorStatusTone(value: string): "accent" | "success" | "warning" | "danger" | "muted" {
+  if (value === "processing") return "accent";
+  if (value === "resolved") return "success";
+  if (value === "archived") return "muted";
+  return "danger";
+}
+
+function pushErrorResolution(account: AccountDocument) {
+  const resolution = text(account.metadata.problem_resolution);
+  const labels: Record<string, string> = {
+    free_auto_archived: "free 已自动归档",
+    plus_reprocess: "已加入 plus 重新处理",
+    problem_library: "已进问题库",
+  };
+  return labels[resolution] || resolution || "已处理";
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

@@ -251,30 +251,29 @@ export function AccountsPage({ token, showToast }: Props) {
           <p>账号总库负责筛选、查看和编辑。账号进入可用池、问题账号、弃用等状态都由人工按钮触发。</p>
         </div>
         <div className="button-row">
+          <div className="account-view-menu" aria-label="账号列表视图">
+            <button
+              className={`account-view-menu-item ${accountScope === "normal" ? "active" : ""}`}
+              onClick={() => selectAccountScope("normal")}
+              type="button"
+            >
+              <strong>正常账号</strong>
+              <span>不含问题和弃用</span>
+            </button>
+            <button
+              className={`account-view-menu-item ${accountScope === "problem" ? "active" : ""}`}
+              onClick={() => selectAccountScope("problem")}
+              type="button"
+            >
+              <strong>问题账号</strong>
+              <span>只查看 problem</span>
+            </button>
+          </div>
           <button className="ghost" onClick={() => loadAccounts().catch((error) => showToast(errorMessage(error), true))} type="button">
             刷新
           </button>
         </div>
       </div>
-
-      <aside className="account-view-menu" aria-label="账号列表视图">
-        <button
-          className={`account-view-menu-item ${accountScope === "normal" ? "active" : ""}`}
-          onClick={() => selectAccountScope("normal")}
-          type="button"
-        >
-          <strong>正常账号</strong>
-          <span>不含问题和弃用</span>
-        </button>
-        <button
-          className={`account-view-menu-item ${accountScope === "problem" ? "active" : ""}`}
-          onClick={() => selectAccountScope("problem")}
-          type="button"
-        >
-          <strong>问题账号</strong>
-          <span>只查看 problem</span>
-        </button>
-      </aside>
 
       <CompactStats
         items={[

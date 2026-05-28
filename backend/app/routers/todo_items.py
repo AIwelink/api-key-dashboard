@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.schemas import FreeToPlusCompleteRequest, FreeToPlusFailRequest
+from app.schemas import FreeToPlusCompleteRequest, FreeToPlusFailRequest, PushErrorDecisionRequest, PushErrorTestRequest
 from app.security import get_current_user
 from app.security import require_roles
 from app.services.audit import write_audit_log
@@ -13,6 +13,13 @@ from app.services.todo_free_to_plus import (
     release_free_to_plus,
     return_completed_free_to_plus,
     start_free_to_plus,
+)
+from app.services.todo_push_errors import (
+    decide_push_error_account,
+    list_push_error_accounts,
+    release_push_error_task,
+    start_push_error_task,
+    test_push_error_account,
 )
 from app.utils import serialize_doc
 
@@ -112,5 +119,97 @@ async def post_fail_free_to_plus(
         resource_type="account",
         resource_id=account_id,
         after={"error": payload.error, "note": payload.note},
+    )
+    return updated
+
+
+@router.get("/push-errors/accounts")
+async def get_push_error_accounts(
+    status_filter: str = Query(default="open", alias="status"),
+    account_type: str | None = Query(default="all"),
+    q: str | None = None,
+    skip: int = 0,
+    limit: int = Query(default=50, le=500),
+    _: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    return await list_push_error_accounts(
+        db,
+        status_filter=status_filter,
+        account_type=account_type,
+        q=q,
+        skip=skip,
+        limit=limit,
+    )
+
+
+@router.post("/push-errors/accounts/{account_id}/start")
+async def post_start_push_error_task(
+    account_id: str,
+    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    updated = await start_push_error_task(db, account_id=account_id, actor=actor)
+    await write_audit_log(db, actor=actor, action="todo.push_error.start", resource_type="account", resource_id=account_id)
+    return updated
+
+
+@router.post("/push-errors/accounts/{account_id}/release")
+async def post_release_push_error_task(
+    account_id: str,
+    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    updated = await release_push_error_task(db, account_id=account_id, actor=actor)
+    await write_audit_log(db, actor=actor, action="todo.push_error.release", resource_type="account", resource_id=account_id)
+    return updated
+
+
+@router.post("/push-errors/accounts/{account_id}/test")
+async def post_test_push_error_account(
+    account_id: str,
+    payload: PushErrorTestRequest,
+    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    result = await test_push_error_account(
+        db,
+        account_id=account_id,
+        model_id=payload.model_id,
+        prompt=payload.prompt,
+        actor=actor,
+    )
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="todo.push_error.test",
+        resource_type="account",
+        resource_id=account_id,
+        after={"verification": result.get("verification", {})},
+    )
+    return result
+
+
+@router.post("/push-errors/accounts/{account_id}/decide")
+async def post_decide_push_error_account(
+    account_id: str,
+    payload: PushErrorDecisionRequest,
+    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    updated = await decide_push_error_account(
+        db,
+        account_id=account_id,
+        decision=payload.decision,
+        note=payload.note,
+        actor=actor,
+    )
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="todo.push_error.decide",
+        resource_type="account",
+        resource_id=account_id,
+        after={"decision": payload.decision, "note": payload.note},
     )
     return updated
