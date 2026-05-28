@@ -18,6 +18,8 @@ def serialize_doc(value: Any) -> Any:
     if isinstance(value, ObjectId):
         return str(value)
     if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
         return value.isoformat()
     if isinstance(value, list):
         return [serialize_doc(item) for item in value]
@@ -53,4 +55,3 @@ def redact_auth_token(token: str) -> str:
     if len(token) <= 10:
         return "***"
     return f"{token[:6]}...{token[-4:]}"
-

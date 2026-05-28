@@ -646,7 +646,9 @@ def _name_payment_type(value: Any) -> str:
 
 def _parse_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
-        parsed = value
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
     elif isinstance(value, str) and value:
         try:
             parsed = datetime.fromisoformat(value)
