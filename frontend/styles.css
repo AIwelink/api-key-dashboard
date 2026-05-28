@@ -826,6 +826,10 @@ legend {
   border-radius: inherit;
 }
 
+.capacity-meter-fill.info {
+  background: #4b83d8;
+}
+
 .capacity-meter-fill.success {
   background: var(--success);
 }

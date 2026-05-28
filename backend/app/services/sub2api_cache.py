@@ -667,6 +667,8 @@ async def _capacity_summary_for_accounts(db: AsyncIOMotorDatabase, site_id: str,
     current_speed_multiple = _ratio_or_none(seven_day_capacity_usd, recent_24h_cost * 7 if recent_24h_cost > 0 else 0)
     current_speed_days = _ratio_or_none(seven_day_capacity_usd, recent_24h_cost)
     five_x_speed_days = _ratio_or_none(seven_day_capacity_usd, recent_24h_cost * 5 if recent_24h_cost > 0 else 0)
+    seven_day_peak_speed_days = _ratio_or_none(seven_day_capacity_usd, seven_day_24h_peak_cost)
+    five_x_peak_speed_days = _ratio_or_none(seven_day_capacity_usd, seven_day_24h_peak_cost * 5 if seven_day_24h_peak_cost > 0 else 0)
     five_x_peak_multiple = _ratio_or_none(five_hour_capacity_usd, five_hour_peak_cost * 5 if five_hour_peak_cost > 0 else 0)
     five_x_recent_day_peak_multiple = _ratio_or_none(five_hour_capacity_usd, recent_day_five_hour_peak_cost * 5 if recent_day_five_hour_peak_cost > 0 else 0)
     five_x_24h_peak_multiple = _ratio_or_none(twenty_four_hour_capacity_usd, seven_day_24h_peak_cost * 5 if seven_day_24h_peak_cost > 0 else 0)
@@ -716,6 +718,8 @@ async def _capacity_summary_for_accounts(db: AsyncIOMotorDatabase, site_id: str,
         "current_speed_multiple": _round_optional(current_speed_multiple),
         "current_speed_days": _round_optional(current_speed_days),
         "five_x_speed_days": _round_optional(five_x_speed_days),
+        "seven_day_peak_speed_days": _round_optional(seven_day_peak_speed_days),
+        "five_x_peak_speed_days": _round_optional(five_x_peak_speed_days),
         "health_status": health["status"],
         "health_label": health["label"],
         "health_tone": health["tone"],

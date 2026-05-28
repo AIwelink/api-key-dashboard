@@ -62,6 +62,8 @@ type CapacitySummary = {
   current_speed_multiple?: number | null;
   current_speed_days?: number | null;
   five_x_speed_days?: number | null;
+  seven_day_peak_speed_days?: number | null;
+  five_x_peak_speed_days?: number | null;
   ten_x_speed_days?: number | null;
   health_status?: string;
   health_label?: string;
@@ -1323,16 +1325,17 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
   const accountType = summary?.account_type ? displayPlan(summary.account_type) : "未知";
   const sevenDayFiveHourPeak = summary?.seven_day_five_hour_peak_cost ?? summary?.five_hour_peak_cost;
   const sevenDayFiveHourPeakMultiple = summary?.five_hour_peak_multiple;
-  const sevenDayFiveXPeakMultiple = summary?.five_x_peak_multiple ?? summary?.ten_x_peak_multiple;
   const recentDayFiveHourPeak = summary?.recent_day_five_hour_peak_cost;
   const recentDayFiveHourPeakMultiple = summary?.recent_day_five_hour_peak_multiple;
   const recentDayFiveXPeakMultiple = summary?.five_x_recent_day_peak_multiple;
-  const recent5hMultiple = summary?.recent_5h_multiple;
   const dailyPeakMultiple = summary?.twenty_four_hour_peak_multiple;
   const dailyFiveXPeakMultiple = summary?.five_x_24h_peak_multiple;
-  const recent24hMultiple = summary?.recent_24h_multiple ?? summary?.current_speed_multiple;
   const currentSpeedDays = summary?.current_speed_days;
   const fiveXSpeedDays = summary?.five_x_speed_days ?? summary?.ten_x_speed_days;
+  const sevenDayPeakSpeedDays = summary?.seven_day_peak_speed_days;
+  const fiveXPeakSpeedDays = summary?.five_x_peak_speed_days;
+  const recent5hUsedPercent = percentOf(summary?.recent_5h_cost, summary?.five_hour_capacity_usd);
+  const sevenDayUsedPercent = percentOf(summary?.seven_day_cost, summary?.seven_day_capacity_usd);
   return (
     <section className={`capacity-runway-card ${tone}`}>
       <div className="capacity-runway-head">
@@ -1344,19 +1347,71 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
         <div className="capacity-runway-type">{accountType} 池</div>
       </div>
       <div className="capacity-runway-grid">
-        <CapacityMetric label="5h总容量" value={formatUsd(summary?.five_hour_capacity_usd)} sub={`最近5h已用 ${formatUsd(summary?.recent_5h_cost)}，预估可用 ${formatUsd(summary?.recent_5h_remaining_usd)}`} percent={ratioToPercent(recent5hMultiple)} tone={multipleTone(recent5hMultiple)} />
-        <CapacityMetric label="最近一天5h峰值" value={formatMultiple(recentDayFiveHourPeakMultiple)} sub={`${formatUsd(recentDayFiveHourPeak)} / 5倍 ${formatMultiple(recentDayFiveXPeakMultiple)}`} percent={ratioToPercent(recentDayFiveHourPeakMultiple)} tone={multipleTone(recentDayFiveHourPeakMultiple)} />
-        <CapacityMetric label="7天最高5h峰值" value={formatMultiple(sevenDayFiveHourPeakMultiple)} sub={`${formatUsd(sevenDayFiveHourPeak)} / 5倍 ${formatMultiple(sevenDayFiveXPeakMultiple)}`} percent={ratioToPercent(sevenDayFiveHourPeakMultiple)} tone={multipleTone(sevenDayFiveHourPeakMultiple)} />
-        <CapacityMetric label="24h折算容量" value={formatUsd(summary?.twenty_four_hour_capacity_usd)} sub={`最近24h已用 ${formatUsd(summary?.recent_24h_cost)}，预估可用 ${formatUsd(summary?.recent_24h_remaining_usd)}`} percent={ratioToPercent(recent24hMultiple)} tone={multipleTone(recent24hMultiple)} />
-        <CapacityMetric label="7天最高24h峰值" value={formatMultiple(dailyPeakMultiple)} sub={`${formatUsd(summary?.seven_day_24h_peak_cost)} / 5倍 ${formatMultiple(dailyFiveXPeakMultiple)}`} percent={ratioToPercent(dailyPeakMultiple)} tone={multipleTone(dailyPeakMultiple)} />
-        <CapacityMetric label="7d总容量" value={formatUsd(summary?.seven_day_capacity_usd)} sub={`7天已用 ${formatUsd(summary?.seven_day_cost)}，预估可用 ${formatUsd(summary?.seven_day_remaining_usd)}`} percent={capacityRemainingPercent(summary?.seven_day_remaining_usd, summary?.seven_day_capacity_usd)} tone={remainingUsdTone(summary?.seven_day_remaining_usd, summary?.seven_day_capacity_usd)} />
-        <CapacityMetric label="当前速度可用" value={formatDays(currentSpeedDays)} sub={`5倍速度 ${formatDays(fiveXSpeedDays)}`} percent={daysToPercent(currentSpeedDays)} tone={daysTone(currentSpeedDays)} />
+        <CapacityMetric
+          label="5h总容量"
+          value={formatUsd(summary?.five_hour_capacity_usd)}
+          sub={`可用额度：最近5h已用 ${formatUsd(summary?.recent_5h_cost)}，预估可用 ${formatUsd(summary?.recent_5h_remaining_usd)}`}
+          percent={recent5hUsedPercent}
+          tone={usagePercentTone(recent5hUsedPercent)}
+        />
+        <CapacityMetric
+          label="7d总容量"
+          value={formatUsd(summary?.seven_day_capacity_usd)}
+          sub={`可用额度：7天已用 ${formatUsd(summary?.seven_day_cost)}，预估可用 ${formatUsd(summary?.seven_day_remaining_usd)}`}
+          percent={sevenDayUsedPercent}
+          tone={usagePercentTone(sevenDayUsedPercent)}
+        />
+
+        <CapacityMetric
+          label="最近一天5h峰值容量"
+          value={formatMultiple(recentDayFiveHourPeakMultiple)}
+          sub={`峰值 ${formatUsd(recentDayFiveHourPeak)}，5h容量 ${formatUsd(summary?.five_hour_capacity_usd)}`}
+          percent={multipleScalePercent(recentDayFiveHourPeakMultiple)}
+          tone={multipleScaleTone(recentDayFiveHourPeakMultiple)}
+        />
+        <CapacityMetric
+          label="7天最高24h峰值容量"
+          value={formatMultiple(dailyPeakMultiple)}
+          sub={`峰值 ${formatUsd(summary?.seven_day_24h_peak_cost)}，24h折算容量 ${formatUsd(summary?.twenty_four_hour_capacity_usd)}`}
+          percent={multipleScalePercent(dailyPeakMultiple)}
+          tone={multipleScaleTone(dailyPeakMultiple)}
+        />
+
+        <CapacityMetric
+          label="最近一天预估"
+          value={formatMultiple(recentDayFiveXPeakMultiple)}
+          sub={`按最近一天5h峰值 * 5，7天5h峰值 ${formatMultiple(sevenDayFiveHourPeakMultiple)} / ${formatUsd(sevenDayFiveHourPeak)}`}
+          percent={multipleScalePercent(recentDayFiveXPeakMultiple)}
+          tone={multipleScaleTone(recentDayFiveXPeakMultiple)}
+        />
+        <CapacityMetric
+          label="7天最高24h预估"
+          value={formatMultiple(dailyFiveXPeakMultiple)}
+          sub="按7天最高24h峰值 * 5"
+          percent={multipleScalePercent(dailyFiveXPeakMultiple)}
+          tone={multipleScaleTone(dailyFiveXPeakMultiple)}
+        />
+
+        <CapacityMetric
+          label="最近一天预估可用天数"
+          value={formatDays(currentSpeedDays)}
+          sub={`按最近24h速度，5倍速度 ${formatDays(fiveXSpeedDays)}`}
+          percent={daysScalePercent(currentSpeedDays)}
+          tone={daysScaleTone(currentSpeedDays)}
+        />
+        <CapacityMetric
+          label="7天最高24h预估可用天数"
+          value={formatDays(sevenDayPeakSpeedDays)}
+          sub={`按最高24h速度，5倍速度 ${formatDays(fiveXPeakSpeedDays)}`}
+          percent={daysScalePercent(sevenDayPeakSpeedDays)}
+          tone={daysScaleTone(sevenDayPeakSpeedDays)}
+        />
       </div>
     </section>
   );
 }
 
-function CapacityMetric({ label, value, sub, percent, tone = "muted" }: { label: string; value: string; sub: string; percent?: number | null; tone?: "success" | "warning" | "danger" | "muted" }) {
+function CapacityMetric({ label, value, sub, percent, tone = "muted" }: { label: string; value: string; sub: string; percent?: number | null; tone?: "info" | "success" | "warning" | "danger" | "muted" }) {
   return (
     <div className="capacity-metric">
       <span>{label}</span>
@@ -1584,6 +1639,52 @@ function formatDays(value: unknown): string {
   if (number >= 10) return `${number.toFixed(0)}天`;
   if (number >= 1) return `${number.toFixed(1)}天`;
   return `${Math.max(0, number * 24).toFixed(1)}小时`;
+}
+
+function percentOf(used: unknown, capacity: unknown): number | null {
+  const usedNumber = optionalNumberValue(used);
+  const capacityNumber = optionalNumberValue(capacity);
+  if (usedNumber === null || capacityNumber === null || capacityNumber <= 0) return null;
+  return clampPercent((usedNumber / capacityNumber) * 100);
+}
+
+function usagePercentTone(value: unknown): "info" | "success" | "warning" | "danger" | "muted" {
+  const number = optionalNumberValue(value);
+  if (number === null) return "muted";
+  if (number >= 90) return "danger";
+  if (number >= 75) return "warning";
+  if (number >= 50) return "success";
+  return "info";
+}
+
+function multipleScalePercent(value: unknown): number | null {
+  const number = optionalNumberValue(value);
+  if (number === null) return null;
+  return clampPercent((Math.max(0, number) / 10) * 100);
+}
+
+function multipleScaleTone(value: unknown): "info" | "success" | "warning" | "danger" | "muted" {
+  const number = optionalNumberValue(value);
+  if (number === null) return "muted";
+  if (number < 1) return "danger";
+  if (number < 5) return "warning";
+  if (number < 10) return "success";
+  return "info";
+}
+
+function daysScalePercent(value: unknown): number | null {
+  const number = optionalNumberValue(value);
+  if (number === null) return null;
+  return clampPercent((Math.max(0, number) / 10) * 100);
+}
+
+function daysScaleTone(value: unknown): "info" | "success" | "warning" | "danger" | "muted" {
+  const number = optionalNumberValue(value);
+  if (number === null) return "muted";
+  if (number < 1) return "danger";
+  if (number < 5) return "warning";
+  if (number < 10) return "success";
+  return "info";
 }
 
 function ratioToPercent(value: unknown): number | null {
