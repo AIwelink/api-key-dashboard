@@ -802,52 +802,34 @@ legend {
 }
 
 .capacity-runway-head strong {
-  width: fit-content;
-  padding: 4px 10px;
-  border-radius: 999px;
   font-size: 26px;
   line-height: 1.1;
   font-weight: 800;
   color: var(--muted);
-  background: #f4f6f8;
-  border: 1px solid #e1e5ea;
 }
 
 .capacity-runway-card.success .capacity-runway-head strong {
   color: #237246;
-  background: #edf8f1;
-  border-color: #b9dfca;
 }
 
 .capacity-runway-card.info .capacity-runway-head strong {
   color: #2569bd;
-  background: #edf5ff;
-  border-color: #9fc0ee;
 }
 
 .capacity-runway-card.excellent .capacity-runway-head strong {
   color: #7f3df1;
-  background: linear-gradient(135deg, #f3ebff, #fff 44%, #efe6ff);
-  border-color: #c191ff;
-  box-shadow: 0 0 0 1px rgb(139 71 255 / 12%), 0 8px 22px rgb(139 71 255 / 12%);
 }
 
 .capacity-runway-card.warning .capacity-runway-head strong {
   color: #9c600b;
-  background: #fff7e8;
-  border-color: #efc58d;
 }
 
 .capacity-runway-card.danger .capacity-runway-head strong {
   color: var(--danger);
-  background: #fff0f4;
-  border-color: #efb4c4;
 }
 
 .capacity-runway-card.exhausted .capacity-runway-head strong {
-  color: #fff;
-  background: var(--danger);
-  border-color: var(--danger);
+  color: var(--danger);
 }
 
 .capacity-runway-type {
