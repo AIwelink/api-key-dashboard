@@ -1394,6 +1394,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`按最近24h消耗 ${formatUsd(summary?.recent_24h_cost)}`}
           percent={daysScalePercent(recent24hSpeedDays)}
           tone={daysScaleTone(recent24hSpeedDays)}
+          showMeterHead
           secondary={{
             label: "5倍预估",
             value: formatDays(fiveXRecent24hSpeedDays),
@@ -1407,6 +1408,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`按7天最高24h消耗 ${formatUsd(summary?.seven_day_24h_peak_cost)}`}
           percent={daysScalePercent(sevenDayPeak24hSpeedDays)}
           tone={daysScaleTone(sevenDayPeak24hSpeedDays)}
+          showMeterHead
           secondary={{
             label: "5倍预估",
             value: formatDays(fiveXPeak24hSpeedDays),
@@ -1427,6 +1429,7 @@ function CapacityMetric({
   sub,
   percent,
   tone = "muted",
+  showMeterHead = false,
   secondary,
 }: {
   label: string;
@@ -1434,6 +1437,7 @@ function CapacityMetric({
   sub: string;
   percent?: number | null;
   tone?: CapacityMetricTone;
+  showMeterHead?: boolean;
   secondary?: {
     label: string;
     value: string;
@@ -1452,10 +1456,12 @@ function CapacityMetric({
       <small>{sub}</small>
       {percent !== undefined && percent !== null && (
         <div className="capacity-primary-meter">
-          <div className="capacity-secondary-head">
-            <span>{sub}</span>
-            <strong>{value}</strong>
-          </div>
+          {showMeterHead && (
+            <div className="capacity-secondary-head">
+              <span>{sub}</span>
+              <strong>{value}</strong>
+            </div>
+          )}
           <div className="capacity-meter" aria-label={`${label} ${percent}%`}>
             <div className={`capacity-meter-fill ${tone}`} style={{ width: `${clampPercent(percent)}%` }} />
           </div>
