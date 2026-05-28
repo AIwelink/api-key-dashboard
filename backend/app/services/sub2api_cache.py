@@ -644,7 +644,7 @@ def _account_cache_fields(account: dict[str, Any]) -> dict[str, Any]:
 async def _capacity_summary_for_accounts(db: AsyncIOMotorDatabase, site_id: str, accounts: list[dict[str, Any]]) -> dict[str, Any]:
     capacity_accounts = [account for account in accounts if _is_capacity_account(account)]
     five_hour_capacity_accounts = [account for account in capacity_accounts if not _is_7d_exhausted(account)]
-    used_5h = _average_percent(_usage_number(account, "codex_5h_used_percent") for account in five_hour_capacity_accounts)
+    used_5h = _average_percent(_usage_number(account, "codex_5h_used_percent") for account in capacity_accounts)
     used_7d = _average_percent(_usage_number(account, "codex_7d_used_percent") for account in capacity_accounts)
     type_summary = _capacity_by_account_type(capacity_accounts, five_hour_capacity_accounts)
     primary_type = _primary_capacity_type(type_summary)
@@ -752,13 +752,13 @@ def _capacity_by_account_type(capacity_accounts: list[dict[str, Any]], five_hour
         account_id = str(account.get("id"))
         result[account_type]["available_accounts"] += 1
         result[account_type]["seven_day_capacity_usd"] += 150 if account_type == "plus" else 10
+        result[account_type]["five_hour_capacity_usd"] += 30 if account_type == "plus" else 2
         result["total"]["available_accounts"] += 1
         result["total"]["seven_day_capacity_usd"] += 150 if account_type == "plus" else 10
+        result["total"]["five_hour_capacity_usd"] += 30 if account_type == "plus" else 2
         if account_id in five_hour_ids:
             result[account_type]["available_5h_accounts"] += 1
-            result[account_type]["five_hour_capacity_usd"] += 30 if account_type == "plus" else 2
             result["total"]["available_5h_accounts"] += 1
-            result["total"]["five_hour_capacity_usd"] += 30 if account_type == "plus" else 2
     return result
 
 
@@ -778,6 +778,27 @@ def _capacity_account_type(account: dict[str, Any]) -> str:
     if normalized in {"plus", "pro"}:
         return "plus"
     if normalized == "free":
+        return "free"
+    text_values: list[str] = [
+        str(account.get("name") or ""),
+        str(account.get("notes") or ""),
+        str(extra.get("name") or ""),
+        str(extra.get("notes") or ""),
+    ]
+    groups = account.get("groups") if isinstance(account.get("groups"), list) else []
+    account_groups = account.get("account_groups") if isinstance(account.get("account_groups"), list) else []
+    text_values.extend(str(group.get("name") or "") for group in groups if isinstance(group, dict))
+    for account_group in account_groups:
+        if isinstance(account_group, dict) and isinstance(account_group.get("group"), dict):
+            text_values.append(str(account_group["group"].get("name") or ""))
+    combined = " ".join(text_values).lower()
+    if any(marker in combined for marker in ("plus", "pro", "付费", "购买plus")):
+        return "plus"
+    if any(marker in combined for marker in ("free", "免费")):
+        return "free"
+    if credentials.get("subscription_expires_at") or extra.get("subscription_expires_at"):
+        return "plus"
+    if str(account.get("platform") or "").lower() == "openai":
         return "free"
     return "other"
 
