@@ -659,6 +659,10 @@ async def _capacity_summary_for_accounts(db: AsyncIOMotorDatabase, site_id: str,
     five_hour_capacity_usd = selected["five_hour_capacity_usd"]
     seven_day_capacity_usd = selected["seven_day_capacity_usd"]
     twenty_four_hour_capacity_usd = seven_day_capacity_usd / 7 if seven_day_capacity_usd > 0 else 0
+    five_hour_used_estimated_usd = five_hour_capacity_usd * used_5h / 100
+    five_hour_remaining_estimated_usd = five_hour_capacity_usd * max(0, 100 - used_5h) / 100
+    seven_day_used_estimated_usd = seven_day_capacity_usd * used_7d / 100
+    seven_day_remaining_estimated_usd = seven_day_capacity_usd * max(0, 100 - used_7d) / 100
     five_hour_peak_multiple = _ratio_or_none(five_hour_capacity_usd, five_hour_peak_cost)
     recent_day_five_hour_peak_multiple = _ratio_or_none(five_hour_capacity_usd, recent_day_five_hour_peak_cost)
     recent_5h_multiple = _ratio_or_none(five_hour_capacity_usd, recent_5h_cost)
@@ -697,6 +701,10 @@ async def _capacity_summary_for_accounts(db: AsyncIOMotorDatabase, site_id: str,
         "five_hour_capacity_usd": round(five_hour_capacity_usd, 4),
         "seven_day_capacity_usd": round(seven_day_capacity_usd, 4),
         "twenty_four_hour_capacity_usd": round(twenty_four_hour_capacity_usd, 4),
+        "five_hour_used_estimated_usd": round(five_hour_used_estimated_usd, 4),
+        "five_hour_remaining_estimated_usd": round(five_hour_remaining_estimated_usd, 4),
+        "seven_day_used_estimated_usd": round(seven_day_used_estimated_usd, 4),
+        "seven_day_remaining_estimated_usd": round(seven_day_remaining_estimated_usd, 4),
         "five_hour_peak_cost": round(five_hour_peak_cost, 4),
         "seven_day_five_hour_peak_cost": round(five_hour_peak_cost, 4),
         "recent_day_five_hour_peak_cost": round(recent_day_five_hour_peak_cost, 4),
@@ -743,14 +751,14 @@ def _capacity_by_account_type(capacity_accounts: list[dict[str, Any]], five_hour
             continue
         account_id = str(account.get("id"))
         result[account_type]["available_accounts"] += 1
-        result[account_type]["seven_day_capacity_usd"] += 120 if account_type == "plus" else 10
+        result[account_type]["seven_day_capacity_usd"] += 150 if account_type == "plus" else 10
         result["total"]["available_accounts"] += 1
-        result["total"]["seven_day_capacity_usd"] += 120 if account_type == "plus" else 10
+        result["total"]["seven_day_capacity_usd"] += 150 if account_type == "plus" else 10
         if account_id in five_hour_ids:
             result[account_type]["available_5h_accounts"] += 1
-            result[account_type]["five_hour_capacity_usd"] += 25 if account_type == "plus" else 2
+            result[account_type]["five_hour_capacity_usd"] += 30 if account_type == "plus" else 2
             result["total"]["available_5h_accounts"] += 1
-            result["total"]["five_hour_capacity_usd"] += 25 if account_type == "plus" else 2
+            result["total"]["five_hour_capacity_usd"] += 30 if account_type == "plus" else 2
     return result
 
 

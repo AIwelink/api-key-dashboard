@@ -40,6 +40,10 @@ type CapacitySummary = {
   five_hour_capacity_usd?: number;
   twenty_four_hour_capacity_usd?: number;
   seven_day_capacity_usd?: number;
+  five_hour_used_estimated_usd?: number;
+  five_hour_remaining_estimated_usd?: number;
+  seven_day_used_estimated_usd?: number;
+  seven_day_remaining_estimated_usd?: number;
   five_hour_peak_cost?: number;
   seven_day_five_hour_peak_cost?: number;
   recent_day_five_hour_peak_cost?: number;
@@ -1334,8 +1338,8 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
   const fiveXSpeedDays = summary?.five_x_speed_days ?? summary?.ten_x_speed_days;
   const sevenDayPeakSpeedDays = summary?.seven_day_peak_speed_days;
   const fiveXPeakSpeedDays = summary?.five_x_peak_speed_days;
-  const recent5hUsedPercent = percentOf(summary?.recent_5h_cost, summary?.five_hour_capacity_usd);
-  const sevenDayUsedPercent = percentOf(summary?.seven_day_cost, summary?.seven_day_capacity_usd);
+  const fiveHourUsedPercent = summary?.used_5h_percent;
+  const sevenDayUsedPercent = summary?.used_7d_percent;
   return (
     <section className={`capacity-runway-card ${tone}`}>
       <div className="capacity-runway-head">
@@ -1350,14 +1354,14 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
         <CapacityMetric
           label="5h总容量"
           value={formatUsd(summary?.five_hour_capacity_usd)}
-          sub={`可用额度：最近5h已用 ${formatUsd(summary?.recent_5h_cost)}，预估可用 ${formatUsd(summary?.recent_5h_remaining_usd)}`}
-          percent={recent5hUsedPercent}
-          tone={usagePercentTone(recent5hUsedPercent)}
+          sub={`可用额度：当前已用 ${formatUsd(summary?.five_hour_used_estimated_usd)}，预估可用 ${formatUsd(summary?.five_hour_remaining_estimated_usd)}`}
+          percent={fiveHourUsedPercent}
+          tone={usagePercentTone(fiveHourUsedPercent)}
         />
         <CapacityMetric
           label="7d总容量"
           value={formatUsd(summary?.seven_day_capacity_usd)}
-          sub={`可用额度：7天已用 ${formatUsd(summary?.seven_day_cost)}，预估可用 ${formatUsd(summary?.seven_day_remaining_usd)}`}
+          sub={`可用额度：当前已用 ${formatUsd(summary?.seven_day_used_estimated_usd)}，预估可用 ${formatUsd(summary?.seven_day_remaining_estimated_usd)}`}
           percent={sevenDayUsedPercent}
           tone={usagePercentTone(sevenDayUsedPercent)}
         />
@@ -1641,13 +1645,6 @@ function formatDays(value: unknown): string {
   return `${Math.max(0, number * 24).toFixed(1)}小时`;
 }
 
-function percentOf(used: unknown, capacity: unknown): number | null {
-  const usedNumber = optionalNumberValue(used);
-  const capacityNumber = optionalNumberValue(capacity);
-  if (usedNumber === null || capacityNumber === null || capacityNumber <= 0) return null;
-  return clampPercent((usedNumber / capacityNumber) * 100);
-}
-
 function usagePercentTone(value: unknown): "info" | "success" | "warning" | "danger" | "muted" {
   const number = optionalNumberValue(value);
   if (number === null) return "muted";
@@ -1685,49 +1682,6 @@ function daysScaleTone(value: unknown): "info" | "success" | "warning" | "danger
   if (number < 5) return "warning";
   if (number < 10) return "success";
   return "info";
-}
-
-function ratioToPercent(value: unknown): number | null {
-  const number = optionalNumberValue(value);
-  if (number === null) return null;
-  return clampPercent(number * 100);
-}
-
-function daysToPercent(value: unknown): number | null {
-  const number = optionalNumberValue(value);
-  if (number === null) return null;
-  return clampPercent((number / 7) * 100);
-}
-
-function capacityRemainingPercent(remaining: unknown, capacity: unknown): number | null {
-  const remainingNumber = optionalNumberValue(remaining);
-  const capacityNumber = optionalNumberValue(capacity);
-  if (remainingNumber === null || capacityNumber === null || capacityNumber <= 0) return null;
-  return clampPercent((remainingNumber / capacityNumber) * 100);
-}
-
-function multipleTone(value: unknown): "success" | "warning" | "danger" | "muted" {
-  const number = optionalNumberValue(value);
-  if (number === null) return "muted";
-  if (number < 1) return "danger";
-  if (number < 1.5) return "warning";
-  return "success";
-}
-
-function daysTone(value: unknown): "success" | "warning" | "danger" | "muted" {
-  const number = optionalNumberValue(value);
-  if (number === null) return "muted";
-  if (number < 1) return "danger";
-  if (number < 3) return "warning";
-  return "success";
-}
-
-function remainingUsdTone(remaining: unknown, capacity: unknown): "success" | "warning" | "danger" | "muted" {
-  const percent = capacityRemainingPercent(remaining, capacity);
-  if (percent === null) return "muted";
-  if (percent < 20) return "danger";
-  if (percent < 40) return "warning";
-  return "success";
 }
 
 function usageValue(account: RemoteAccount, key: string): unknown {
