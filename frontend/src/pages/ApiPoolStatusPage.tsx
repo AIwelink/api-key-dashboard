@@ -1451,8 +1451,14 @@ function CapacityMetric({
       <strong>{value}</strong>
       <small>{sub}</small>
       {percent !== undefined && percent !== null && (
-        <div className="capacity-meter" aria-label={`${label} ${percent}%`}>
-          <div className={`capacity-meter-fill ${tone}`} style={{ width: `${clampPercent(percent)}%` }} />
+        <div className="capacity-primary-meter">
+          <div className="capacity-secondary-head">
+            <span>{sub}</span>
+            <strong>{value}</strong>
+          </div>
+          <div className="capacity-meter" aria-label={`${label} ${percent}%`}>
+            <div className={`capacity-meter-fill ${tone}`} style={{ width: `${clampPercent(percent)}%` }} />
+          </div>
         </div>
       )}
       {secondary && (

@@ -841,6 +841,11 @@ legend {
   background: #f4edf0;
 }
 
+.capacity-primary-meter {
+  display: grid;
+  gap: 5px;
+}
+
 .capacity-secondary {
   display: grid;
   gap: 5px;
