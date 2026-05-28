@@ -845,6 +845,14 @@ legend {
   font-weight: 500;
 }
 
+.capacity-metric-value-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
 .capacity-metric-value {
   display: flex;
   align-items: baseline;
@@ -855,6 +863,27 @@ legend {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.capacity-metric-side-value {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.capacity-metric-side-value em {
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.capacity-metric-side-value b {
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 500;
 }
 
 .capacity-metric-value.excellent,
