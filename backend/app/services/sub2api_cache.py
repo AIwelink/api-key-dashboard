@@ -689,6 +689,9 @@ async def _capacity_summary_for_accounts(
     seven_day_cost = cost_summary["seven_day_cost"]
     active_five_hour_capacity_usd = selected["five_hour_capacity_usd"]
     active_seven_day_capacity_usd = selected["seven_day_capacity_usd"]
+    selected_limits = CAPACITY_ACCOUNT_LIMITS.get(primary_type, {})
+    estimated_5h_consumed_accounts = _ratio_or_none(recent_5h_cost, float(selected_limits.get("five_hour_usd") or 0))
+    estimated_24h_consumed_accounts = _ratio_or_none(recent_24h_cost, float(selected_limits.get("seven_day_usd") or 0) / 7)
     five_hour_capacity_usd = active_five_hour_capacity_usd + selected_reserve["five_hour_capacity_usd"]
     seven_day_capacity_usd = active_seven_day_capacity_usd + selected_reserve["seven_day_capacity_usd"]
     twenty_four_hour_capacity_usd = seven_day_capacity_usd / 7 if seven_day_capacity_usd > 0 else 0
@@ -783,6 +786,8 @@ async def _capacity_summary_for_accounts(
         "seven_day_24h_peak_cost": round(seven_day_24h_peak_cost, 4),
         "recent_5h_cost": round(recent_5h_cost, 4),
         "recent_24h_cost": round(recent_24h_cost, 4),
+        "estimated_5h_consumed_accounts": _round_optional(estimated_5h_consumed_accounts),
+        "estimated_24h_consumed_accounts": _round_optional(estimated_24h_consumed_accounts),
         "seven_day_cost": round(seven_day_cost, 4),
         "recent_5h_remaining_usd": round(recent_5h_remaining_usd, 4),
         "recent_24h_remaining_usd": round(recent_24h_remaining_usd, 4),

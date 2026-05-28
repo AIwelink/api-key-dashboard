@@ -54,6 +54,8 @@ type CapacitySummary = {
   seven_day_24h_peak_cost?: number;
   recent_5h_cost?: number;
   recent_24h_cost?: number;
+  estimated_5h_consumed_accounts?: number | null;
+  estimated_24h_consumed_accounts?: number | null;
   seven_day_cost?: number;
   recent_5h_remaining_usd?: number;
   recent_24h_remaining_usd?: number;
@@ -1402,6 +1404,16 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           meterValue={formatPercent(sevenDayRemainingPercent)}
           reverse
         />
+        <CapacityMetric
+          label="预估消耗：最近5h"
+          value={formatAccountCount(summary?.estimated_5h_consumed_accounts)}
+          sub={`按最近5h消耗 ${formatUsd(summary?.recent_5h_cost)} 折算`}
+        />
+        <CapacityMetric
+          label="预估消耗：最近24h"
+          value={formatAccountCount(summary?.estimated_24h_consumed_accounts)}
+          sub={`按最近24h消耗 ${formatUsd(summary?.recent_24h_cost)} 折算`}
+        />
 
         <CapacityMetric
           label="峰值容量：最近一天5h"
@@ -1813,6 +1825,14 @@ function formatDays(value: unknown): string {
   if (number >= 10) return `${number.toFixed(0)}天`;
   if (number >= 1) return `${number.toFixed(1)}天`;
   return `${Math.max(0, number * 24).toFixed(1)}小时`;
+}
+
+function formatAccountCount(value: unknown): string {
+  const number = optionalNumberValue(value);
+  if (number === null) return "-";
+  if (number >= 10) return `约 ${number.toFixed(0)} 个`;
+  if (number >= 1) return `约 ${number.toFixed(1)} 个`;
+  return `约 ${Math.max(0, number).toFixed(2)} 个`;
 }
 
 function formatPercent(value: unknown): string {

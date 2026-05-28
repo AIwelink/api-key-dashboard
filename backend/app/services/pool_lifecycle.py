@@ -301,11 +301,7 @@ async def set_reserve_pin(
 
     metadata = dict(account.get("metadata", {}))
     now = now_utc()
-    updates = {
-        "metadata.updated_at": now,
-        "metadata.updated_by_user_id": actor.get("_id"),
-        "metadata.updated_by_name": actor_name(actor),
-    }
+    updates: dict[str, Any] = {}
     update_doc: dict[str, Any] = {"$set": updates}
     after: dict[str, Any]
     if pinned:
