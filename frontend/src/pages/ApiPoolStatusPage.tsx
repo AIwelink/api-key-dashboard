@@ -56,6 +56,7 @@ type CapacitySummary = {
   seven_day_remaining_usd?: number;
   five_hour_peak_multiple?: number | null;
   recent_day_five_hour_peak_multiple?: number | null;
+  active_recent_day_five_hour_peak_multiple?: number | null;
   recent_5h_multiple?: number | null;
   twenty_four_hour_peak_multiple?: number | null;
   recent_24h_multiple?: number | null;
@@ -65,7 +66,10 @@ type CapacitySummary = {
   ten_x_peak_multiple?: number | null;
   current_speed_multiple?: number | null;
   current_speed_days?: number | null;
+  active_current_speed_days?: number | null;
+  active_five_hour_peak_multiple?: number | null;
   five_x_speed_days?: number | null;
+  active_five_x_speed_days?: number | null;
   recent_day_five_hour_peak_daily_cost?: number;
   seven_day_five_hour_peak_daily_cost?: number;
   recent_day_five_hour_peak_speed_days?: number | null;
@@ -74,16 +78,21 @@ type CapacitySummary = {
   five_x_seven_day_five_hour_peak_speed_days?: number | null;
   seven_day_peak_speed_days?: number | null;
   five_x_peak_speed_days?: number | null;
+  active_seven_day_peak_speed_days?: number | null;
+  active_five_x_peak_speed_days?: number | null;
   ten_x_speed_days?: number | null;
   health_status?: string;
   health_label?: string;
-  health_tone?: "success" | "warning" | "danger" | "muted";
+  health_tone?: "info" | "success" | "warning" | "danger" | "muted";
   health_reason?: string;
+  auto_refill_required?: boolean;
   used_5h_percent?: number;
   available_5h_percent?: number;
   used_7d_percent?: number;
   available_7d_percent?: number;
   total_accounts?: number;
+  active_available_accounts?: number;
+  reserve_available_accounts?: number;
   calculated_at?: string;
 };
 
@@ -1341,19 +1350,23 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
   const sevenDayFiveHourPeakMultiple = summary?.five_hour_peak_multiple;
   const recentDayFiveHourPeak = summary?.recent_day_five_hour_peak_cost;
   const recentDayFiveHourPeakMultiple = summary?.recent_day_five_hour_peak_multiple;
+  const activeSevenDayFiveHourPeakMultiple = summary?.active_five_hour_peak_multiple;
+  const activeRecentDayFiveHourPeakMultiple = summary?.active_recent_day_five_hour_peak_multiple;
   const recent24hSpeedDays = summary?.current_speed_days;
-  const fiveXRecent24hSpeedDays = summary?.five_x_speed_days ?? summary?.ten_x_speed_days;
+  const activeRecent24hSpeedDays = summary?.active_current_speed_days;
   const sevenDayPeak24hSpeedDays = summary?.seven_day_peak_speed_days;
-  const fiveXPeak24hSpeedDays = summary?.five_x_peak_speed_days;
+  const activeSevenDayPeak24hSpeedDays = summary?.active_seven_day_peak_speed_days;
   const fiveHourUsedPercent = summary?.used_5h_percent;
   const sevenDayUsedPercent = summary?.used_7d_percent;
+  const fiveHourRemainingPercent = remainingPercent(fiveHourUsedPercent);
+  const sevenDayRemainingPercent = remainingPercent(sevenDayUsedPercent);
   return (
     <section className={`capacity-runway-card ${tone}`}>
       <div className="capacity-runway-head">
         <div>
           <span>容量预估</span>
           <strong>{loading ? "加载中" : summary?.health_label || "暂无数据"}</strong>
-          <em>{loading ? "正在读取账号池容量" : summary?.health_reason || "等待 dashboard cost 数据"}</em>
+          <em>{loading ? "正在读取账号池容量" : capacityHealthReason(summary)}</em>
         </div>
         <div className="capacity-runway-type">{accountType} 池</div>
       </div>
@@ -1362,15 +1375,17 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           label="总容量：5h"
           value={formatUsd(summary?.five_hour_capacity_usd)}
           sub={`可用额度：当前已用 ${formatUsd(summary?.five_hour_used_estimated_usd)}，预估可用 ${formatUsd(summary?.five_hour_remaining_estimated_usd)}`}
-          percent={fiveHourUsedPercent}
+          percent={fiveHourRemainingPercent}
           tone={usagePercentTone(fiveHourUsedPercent)}
+          reverse
         />
         <CapacityMetric
           label="总容量：7d"
           value={formatUsd(summary?.seven_day_capacity_usd)}
           sub={`可用额度：当前已用 ${formatUsd(summary?.seven_day_used_estimated_usd)}，预估可用 ${formatUsd(summary?.seven_day_remaining_estimated_usd)}`}
-          percent={sevenDayUsedPercent}
+          percent={sevenDayRemainingPercent}
           tone={usagePercentTone(sevenDayUsedPercent)}
+          reverse
         />
 
         <CapacityMetric
@@ -1379,6 +1394,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`峰值 ${formatUsd(recentDayFiveHourPeak)}，总容量：5h ${formatUsd(summary?.five_hour_capacity_usd)}`}
           percent={multipleScalePercent(recentDayFiveHourPeakMultiple)}
           tone={multipleScaleTone(recentDayFiveHourPeakMultiple)}
+          overlay={capacityOverlay("\u4f7f\u7528\u6c60", formatMultiple(activeRecentDayFiveHourPeakMultiple), multipleScalePercent(activeRecentDayFiveHourPeakMultiple), multipleScaleTone(activeRecentDayFiveHourPeakMultiple))}
         />
         <CapacityMetric
           label="峰值容量：7天最高5h"
@@ -1386,6 +1402,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`峰值 ${formatUsd(sevenDayFiveHourPeak)}，总容量：5h ${formatUsd(summary?.five_hour_capacity_usd)}`}
           percent={multipleScalePercent(sevenDayFiveHourPeakMultiple)}
           tone={multipleScaleTone(sevenDayFiveHourPeakMultiple)}
+          overlay={capacityOverlay("\u4f7f\u7528\u6c60", formatMultiple(activeSevenDayFiveHourPeakMultiple), multipleScalePercent(activeSevenDayFiveHourPeakMultiple), multipleScaleTone(activeSevenDayFiveHourPeakMultiple))}
         />
 
         <CapacityMetric
@@ -1394,13 +1411,8 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`按最近24h消耗 ${formatUsd(summary?.recent_24h_cost)}`}
           percent={daysScalePercent(recent24hSpeedDays)}
           tone={daysScaleTone(recent24hSpeedDays)}
+          overlay={capacityOverlay("\u4f7f\u7528\u6c60", formatDays(activeRecent24hSpeedDays), daysScalePercent(activeRecent24hSpeedDays), daysScaleTone(activeRecent24hSpeedDays))}
           showMeterHead
-          secondary={{
-            label: "5倍预估",
-            value: formatDays(fiveXRecent24hSpeedDays),
-            percent: daysScalePercent(fiveXRecent24hSpeedDays),
-            tone: daysScaleTone(fiveXRecent24hSpeedDays),
-          }}
         />
         <CapacityMetric
           label="预估天数：7天最高24h"
@@ -1408,20 +1420,36 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`按7天最高24h消耗 ${formatUsd(summary?.seven_day_24h_peak_cost)}`}
           percent={daysScalePercent(sevenDayPeak24hSpeedDays)}
           tone={daysScaleTone(sevenDayPeak24hSpeedDays)}
+          overlay={capacityOverlay("\u4f7f\u7528\u6c60", formatDays(activeSevenDayPeak24hSpeedDays), daysScalePercent(activeSevenDayPeak24hSpeedDays), daysScaleTone(activeSevenDayPeak24hSpeedDays))}
           showMeterHead
-          secondary={{
-            label: "5倍预估",
-            value: formatDays(fiveXPeak24hSpeedDays),
-            percent: daysScalePercent(fiveXPeak24hSpeedDays),
-            tone: daysScaleTone(fiveXPeak24hSpeedDays),
-          }}
         />
       </div>
     </section>
   );
 }
 
-type CapacityMetricTone = "info" | "success" | "warning" | "danger" | "muted";
+type CapacityMetricTone = "excellent" | "info" | "success" | "warning" | "danger" | "muted";
+type CapacityMeterOverlay = {
+  label: string;
+  value: string;
+  percent?: number | null;
+  tone?: CapacityMetricTone;
+};
+
+function capacityOverlay(label: string, value: string, percent?: number | null, tone?: CapacityMetricTone): CapacityMeterOverlay | undefined {
+  if (percent === undefined || percent === null) return undefined;
+  return { label, value, percent, tone };
+}
+
+function capacityHealthReason(summary?: CapacitySummary) {
+  if (!summary) return "等待 dashboard cost 数据";
+  const reserve = numberValue(summary.reserve_available_accounts);
+  const active = numberValue(summary.active_available_accounts);
+  const suffix = reserve > 0 ? `，含备用池 ${reserve} 个，使用池 ${active} 个` : "";
+  const reason = summary.health_reason || "等待 dashboard cost 数据";
+  const refill = summary.auto_refill_required && !reason.includes("自动补号") ? "；已触发自动补号阈值" : "";
+  return `${reason}${suffix}${refill}`;
+}
 
 function CapacityMetric({
   label,
@@ -1429,6 +1457,8 @@ function CapacityMetric({
   sub,
   percent,
   tone = "muted",
+  overlay,
+  reverse = false,
   showMeterHead = false,
   secondary,
 }: {
@@ -1437,12 +1467,15 @@ function CapacityMetric({
   sub: string;
   percent?: number | null;
   tone?: CapacityMetricTone;
+  overlay?: CapacityMeterOverlay;
+  reverse?: boolean;
   showMeterHead?: boolean;
   secondary?: {
     label: string;
     value: string;
     percent?: number | null;
     tone?: CapacityMetricTone;
+    overlay?: CapacityMeterOverlay;
   };
 }) {
   const [labelMain, labelSuffix] = label.split("：");
@@ -1462,9 +1495,8 @@ function CapacityMetric({
               <strong>{value}</strong>
             </div>
           )}
-          <div className="capacity-meter" aria-label={`${label} ${percent}%`}>
-            <div className={`capacity-meter-fill ${tone}`} style={{ width: `${clampPercent(percent)}%` }} />
-          </div>
+          {overlay && <CapacityMeterLegend overlay={overlay} reserveValue={value} />}
+          <CapacityMeter label={label} percent={percent} tone={tone} overlay={overlay} reverse={reverse} />
         </div>
       )}
       {secondary && (
@@ -1474,11 +1506,44 @@ function CapacityMetric({
             <strong>{secondary.value}</strong>
           </div>
           {secondary.percent !== undefined && secondary.percent !== null && (
-            <div className="capacity-meter" aria-label={`${label} ${secondary.label} ${secondary.percent}%`}>
-              <div className={`capacity-meter-fill ${secondary.tone || "muted"}`} style={{ width: `${clampPercent(secondary.percent)}%` }} />
-            </div>
+            <>
+              {secondary.overlay && <CapacityMeterLegend overlay={secondary.overlay} reserveValue={secondary.value} />}
+              <CapacityMeter label={`${label} ${secondary.label}`} percent={secondary.percent} tone={secondary.tone || "muted"} overlay={secondary.overlay} />
+            </>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+function CapacityMeterLegend({ overlay, reserveValue }: { overlay: CapacityMeterOverlay; reserveValue: string }) {
+  return (
+    <div className="capacity-meter-legend">
+      <span>{overlay.label} {overlay.value}</span>
+      <strong>含备用 {reserveValue}</strong>
+    </div>
+  );
+}
+
+function CapacityMeter({
+  label,
+  percent,
+  tone,
+  overlay,
+  reverse = false,
+}: {
+  label: string;
+  percent: number;
+  tone: CapacityMetricTone;
+  overlay?: CapacityMeterOverlay;
+  reverse?: boolean;
+}) {
+  return (
+    <div className={`capacity-meter ${overlay ? "layered" : ""} ${reverse ? "reverse" : ""}`} aria-label={`${label} ${percent}%`}>
+      <div className={`capacity-meter-fill reserve ${tone}`} style={{ width: `${clampPercent(percent)}%` }} />
+      {overlay?.percent !== undefined && overlay.percent !== null && (
+        <div className={`capacity-meter-fill active ${overlay.tone || "muted"}`} style={{ width: `${clampPercent(overlay.percent)}%` }} />
       )}
     </div>
   );
@@ -1710,18 +1775,25 @@ function usagePercentTone(value: unknown): "info" | "success" | "warning" | "dan
   return "info";
 }
 
+function remainingPercent(usedValue: unknown): number | null {
+  const number = optionalNumberValue(usedValue);
+  if (number === null) return null;
+  return clampPercent(100 - number);
+}
+
 function multipleScalePercent(value: unknown): number | null {
   const number = optionalNumberValue(value);
   if (number === null) return null;
-  return clampPercent((Math.max(0, number) / 10) * 100);
+  return clampPercent((Math.max(0, number) / 5) * 100);
 }
 
-function multipleScaleTone(value: unknown): "info" | "success" | "warning" | "danger" | "muted" {
+function multipleScaleTone(value: unknown): CapacityMetricTone {
   const number = optionalNumberValue(value);
   if (number === null) return "muted";
+  if (number > 5) return "excellent";
   if (number < 1) return "danger";
-  if (number < 5) return "warning";
-  if (number < 10) return "success";
+  if (number < 1.5) return "warning";
+  if (number < 5) return "success";
   return "info";
 }
 
@@ -1731,11 +1803,12 @@ function daysScalePercent(value: unknown): number | null {
   return clampPercent((Math.max(0, number) / 10) * 100);
 }
 
-function daysScaleTone(value: unknown): "info" | "success" | "warning" | "danger" | "muted" {
+function daysScaleTone(value: unknown): CapacityMetricTone {
   const number = optionalNumberValue(value);
   if (number === null) return "muted";
+  if (number > 10) return "excellent";
   if (number < 1) return "danger";
-  if (number < 5) return "warning";
+  if (number < 3) return "warning";
   if (number < 10) return "success";
   return "info";
 }

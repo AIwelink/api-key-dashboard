@@ -752,6 +752,10 @@ legend {
   border-color: #b9dfca;
 }
 
+.capacity-runway-card.info {
+  border-color: #9fc0ee;
+}
+
 .capacity-runway-card.warning {
   border-color: #efc58d;
 }
@@ -835,10 +839,56 @@ legend {
 }
 
 .capacity-meter {
+  position: relative;
   overflow: hidden;
   height: 10px;
   border-radius: 999px;
-  background: #f4edf0;
+  background: #e6e9ee;
+}
+
+.capacity-meter.reverse .capacity-meter-fill.reserve {
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  left: auto;
+}
+
+.capacity-meter.layered {
+  position: relative;
+  height: 13px;
+}
+
+.capacity-meter.layered .capacity-meter-fill {
+  position: absolute;
+  left: 0;
+  border-radius: inherit;
+}
+
+.capacity-meter.layered .capacity-meter-fill.reserve {
+  inset-block: 0;
+  opacity: 0.48;
+}
+
+.capacity-meter.layered .capacity-meter-fill.active {
+  top: 3px;
+  height: 7px;
+  opacity: 0.96;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 46%);
+}
+
+.capacity-meter-legend {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.capacity-meter-legend strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .capacity-primary-meter {
@@ -877,6 +927,17 @@ legend {
   border-radius: inherit;
 }
 
+.capacity-meter-fill.excellent {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(110deg, rgb(255 255 255 / 0%) 0%, rgb(255 255 255 / 34%) 18%, rgb(255 255 255 / 0%) 36%) 0 0 / 220% 100%,
+    repeating-linear-gradient(115deg, rgb(255 255 255 / 20%) 0 8px, rgb(255 255 255 / 0%) 8px 18px),
+    linear-gradient(90deg, #6d38f2 0%, #9d45ff 48%, #d362ff 100%);
+  box-shadow: 0 0 14px rgb(137 73 255 / 42%);
+  animation: capacity-fast-shine 1.25s linear infinite;
+}
+
 .capacity-meter-fill.info {
   background: #4b83d8;
 }
@@ -895,6 +956,15 @@ legend {
 
 .capacity-meter-fill.muted {
   background: #b6c0ca;
+}
+
+@keyframes capacity-fast-shine {
+  from {
+    background-position: -180% 0, 0 0, 0 0;
+  }
+  to {
+    background-position: 180% 0, 34px 0, 0 0;
+  }
 }
 
 .overall-track,

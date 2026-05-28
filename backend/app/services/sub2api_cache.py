@@ -25,14 +25,17 @@ CAPACITY_ACCOUNT_LIMITS = {
     "free": {"five_hour_usd": 2, "seven_day_usd": 10},
 }
 CAPACITY_HEALTH_THRESHOLDS = {
-    "danger_peak_multiple": 1.0,
+    "exhausted_available_accounts": 2,
+    "exhausted_recent_day_peak_multiple": 0.2,
+    "exhausted_current_speed_days": 0.25,
+    "danger_recent_day_peak_multiple": 1.0,
     "danger_current_speed_days": 1.0,
+    "auto_refill_peak_multiple": 1.2,
+    "auto_refill_current_speed_days": 1.5,
     "tight_peak_multiple": 1.5,
-    "tight_current_speed_multiple": 1.0,
-    "tight_five_x_speed_days": 1.0,
+    "tight_current_speed_days": 3.0,
     "abundant_peak_multiple": 5.0,
-    "abundant_current_speed_multiple": 2.0,
-    "abundant_five_x_speed_days": 2.0,
+    "abundant_seven_day_peak_speed_days": 10.0,
 }
 ACCOUNT_USAGE_FIELDS = (
     "codex_5h_used_percent",
@@ -603,7 +606,7 @@ async def _get_or_update_group_capacity_summary(db: AsyncIOMotorDatabase, site_i
     if account_ops:
         await db.sub2api_accounts_cache.bulk_write(account_ops, ordered=False)
 
-    summary = await _capacity_summary_for_accounts(db, site_id, accounts)
+    summary = await _capacity_summary_for_accounts(db, site_id, accounts, group_id=group_id)
     await db.sub2api_groups_cache.update_one(
         {"site_id": site_id, "group_id": group_id},
         {"$set": {"capacity_summary": summary, "group.capacity_summary": summary, "capacity_calculated_at": now_utc()}},
@@ -617,7 +620,7 @@ async def _group_capacity_summaries(db: AsyncIOMotorDatabase, site_id: str, acco
         for group_id in _extract_group_ids(account):
             grouped.setdefault(group_id, []).append(account)
     return {
-        group_id: await _capacity_summary_for_accounts(db, site_id, group_accounts)
+        group_id: await _capacity_summary_for_accounts(db, site_id, group_accounts, group_id=group_id)
         for group_id, group_accounts in grouped.items()
     }
 
@@ -656,14 +659,24 @@ def _account_cache_fields(account: dict[str, Any]) -> dict[str, Any]:
     return {field: account.get(field) for field in fields if account.get(field) is not None}
 
 
-async def _capacity_summary_for_accounts(db: AsyncIOMotorDatabase, site_id: str, accounts: list[dict[str, Any]]) -> dict[str, Any]:
+async def _capacity_summary_for_accounts(
+    db: AsyncIOMotorDatabase,
+    site_id: str,
+    accounts: list[dict[str, Any]],
+    *,
+    group_id: int | None = None,
+) -> dict[str, Any]:
     capacity_accounts = [account for account in accounts if _is_capacity_account(account)]
     five_hour_capacity_accounts = [account for account in capacity_accounts if not _is_7d_exhausted(account)]
     used_5h = _average_percent(_usage_number(account, "codex_5h_used_percent") for account in capacity_accounts)
     used_7d = _average_percent(_usage_number(account, "codex_7d_used_percent") for account in capacity_accounts)
     type_summary = _capacity_by_account_type(capacity_accounts, five_hour_capacity_accounts)
     primary_type = _primary_capacity_type(type_summary)
+    reserve_type_summary = await _reserve_capacity_by_account_type(db, site_id, group_id) if group_id is not None else _empty_capacity_type_summary()
+    if primary_type == "total" and reserve_type_summary["total"]["available_accounts"] > 0:
+        primary_type = _primary_capacity_type(reserve_type_summary)
     selected = type_summary.get(primary_type, type_summary["total"])
+    selected_reserve = reserve_type_summary.get(primary_type, reserve_type_summary["total"])
     cost_summary = await _dashboard_cost_summary(db, site_id)
     five_hour_peak_cost = cost_summary["five_hour_peak_cost"]
     recent_day_five_hour_peak_cost = cost_summary["recent_day_five_hour_peak_cost"]
@@ -671,13 +684,23 @@ async def _capacity_summary_for_accounts(db: AsyncIOMotorDatabase, site_id: str,
     recent_5h_cost = cost_summary["recent_5h_cost"]
     recent_24h_cost = cost_summary["recent_24h_cost"]
     seven_day_cost = cost_summary["seven_day_cost"]
-    five_hour_capacity_usd = selected["five_hour_capacity_usd"]
-    seven_day_capacity_usd = selected["seven_day_capacity_usd"]
+    active_five_hour_capacity_usd = selected["five_hour_capacity_usd"]
+    active_seven_day_capacity_usd = selected["seven_day_capacity_usd"]
+    five_hour_capacity_usd = active_five_hour_capacity_usd + selected_reserve["five_hour_capacity_usd"]
+    seven_day_capacity_usd = active_seven_day_capacity_usd + selected_reserve["seven_day_capacity_usd"]
     twenty_four_hour_capacity_usd = seven_day_capacity_usd / 7 if seven_day_capacity_usd > 0 else 0
-    five_hour_used_estimated_usd = five_hour_capacity_usd * used_5h / 100
+    five_hour_used_estimated_usd = active_five_hour_capacity_usd * used_5h / 100
     five_hour_remaining_estimated_usd = five_hour_capacity_usd * max(0, 100 - used_5h) / 100
-    seven_day_used_estimated_usd = seven_day_capacity_usd * used_7d / 100
+    five_hour_remaining_estimated_usd = max(0, five_hour_capacity_usd - five_hour_used_estimated_usd)
+    seven_day_used_estimated_usd = active_seven_day_capacity_usd * used_7d / 100
     seven_day_remaining_estimated_usd = seven_day_capacity_usd * max(0, 100 - used_7d) / 100
+    seven_day_remaining_estimated_usd = max(0, seven_day_capacity_usd - seven_day_used_estimated_usd)
+    effective_used_5h = _ratio_percent(five_hour_used_estimated_usd, five_hour_capacity_usd)
+    effective_used_7d = _ratio_percent(seven_day_used_estimated_usd, seven_day_capacity_usd)
+    active_five_hour_peak_multiple = _ratio_or_none(active_five_hour_capacity_usd, five_hour_peak_cost)
+    active_recent_day_five_hour_peak_multiple = _ratio_or_none(active_five_hour_capacity_usd, recent_day_five_hour_peak_cost)
+    active_current_speed_days = _ratio_or_none(active_seven_day_capacity_usd, recent_24h_cost)
+    active_five_x_speed_days = _ratio_or_none(active_seven_day_capacity_usd, recent_24h_cost * 5 if recent_24h_cost > 0 else 0)
     five_hour_peak_multiple = _ratio_or_none(five_hour_capacity_usd, five_hour_peak_cost)
     recent_day_five_hour_peak_multiple = _ratio_or_none(five_hour_capacity_usd, recent_day_five_hour_peak_cost)
     recent_5h_multiple = _ratio_or_none(five_hour_capacity_usd, recent_5h_cost)
@@ -700,6 +723,8 @@ async def _capacity_summary_for_accounts(db: AsyncIOMotorDatabase, site_id: str,
     )
     seven_day_peak_speed_days = _ratio_or_none(seven_day_capacity_usd, seven_day_24h_peak_cost)
     five_x_peak_speed_days = _ratio_or_none(seven_day_capacity_usd, seven_day_24h_peak_cost * 5 if seven_day_24h_peak_cost > 0 else 0)
+    active_seven_day_peak_speed_days = _ratio_or_none(active_seven_day_capacity_usd, seven_day_24h_peak_cost)
+    active_five_x_peak_speed_days = _ratio_or_none(active_seven_day_capacity_usd, seven_day_24h_peak_cost * 5 if seven_day_24h_peak_cost > 0 else 0)
     five_x_peak_multiple = _ratio_or_none(five_hour_capacity_usd, five_hour_peak_cost * 5 if five_hour_peak_cost > 0 else 0)
     five_x_recent_day_peak_multiple = _ratio_or_none(five_hour_capacity_usd, recent_day_five_hour_peak_cost * 5 if recent_day_five_hour_peak_cost > 0 else 0)
     five_x_24h_peak_multiple = _ratio_or_none(twenty_four_hour_capacity_usd, seven_day_24h_peak_cost * 5 if seven_day_24h_peak_cost > 0 else 0)
@@ -707,24 +732,40 @@ async def _capacity_summary_for_accounts(db: AsyncIOMotorDatabase, site_id: str,
     recent_24h_remaining_usd = max(0.0, twenty_four_hour_capacity_usd - recent_24h_cost)
     seven_day_remaining_usd = max(0.0, seven_day_capacity_usd - seven_day_cost)
     health = _capacity_health(
-        available_accounts=selected["available_accounts"],
+        available_accounts=selected["available_accounts"] + selected_reserve["available_accounts"],
+        reserve_accounts=selected_reserve["available_accounts"],
         five_hour_capacity_usd=five_hour_capacity_usd,
         seven_day_capacity_usd=seven_day_capacity_usd,
         five_hour_peak_multiple=five_hour_peak_multiple,
+        active_five_hour_peak_multiple=active_five_hour_peak_multiple,
+        recent_day_five_hour_peak_multiple=recent_day_five_hour_peak_multiple,
         twenty_four_hour_peak_multiple=twenty_four_hour_peak_multiple,
         current_speed_multiple=current_speed_multiple,
         current_speed_days=current_speed_days,
+        active_current_speed_days=active_current_speed_days,
+        seven_day_peak_speed_days=seven_day_peak_speed_days,
         five_x_speed_days=five_x_speed_days,
     )
     return {
-        "available_accounts": selected["available_accounts"],
-        "available_5h_accounts": selected["available_5h_accounts"],
+        "available_accounts": selected["available_accounts"] + selected_reserve["available_accounts"],
+        "available_5h_accounts": selected["available_5h_accounts"] + selected_reserve["available_5h_accounts"],
+        "active_available_accounts": selected["available_accounts"],
+        "active_available_5h_accounts": selected["available_5h_accounts"],
+        "reserve_available_accounts": selected_reserve["available_accounts"],
+        "reserve_available_5h_accounts": selected_reserve["available_5h_accounts"],
         "account_type": primary_type,
         "type_summary": type_summary,
-        "used_5h_percent": used_5h,
-        "available_5h_percent": _clamp_percent(100 - used_5h),
-        "used_7d_percent": used_7d,
-        "available_7d_percent": _clamp_percent(100 - used_7d),
+        "reserve_type_summary": reserve_type_summary,
+        "used_5h_percent": effective_used_5h,
+        "available_5h_percent": _clamp_percent(100 - effective_used_5h),
+        "used_7d_percent": effective_used_7d,
+        "available_7d_percent": _clamp_percent(100 - effective_used_7d),
+        "active_used_5h_percent": used_5h,
+        "active_used_7d_percent": used_7d,
+        "active_five_hour_capacity_usd": round(active_five_hour_capacity_usd, 4),
+        "active_seven_day_capacity_usd": round(active_seven_day_capacity_usd, 4),
+        "reserve_five_hour_capacity_usd": round(selected_reserve["five_hour_capacity_usd"], 4),
+        "reserve_seven_day_capacity_usd": round(selected_reserve["seven_day_capacity_usd"], 4),
         "five_hour_capacity_usd": round(five_hour_capacity_usd, 4),
         "seven_day_capacity_usd": round(seven_day_capacity_usd, 4),
         "twenty_four_hour_capacity_usd": round(twenty_four_hour_capacity_usd, 4),
@@ -743,7 +784,9 @@ async def _capacity_summary_for_accounts(db: AsyncIOMotorDatabase, site_id: str,
         "recent_24h_remaining_usd": round(recent_24h_remaining_usd, 4),
         "seven_day_remaining_usd": round(seven_day_remaining_usd, 4),
         "five_hour_peak_multiple": _round_optional(five_hour_peak_multiple),
+        "active_five_hour_peak_multiple": _round_optional(active_five_hour_peak_multiple),
         "recent_day_five_hour_peak_multiple": _round_optional(recent_day_five_hour_peak_multiple),
+        "active_recent_day_five_hour_peak_multiple": _round_optional(active_recent_day_five_hour_peak_multiple),
         "recent_5h_multiple": _round_optional(recent_5h_multiple),
         "twenty_four_hour_peak_multiple": _round_optional(twenty_four_hour_peak_multiple),
         "recent_24h_multiple": _round_optional(recent_24h_multiple),
@@ -752,7 +795,9 @@ async def _capacity_summary_for_accounts(db: AsyncIOMotorDatabase, site_id: str,
         "five_x_24h_peak_multiple": _round_optional(five_x_24h_peak_multiple),
         "current_speed_multiple": _round_optional(current_speed_multiple),
         "current_speed_days": _round_optional(current_speed_days),
+        "active_current_speed_days": _round_optional(active_current_speed_days),
         "five_x_speed_days": _round_optional(five_x_speed_days),
+        "active_five_x_speed_days": _round_optional(active_five_x_speed_days),
         "recent_day_five_hour_peak_daily_cost": round(recent_day_five_hour_peak_daily_cost, 4),
         "seven_day_five_hour_peak_daily_cost": round(seven_day_five_hour_peak_daily_cost, 4),
         "recent_day_five_hour_peak_speed_days": _round_optional(recent_day_five_hour_peak_speed_days),
@@ -761,10 +806,13 @@ async def _capacity_summary_for_accounts(db: AsyncIOMotorDatabase, site_id: str,
         "five_x_seven_day_five_hour_peak_speed_days": _round_optional(five_x_seven_day_five_hour_peak_speed_days),
         "seven_day_peak_speed_days": _round_optional(seven_day_peak_speed_days),
         "five_x_peak_speed_days": _round_optional(five_x_peak_speed_days),
+        "active_seven_day_peak_speed_days": _round_optional(active_seven_day_peak_speed_days),
+        "active_five_x_peak_speed_days": _round_optional(active_five_x_peak_speed_days),
         "health_status": health["status"],
         "health_label": health["label"],
         "health_tone": health["tone"],
         "health_reason": health["reason"],
+        "auto_refill_required": health["auto_refill_required"],
         "cost_window": cost_summary,
         "total_accounts": len(accounts),
         "calculated_at": now_utc(),
@@ -772,6 +820,15 @@ async def _capacity_summary_for_accounts(db: AsyncIOMotorDatabase, site_id: str,
 
 
 def _capacity_by_account_type(capacity_accounts: list[dict[str, Any]], five_hour_capacity_accounts: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    result = _empty_capacity_type_summary()
+    five_hour_ids = {str(account.get("id")) for account in five_hour_capacity_accounts}
+    for account in capacity_accounts:
+        account_type = _capacity_account_type(account)
+        _add_capacity_account(result, account_type, five_hour_available=str(account.get("id")) in five_hour_ids)
+    return result
+
+
+def _empty_capacity_type_summary() -> dict[str, dict[str, Any]]:
     result = {
         **{
             account_type: {"available_accounts": 0, "available_5h_accounts": 0, "five_hour_capacity_usd": 0.0, "seven_day_capacity_usd": 0.0}
@@ -779,23 +836,40 @@ def _capacity_by_account_type(capacity_accounts: list[dict[str, Any]], five_hour
         },
         "total": {"available_accounts": 0, "available_5h_accounts": 0, "five_hour_capacity_usd": 0.0, "seven_day_capacity_usd": 0.0},
     }
-    five_hour_ids = {str(account.get("id")) for account in five_hour_capacity_accounts}
-    for account in capacity_accounts:
-        account_type = _capacity_account_type(account)
-        if account_type not in CAPACITY_ACCOUNT_LIMITS:
-            continue
-        limits = CAPACITY_ACCOUNT_LIMITS[account_type]
-        account_id = str(account.get("id"))
-        result[account_type]["available_accounts"] += 1
-        result[account_type]["seven_day_capacity_usd"] += limits["seven_day_usd"]
-        result[account_type]["five_hour_capacity_usd"] += limits["five_hour_usd"]
-        result["total"]["available_accounts"] += 1
-        result["total"]["seven_day_capacity_usd"] += limits["seven_day_usd"]
-        result["total"]["five_hour_capacity_usd"] += limits["five_hour_usd"]
-        if account_id in five_hour_ids:
-            result[account_type]["available_5h_accounts"] += 1
-            result["total"]["available_5h_accounts"] += 1
     return result
+
+
+async def _reserve_capacity_by_account_type(db: AsyncIOMotorDatabase, site_id: str, group_id: int | None) -> dict[str, dict[str, Any]]:
+    result = _empty_capacity_type_summary()
+    if group_id is None:
+        return result
+    query = {
+        "metadata.deleted_at": {"$exists": False},
+        "metadata.pool_status": "reserve",
+        "metadata.sub2api_site_id": site_id,
+        "$or": [
+            {"metadata.sub2api_group_id": group_id},
+            {"metadata.pool_id": str(group_id)},
+        ],
+    }
+    async for account in db.accounts.find(query, {"metadata.account_type": 1, "account_json.credentials.plan_type": 1, "account_json.extra.account_type": 1}):
+        _add_capacity_account(result, _local_capacity_account_type(account), five_hour_available=True)
+    return result
+
+
+def _add_capacity_account(result: dict[str, dict[str, Any]], account_type: str, *, five_hour_available: bool) -> None:
+    if account_type not in CAPACITY_ACCOUNT_LIMITS:
+        return
+    limits = CAPACITY_ACCOUNT_LIMITS[account_type]
+    result[account_type]["available_accounts"] += 1
+    result[account_type]["seven_day_capacity_usd"] += limits["seven_day_usd"]
+    result[account_type]["five_hour_capacity_usd"] += limits["five_hour_usd"]
+    result["total"]["available_accounts"] += 1
+    result["total"]["seven_day_capacity_usd"] += limits["seven_day_usd"]
+    result["total"]["five_hour_capacity_usd"] += limits["five_hour_usd"]
+    if five_hour_available:
+        result[account_type]["available_5h_accounts"] += 1
+        result["total"]["available_5h_accounts"] += 1
 
 
 def _primary_capacity_type(type_summary: dict[str, dict[str, Any]]) -> str:
@@ -814,7 +888,7 @@ def _capacity_account_type(account: dict[str, Any]) -> str:
     credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
     extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
     value = account.get("plan_type") or credentials.get("plan_type") or extra.get("account_type") or extra.get("plan_type")
-    normalized = str(value or "").strip().lower()
+    normalized = _normalize_capacity_account_type(value)
     if normalized in {"team", "team_sub", "team-sub", "team_child", "team_child_account", "team子号", "team 子号"}:
         return "team"
     if normalized in {"plus", "pro"}:
@@ -845,6 +919,28 @@ def _capacity_account_type(account: dict[str, Any]) -> str:
     if str(account.get("platform") or "").lower() == "openai":
         return "free"
     return "other"
+
+
+def _local_capacity_account_type(account: dict[str, Any]) -> str:
+    metadata = account.get("metadata") if isinstance(account.get("metadata"), dict) else {}
+    account_json = account.get("account_json") if isinstance(account.get("account_json"), dict) else {}
+    credentials = account_json.get("credentials") if isinstance(account_json.get("credentials"), dict) else {}
+    extra = account_json.get("extra") if isinstance(account_json.get("extra"), dict) else {}
+    normalized = _normalize_capacity_account_type(metadata.get("account_type") or extra.get("account_type") or credentials.get("plan_type"))
+    if normalized == "team":
+        return "team"
+    if normalized in {"plus", "pro"}:
+        return "plus"
+    if normalized == "free":
+        return "free"
+    return "other"
+
+
+def _normalize_capacity_account_type(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"team", "team_sub", "team-sub", "team_child", "team_child_account", "team子号", "team 子号", "team瀛愬彿", "team 瀛愬彿"}:
+        return "team"
+    return normalized
 
 
 async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str) -> dict[str, Any]:
@@ -908,40 +1004,61 @@ def _rolling_peak_cost(items: list[dict[str, Any]], window_size: int) -> float:
 def _capacity_health(
     *,
     available_accounts: int,
+    reserve_accounts: int,
     five_hour_capacity_usd: float,
     seven_day_capacity_usd: float,
     five_hour_peak_multiple: float | None,
+    active_five_hour_peak_multiple: float | None,
+    recent_day_five_hour_peak_multiple: float | None,
     twenty_four_hour_peak_multiple: float | None,
     current_speed_multiple: float | None,
     current_speed_days: float | None,
+    active_current_speed_days: float | None,
+    seven_day_peak_speed_days: float | None,
     five_x_speed_days: float | None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     thresholds = CAPACITY_HEALTH_THRESHOLDS
-    if available_accounts <= 0 or five_hour_capacity_usd <= 0 or seven_day_capacity_usd <= 0:
-        return {"status": "exhausted", "label": "耗尽", "tone": "danger", "reason": "可用账号或理论容量为 0"}
+    auto_refill_required = _lt(active_five_hour_peak_multiple, thresholds["auto_refill_peak_multiple"]) or _lt(
+        active_current_speed_days,
+        thresholds["auto_refill_current_speed_days"],
+    )
+    base = {"auto_refill_required": auto_refill_required, "reserve_accounts": reserve_accounts}
     if five_hour_peak_multiple is None and current_speed_multiple is None:
-        return {"status": "pending", "label": "等待数据", "tone": "muted", "reason": "dashboard cost 数据尚未同步"}
-    if _lt(five_hour_peak_multiple, thresholds["danger_peak_multiple"]) or _lt(current_speed_days, thresholds["danger_current_speed_days"]):
-        return {"status": "danger", "label": "危险", "tone": "danger", "reason": "7天峰值或当前速度已压到容量线"}
-    if (
-        _lt(five_hour_peak_multiple, thresholds["tight_peak_multiple"])
-        or _lt(current_speed_multiple, thresholds["tight_current_speed_multiple"])
-        or _lt(five_x_speed_days, thresholds["tight_five_x_speed_days"])
+        return {**base, "status": "pending", "label": "等待数据", "tone": "muted", "reason": "7天最高5h峰值倍数和当前速度倍数还没有数据"}
+    if available_accounts <= thresholds["exhausted_available_accounts"] or five_hour_capacity_usd <= 0 or seven_day_capacity_usd <= 0:
+        return {**base, "status": "exhausted", "label": "耗尽", "tone": "danger", "reason": "可用账号 <= 2，或理论容量为 0"}
+    if _lt(recent_day_five_hour_peak_multiple, thresholds["exhausted_recent_day_peak_multiple"]) or _lt(
+        current_speed_days,
+        thresholds["exhausted_current_speed_days"],
     ):
-        return {"status": "tight", "label": "偏紧", "tone": "warning", "reason": "容量有余量，但高峰或 5 倍增量会偏紧"}
-    if (
-        _gte(five_hour_peak_multiple, thresholds["abundant_peak_multiple"])
-        and _gte(current_speed_multiple, thresholds["abundant_current_speed_multiple"])
-        and _gte(five_x_speed_days, thresholds["abundant_five_x_speed_days"])
+        return {**base, "status": "exhausted", "label": "耗尽", "tone": "danger", "reason": "最近一天5h峰值低于 0.2x，或当前速度可用不足 6 小时"}
+    if _lt(recent_day_five_hour_peak_multiple, thresholds["danger_recent_day_peak_multiple"]) or _lt(
+        current_speed_days,
+        thresholds["danger_current_speed_days"],
     ):
-        return {"status": "abundant", "label": "充裕", "tone": "success", "reason": "峰值、当前速度和 5 倍增量都有较大余量"}
-    return {"status": "healthy", "label": "健康", "tone": "success", "reason": "7天峰值和当前速度都有余量"}
-
+        return {**base, "status": "danger", "label": "危险", "tone": "danger", "reason": "最近一天5h峰值或当前速度已压到危险线"}
+    if _lt(five_hour_peak_multiple, thresholds["tight_peak_multiple"]) or _lt(current_speed_days, thresholds["tight_current_speed_days"]):
+        reason = "含备用池后，7天最高5h峰值或当前速度仍偏紧"
+        if auto_refill_required:
+            reason = "已触发自动补号阈值，含备用池后仍按黄色维护"
+        return {**base, "status": "tight", "label": "紧张", "tone": "warning", "reason": reason}
+    if _gte(five_hour_peak_multiple, thresholds["abundant_peak_multiple"]) and _gte(
+        seven_day_peak_speed_days,
+        thresholds["abundant_seven_day_peak_speed_days"],
+    ):
+        return {**base, "status": "very_abundant", "label": "十分充裕", "tone": "info", "reason": "含备用池后，峰值容量 >= 5x 且 7天最高24h可用 >= 10天"}
+    return {**base, "status": "healthy", "label": "健康", "tone": "success", "reason": "含备用池后容量处于健康范围"}
 
 def _ratio_or_none(numerator: float, denominator: float) -> float | None:
     if denominator <= 0:
         return None
     return numerator / denominator
+
+
+def _ratio_percent(numerator: float, denominator: float) -> float:
+    if denominator <= 0:
+        return 0.0
+    return _clamp_percent(numerator / denominator * 100)
 
 
 def _round_optional(value: float | None) -> float | None:
@@ -1309,3 +1426,4 @@ def _is_due(last_refreshed_at: Any, interval_minutes: int) -> bool:
     if isinstance(last_refreshed_at, datetime) and last_refreshed_at.tzinfo is None:
         last_refreshed_at = last_refreshed_at.replace(tzinfo=UTC)
     return now_utc() - last_refreshed_at >= timedelta(minutes=interval_minutes)
+
