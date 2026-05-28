@@ -773,11 +773,12 @@ legend {
 }
 
 .capacity-runway-head span,
-.capacity-runway-head em {
+.capacity-runway-head em,
+.capacity-metric small {
   color: var(--muted);
   font-size: 13px;
   font-style: normal;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .capacity-runway-head strong {
@@ -809,25 +810,28 @@ legend {
   gap: 8px;
 }
 
-.capacity-metric span {
+.capacity-metric-label {
   color: var(--muted);
   font-size: 14px;
   font-style: normal;
-  font-weight: 800;
+  font-weight: 500;
+}
+
+.capacity-metric-label b {
+  color: var(--text);
+  font-weight: 850;
+}
+
+.capacity-metric-label em {
+  color: var(--muted);
+  font-style: normal;
+  font-weight: 500;
 }
 
 .capacity-metric strong {
   font-size: 24px;
   line-height: 1.1;
-  font-weight: 850;
-}
-
-.capacity-metric em {
-  color: var(--muted);
-  font-size: 13px;
-  font-style: normal;
-  font-weight: 700;
-  line-height: 1.35;
+  font-weight: 500;
 }
 
 .capacity-meter {

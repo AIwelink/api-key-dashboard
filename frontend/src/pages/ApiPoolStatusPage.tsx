@@ -1341,10 +1341,10 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
   const sevenDayFiveHourPeakMultiple = summary?.five_hour_peak_multiple;
   const recentDayFiveHourPeak = summary?.recent_day_five_hour_peak_cost;
   const recentDayFiveHourPeakMultiple = summary?.recent_day_five_hour_peak_multiple;
-  const recentDayPeakSpeedDays = summary?.recent_day_five_hour_peak_speed_days ?? summary?.current_speed_days;
-  const fiveXRecentDayPeakSpeedDays = summary?.five_x_recent_day_five_hour_peak_speed_days ?? summary?.five_x_speed_days ?? summary?.ten_x_speed_days;
-  const sevenDayPeakSpeedDays = summary?.seven_day_five_hour_peak_speed_days ?? summary?.seven_day_peak_speed_days;
-  const fiveXPeakSpeedDays = summary?.five_x_seven_day_five_hour_peak_speed_days ?? summary?.five_x_peak_speed_days;
+  const recent24hSpeedDays = summary?.current_speed_days;
+  const fiveXRecent24hSpeedDays = summary?.five_x_speed_days ?? summary?.ten_x_speed_days;
+  const sevenDayPeak24hSpeedDays = summary?.seven_day_peak_speed_days;
+  const fiveXPeak24hSpeedDays = summary?.five_x_peak_speed_days;
   const fiveHourUsedPercent = summary?.used_5h_percent;
   const sevenDayUsedPercent = summary?.used_7d_percent;
   return (
@@ -1389,33 +1389,33 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
         />
 
         <CapacityMetric
-          label="预估天数：最近一天5h"
-          value={formatDays(recentDayPeakSpeedDays)}
-          sub={`按5h峰值折算日消耗 ${formatUsd(summary?.recent_day_five_hour_peak_daily_cost)}，5倍 ${formatDays(fiveXRecentDayPeakSpeedDays)}`}
-          percent={daysScalePercent(recentDayPeakSpeedDays)}
-          tone={daysScaleTone(recentDayPeakSpeedDays)}
+          label="预估天数：最近24h"
+          value={formatDays(recent24hSpeedDays)}
+          sub={`按最近24h消耗 ${formatUsd(summary?.recent_24h_cost)}，5倍 ${formatDays(fiveXRecent24hSpeedDays)}`}
+          percent={daysScalePercent(recent24hSpeedDays)}
+          tone={daysScaleTone(recent24hSpeedDays)}
         />
         <CapacityMetric
-          label="预估天数：7天最高5h"
-          value={formatDays(sevenDayPeakSpeedDays)}
-          sub={`按5h峰值折算日消耗 ${formatUsd(summary?.seven_day_five_hour_peak_daily_cost)}，5倍 ${formatDays(fiveXPeakSpeedDays)}`}
-          percent={daysScalePercent(sevenDayPeakSpeedDays)}
-          tone={daysScaleTone(sevenDayPeakSpeedDays)}
+          label="预估天数：7天最高24h"
+          value={formatDays(sevenDayPeak24hSpeedDays)}
+          sub={`按7天最高24h消耗 ${formatUsd(summary?.seven_day_24h_peak_cost)}，5倍 ${formatDays(fiveXPeak24hSpeedDays)}`}
+          percent={daysScalePercent(sevenDayPeak24hSpeedDays)}
+          tone={daysScaleTone(sevenDayPeak24hSpeedDays)}
         />
 
         <CapacityMetric
-          label="5倍预估：最近一天5h"
-          value={formatDays(fiveXRecentDayPeakSpeedDays)}
-          sub="按最近一天5h峰值折算日消耗 * 5"
-          percent={daysScalePercent(fiveXRecentDayPeakSpeedDays)}
-          tone={daysScaleTone(fiveXRecentDayPeakSpeedDays)}
+          label="5倍预估：最近24h"
+          value={formatDays(fiveXRecent24hSpeedDays)}
+          sub="按最近24h消耗速度 * 5"
+          percent={daysScalePercent(fiveXRecent24hSpeedDays)}
+          tone={daysScaleTone(fiveXRecent24hSpeedDays)}
         />
         <CapacityMetric
-          label="5倍预估：7天最高5h"
-          value={formatDays(fiveXPeakSpeedDays)}
-          sub="按7天最高5h峰值折算日消耗 * 5"
-          percent={daysScalePercent(fiveXPeakSpeedDays)}
-          tone={daysScaleTone(fiveXPeakSpeedDays)}
+          label="5倍预估：7天最高24h"
+          value={formatDays(fiveXPeak24hSpeedDays)}
+          sub="按7天最高24h消耗速度 * 5"
+          percent={daysScalePercent(fiveXPeak24hSpeedDays)}
+          tone={daysScaleTone(fiveXPeak24hSpeedDays)}
         />
       </div>
     </section>
@@ -1423,11 +1423,15 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
 }
 
 function CapacityMetric({ label, value, sub, percent, tone = "muted" }: { label: string; value: string; sub: string; percent?: number | null; tone?: "info" | "success" | "warning" | "danger" | "muted" }) {
+  const [labelMain, labelSuffix] = label.split("：");
   return (
     <div className="capacity-metric">
-      <span>{label}</span>
+      <span className="capacity-metric-label">
+        <b>{labelMain}</b>
+        {labelSuffix ? <em>：{labelSuffix}</em> : null}
+      </span>
       <strong>{value}</strong>
-      <em>{sub}</em>
+      <small>{sub}</small>
       {percent !== undefined && percent !== null && (
         <div className="capacity-meter" aria-label={`${label} ${percent}%`}>
           <div className={`capacity-meter-fill ${tone}`} style={{ width: `${clampPercent(percent)}%` }} />
