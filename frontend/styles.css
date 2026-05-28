@@ -838,6 +838,54 @@ legend {
   font-weight: 500;
 }
 
+.capacity-metric-value {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.capacity-metric-value span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.capacity-metric-value.excellent,
+.capacity-meter-legend-value.excellent,
+.capacity-secondary-value.excellent {
+  color: #7f3df1;
+}
+
+.capacity-metric-value.info,
+.capacity-meter-legend-value.info,
+.capacity-secondary-value.info {
+  color: #3575cf;
+}
+
+.capacity-metric-value.success,
+.capacity-meter-legend-value.success,
+.capacity-secondary-value.success {
+  color: var(--success);
+}
+
+.capacity-metric-value.warning,
+.capacity-meter-legend-value.warning,
+.capacity-secondary-value.warning {
+  color: #c47a14;
+}
+
+.capacity-metric-value.danger,
+.capacity-meter-legend-value.danger,
+.capacity-secondary-value.danger {
+  color: var(--danger);
+}
+
+.capacity-metric-value.muted,
+.capacity-meter-legend-value.muted,
+.capacity-secondary-value.muted {
+  color: var(--muted);
+}
+
 .capacity-meter {
   position: relative;
   overflow: hidden;
@@ -886,7 +934,6 @@ legend {
 }
 
 .capacity-meter-legend strong {
-  color: var(--text);
   font-size: 12px;
   font-weight: 600;
 }

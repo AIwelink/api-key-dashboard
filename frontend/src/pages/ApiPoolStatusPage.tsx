@@ -1394,7 +1394,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`峰值 ${formatUsd(recentDayFiveHourPeak)}，总容量：5h ${formatUsd(summary?.five_hour_capacity_usd)}`}
           percent={multipleScalePercent(recentDayFiveHourPeakMultiple)}
           tone={multipleScaleTone(recentDayFiveHourPeakMultiple)}
-          overlay={capacityOverlay("\u4f7f\u7528\u6c60", formatMultiple(activeRecentDayFiveHourPeakMultiple), multipleScalePercent(activeRecentDayFiveHourPeakMultiple), multipleScaleTone(activeRecentDayFiveHourPeakMultiple))}
+          overlay={capacityOverlay("使用池", formatMultiple(activeRecentDayFiveHourPeakMultiple), multipleScalePercent(activeRecentDayFiveHourPeakMultiple), multipleScaleTone(activeRecentDayFiveHourPeakMultiple))}
         />
         <CapacityMetric
           label="峰值容量：7天最高5h"
@@ -1402,7 +1402,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`峰值 ${formatUsd(sevenDayFiveHourPeak)}，总容量：5h ${formatUsd(summary?.five_hour_capacity_usd)}`}
           percent={multipleScalePercent(sevenDayFiveHourPeakMultiple)}
           tone={multipleScaleTone(sevenDayFiveHourPeakMultiple)}
-          overlay={capacityOverlay("\u4f7f\u7528\u6c60", formatMultiple(activeSevenDayFiveHourPeakMultiple), multipleScalePercent(activeSevenDayFiveHourPeakMultiple), multipleScaleTone(activeSevenDayFiveHourPeakMultiple))}
+          overlay={capacityOverlay("使用池", formatMultiple(activeSevenDayFiveHourPeakMultiple), multipleScalePercent(activeSevenDayFiveHourPeakMultiple), multipleScaleTone(activeSevenDayFiveHourPeakMultiple))}
         />
 
         <CapacityMetric
@@ -1411,7 +1411,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`按最近24h消耗 ${formatUsd(summary?.recent_24h_cost)}`}
           percent={daysScalePercent(recent24hSpeedDays)}
           tone={daysScaleTone(recent24hSpeedDays)}
-          overlay={capacityOverlay("\u4f7f\u7528\u6c60", formatDays(activeRecent24hSpeedDays), daysScalePercent(activeRecent24hSpeedDays), daysScaleTone(activeRecent24hSpeedDays))}
+          overlay={capacityOverlay("使用池", formatDays(activeRecent24hSpeedDays), daysScalePercent(activeRecent24hSpeedDays), daysScaleTone(activeRecent24hSpeedDays))}
           showMeterHead
         />
         <CapacityMetric
@@ -1420,7 +1420,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`按7天最高24h消耗 ${formatUsd(summary?.seven_day_24h_peak_cost)}`}
           percent={daysScalePercent(sevenDayPeak24hSpeedDays)}
           tone={daysScaleTone(sevenDayPeak24hSpeedDays)}
-          overlay={capacityOverlay("\u4f7f\u7528\u6c60", formatDays(activeSevenDayPeak24hSpeedDays), daysScalePercent(activeSevenDayPeak24hSpeedDays), daysScaleTone(activeSevenDayPeak24hSpeedDays))}
+          overlay={capacityOverlay("使用池", formatDays(activeSevenDayPeak24hSpeedDays), daysScalePercent(activeSevenDayPeak24hSpeedDays), daysScaleTone(activeSevenDayPeak24hSpeedDays))}
           showMeterHead
         />
       </div>
@@ -1485,17 +1485,24 @@ function CapacityMetric({
         <b>{labelMain}</b>
         {labelSuffix ? <em>：{labelSuffix}</em> : null}
       </span>
-      <strong>{value}</strong>
+      <strong className={`capacity-metric-value ${tone}`}>
+        {overlay ? (
+          <>
+            <span>含备用</span>
+            {value}
+          </>
+        ) : value}
+      </strong>
       <small>{sub}</small>
       {percent !== undefined && percent !== null && (
         <div className="capacity-primary-meter">
           {showMeterHead && (
             <div className="capacity-secondary-head">
               <span>{sub}</span>
-              <strong>{value}</strong>
+              <strong className={`capacity-secondary-value ${tone}`}>{value}</strong>
             </div>
           )}
-          {overlay && <CapacityMeterLegend overlay={overlay} reserveValue={value} />}
+          {overlay && <CapacityMeterLegend overlay={overlay} reserveValue={value} reserveTone={tone} />}
           <CapacityMeter label={label} percent={percent} tone={tone} overlay={overlay} reverse={reverse} />
         </div>
       )}
@@ -1503,11 +1510,11 @@ function CapacityMetric({
         <div className="capacity-secondary">
           <div className="capacity-secondary-head">
             <span>{secondary.label}</span>
-            <strong>{secondary.value}</strong>
+            <strong className={`capacity-secondary-value ${secondary.tone || "muted"}`}>{secondary.value}</strong>
           </div>
           {secondary.percent !== undefined && secondary.percent !== null && (
             <>
-              {secondary.overlay && <CapacityMeterLegend overlay={secondary.overlay} reserveValue={secondary.value} />}
+              {secondary.overlay && <CapacityMeterLegend overlay={secondary.overlay} reserveValue={secondary.value} reserveTone={secondary.tone || "muted"} />}
               <CapacityMeter label={`${label} ${secondary.label}`} percent={secondary.percent} tone={secondary.tone || "muted"} overlay={secondary.overlay} />
             </>
           )}
@@ -1517,11 +1524,19 @@ function CapacityMetric({
   );
 }
 
-function CapacityMeterLegend({ overlay, reserveValue }: { overlay: CapacityMeterOverlay; reserveValue: string }) {
+function CapacityMeterLegend({
+  overlay,
+  reserveValue,
+  reserveTone,
+}: {
+  overlay: CapacityMeterOverlay;
+  reserveValue: string;
+  reserveTone: CapacityMetricTone;
+}) {
   return (
     <div className="capacity-meter-legend">
-      <span>{overlay.label} {overlay.value}</span>
-      <strong>含备用 {reserveValue}</strong>
+      <span className={`capacity-meter-legend-value ${overlay.tone || "muted"}`}>{overlay.label} {overlay.value}</span>
+      <strong className={`capacity-meter-legend-value ${reserveTone}`}>含备用 {reserveValue}</strong>
     </div>
   );
 }
