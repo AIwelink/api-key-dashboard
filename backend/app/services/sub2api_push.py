@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -24,6 +24,7 @@ PUSH_PROBLEM_GROUP_FALLBACK_ID = 4
 VERIFICATION_RETRY_ATTEMPTS = 3
 PUSH_ERROR_TASK_TYPE = "push_use_pool_error"
 PROBLEM_CLASS_PUSH_TOKEN_EXPIRED = "push_token_expired"
+BEIJING_TZ = timezone(timedelta(hours=8))
 REMOTE_STRIP_FIELDS = {
     "id",
     "created_at",
@@ -609,8 +610,8 @@ def _name_date(metadata: dict[str, Any]) -> str:
     )
     parsed = _parse_datetime(value)
     if parsed is None:
-        return now_utc().strftime("%m%d")
-    return parsed.strftime("%m%d")
+        return now_utc().astimezone(BEIJING_TZ).strftime("%m%d")
+    return parsed.astimezone(BEIJING_TZ).strftime("%m%d")
 
 
 def _name_account_type(account_json: dict[str, Any], metadata: dict[str, Any]) -> str:
@@ -654,7 +655,7 @@ def _parse_datetime(value: Any) -> datetime | None:
     else:
         return None
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
+        return parsed.replace(tzinfo=BEIJING_TZ)
     return parsed.astimezone(UTC)
 
 

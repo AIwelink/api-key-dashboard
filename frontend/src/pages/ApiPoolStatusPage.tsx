@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { errorMessage, formatDateTime, text } from "../utils/format";
+import { errorMessage, formatDateTime, parseDisplayDate, text } from "../utils/format";
 
 type Props = {
   token: string;
@@ -1664,9 +1664,7 @@ function isTemporaryRateLimit(account: RemoteAccount): boolean {
 
 function isFutureDate(value: unknown): boolean {
   if (!value) return false;
-  const date = typeof value === "number"
-    ? new Date(value > 10_000_000_000 ? value : value * 1000)
-    : new Date(String(value));
+  const date = parseDisplayDate(value);
   return Number.isFinite(date.getTime()) && date.getTime() > Date.now();
 }
 
@@ -1756,10 +1754,6 @@ function privacyTagTone(value: string): string {
 }
 
 function formatOptionalDate(value: unknown): string {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const milliseconds = value > 10_000_000_000 ? value : value * 1000;
-    return formatDateTime(new Date(milliseconds).toISOString()) || "从未";
-  }
   const formatted = formatDateTime(value);
   return formatted && formatted !== "-" ? formatted : "从未";
 }
