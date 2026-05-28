@@ -589,7 +589,7 @@ def _ensure_single_remote_group(remote_account: dict[str, Any], group_id: int) -
 def _account_type(account_json: dict[str, Any], metadata: dict[str, Any]) -> str:
     credentials = account_json.get("credentials") if isinstance(account_json.get("credentials"), dict) else {}
     value = metadata.get("account_type") or credentials.get("plan_type") or ""
-    return str(value).strip().lower()
+    return _normalize_account_type(value)
 
 
 def build_sub2api_account_name(account_json: dict[str, Any], metadata: dict[str, Any]) -> str:
@@ -616,10 +616,19 @@ def _name_date(metadata: dict[str, Any]) -> str:
 def _name_account_type(account_json: dict[str, Any], metadata: dict[str, Any]) -> str:
     credentials = account_json.get("credentials") if isinstance(account_json.get("credentials"), dict) else {}
     value = metadata.get("account_type") or credentials.get("plan_type") or "unknown"
-    normalized = str(value).strip().lower()
+    normalized = _normalize_account_type(value)
+    if normalized == "team":
+        return "team子号"
     if normalized in {"plus", "free", "pro"}:
         return normalized
     return str(value).strip() or "unknown"
+
+
+def _normalize_account_type(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"team", "team_sub", "team-sub", "team_child", "team_child_account", "team子号", "team 子号"}:
+        return "team"
+    return normalized
 
 
 def _name_payment_type(value: Any) -> str:

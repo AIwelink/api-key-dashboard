@@ -29,7 +29,7 @@ export type PoolStatus = "library" | "available" | "reserve" | "active" | "probl
 
 export type UploadMode = "fill" | "parse";
 export type UploadTemplate = "sub2api" | "purchased_jinyao";
-export type AccountType = "plus" | "free" | "pro" | "other";
+export type AccountType = "plus" | "team" | "free" | "pro" | "other";
 
 export type UploadFields = {
   email_session: string;
@@ -49,7 +49,7 @@ export type UploadFields = {
 export type ApiPool = {
   id: string;
   name: string;
-  account_type: "plus" | "free" | "pro" | "other";
+  account_type: AccountType;
   site_id: string;
   active_group_id: number;
   verification_group_id?: number | null;

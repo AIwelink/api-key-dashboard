@@ -524,6 +524,7 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
         items={[
           ["当前账号", `${accounts.length} / ${total}`],
           ["Plus", countBy(accounts, "account_type", "plus")],
+          ["Team子号", countBy(accounts, "account_type", "team")],
           ["已绑手机", accounts.filter((item) => item.metadata.phone_bound === true).length],
           ["问题标记", accounts.filter((item) => text(item.metadata.last_error)).length],
         ]}

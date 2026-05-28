@@ -25,7 +25,7 @@ type FreeToPlusResponse = {
 };
 
 type PushErrorStatus = "open" | "pending" | "processing" | "archived" | "resolved" | "all";
-type PushErrorAccountType = "all" | "plus" | "free";
+type PushErrorAccountType = "all" | "plus" | "team" | "free";
 
 type PushErrorResponse = {
   items: AccountDocument[];
@@ -38,6 +38,7 @@ type PushErrorResponse = {
     archived: number;
     resolved: number;
     free: number;
+    team: number;
     plus: number;
   };
 };
@@ -381,7 +382,7 @@ export function TodoPage({ token, showToast }: Props) {
 export function PushErrorTodoPage({ token, showToast }: Props) {
   const [accounts, setAccounts] = useState<AccountDocument[]>([]);
   const [total, setTotal] = useState(0);
-  const [stats, setStats] = useState<PushErrorResponse["stats"]>({ pending: 0, processing: 0, archived: 0, resolved: 0, free: 0, plus: 0 });
+  const [stats, setStats] = useState<PushErrorResponse["stats"]>({ pending: 0, processing: 0, archived: 0, resolved: 0, free: 0, team: 0, plus: 0 });
   const [status, setStatus] = useState<PushErrorStatus>("open");
   const [accountType, setAccountType] = useState<PushErrorAccountType>("plus");
   const [query, setQuery] = useState("");
@@ -481,6 +482,7 @@ export function PushErrorTodoPage({ token, showToast }: Props) {
               }}
             >
               <option value="plus">plus</option>
+              <option value="team">team子号</option>
               <option value="free">free</option>
               <option value="all">全部</option>
             </select>
@@ -522,6 +524,7 @@ export function PushErrorTodoPage({ token, showToast }: Props) {
             ["已归档", stats.archived],
             ["已转处理", stats.resolved],
             ["plus", stats.plus],
+            ["team子号", stats.team],
             ["free", stats.free],
           ]}
         />

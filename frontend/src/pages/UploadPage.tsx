@@ -123,7 +123,7 @@ export function UploadPage({ token, showToast }: Props) {
       account_json: pretty(account),
       email_session:
         current.email_session || text(extra.email_session) || text(extra.mailbox_connection) || text(credentials.email) || text(extra.email) || text(account.name),
-      account_type: isAccountType(credentials.plan_type) ? credentials.plan_type : current.account_type,
+      account_type: normalizeAccountType(credentials.plan_type, current.account_type),
       twoFA: current.twoFA || text(extra["2FA"]),
       self_produced: uploadTemplate === "purchased_jinyao" ? "false" : current.self_produced,
       purchase_source: uploadTemplate === "purchased_jinyao" ? current.purchase_source || "金幺" : current.purchase_source,
@@ -352,6 +352,7 @@ export function UploadPage({ token, showToast }: Props) {
                 >
                   <option value="free">free</option>
                   <option value="plus">plus</option>
+                  <option value="team">team子号</option>
                   <option value="pro">pro</option>
                   <option value="other">其他</option>
                 </select>
@@ -376,6 +377,7 @@ export function UploadPage({ token, showToast }: Props) {
                 required
               >
                 <option value="plus">plus</option>
+                <option value="team">team子号</option>
                 <option value="free">free</option>
                 <option value="pro">pro</option>
                 <option value="other">其他</option>
@@ -557,7 +559,7 @@ function FieldHelp() {
               <code>account_type</code>
             </td>
             <td>必填</td>
-            <td>标记 plus/free/pro/其他。</td>
+            <td>标记 plus/team子号/free/pro/其他。</td>
           </tr>
           <tr>
             <td>支付类型</td>
@@ -737,5 +739,11 @@ function parsedAccountLabel(account: Record<string, unknown> | undefined) {
 }
 
 function isAccountType(value: unknown): value is UploadFields["account_type"] {
-  return value === "plus" || value === "free" || value === "pro" || value === "other";
+  return value === "plus" || value === "team" || value === "free" || value === "pro" || value === "other";
+}
+
+function normalizeAccountType(value: unknown, fallback: UploadFields["account_type"]): UploadFields["account_type"] {
+  const normalized = text(value).trim().toLowerCase();
+  if (["team", "team_sub", "team-sub", "team_child", "team_child_account", "team子号", "team 子号"].includes(normalized)) return "team";
+  return isAccountType(normalized) ? normalized : fallback;
 }

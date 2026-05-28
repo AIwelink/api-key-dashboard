@@ -89,6 +89,7 @@ async def list_push_error_accounts(
         "archived": await db.accounts.count_documents(status_query(STATUS_ARCHIVED, account_type)),
         "resolved": await db.accounts.count_documents(status_query(STATUS_RESOLVED, account_type)),
         "free": await db.accounts.count_documents(status_query("all", "free")),
+        "team": await db.accounts.count_documents(status_query("all", "team")),
         "plus": await db.accounts.count_documents(status_query("all", "plus")),
     }
     return {"items": items, "total": total, "skip": skip, "limit": limit, "stats": stats}

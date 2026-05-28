@@ -63,7 +63,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
   const [reserveTotal, setReserveTotal] = useState(0);
-  const [reserveSummary, setReserveSummary] = useState({ plus: 0, free: 0, pro: 0, phoneBound: 0, problem: 0 });
+  const [reserveSummary, setReserveSummary] = useState({ plus: 0, team: 0, free: 0, pro: 0, phoneBound: 0, problem: 0 });
   const [localPools, setLocalPools] = useState<ApiPool[]>([]);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -103,9 +103,10 @@ export function AccountPoolsPage({ token, showToast }: Props) {
         if (key && value) params.set(key, value);
         return `/accounts?${params.toString()}`;
       };
-      const [allData, plusData, freeData, proData, phoneData] = await Promise.all([
+      const [allData, plusData, teamData, freeData, proData, phoneData] = await Promise.all([
         api<AccountsResponse>(withFilter(), token),
         api<AccountsResponse>(withFilter("account_type", "plus"), token),
+        api<AccountsResponse>(withFilter("account_type", "team"), token),
         api<AccountsResponse>(withFilter("account_type", "free"), token),
         api<AccountsResponse>(withFilter("account_type", "pro"), token),
         api<AccountsResponse>(withFilter("phone_bound", "true"), token),
@@ -113,6 +114,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       setReserveTotal(allData.total);
       setReserveSummary({
         plus: plusData.total,
+        team: teamData.total,
         free: freeData.total,
         pro: proData.total,
         phoneBound: phoneData.total,
@@ -304,6 +306,10 @@ export function AccountPoolsPage({ token, showToast }: Props) {
             <div className="compact-stat">
               <span>Plus</span>
               <strong>{reserveSummary.plus}</strong>
+            </div>
+            <div className="compact-stat">
+              <span>Team子号</span>
+              <strong>{reserveSummary.team}</strong>
             </div>
             <div className="compact-stat">
               <span>已绑手机</span>
