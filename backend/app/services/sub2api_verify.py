@@ -282,7 +282,6 @@ async def _acquire_verification_lock(
                     "locked_by_user_id": actor.get("_id"),
                     "locked_by_name": actor_name(actor),
                 },
-                "metadata.updated_at": now,
                 "metadata.updated_by_user_id": actor.get("_id"),
                 "metadata.updated_by_name": actor_name(actor),
             }
@@ -322,7 +321,6 @@ async def _mark_verification_completed(
         "metadata.verification_cleanup_status": cleanup_status,
         "metadata.verification_cleanup_error": cleanup.get("error"),
         "metadata.last_error": None if passed else str(verification.get("error") or "verification failed"),
-        "metadata.updated_at": now,
         "metadata.updated_by_user_id": actor.get("_id"),
         "metadata.updated_by_name": actor_name(actor),
     }
@@ -407,7 +405,6 @@ async def _write_local_remote_test_if_bound(
                 "metadata.remote_test_response_preview": verification.get("response_preview"),
                 "metadata.remote_test_latency_ms": verification.get("latency_ms"),
                 "metadata.remote_test_error": verification.get("error"),
-                "metadata.updated_at": now,
                 "metadata.updated_by_user_id": actor.get("_id"),
                 "metadata.updated_by_name": actor_name(actor),
             }

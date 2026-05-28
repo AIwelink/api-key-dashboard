@@ -209,7 +209,6 @@ async def soft_delete_account(
     metadata = dict(account.get("metadata", {}))
     metadata["deleted_at"] = now_utc()
     metadata["deleted_by"] = actor.get("_id")
-    metadata["updated_at"] = now_utc()
     await db.accounts.update_one({"_id": account["_id"]}, {"$set": {"metadata": metadata}})
 
 

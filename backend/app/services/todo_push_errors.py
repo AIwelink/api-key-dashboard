@@ -122,7 +122,6 @@ async def start_push_error_task(db: AsyncIOMotorDatabase, *, account_id: str, ac
                     "locked_at": now,
                     "expires_at": now + LOCK_TTL,
                 },
-                "metadata.updated_at": now,
                 "metadata.updated_by_user_id": actor.get("_id"),
                 "metadata.updated_by_name": actor_name(actor),
             }
@@ -149,7 +148,6 @@ async def release_push_error_task(db: AsyncIOMotorDatabase, *, account_id: str, 
         actor=actor,
         updates={
             "metadata.problem_task_status": STATUS_PENDING,
-            "metadata.updated_at": now_utc(),
             "metadata.updated_by_user_id": actor.get("_id"),
             "metadata.updated_by_name": actor_name(actor),
         },
@@ -202,7 +200,6 @@ async def test_push_error_account(
         "metadata.problem_last_test_at": now,
         "metadata.problem_last_test_error": None if verification.get("success") is True else str(verification.get("error") or "测试失败"),
         "metadata.problem_last_test_result": verification,
-        "metadata.updated_at": now,
         "metadata.updated_by_user_id": actor.get("_id"),
         "metadata.updated_by_name": actor_name(actor),
     }
@@ -264,7 +261,6 @@ async def decide_push_error_account(
             "metadata.plus_reprocess_reason": metadata.get("problem_error") or "push token expired",
             "metadata.plus_reprocess_created_at": now,
             "metadata.pool_status": "problem",
-            "metadata.updated_at": now,
             "metadata.updated_by_user_id": actor.get("_id"),
             "metadata.updated_by_name": actor_name(actor),
         }
@@ -280,7 +276,6 @@ async def decide_push_error_account(
             "metadata.problem_resolved_by_name": actor_name(actor),
             "metadata.problem_resolution_note": note or "",
             "metadata.pool_status": "problem",
-            "metadata.updated_at": now,
             "metadata.updated_by_user_id": actor.get("_id"),
             "metadata.updated_by_name": actor_name(actor),
         }

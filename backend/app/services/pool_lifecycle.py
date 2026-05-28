@@ -142,7 +142,6 @@ async def enter_reserve(
                 "metadata.pool_id": pool_id,
                 "metadata.priority": priority,
                 "metadata.last_error": None,
-                "metadata.updated_at": now,
                 "metadata.updated_by_user_id": actor.get("_id"),
                 "metadata.updated_by_name": actor_name(actor),
             }
@@ -205,7 +204,6 @@ async def manual_transfer_account(
     now = now_utc()
     updates: dict[str, Any] = {
         "metadata.pool_status": target_status,
-        "metadata.updated_at": now,
         "metadata.updated_by_user_id": actor.get("_id"),
         "metadata.updated_by_name": actor_name(actor),
     }

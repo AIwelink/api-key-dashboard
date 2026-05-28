@@ -41,7 +41,6 @@ async def manually_unbind_sub2api_account(
                 "metadata.sub2api_manual_unbound_by_name": actor_name(actor),
                 "metadata.sub2api_last_error": None,
                 "metadata.last_error": None,
-                "metadata.updated_at": now,
                 "metadata.updated_by_user_id": actor.get("_id"),
                 "metadata.updated_by_name": actor_name(actor),
             },

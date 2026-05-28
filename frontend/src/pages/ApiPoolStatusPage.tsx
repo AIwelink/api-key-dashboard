@@ -56,6 +56,8 @@ type CapacitySummary = {
   recent_24h_cost?: number;
   estimated_5h_consumed_accounts?: number | null;
   estimated_24h_consumed_accounts?: number | null;
+  estimated_recent_24h_consumed_accounts?: number | null;
+  estimated_seven_day_peak_24h_consumed_accounts?: number | null;
   seven_day_cost?: number;
   recent_5h_remaining_usd?: number;
   recent_24h_remaining_usd?: number;
@@ -1405,17 +1407,6 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           reverse
         />
         <CapacityMetric
-          label="预估消耗：最近5h"
-          value={formatAccountCount(summary?.estimated_5h_consumed_accounts)}
-          sub={`按最近5h消耗 ${formatUsd(summary?.recent_5h_cost)} 折算`}
-        />
-        <CapacityMetric
-          label="预估消耗：最近24h"
-          value={formatAccountCount(summary?.estimated_24h_consumed_accounts)}
-          sub={`按最近24h消耗 ${formatUsd(summary?.recent_24h_cost)} 折算`}
-        />
-
-        <CapacityMetric
           label="峰值容量：最近一天5h"
           value={formatMultiple(recentDayFiveHourPeakMultiple)}
           sub={`峰值 ${formatUsd(recentDayFiveHourPeak)}，总容量：5h ${formatUsd(summary?.five_hour_capacity_usd)}`}
@@ -1447,6 +1438,16 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           percent={daysScalePercent(sevenDayPeak24hSpeedDays)}
           tone={daysScaleTone(sevenDayPeak24hSpeedDays)}
           overlay={capacityOverlay("使用池", formatDays(activeSevenDayPeak24hSpeedDays), daysScalePercent(activeSevenDayPeak24hSpeedDays), daysScaleTone(activeSevenDayPeak24hSpeedDays))}
+        />
+        <CapacityMetric
+          label="预估消耗：最近24h"
+          value={formatAccountCount(summary?.estimated_recent_24h_consumed_accounts ?? summary?.estimated_24h_consumed_accounts)}
+          sub={`按最近24h消耗 ${formatUsd(summary?.recent_24h_cost)} / 单账号7d限额折算`}
+        />
+        <CapacityMetric
+          label="预估消耗：7天最高24h"
+          value={formatAccountCount(summary?.estimated_seven_day_peak_24h_consumed_accounts)}
+          sub={`按7天最高24h消耗 ${formatUsd(summary?.seven_day_24h_peak_cost)} / 单账号7d限额折算`}
         />
       </div>
     </section>

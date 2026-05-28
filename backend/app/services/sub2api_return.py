@@ -452,7 +452,6 @@ async def _acquire_local_return_lock(
                     "locked_by_name": actor_name(actor),
                 },
                 "metadata.sub2api_delete_status": "pending",
-                "metadata.updated_at": now,
                 "metadata.updated_by_user_id": actor.get("_id"),
                 "metadata.updated_by_name": actor_name(actor),
             }
@@ -616,7 +615,7 @@ async def _mark_cache_refresh_error(db: AsyncIOMotorDatabase, *, account_id: str
         return
     await db.accounts.update_one(
         {"_id": oid},
-        {"$set": {"metadata.sub2api_cache_refresh_after_delete_error": error, "metadata.updated_at": now_utc()}},
+        {"$set": {"metadata.sub2api_cache_refresh_after_delete_error": error}},
     )
 
 

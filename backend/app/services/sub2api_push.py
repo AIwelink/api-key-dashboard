@@ -802,7 +802,6 @@ async def _acquire_push_lock(
                     "target_group_id": group_id,
                 },
                 "metadata.sub2api_push_status": "pushing",
-                "metadata.updated_at": now,
                 "metadata.updated_by_user_id": actor.get("_id"),
                 "metadata.updated_by_name": actor_name(actor),
             }
@@ -856,7 +855,6 @@ async def _mark_push_completed(
         "metadata.verification_checked_at": now,
         "metadata.verification_error": error,
         "metadata.last_error": error,
-        "metadata.updated_at": now,
         "metadata.updated_by_user_id": actor.get("_id"),
         "metadata.updated_by_name": actor_name(actor),
         "account_json.name": remote_name,
@@ -897,7 +895,6 @@ async def _mark_push_failed(
             "metadata.sub2api_push_status": "failed",
             "metadata.sub2api_last_error": error,
             "metadata.last_error": error,
-            "metadata.updated_at": now,
         }
     }
     if unset_lock:
@@ -916,7 +913,6 @@ async def _mark_push_uncertain(db: AsyncIOMotorDatabase, *, account_oid: Any, or
                 "metadata.sub2api_last_error": error,
                 "metadata.last_error": "push remote state unknown",
                 "metadata.analysis.remote_uncertain": True,
-                "metadata.updated_at": now,
             },
             "$unset": {"metadata.push_lock": ""},
         },
