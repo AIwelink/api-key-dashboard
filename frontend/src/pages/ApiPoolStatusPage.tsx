@@ -94,6 +94,8 @@ type CapacitySummary = {
   available_5h_percent?: number;
   used_7d_percent?: number;
   available_7d_percent?: number;
+  active_used_5h_percent?: number;
+  active_used_7d_percent?: number;
   total_accounts?: number;
   active_available_accounts?: number;
   reserve_available_accounts?: number;
@@ -1355,8 +1357,12 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
   const activeSevenDayPeak24hSpeedDays = summary?.active_seven_day_peak_speed_days;
   const fiveHourUsedPercent = summary?.used_5h_percent;
   const sevenDayUsedPercent = summary?.used_7d_percent;
+  const activeFiveHourUsedPercent = summary?.active_used_5h_percent;
+  const activeSevenDayUsedPercent = summary?.active_used_7d_percent;
   const fiveHourRemainingPercent = remainingPercent(fiveHourUsedPercent);
   const sevenDayRemainingPercent = remainingPercent(sevenDayUsedPercent);
+  const activeFiveHourRemainingPercent = remainingPercent(activeFiveHourUsedPercent);
+  const activeSevenDayRemainingPercent = remainingPercent(activeSevenDayUsedPercent);
   return (
     <section className={`capacity-runway-card ${tone}`}>
       <div className="capacity-runway-head">
@@ -1370,20 +1376,30 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
       <div className="capacity-runway-grid">
         <CapacityMetric
           label="总容量：5h"
-          value={formatUsd(summary?.active_five_hour_capacity_usd ?? summary?.five_hour_capacity_usd)}
-          sideValue={capacitySideValue("备用池", summary?.reserve_five_hour_capacity_usd)}
+          value={formatUsd(summary?.five_hour_capacity_usd)}
+          sideValues={[
+            capacitySideValue("实际池", summary?.active_five_hour_capacity_usd),
+            capacitySideValue("备用池", summary?.reserve_five_hour_capacity_usd),
+          ]}
           sub={`可用额度：当前已用 ${formatUsd(summary?.five_hour_used_estimated_usd)}，预估可用 ${formatUsd(summary?.five_hour_remaining_estimated_usd)}`}
           percent={fiveHourRemainingPercent}
-          tone={usagePercentTone(fiveHourUsedPercent)}
+          tone={capacityAvailabilityTone(fiveHourUsedPercent, fiveHourRemainingPercent)}
+          overlay={capacityOverlay("实际池", formatPercent(activeFiveHourRemainingPercent), activeFiveHourRemainingPercent, capacityAvailabilityTone(activeFiveHourUsedPercent, activeFiveHourRemainingPercent))}
+          meterValue={formatPercent(fiveHourRemainingPercent)}
           reverse
         />
         <CapacityMetric
           label="总容量：7d"
-          value={formatUsd(summary?.active_seven_day_capacity_usd ?? summary?.seven_day_capacity_usd)}
-          sideValue={capacitySideValue("备用池", summary?.reserve_seven_day_capacity_usd)}
+          value={formatUsd(summary?.seven_day_capacity_usd)}
+          sideValues={[
+            capacitySideValue("实际池", summary?.active_seven_day_capacity_usd),
+            capacitySideValue("备用池", summary?.reserve_seven_day_capacity_usd),
+          ]}
           sub={`可用额度：当前已用 ${formatUsd(summary?.seven_day_used_estimated_usd)}，预估可用 ${formatUsd(summary?.seven_day_remaining_estimated_usd)}`}
           percent={sevenDayRemainingPercent}
-          tone={usagePercentTone(sevenDayUsedPercent)}
+          tone={capacityAvailabilityTone(sevenDayUsedPercent, sevenDayRemainingPercent)}
+          overlay={capacityOverlay("实际池", formatPercent(activeSevenDayRemainingPercent), activeSevenDayRemainingPercent, capacityAvailabilityTone(activeSevenDayUsedPercent, activeSevenDayRemainingPercent))}
+          meterValue={formatPercent(sevenDayRemainingPercent)}
           reverse
         />
 
@@ -1456,25 +1472,27 @@ function capacityHealthReason(summary?: CapacitySummary) {
 function CapacityMetric({
   label,
   value,
-  sideValue,
+  sideValues,
   sub,
   percent,
   tone = "muted",
   overlay,
+  meterValue,
   reverse = false,
   showMeterHead = false,
   secondary,
 }: {
   label: string;
   value: string;
-  sideValue?: {
+  sideValues?: Array<{
     label: string;
     value: string;
-  };
+  } | undefined>;
   sub: string;
   percent?: number | null;
   tone?: CapacityMetricTone;
   overlay?: CapacityMeterOverlay;
+  meterValue?: string;
   reverse?: boolean;
   showMeterHead?: boolean;
   secondary?: {
@@ -1486,6 +1504,8 @@ function CapacityMetric({
   };
 }) {
   const [labelMain, labelSuffix] = label.split("：");
+  const visibleSideValues = (sideValues || []).filter((item): item is { label: string; value: string } => Boolean(item));
+  const showInlineSub = Boolean(overlay && !reverse);
   return (
     <div className="capacity-metric">
       <span className="capacity-metric-label">
@@ -1494,22 +1514,26 @@ function CapacityMetric({
       </span>
       <div className="capacity-metric-value-row">
         <strong className={`capacity-metric-value ${tone}`}>
-          {overlay ? (
+          {showInlineSub ? (
             <>
               <span>含备用</span>
               {value}
             </>
           ) : value}
         </strong>
-        {overlay && <small className="capacity-metric-inline-sub">{sub}</small>}
-        {sideValue && (
-          <span className="capacity-metric-side-value">
-            <em>{sideValue.label}</em>
-            <b>{sideValue.value}</b>
+        {showInlineSub && <small className="capacity-metric-inline-sub">{sub}</small>}
+        {visibleSideValues.length > 0 && (
+          <span className="capacity-metric-side-values">
+            {visibleSideValues.map((item) => (
+              <span className="capacity-metric-side-value" key={item.label}>
+                <em>{item.label}</em>
+                <b>{item.value}</b>
+              </span>
+            ))}
           </span>
         )}
       </div>
-      {!overlay && <small>{sub}</small>}
+      {!showInlineSub && <small>{sub}</small>}
       {percent !== undefined && percent !== null && (
         <div className="capacity-primary-meter">
           {showMeterHead && (
@@ -1518,7 +1542,7 @@ function CapacityMetric({
               <strong className={`capacity-secondary-value ${tone}`}>{value}</strong>
             </div>
           )}
-          {overlay && <CapacityMeterLegend overlay={overlay} reserveValue={value} reserveTone={tone} />}
+          {overlay && <CapacityMeterLegend overlay={overlay} reserveValue={meterValue || value} reserveTone={tone} />}
           <CapacityMeter label={label} percent={percent} tone={tone} overlay={overlay} reverse={reverse} />
         </div>
       )}
@@ -1791,13 +1815,25 @@ function formatDays(value: unknown): string {
   return `${Math.max(0, number * 24).toFixed(1)}小时`;
 }
 
-function usagePercentTone(value: unknown): "info" | "success" | "warning" | "danger" | "muted" {
+function formatPercent(value: unknown): string {
+  const number = optionalNumberValue(value);
+  if (number === null) return "-";
+  return `${Math.round(number)}%可用`;
+}
+
+function usagePercentTone(value: unknown): CapacityMetricTone {
   const number = optionalNumberValue(value);
   if (number === null) return "muted";
   if (number >= 90) return "danger";
   if (number >= 75) return "warning";
   if (number >= 50) return "success";
   return "info";
+}
+
+function capacityAvailabilityTone(usedValue: unknown, remainingValue: unknown): CapacityMetricTone {
+  const remaining = optionalNumberValue(remainingValue);
+  if (remaining !== null && remaining >= 100) return "excellent";
+  return usagePercentTone(usedValue);
 }
 
 function remainingPercent(usedValue: unknown): number | null {

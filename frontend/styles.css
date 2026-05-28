@@ -870,14 +870,21 @@ legend {
   text-align: left;
 }
 
+.capacity-metric-side-values {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 12px;
+  min-width: 0;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
 .capacity-metric-side-value {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  min-width: 0;
   color: var(--muted);
-  margin-left: auto;
-  white-space: nowrap;
 }
 
 .capacity-metric-side-value em {
@@ -943,6 +950,11 @@ legend {
   left: auto;
 }
 
+.capacity-meter.reverse .capacity-meter-fill.active {
+  right: 0;
+  left: auto;
+}
+
 .capacity-meter.layered {
   position: relative;
   height: 13px;
@@ -964,6 +976,11 @@ legend {
   height: 7px;
   opacity: 0.96;
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 46%);
+}
+
+.capacity-meter.layered.reverse .capacity-meter-fill.active {
+  right: 0;
+  left: auto;
 }
 
 .capacity-meter-legend {
