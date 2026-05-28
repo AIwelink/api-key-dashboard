@@ -841,6 +841,31 @@ legend {
   background: #f4edf0;
 }
 
+.capacity-secondary {
+  display: grid;
+  gap: 5px;
+  padding-top: 2px;
+}
+
+.capacity-secondary-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.capacity-secondary-head span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.capacity-secondary-head strong {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 500;
+}
+
 .capacity-meter-fill {
   height: 100%;
   min-width: 3px;
