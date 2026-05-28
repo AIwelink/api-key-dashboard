@@ -19,6 +19,21 @@ REFRESH_DEBOUNCE_SECONDS = 3
 ACCOUNT_USAGE_CONCURRENCY = 50
 ACCOUNT_USAGE_BATCH_SIZE = 50
 ACCOUNT_USAGE_REFRESH_INTERVAL = timedelta(hours=2)
+CAPACITY_ACCOUNT_LIMITS = {
+    "plus": {"five_hour_usd": 30, "seven_day_usd": 150},
+    "team": {"five_hour_usd": 30, "seven_day_usd": 150},
+    "free": {"five_hour_usd": 2, "seven_day_usd": 10},
+}
+CAPACITY_HEALTH_THRESHOLDS = {
+    "danger_peak_multiple": 1.0,
+    "danger_current_speed_days": 1.0,
+    "tight_peak_multiple": 1.5,
+    "tight_current_speed_multiple": 1.0,
+    "tight_five_x_speed_days": 1.0,
+    "abundant_peak_multiple": 5.0,
+    "abundant_current_speed_multiple": 2.0,
+    "abundant_five_x_speed_days": 2.0,
+}
 ACCOUNT_USAGE_FIELDS = (
     "codex_5h_used_percent",
     "codex_7d_used_percent",
@@ -758,22 +773,25 @@ async def _capacity_summary_for_accounts(db: AsyncIOMotorDatabase, site_id: str,
 
 def _capacity_by_account_type(capacity_accounts: list[dict[str, Any]], five_hour_capacity_accounts: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     result = {
-        "plus": {"available_accounts": 0, "available_5h_accounts": 0, "five_hour_capacity_usd": 0.0, "seven_day_capacity_usd": 0.0},
-        "free": {"available_accounts": 0, "available_5h_accounts": 0, "five_hour_capacity_usd": 0.0, "seven_day_capacity_usd": 0.0},
+        **{
+            account_type: {"available_accounts": 0, "available_5h_accounts": 0, "five_hour_capacity_usd": 0.0, "seven_day_capacity_usd": 0.0}
+            for account_type in CAPACITY_ACCOUNT_LIMITS
+        },
         "total": {"available_accounts": 0, "available_5h_accounts": 0, "five_hour_capacity_usd": 0.0, "seven_day_capacity_usd": 0.0},
     }
     five_hour_ids = {str(account.get("id")) for account in five_hour_capacity_accounts}
     for account in capacity_accounts:
         account_type = _capacity_account_type(account)
-        if account_type not in {"plus", "free"}:
+        if account_type not in CAPACITY_ACCOUNT_LIMITS:
             continue
+        limits = CAPACITY_ACCOUNT_LIMITS[account_type]
         account_id = str(account.get("id"))
         result[account_type]["available_accounts"] += 1
-        result[account_type]["seven_day_capacity_usd"] += 150 if account_type == "plus" else 10
-        result[account_type]["five_hour_capacity_usd"] += 30 if account_type == "plus" else 2
+        result[account_type]["seven_day_capacity_usd"] += limits["seven_day_usd"]
+        result[account_type]["five_hour_capacity_usd"] += limits["five_hour_usd"]
         result["total"]["available_accounts"] += 1
-        result["total"]["seven_day_capacity_usd"] += 150 if account_type == "plus" else 10
-        result["total"]["five_hour_capacity_usd"] += 30 if account_type == "plus" else 2
+        result["total"]["seven_day_capacity_usd"] += limits["seven_day_usd"]
+        result["total"]["five_hour_capacity_usd"] += limits["five_hour_usd"]
         if account_id in five_hour_ids:
             result[account_type]["available_5h_accounts"] += 1
             result["total"]["available_5h_accounts"] += 1
@@ -781,11 +799,15 @@ def _capacity_by_account_type(capacity_accounts: list[dict[str, Any]], five_hour
 
 
 def _primary_capacity_type(type_summary: dict[str, dict[str, Any]]) -> str:
-    plus_count = int(type_summary["plus"]["available_accounts"])
-    free_count = int(type_summary["free"]["available_accounts"])
-    if plus_count == 0 and free_count == 0:
+    candidates = [
+        (account_type, int(summary["available_accounts"]))
+        for account_type, summary in type_summary.items()
+        if account_type != "total"
+    ]
+    if not any(count > 0 for _, count in candidates):
         return "total"
-    return "plus" if plus_count >= free_count else "free"
+    priority = {"team": 3, "plus": 2, "free": 1}
+    return max(candidates, key=lambda item: (item[1], priority.get(item[0], 0)))[0]
 
 
 def _capacity_account_type(account: dict[str, Any]) -> str:
@@ -793,6 +815,8 @@ def _capacity_account_type(account: dict[str, Any]) -> str:
     extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
     value = account.get("plan_type") or credentials.get("plan_type") or extra.get("account_type") or extra.get("plan_type")
     normalized = str(value or "").strip().lower()
+    if normalized in {"team", "team_sub", "team-sub", "team_child", "team_child_account", "team子号", "team 子号"}:
+        return "team"
     if normalized in {"plus", "pro"}:
         return "plus"
     if normalized == "free":
@@ -810,6 +834,8 @@ def _capacity_account_type(account: dict[str, Any]) -> str:
         if isinstance(account_group, dict) and isinstance(account_group.get("group"), dict):
             text_values.append(str(account_group["group"].get("name") or ""))
     combined = " ".join(text_values).lower()
+    if any(marker in combined for marker in ("team子号", "team 子号", "team-sub", "team_sub", "team child", "team member", "子号")):
+        return "team"
     if any(marker in combined for marker in ("plus", "pro", "付费", "购买plus")):
         return "plus"
     if any(marker in combined for marker in ("free", "免费")):
@@ -890,14 +916,25 @@ def _capacity_health(
     current_speed_days: float | None,
     five_x_speed_days: float | None,
 ) -> dict[str, str]:
+    thresholds = CAPACITY_HEALTH_THRESHOLDS
     if available_accounts <= 0 or five_hour_capacity_usd <= 0 or seven_day_capacity_usd <= 0:
         return {"status": "exhausted", "label": "耗尽", "tone": "danger", "reason": "可用账号或理论容量为 0"}
     if five_hour_peak_multiple is None and current_speed_multiple is None:
         return {"status": "pending", "label": "等待数据", "tone": "muted", "reason": "dashboard cost 数据尚未同步"}
-    if _lt(five_hour_peak_multiple, 1) or _lt(current_speed_days, 1):
+    if _lt(five_hour_peak_multiple, thresholds["danger_peak_multiple"]) or _lt(current_speed_days, thresholds["danger_current_speed_days"]):
         return {"status": "danger", "label": "危险", "tone": "danger", "reason": "7天峰值或当前速度已压到容量线"}
-    if _lt(five_hour_peak_multiple, 1.5) or _lt(current_speed_multiple, 1) or _lt(five_x_speed_days, 1):
+    if (
+        _lt(five_hour_peak_multiple, thresholds["tight_peak_multiple"])
+        or _lt(current_speed_multiple, thresholds["tight_current_speed_multiple"])
+        or _lt(five_x_speed_days, thresholds["tight_five_x_speed_days"])
+    ):
         return {"status": "tight", "label": "偏紧", "tone": "warning", "reason": "容量有余量，但高峰或 5 倍增量会偏紧"}
+    if (
+        _gte(five_hour_peak_multiple, thresholds["abundant_peak_multiple"])
+        and _gte(current_speed_multiple, thresholds["abundant_current_speed_multiple"])
+        and _gte(five_x_speed_days, thresholds["abundant_five_x_speed_days"])
+    ):
+        return {"status": "abundant", "label": "充裕", "tone": "success", "reason": "峰值、当前速度和 5 倍增量都有较大余量"}
     return {"status": "healthy", "label": "健康", "tone": "success", "reason": "7天峰值和当前速度都有余量"}
 
 
@@ -913,6 +950,10 @@ def _round_optional(value: float | None) -> float | None:
 
 def _lt(value: float | None, threshold: float) -> bool:
     return value is not None and value < threshold
+
+
+def _gte(value: float | None, threshold: float) -> bool:
+    return value is not None and value >= threshold
 
 
 def _float_or_zero(value: Any) -> float:

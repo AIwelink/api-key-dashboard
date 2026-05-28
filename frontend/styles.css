@@ -1028,6 +1028,12 @@ legend {
   color: #6840b8;
 }
 
+.account-tag.plan-team {
+  background: #e8f8f8;
+  border-color: #b8e2e1;
+  color: #197078;
+}
+
 .account-tag.plan-other {
   background: #f3f5f7;
   color: var(--muted);

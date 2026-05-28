@@ -1625,6 +1625,7 @@ function displayPlatform(value?: string): string {
 
 function displayPlan(value: string): string {
   const normalized = value.toLowerCase();
+  if (["team", "team_sub", "team-sub", "team_child", "team子号", "team 子号"].includes(normalized)) return "Team子号";
   if (normalized === "plus") return "Plus";
   if (normalized === "pro") return "Pro";
   if (normalized === "free") return "Free";
@@ -1633,6 +1634,7 @@ function displayPlan(value: string): string {
 
 function planTagTone(value: string): string {
   const normalized = value.toLowerCase();
+  if (["team", "team_sub", "team-sub", "team_child", "team子号", "team 子号"].includes(normalized)) return "plan-team";
   if (normalized === "plus") return "plan-plus";
   if (normalized === "free") return "plan-free";
   if (normalized === "pro") return "plan-pro";
