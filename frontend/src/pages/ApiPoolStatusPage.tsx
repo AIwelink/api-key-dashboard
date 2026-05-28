@@ -924,6 +924,9 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
             <h3>站点配置</h3>
           </div>
           <div className="button-row">
+            <button className="compact-button" type="button" onClick={saveSiteForm} disabled={savingSite}>
+              {savingSite ? "保存中..." : editingSiteId ? "保存站点" : "创建站点"}
+            </button>
             <button className="ghost compact-button" type="button" onClick={startCreateSite}>
               新增站点
             </button>
@@ -996,11 +999,6 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
               onChange={(event) => setSiteForm((current) => ({ ...current, refresh_interval_minutes: Number(event.target.value) }))}
             />
           </label>
-          <div className="site-config-actions">
-            <button className="compact-button" type="button" onClick={saveSiteForm} disabled={savingSite}>
-              {savingSite ? "保存中..." : editingSiteId ? "保存站点" : "创建站点"}
-            </button>
-          </div>
         </div>
       </section>
 
@@ -1041,6 +1039,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
             <div>
               <div className="account-pool-title-row">
                 <h3>{selectedGroup?.name || "账号"}</h3>
+                {selectedGroup && <span className="account-pool-id-chip">ID = {selectedGroup.id}</span>}
                 <button
                   className="ghost compact-button frontend-refresh-button"
                   type="button"
@@ -1050,11 +1049,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
                   {refreshingFrontend ? "前端刷新中..." : "前端数据刷新"}
                 </button>
               </div>
-              <p>
-                {selectedGroup
-                  ? `id=${selectedGroup.id} · active ${numberValue(selectedGroup.active_account_count)} / ${numberValue(selectedGroup.account_count)}`
-                  : "请选择一个 group"}
-              </p>
+              {!selectedGroup && <p>请选择一个 group</p>}
             </div>
             <div className="button-row">
               <label className="inline-select">
@@ -1087,8 +1082,6 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
               <em>active / {numberValue(selectedGroup?.account_count)}</em>
             </div>
             <div className="pool-health-grid">
-              <MiniMetric label="总账号" value={numberValue(selectedGroup?.account_count) || visibleAccountsTotal} />
-              <MiniMetric label="活跃" value={numberValue(selectedGroup?.active_account_count)} />
               <MiniMetric label="可用账号" value={numberValue(selectedGroup?.capacity_summary?.available_accounts)} />
               <MiniMetric label="5h可用" value={numberValue(selectedGroup?.capacity_summary?.available_5h_accounts)} />
               <MiniMetric label="限流中" value={numberValue(selectedGroup?.rate_limited_account_count) || accountSummary.rateLimited} />
@@ -1412,7 +1405,6 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           percent={daysScalePercent(recent24hSpeedDays)}
           tone={daysScaleTone(recent24hSpeedDays)}
           overlay={capacityOverlay("使用池", formatDays(activeRecent24hSpeedDays), daysScalePercent(activeRecent24hSpeedDays), daysScaleTone(activeRecent24hSpeedDays))}
-          showMeterHead
         />
         <CapacityMetric
           label="预估天数：7天最高24h"
@@ -1421,7 +1413,6 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           percent={daysScalePercent(sevenDayPeak24hSpeedDays)}
           tone={daysScaleTone(sevenDayPeak24hSpeedDays)}
           overlay={capacityOverlay("使用池", formatDays(activeSevenDayPeak24hSpeedDays), daysScalePercent(activeSevenDayPeak24hSpeedDays), daysScaleTone(activeSevenDayPeak24hSpeedDays))}
-          showMeterHead
         />
       </div>
     </section>
