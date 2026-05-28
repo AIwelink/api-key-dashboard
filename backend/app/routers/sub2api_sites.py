@@ -18,6 +18,7 @@ from app.services.sub2api_cache import (
     request_debounced_refresh,
     update_site_config,
 )
+from app.services.sub2api_dashboard import get_stored_dashboard_snapshots, refresh_dashboard_snapshots
 from app.services.sub2api_return import manual_delete_sub2api_account
 from app.services.sub2api_verify import test_remote_sub2api_account
 
@@ -125,6 +126,29 @@ async def refresh_site(
     if not await get_site(db, site_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
     return await request_debounced_refresh(db, site_id)
+
+
+@router.post("/{site_id}/dashboard/refresh")
+async def refresh_site_dashboard(
+    site_id: str,
+    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    if not await get_site(db, site_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
+    client = await _client_for_site(db, site_id)
+    return await refresh_dashboard_snapshots(db, site_id=site_id, client=client, force=True)
+
+
+@router.get("/{site_id}/dashboard")
+async def get_site_dashboard(
+    site_id: str,
+    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    if not await get_site(db, site_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
+    return await get_stored_dashboard_snapshots(db, site_id=site_id)
 
 
 @router.get("/{site_id}/groups")

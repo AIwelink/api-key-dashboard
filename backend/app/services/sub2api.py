@@ -125,6 +125,36 @@ class Sub2ApiClient:
         response = await self.request_admin("GET", f"/accounts/{account_id}/usage", params={"timezone": timezone})
         return response.get("data", response)
 
+    async def get_dashboard_snapshot(
+        self,
+        *,
+        start_date: str,
+        end_date: str,
+        granularity: str,
+        timezone: str = "Asia/Shanghai",
+        include_stats: bool = False,
+        include_trend: bool = True,
+        include_model_stats: bool = True,
+        include_group_stats: bool = False,
+        include_users_trend: bool = False,
+    ) -> dict[str, Any]:
+        response = await self.request_admin(
+            "GET",
+            "/dashboard/snapshot-v2",
+            params={
+                "start_date": start_date,
+                "end_date": end_date,
+                "granularity": granularity,
+                "include_stats": str(include_stats).lower(),
+                "include_trend": str(include_trend).lower(),
+                "include_model_stats": str(include_model_stats).lower(),
+                "include_group_stats": str(include_group_stats).lower(),
+                "include_users_trend": str(include_users_trend).lower(),
+                "timezone": timezone,
+            },
+        )
+        return response.get("data", response)
+
     async def delete_account(self, account_id: int | str) -> dict[str, Any]:
         if not self.configured:
             raise HTTPException(

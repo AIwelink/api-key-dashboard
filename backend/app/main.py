@@ -12,7 +12,8 @@ from app.database import close_mongo_connection, connect_to_mongo, get_db
 from app.logging_config import RequestLoggingMiddleware, cleanup_old_logs, log_cleanup_loop, setup_logging
 from app.routers import accounts, api_pools, audit, auth, import_batches, imports, settings, sub2api_sites, sync, todo_items, users
 from app.services.bootstrap import ensure_bootstrap_data, ensure_indexes
-from app.services.sub2api_cache import refresh_scheduler_loop
+from app.services.sub2api_cache import refresh_account_caches_for_all_sites, refresh_scheduler_loop
+from app.services.sub2api_dashboard import refresh_due_dashboard_snapshots_for_all_sites
 
 
 settings_obj = get_settings()
@@ -30,6 +31,8 @@ async def lifespan(_: FastAPI):
     db = get_db()
     await ensure_indexes(db)
     await ensure_bootstrap_data(db)
+    dashboard_startup_task = asyncio.create_task(refresh_due_dashboard_snapshots_for_all_sites(db, force=True))
+    account_cache_startup_task = asyncio.create_task(refresh_account_caches_for_all_sites(db))
     refresh_task = asyncio.create_task(refresh_scheduler_loop(db))
     cleanup_task = asyncio.create_task(log_cleanup_loop(settings_obj))
     try:
@@ -37,7 +40,7 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         logger.info("app_stopping")
-        for task in (refresh_task, cleanup_task):
+        for task in (dashboard_startup_task, account_cache_startup_task, refresh_task, cleanup_task):
             task.cancel()
             try:
                 await task

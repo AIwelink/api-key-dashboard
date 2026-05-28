@@ -667,13 +667,6 @@ legend {
   white-space: nowrap;
 }
 
-.overall-usage {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
 .pool-health-card {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -741,33 +734,112 @@ legend {
 
 .pool-health-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(96px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   gap: 6px;
 }
 
-.overall-usage-card {
+.capacity-runway-card {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fff;
-  padding: 10px 12px;
+  padding: 14px;
+  margin-bottom: 12px;
+  display: grid;
+  gap: 12px;
 }
 
-.overall-usage-head {
+.capacity-runway-card.success {
+  border-color: #b9dfca;
+}
+
+.capacity-runway-card.warning {
+  border-color: #efc58d;
+}
+
+.capacity-runway-card.danger {
+  border-color: #efb4c4;
+}
+
+.capacity-runway-head {
   display: flex;
   justify-content: space-between;
   gap: 10px;
-  align-items: baseline;
-  margin-bottom: 8px;
+  align-items: flex-start;
 }
 
-.overall-usage-head strong {
-  font-size: 13px;
+.capacity-runway-head div:first-child {
+  display: grid;
+  gap: 3px;
 }
 
-.overall-usage-head span {
+.capacity-runway-head span,
+.capacity-runway-head em,
+.capacity-metric span,
+.capacity-metric em {
   color: var(--muted);
   font-size: 12px;
+  font-style: normal;
+}
+
+.capacity-runway-head strong {
+  font-size: 22px;
+  line-height: 1.1;
+}
+
+.capacity-runway-type {
+  color: var(--accent-strong);
+  font-weight: 700;
   white-space: nowrap;
+}
+
+.capacity-runway-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.capacity-metric {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fcfafb;
+  padding: 11px 12px;
+  display: grid;
+  gap: 7px;
+}
+
+.capacity-metric strong {
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.capacity-meter {
+  overflow: hidden;
+  height: 10px;
+  border-radius: 999px;
+  background: #f4edf0;
+}
+
+.capacity-meter-fill {
+  height: 100%;
+  min-width: 3px;
+  border-radius: inherit;
+}
+
+.capacity-meter-fill.success {
+  background: var(--success);
+}
+
+.capacity-meter-fill.warning {
+  background: #d59022;
+}
+
+.capacity-meter-fill.danger {
+  background: var(--danger);
+}
+
+.capacity-meter-fill.muted {
+  background: #b6c0ca;
 }
 
 .overall-track,
@@ -1470,12 +1542,12 @@ code {
     grid-template-columns: 1fr;
   }
 
-  .overall-usage {
-    grid-template-columns: 1fr;
-  }
-
   .pool-toolbar-actions {
     justify-content: flex-start;
+  }
+
+  .capacity-runway-grid {
+    grid-template-columns: 1fr;
   }
 
   .pool-health-grid {

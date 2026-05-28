@@ -36,6 +36,37 @@ type Group = {
 type CapacitySummary = {
   available_accounts?: number;
   available_5h_accounts?: number;
+  account_type?: string;
+  five_hour_capacity_usd?: number;
+  twenty_four_hour_capacity_usd?: number;
+  seven_day_capacity_usd?: number;
+  five_hour_peak_cost?: number;
+  seven_day_five_hour_peak_cost?: number;
+  recent_day_five_hour_peak_cost?: number;
+  seven_day_24h_peak_cost?: number;
+  recent_5h_cost?: number;
+  recent_24h_cost?: number;
+  seven_day_cost?: number;
+  recent_5h_remaining_usd?: number;
+  recent_24h_remaining_usd?: number;
+  seven_day_remaining_usd?: number;
+  five_hour_peak_multiple?: number | null;
+  recent_day_five_hour_peak_multiple?: number | null;
+  recent_5h_multiple?: number | null;
+  twenty_four_hour_peak_multiple?: number | null;
+  recent_24h_multiple?: number | null;
+  five_x_peak_multiple?: number | null;
+  five_x_recent_day_peak_multiple?: number | null;
+  five_x_24h_peak_multiple?: number | null;
+  ten_x_peak_multiple?: number | null;
+  current_speed_multiple?: number | null;
+  current_speed_days?: number | null;
+  five_x_speed_days?: number | null;
+  ten_x_speed_days?: number | null;
+  health_status?: string;
+  health_label?: string;
+  health_tone?: "success" | "warning" | "danger" | "muted";
+  health_reason?: string;
   used_5h_percent?: number;
   available_5h_percent?: number;
   used_7d_percent?: number;
@@ -257,12 +288,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   const accountViewLoading = Boolean(currentAccountKey && !accountsMatchCurrent && loadingCurrentAccounts);
   const summary = useMemo(() => summarizeGroups(groups), [groups]);
   const accountSummary = useMemo(() => summarizeRemoteAccounts(visibleAccounts), [visibleAccounts]);
-  const usageSummary = useMemo(() => usageSummaryFromCapacity(selectedGroup?.capacity_summary), [selectedGroup?.capacity_summary]);
-  const usageSummaryLoading = accountViewLoading || (selectedGroupId !== null && !selectedGroup?.capacity_summary);
-  const poolHealth = useMemo(
-    () => poolHealthOverview(accountSummary, usageSummary, visibleAccounts.length, visibleAccountsTotal, selectedGroup ?? undefined),
-    [accountSummary, usageSummary, visibleAccounts.length, visibleAccountsTotal, selectedGroup],
-  );
+  const capacitySummaryLoading = accountViewLoading || (selectedGroupId !== null && !selectedGroup?.capacity_summary);
   const selectedVisibleAccounts = useMemo(() => visibleAccounts.filter((account) => selectedRemoteIds.has(account.id)), [visibleAccounts, selectedRemoteIds]);
   const allPageSelected = visibleAccounts.length > 0 && selectedVisibleAccounts.length === visibleAccounts.length;
   const somePageSelected = selectedVisibleAccounts.length > 0 && !allPageSelected;
@@ -1033,32 +1059,24 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
             </div>
           </div>
 
-          <section className={`pool-health-card ${poolHealth.tone}`}>
+          <section className="pool-health-card">
             <div className="pool-health-main">
-              <span>账号池健康度</span>
-              <strong>{poolHealth.score}%</strong>
-              <em>{poolHealth.label}</em>
-            </div>
-            <div className="pool-health-track">
-              <div className="pool-health-fill" style={{ width: `${poolHealth.score}%` }} />
+              <span>账号池概览</span>
+              <strong>{numberValue(selectedGroup?.active_account_count)}</strong>
+              <em>active / {numberValue(selectedGroup?.account_count)}</em>
             </div>
             <div className="pool-health-grid">
-              <MiniMetric label="当前页" value={visibleAccounts.length} />
-              <MiniMetric label="总账号" value={visibleAccountsTotal} />
-              <MiniMetric label="健康" value={accountSummary.healthy} />
-              <MiniMetric label="限流中" value={accountSummary.rateLimited} />
-              <MiniMetric label="限流重置" value={accountSummary.rateLimitResetting} />
-              <MiniMetric label="临时不可调度" value={accountSummary.tempUnschedulable} />
-              <MiniMetric label="警告" value={accountSummary.warning} />
+              <MiniMetric label="总账号" value={numberValue(selectedGroup?.account_count) || visibleAccountsTotal} />
+              <MiniMetric label="活跃" value={numberValue(selectedGroup?.active_account_count)} />
+              <MiniMetric label="可用账号" value={numberValue(selectedGroup?.capacity_summary?.available_accounts)} />
+              <MiniMetric label="5h可用" value={numberValue(selectedGroup?.capacity_summary?.available_5h_accounts)} />
+              <MiniMetric label="限流中" value={numberValue(selectedGroup?.rate_limited_account_count) || accountSummary.rateLimited} />
               <MiniMetric label="异常" value={accountSummary.error} />
             </div>
-            <p>{poolHealth.message}</p>
+            <p>当前只保留账号池判断真正需要的基础指标；后续会用历史 cost 数据替换为新的容量预估健康度。</p>
           </section>
 
-          <section className="overall-usage">
-            <OverallUsageBar label="5h 总体容量" usedPercent={usageSummary.used5h} availablePercent={usageSummary.available5h} count={usageSummary.availableAccounts} loading={usageSummaryLoading} />
-            <OverallUsageBar label="7d 总体容量" usedPercent={usageSummary.used7d} availablePercent={usageSummary.available7d} count={usageSummary.availableAccounts} loading={usageSummaryLoading} />
-          </section>
+          <CapacityRunwaySummary summary={selectedGroup?.capacity_summary} loading={capacitySummaryLoading} />
 
           <div className="list-toolbar">
             <label className="checkbox-line">
@@ -1300,28 +1318,55 @@ function AccountSevenDayUsage({ account }: { account: RemoteAccount }) {
   return <div className="cell-sub total-usage-line">7天 {requestLabel} / {costLabel}</div>;
 }
 
-function OverallUsageBar({
-  label,
-  usedPercent,
-  availablePercent,
-  count,
-  loading = false,
-}: {
-  label: string;
-  usedPercent: number;
-  availablePercent: number;
-  count: number;
-  loading?: boolean;
-}) {
+function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary; loading: boolean }) {
+  const tone = summary?.health_tone || "muted";
+  const accountType = summary?.account_type ? displayPlan(summary.account_type) : "未知";
+  const sevenDayFiveHourPeak = summary?.seven_day_five_hour_peak_cost ?? summary?.five_hour_peak_cost;
+  const sevenDayFiveHourPeakMultiple = summary?.five_hour_peak_multiple;
+  const sevenDayFiveXPeakMultiple = summary?.five_x_peak_multiple ?? summary?.ten_x_peak_multiple;
+  const recentDayFiveHourPeak = summary?.recent_day_five_hour_peak_cost;
+  const recentDayFiveHourPeakMultiple = summary?.recent_day_five_hour_peak_multiple;
+  const recentDayFiveXPeakMultiple = summary?.five_x_recent_day_peak_multiple;
+  const recent5hMultiple = summary?.recent_5h_multiple;
+  const dailyPeakMultiple = summary?.twenty_four_hour_peak_multiple;
+  const dailyFiveXPeakMultiple = summary?.five_x_24h_peak_multiple;
+  const recent24hMultiple = summary?.recent_24h_multiple ?? summary?.current_speed_multiple;
+  const currentSpeedDays = summary?.current_speed_days;
+  const fiveXSpeedDays = summary?.five_x_speed_days ?? summary?.ten_x_speed_days;
   return (
-    <div className="overall-usage-card">
-      <div className="overall-usage-head">
-        <strong>{label}</strong>
-        <span>{loading ? "加载中..." : `${availablePercent}% 可用 · ${usedPercent}% 已用 · ${count} 个可用账号`}</span>
+    <section className={`capacity-runway-card ${tone}`}>
+      <div className="capacity-runway-head">
+        <div>
+          <span>容量预估</span>
+          <strong>{loading ? "加载中" : summary?.health_label || "暂无数据"}</strong>
+          <em>{loading ? "正在读取账号池容量" : summary?.health_reason || "等待 dashboard cost 数据"}</em>
+        </div>
+        <div className="capacity-runway-type">{accountType} 池</div>
       </div>
-      <div className="overall-track" aria-label={`${label} used ${usedPercent}%`}>
-        <div className={`overall-fill ${loading ? "usage-loading" : usageToneClass(usedPercent)}`} style={{ width: loading ? "100%" : `${usedPercent}%` }} />
+      <div className="capacity-runway-grid">
+        <CapacityMetric label="5h总容量" value={formatUsd(summary?.five_hour_capacity_usd)} sub={`最近5h已用 ${formatUsd(summary?.recent_5h_cost)}，预估可用 ${formatUsd(summary?.recent_5h_remaining_usd)}`} percent={ratioToPercent(recent5hMultiple)} tone={multipleTone(recent5hMultiple)} />
+        <CapacityMetric label="最近一天5h峰值" value={formatMultiple(recentDayFiveHourPeakMultiple)} sub={`${formatUsd(recentDayFiveHourPeak)} / 5倍 ${formatMultiple(recentDayFiveXPeakMultiple)}`} percent={ratioToPercent(recentDayFiveHourPeakMultiple)} tone={multipleTone(recentDayFiveHourPeakMultiple)} />
+        <CapacityMetric label="7天最高5h峰值" value={formatMultiple(sevenDayFiveHourPeakMultiple)} sub={`${formatUsd(sevenDayFiveHourPeak)} / 5倍 ${formatMultiple(sevenDayFiveXPeakMultiple)}`} percent={ratioToPercent(sevenDayFiveHourPeakMultiple)} tone={multipleTone(sevenDayFiveHourPeakMultiple)} />
+        <CapacityMetric label="24h折算容量" value={formatUsd(summary?.twenty_four_hour_capacity_usd)} sub={`最近24h已用 ${formatUsd(summary?.recent_24h_cost)}，预估可用 ${formatUsd(summary?.recent_24h_remaining_usd)}`} percent={ratioToPercent(recent24hMultiple)} tone={multipleTone(recent24hMultiple)} />
+        <CapacityMetric label="7天最高24h峰值" value={formatMultiple(dailyPeakMultiple)} sub={`${formatUsd(summary?.seven_day_24h_peak_cost)} / 5倍 ${formatMultiple(dailyFiveXPeakMultiple)}`} percent={ratioToPercent(dailyPeakMultiple)} tone={multipleTone(dailyPeakMultiple)} />
+        <CapacityMetric label="7d总容量" value={formatUsd(summary?.seven_day_capacity_usd)} sub={`7天已用 ${formatUsd(summary?.seven_day_cost)}，预估可用 ${formatUsd(summary?.seven_day_remaining_usd)}`} percent={capacityRemainingPercent(summary?.seven_day_remaining_usd, summary?.seven_day_capacity_usd)} tone={remainingUsdTone(summary?.seven_day_remaining_usd, summary?.seven_day_capacity_usd)} />
+        <CapacityMetric label="当前速度可用" value={formatDays(currentSpeedDays)} sub={`5倍速度 ${formatDays(fiveXSpeedDays)}`} percent={daysToPercent(currentSpeedDays)} tone={daysTone(currentSpeedDays)} />
       </div>
+    </section>
+  );
+}
+
+function CapacityMetric({ label, value, sub, percent, tone = "muted" }: { label: string; value: string; sub: string; percent?: number | null; tone?: "success" | "warning" | "danger" | "muted" }) {
+  return (
+    <div className="capacity-metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <em>{sub}</em>
+      {percent !== undefined && percent !== null && (
+        <div className="capacity-meter" aria-label={`${label} ${percent}%`}>
+          <div className={`capacity-meter-fill ${tone}`} style={{ width: `${clampPercent(percent)}%` }} />
+        </div>
+      )}
     </div>
   );
 }
@@ -1378,42 +1423,6 @@ function summarizeRemoteAccounts(accounts: RemoteAccount[]) {
     },
     { healthy: 0, warning: 0, error: 0, rateLimited: 0, rateLimitResetting: 0, tempUnschedulable: 0 },
   );
-}
-
-function usageSummaryFromCapacity(capacitySummary?: CapacitySummary) {
-  const used5h = numberValue(capacitySummary?.used_5h_percent);
-  const used7d = numberValue(capacitySummary?.used_7d_percent);
-  return {
-    availableAccounts: numberValue(capacitySummary?.available_accounts),
-    used5h,
-    used7d,
-    available5h: capacitySummary?.available_5h_percent !== undefined ? numberValue(capacitySummary.available_5h_percent) : clampPercent(100 - used5h),
-    available7d: capacitySummary?.available_7d_percent !== undefined ? numberValue(capacitySummary.available_7d_percent) : clampPercent(100 - used7d),
-  };
-}
-
-function poolHealthOverview(
-  accountSummary: ReturnType<typeof summarizeRemoteAccounts>,
-  usageSummary: ReturnType<typeof usageSummaryFromCapacity>,
-  pageCount: number,
-  totalCount: number,
-  group?: Group,
-) {
-  const pageBase = Math.max(1, pageCount);
-  const pageHealthScore = clampPercent((accountSummary.healthy / pageBase) * 100);
-  const groupTotal = numberValue(group?.account_count) || totalCount;
-  const groupActive = numberValue(group?.active_account_count);
-  const groupRateLimited = numberValue(group?.rate_limited_account_count);
-  const groupBase = Math.max(1, groupTotal);
-  const groupHealthyEstimate = Math.max(0, groupActive - groupRateLimited);
-  const groupHealthScore = groupTotal > 0 ? clampPercent((groupHealthyEstimate / groupBase) * 100) : pageHealthScore;
-  const capacityPressure = Math.max(usageSummary.used5h, usageSummary.used7d);
-  const score = clampPercent(Math.min(pageHealthScore, groupHealthScore, 100 - Math.max(0, capacityPressure - 70)));
-  const rateLimited = accountSummary.rateLimited;
-  const label = score >= 80 && accountSummary.error === 0 ? "良好" : score >= 55 ? "需关注" : "压力较高";
-  const tone = score >= 80 && accountSummary.error === 0 ? "success" : score >= 55 ? "warning" : "danger";
-  const message = `整体 active ${groupActive}/${groupTotal}，整体限流 ${groupRateLimited}；当前页 ${pageCount}/${totalCount}，限流中 ${rateLimited}，异常 ${accountSummary.error}；容量压力 ${capacityPressure}%。`;
-  return { score, label, tone, message };
 }
 
 function accountHealth(account: RemoteAccount): "healthy" | "warning" | "error" | "unknown" {
@@ -1553,6 +1562,71 @@ function formatDuration(value: unknown): string {
   if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
+}
+
+function formatUsd(value: unknown): string {
+  const number = optionalNumberValue(value);
+  if (number === null) return "$-";
+  if (Math.abs(number) >= 100) return `$${number.toFixed(0)}`;
+  if (Math.abs(number) >= 10) return `$${number.toFixed(1)}`;
+  return `$${number.toFixed(2)}`;
+}
+
+function formatMultiple(value: unknown): string {
+  const number = optionalNumberValue(value);
+  if (number === null) return "-";
+  return `${number.toFixed(2)}x`;
+}
+
+function formatDays(value: unknown): string {
+  const number = optionalNumberValue(value);
+  if (number === null) return "-";
+  if (number >= 10) return `${number.toFixed(0)}天`;
+  if (number >= 1) return `${number.toFixed(1)}天`;
+  return `${Math.max(0, number * 24).toFixed(1)}小时`;
+}
+
+function ratioToPercent(value: unknown): number | null {
+  const number = optionalNumberValue(value);
+  if (number === null) return null;
+  return clampPercent(number * 100);
+}
+
+function daysToPercent(value: unknown): number | null {
+  const number = optionalNumberValue(value);
+  if (number === null) return null;
+  return clampPercent((number / 7) * 100);
+}
+
+function capacityRemainingPercent(remaining: unknown, capacity: unknown): number | null {
+  const remainingNumber = optionalNumberValue(remaining);
+  const capacityNumber = optionalNumberValue(capacity);
+  if (remainingNumber === null || capacityNumber === null || capacityNumber <= 0) return null;
+  return clampPercent((remainingNumber / capacityNumber) * 100);
+}
+
+function multipleTone(value: unknown): "success" | "warning" | "danger" | "muted" {
+  const number = optionalNumberValue(value);
+  if (number === null) return "muted";
+  if (number < 1) return "danger";
+  if (number < 1.5) return "warning";
+  return "success";
+}
+
+function daysTone(value: unknown): "success" | "warning" | "danger" | "muted" {
+  const number = optionalNumberValue(value);
+  if (number === null) return "muted";
+  if (number < 1) return "danger";
+  if (number < 3) return "warning";
+  return "success";
+}
+
+function remainingUsdTone(remaining: unknown, capacity: unknown): "success" | "warning" | "danger" | "muted" {
+  const percent = capacityRemainingPercent(remaining, capacity);
+  if (percent === null) return "muted";
+  if (percent < 20) return "danger";
+  if (percent < 40) return "warning";
+  return "success";
 }
 
 function usageValue(account: RemoteAccount, key: string): unknown {
