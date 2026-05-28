@@ -87,7 +87,7 @@ type CapacitySummary = {
   ten_x_speed_days?: number | null;
   health_status?: string;
   health_label?: string;
-  health_tone?: "info" | "success" | "warning" | "danger" | "muted";
+  health_tone?: "excellent" | "info" | "success" | "warning" | "danger" | "muted";
   health_reason?: string;
   auto_refill_required?: boolean;
   used_5h_percent?: number;
@@ -1364,7 +1364,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
   const activeFiveHourRemainingPercent = remainingPercent(activeFiveHourUsedPercent);
   const activeSevenDayRemainingPercent = remainingPercent(activeSevenDayUsedPercent);
   return (
-    <section className={`capacity-runway-card ${tone}`}>
+    <section className={`capacity-runway-card ${tone} ${summary?.health_status || ""}`}>
       <div className="capacity-runway-head">
         <div>
           <span>容量预估</span>
@@ -1830,10 +1830,14 @@ function usagePercentTone(value: unknown): CapacityMetricTone {
   return "info";
 }
 
-function capacityAvailabilityTone(usedValue: unknown, remainingValue: unknown): CapacityMetricTone {
+function capacityAvailabilityTone(_usedValue: unknown, remainingValue: unknown): CapacityMetricTone {
   const remaining = optionalNumberValue(remainingValue);
   if (remaining !== null && remaining >= 100) return "excellent";
-  return usagePercentTone(usedValue);
+  if (remaining === null) return "muted";
+  if (remaining < 10) return "danger";
+  if (remaining < 25) return "warning";
+  if (remaining < 50) return "success";
+  return "info";
 }
 
 function remainingPercent(usedValue: unknown): number | null {
@@ -1851,10 +1855,10 @@ function multipleScalePercent(value: unknown): number | null {
 function multipleScaleTone(value: unknown): CapacityMetricTone {
   const number = optionalNumberValue(value);
   if (number === null) return "muted";
-  if (number > 5) return "excellent";
+  if (number >= 5) return "excellent";
   if (number < 1) return "danger";
   if (number < 1.5) return "warning";
-  if (number < 5) return "success";
+  if (number < 3) return "success";
   return "info";
 }
 
@@ -1867,10 +1871,10 @@ function daysScalePercent(value: unknown): number | null {
 function daysScaleTone(value: unknown): CapacityMetricTone {
   const number = optionalNumberValue(value);
   if (number === null) return "muted";
-  if (number > 10) return "excellent";
+  if (number >= 10) return "excellent";
   if (number < 1) return "danger";
   if (number < 3) return "warning";
-  if (number < 10) return "success";
+  if (number < 5) return "success";
   return "info";
 }
 

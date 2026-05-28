@@ -20,8 +20,9 @@ ACCOUNT_USAGE_CONCURRENCY = 50
 ACCOUNT_USAGE_BATCH_SIZE = 50
 ACCOUNT_USAGE_REFRESH_INTERVAL = timedelta(hours=2)
 CAPACITY_ACCOUNT_LIMITS = {
-    "plus": {"five_hour_usd": 30, "seven_day_usd": 150},
-    "team": {"five_hour_usd": 30, "seven_day_usd": 150},
+    "plus": {"five_hour_usd": 28, "seven_day_usd": 140},
+    "team": {"five_hour_usd": 15, "seven_day_usd": 75},
+    "pro": {"five_hour_usd": 400, "seven_day_usd": 2000},
     "free": {"five_hour_usd": 2, "seven_day_usd": 10},
 }
 CAPACITY_HEALTH_THRESHOLDS = {
@@ -30,12 +31,14 @@ CAPACITY_HEALTH_THRESHOLDS = {
     "exhausted_current_speed_days": 0.25,
     "danger_recent_day_peak_multiple": 1.0,
     "danger_current_speed_days": 1.0,
-    "auto_refill_peak_multiple": 1.2,
-    "auto_refill_current_speed_days": 1.5,
+    "auto_refill_recent_day_peak_multiple": 1.75,
+    "auto_refill_current_speed_days": 3.5,
     "tight_peak_multiple": 1.5,
     "tight_current_speed_days": 3.0,
-    "abundant_peak_multiple": 5.0,
-    "abundant_seven_day_peak_speed_days": 10.0,
+    "abundant_recent_day_peak_multiple": 3.0,
+    "abundant_current_speed_days": 5.0,
+    "very_abundant_peak_multiple": 5.0,
+    "very_abundant_seven_day_peak_speed_days": 10.0,
 }
 ACCOUNT_USAGE_FIELDS = (
     "codex_5h_used_percent",
@@ -739,6 +742,7 @@ async def _capacity_summary_for_accounts(
         five_hour_peak_multiple=five_hour_peak_multiple,
         active_five_hour_peak_multiple=active_five_hour_peak_multiple,
         recent_day_five_hour_peak_multiple=recent_day_five_hour_peak_multiple,
+        active_recent_day_five_hour_peak_multiple=active_recent_day_five_hour_peak_multiple,
         twenty_four_hour_peak_multiple=twenty_four_hour_peak_multiple,
         current_speed_multiple=current_speed_multiple,
         current_speed_days=current_speed_days,
@@ -880,7 +884,7 @@ def _primary_capacity_type(type_summary: dict[str, dict[str, Any]]) -> str:
     ]
     if not any(count > 0 for _, count in candidates):
         return "total"
-    priority = {"team": 3, "plus": 2, "free": 1}
+    priority = {"pro": 4, "plus": 3, "team": 2, "free": 1}
     return max(candidates, key=lambda item: (item[1], priority.get(item[0], 0)))[0]
 
 
@@ -891,7 +895,9 @@ def _capacity_account_type(account: dict[str, Any]) -> str:
     normalized = _normalize_capacity_account_type(value)
     if normalized in {"team", "team_sub", "team-sub", "team_child", "team_child_account", "team子号", "team 子号"}:
         return "team"
-    if normalized in {"plus", "pro"}:
+    if normalized == "pro":
+        return "pro"
+    if normalized == "plus":
         return "plus"
     if normalized == "free":
         return "free"
@@ -910,7 +916,9 @@ def _capacity_account_type(account: dict[str, Any]) -> str:
     combined = " ".join(text_values).lower()
     if any(marker in combined for marker in ("team子号", "team 子号", "team-sub", "team_sub", "team child", "team member", "子号")):
         return "team"
-    if any(marker in combined for marker in ("plus", "pro", "付费", "购买plus")):
+    if any(marker in combined for marker in ("pro", "20x")):
+        return "pro"
+    if any(marker in combined for marker in ("plus", "付费", "购买plus")):
         return "plus"
     if any(marker in combined for marker in ("free", "免费")):
         return "free"
@@ -929,7 +937,9 @@ def _local_capacity_account_type(account: dict[str, Any]) -> str:
     normalized = _normalize_capacity_account_type(metadata.get("account_type") or extra.get("account_type") or credentials.get("plan_type"))
     if normalized == "team":
         return "team"
-    if normalized in {"plus", "pro"}:
+    if normalized == "pro":
+        return "pro"
+    if normalized == "plus":
         return "plus"
     if normalized == "free":
         return "free"
@@ -940,6 +950,10 @@ def _normalize_capacity_account_type(value: Any) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in {"team", "team_sub", "team-sub", "team_child", "team_child_account", "team子号", "team 子号", "team瀛愬彿", "team 瀛愬彿"}:
         return "team"
+    if "pro" in normalized or "20x" in normalized:
+        return "pro"
+    if "plus" in normalized:
+        return "plus"
     return normalized
 
 
@@ -1010,6 +1024,7 @@ def _capacity_health(
     five_hour_peak_multiple: float | None,
     active_five_hour_peak_multiple: float | None,
     recent_day_five_hour_peak_multiple: float | None,
+    active_recent_day_five_hour_peak_multiple: float | None,
     twenty_four_hour_peak_multiple: float | None,
     current_speed_multiple: float | None,
     current_speed_days: float | None,
@@ -1018,7 +1033,7 @@ def _capacity_health(
     five_x_speed_days: float | None,
 ) -> dict[str, Any]:
     thresholds = CAPACITY_HEALTH_THRESHOLDS
-    auto_refill_required = _lt(active_five_hour_peak_multiple, thresholds["auto_refill_peak_multiple"]) or _lt(
+    auto_refill_required = _lt(active_recent_day_five_hour_peak_multiple, thresholds["auto_refill_recent_day_peak_multiple"]) or _lt(
         active_current_speed_days,
         thresholds["auto_refill_current_speed_days"],
     )
@@ -1037,16 +1052,21 @@ def _capacity_health(
         thresholds["danger_current_speed_days"],
     ):
         return {**base, "status": "danger", "label": "危险", "tone": "danger", "reason": "最近一天5h峰值或当前速度已压到危险线"}
-    if _lt(five_hour_peak_multiple, thresholds["tight_peak_multiple"]) or _lt(current_speed_days, thresholds["tight_current_speed_days"]):
-        reason = "含备用池后，7天最高5h峰值或当前速度仍偏紧"
+    if _lt(recent_day_five_hour_peak_multiple, thresholds["tight_peak_multiple"]) or _lt(current_speed_days, thresholds["tight_current_speed_days"]):
+        reason = "含备用池后，最近一天5h峰值或当前速度仍偏紧"
         if auto_refill_required:
             reason = "已触发自动补号阈值，含备用池后仍按黄色维护"
         return {**base, "status": "tight", "label": "紧张", "tone": "warning", "reason": reason}
-    if _gte(five_hour_peak_multiple, thresholds["abundant_peak_multiple"]) and _gte(
+    if _gte(five_hour_peak_multiple, thresholds["very_abundant_peak_multiple"]) and _gte(
         seven_day_peak_speed_days,
-        thresholds["abundant_seven_day_peak_speed_days"],
+        thresholds["very_abundant_seven_day_peak_speed_days"],
     ):
-        return {**base, "status": "very_abundant", "label": "十分充裕", "tone": "info", "reason": "含备用池后，峰值容量 >= 5x 且 7天最高24h可用 >= 10天"}
+        return {**base, "status": "very_abundant", "label": "十分充裕", "tone": "excellent", "reason": "含备用池后，7天最高5h峰值 >= 5x 且 7天最高24h可用 >= 10天"}
+    if _gte(recent_day_five_hour_peak_multiple, thresholds["abundant_recent_day_peak_multiple"]) and _gte(
+        current_speed_days,
+        thresholds["abundant_current_speed_days"],
+    ):
+        return {**base, "status": "abundant", "label": "充裕", "tone": "info", "reason": "含备用池后，最近一天5h峰值 >= 3x 且当前速度可用 >= 5天"}
     return {**base, "status": "healthy", "label": "健康", "tone": "success", "reason": "含备用池后容量处于健康范围"}
 
 def _ratio_or_none(numerator: float, denominator: float) -> float | None:

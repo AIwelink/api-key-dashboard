@@ -763,12 +763,21 @@ legend {
   border-color: #9fc0ee;
 }
 
+.capacity-runway-card.excellent {
+  border-color: #c191ff;
+  box-shadow: 0 0 0 1px rgb(139 71 255 / 14%), 0 10px 26px rgb(139 71 255 / 12%);
+}
+
 .capacity-runway-card.warning {
   border-color: #efc58d;
 }
 
 .capacity-runway-card.danger {
   border-color: #efb4c4;
+}
+
+.capacity-runway-card.exhausted {
+  animation: capacity-danger-pulse 1.2s ease-in-out infinite;
 }
 
 .capacity-runway-head {
@@ -1075,6 +1084,18 @@ legend {
   }
   to {
     background-position: 180% 0, 34px 0, 0 0;
+  }
+}
+
+@keyframes capacity-danger-pulse {
+  0%,
+  100% {
+    border-color: #efb4c4;
+    box-shadow: 0 0 0 0 rgb(180 35 74 / 0%);
+  }
+  50% {
+    border-color: var(--danger);
+    box-shadow: 0 0 0 3px rgb(180 35 74 / 12%);
   }
 }
 
