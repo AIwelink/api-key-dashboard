@@ -63,6 +63,41 @@ type BatchResult = {
   succeeded: number;
 };
 
+type AutoRefillLogAccount = {
+  account_id?: string;
+  email?: string;
+  succeeded?: boolean;
+  result?: string;
+  current_status?: string;
+  current_status_label?: string;
+  remote_id?: string | number | null;
+  verification_status?: string;
+  error?: string | null;
+  updated_at?: string;
+};
+
+type AutoRefillLog = {
+  id: string;
+  created_at?: string;
+  finished_at?: string;
+  status?: string;
+  site_id?: string;
+  group_id?: number;
+  group_name?: string;
+  need_count?: number;
+  selected?: number;
+  succeeded?: number;
+  failed?: number;
+  skipped?: boolean;
+  reason?: string;
+  accounts?: AutoRefillLogAccount[];
+};
+
+type AutoRefillLogsResponse = {
+  items: AutoRefillLog[];
+  total: number;
+};
+
 type ManualPoolMode = "todos" | "available" | "reserve";
 
 type PageConfig = {
@@ -133,6 +168,8 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
   const [limit, setLimit] = useState(50);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [refillLogs, setRefillLogs] = useState<AutoRefillLog[]>([]);
+  const [loadingRefillLogs, setLoadingRefillLogs] = useState(false);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const pushingIdsRef = useRef<Set<string>>(new Set());
 
@@ -146,8 +183,8 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
     if (mode === "reserve" && !selectedSiteId) return;
     const params = new URLSearchParams({
       pool_status: config.poolStatus,
-      sort_by: "updated_at",
-      sort_dir: "desc",
+      sort_by: mode === "reserve" ? "reserve_order" : "updated_at",
+      sort_dir: mode === "reserve" ? "asc" : "desc",
       skip: String(skip),
       limit: String(limit),
     });
@@ -156,6 +193,18 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
     const data = await api<AccountListResponse>(`/accounts?${params.toString()}`, token);
     setAccounts(data.items);
     setTotal(data.total);
+  };
+
+  const loadRefillLogs = async () => {
+    if (mode !== "reserve" || !selectedSiteId) return;
+    setLoadingRefillLogs(true);
+    try {
+      const params = new URLSearchParams({ site_id: selectedSiteId, limit: "10" });
+      const data = await api<AutoRefillLogsResponse>(`/api-pools/auto-refill-logs?${params.toString()}`, token);
+      setRefillLogs(data.items);
+    } finally {
+      setLoadingRefillLogs(false);
+    }
   };
 
   const loadSites = async () => {
@@ -205,6 +254,11 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
   }, [mode, skip, limit, selectedSiteId]);
 
   useEffect(() => {
+    if (mode !== "reserve") return;
+    loadRefillLogs().catch((error) => showToast(errorMessage(error), true));
+  }, [mode, selectedSiteId]);
+
+  useEffect(() => {
     const pageIds = new Set(accounts.map((account) => account.id));
     setSelectedIds((current) => new Set([...current].filter((id) => pageIds.has(id))));
   }, [accounts]);
@@ -221,6 +275,23 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
 
   const replaceAccountOnPage = (updated: AccountDocument) => {
     setAccounts((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+  };
+
+  const toggleReservePin = async (account: AccountDocument) => {
+    const nextPinned = !isReservePinned(account);
+    setBusyId(account.id);
+    try {
+      await api<AccountDocument>(`/accounts/${account.id}/reserve-pin`, token, {
+        method: "POST",
+        body: JSON.stringify({ pinned: nextPinned }),
+      });
+      showToast(nextPinned ? "已置顶到使用备选池前面" : "已取消置顶");
+      await loadAccounts();
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setBusyId(null);
+    }
   };
 
   const transfer = async (account: AccountDocument, targetStatus: PoolStatus, label: string, extra: Record<string, unknown> = {}) => {
@@ -530,6 +601,49 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
         ]}
       />
 
+      {mode === "reserve" && (
+        <section className="panel refill-log-panel">
+          <div className="panel-header">
+            <div>
+              <h3>补号日志</h3>
+              <p>记录自动补号批次、账号、时间、结果和当前状态。</p>
+            </div>
+            <button className="ghost compact-button" type="button" onClick={() => loadRefillLogs().catch((error) => showToast(errorMessage(error), true))}>
+              {loadingRefillLogs ? "刷新中..." : "刷新日志"}
+            </button>
+          </div>
+          <div className="refill-log-list">
+            {refillLogs.map((log) => (
+              <div className="refill-log-item" key={log.id}>
+                <div className="refill-log-head">
+                  <strong>{log.group_name || `分组 #${log.group_id || "-"}`}</strong>
+                  <span>{formatDateTime(log.finished_at || log.created_at)}</span>
+                  <span>需要 {numberValue(log.need_count)} / 选择 {numberValue(log.selected)} / 成功 {numberValue(log.succeeded)} / 失败 {numberValue(log.failed)}</span>
+                  {log.skipped && <span className="muted">{log.reason || "已跳过"}</span>}
+                </div>
+                <div className="refill-log-accounts">
+                  {(log.accounts || []).map((item) => (
+                    <div className="refill-log-account" key={`${log.id}:${item.account_id}`}>
+                      <span className={item.succeeded ? "success-text" : "danger"}>
+                        {item.result || (item.succeeded ? "成功" : "失败")}
+                      </span>
+                      <strong>{item.email || item.account_id || "-"}</strong>
+                      <span>现状 {item.current_status_label || poolStatusLabel(text(item.current_status))}</span>
+                      {item.remote_id ? <span>远端 #{item.remote_id}</span> : null}
+                      {item.verification_status ? <span>测试 {verificationLabel(text(item.verification_status))}</span> : null}
+                      {item.updated_at ? <span>更新 {formatDateTime(item.updated_at)}</span> : null}
+                      {item.error ? <span className="danger truncate" title={text(item.error)}>{text(item.error)}</span> : null}
+                    </div>
+                  ))}
+                  {!log.accounts?.length && <div className="cell-sub">{log.reason || "本批次没有选择账号"}</div>}
+                </div>
+              </div>
+            ))}
+            {!refillLogs.length && <div className="empty-state">{loadingRefillLogs ? "正在读取补号日志..." : "暂无补号日志"}</div>}
+          </div>
+        </section>
+      )}
+
       <section className="panel">
         <div className="panel-header">
           <div>
@@ -748,6 +862,7 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
                   </td>
                   <td>
                     <StatusPill value={poolStatusLabel(text(account.metadata.pool_status) || config.poolStatus)} tone={poolStatusTone(text(account.metadata.pool_status) || config.poolStatus)} />
+                    {mode === "reserve" && isReservePinned(account) && <div className="cell-sub reserve-pin-label">已置顶</div>}
                     {targetGroupLabel(account) && <div className="cell-sub">{targetGroupLabel(account)}</div>}
                     {text(account.metadata.priority) && <div className="cell-sub">优先级 {text(account.metadata.priority)}</div>}
                     {text(account.metadata.sub2api_account_id) && <div className="cell-sub">远端账号 #{text(account.metadata.sub2api_account_id)}</div>}
@@ -811,6 +926,14 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
                       )}
                       {mode === "reserve" && (
                         <>
+                          <button
+                            className="ghost compact-button"
+                            disabled={busyId === account.id}
+                            onClick={() => toggleReservePin(account)}
+                            type="button"
+                          >
+                            {isReservePinned(account) ? "取消置顶" : "置顶"}
+                          </button>
                           <button
                             className="ghost compact-button"
                             disabled={busyId === account.id || !accountTargetGroupId(account)}
@@ -958,6 +1081,10 @@ function accountTargetGroupLabel(account: AccountDocument, groups: Group[]) {
 
 function accountTargetSiteId(account: AccountDocument) {
   return text(account.metadata.sub2api_site_id);
+}
+
+function isReservePinned(account: AccountDocument): boolean {
+  return Boolean(text(account.metadata.reserve_pinned_at));
 }
 
 function numberValue(value: unknown) {

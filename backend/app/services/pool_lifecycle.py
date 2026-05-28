@@ -239,6 +239,11 @@ async def manual_transfer_account(
         unsets.update(pool_reference_unsets())
         unsets["metadata.push_lock"] = ""
 
+    if target_status != POOL_STATUS_RESERVE:
+        unsets["metadata.reserve_pinned_at"] = ""
+        unsets["metadata.reserve_pinned_by_user_id"] = ""
+        unsets["metadata.reserve_pinned_by_name"] = ""
+
     update_doc: dict[str, Any] = {"$set": updates}
     if unsets:
         update_doc["$unset"] = unsets
@@ -269,6 +274,65 @@ async def manual_transfer_account(
         after.get("pool_id"),
         actor.get("_id"),
     )
+    return serialize_doc(updated)
+
+
+async def set_reserve_pin(
+    db: AsyncIOMotorDatabase,
+    *,
+    account_id: str,
+    pinned: bool,
+    actor: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        account_oid = object_id(account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found") from exc
+
+    account = await db.accounts.find_one(
+        {
+            "_id": account_oid,
+            "metadata.deleted_at": {"$exists": False},
+            "metadata.pool_status": POOL_STATUS_RESERVE,
+        }
+    )
+    if account is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserve account not found")
+
+    metadata = dict(account.get("metadata", {}))
+    now = now_utc()
+    updates = {
+        "metadata.updated_at": now,
+        "metadata.updated_by_user_id": actor.get("_id"),
+        "metadata.updated_by_name": actor_name(actor),
+    }
+    update_doc: dict[str, Any] = {"$set": updates}
+    after: dict[str, Any]
+    if pinned:
+        updates["metadata.reserve_pinned_at"] = now
+        updates["metadata.reserve_pinned_by_user_id"] = actor.get("_id")
+        updates["metadata.reserve_pinned_by_name"] = actor_name(actor)
+        after = {"reserve_pinned_at": now, "reserve_pinned": True}
+    else:
+        update_doc["$unset"] = {
+            "metadata.reserve_pinned_at": "",
+            "metadata.reserve_pinned_by_user_id": "",
+            "metadata.reserve_pinned_by_name": "",
+        }
+        after = {"reserve_pinned": False}
+
+    await db.accounts.update_one({"_id": account_oid}, update_doc)
+    updated = await db.accounts.find_one({"_id": account_oid})
+    await write_pool_action(
+        db,
+        action_type="reserve_pin" if pinned else "reserve_unpin",
+        actor=actor,
+        account_id=account_id,
+        pool_id=str(metadata.get("pool_id") or metadata.get("sub2api_group_id") or ""),
+        before={"reserve_pinned_at": metadata.get("reserve_pinned_at"), "reserve_pinned": bool(metadata.get("reserve_pinned_at"))},
+        after=after,
+    )
+    logger.info("reserve_pin_updated account_id=%s pinned=%s actor=%s", account_id, pinned, actor.get("_id"))
     return serialize_doc(updated)
 
 
@@ -448,7 +512,7 @@ async def suggest_reserve_accounts(
     }
     if account_type:
         query["metadata.account_type"] = account_type
-    cursor = db.accounts.find(query).sort([("metadata.priority", -1), ("metadata.updated_at", 1), ("metadata.created_at", 1)]).limit(need_count)
+    cursor = db.accounts.find(query).sort([("metadata.reserve_pinned_at", -1), ("metadata.updated_at", 1), ("metadata.created_at", 1)]).limit(need_count)
     return [str(doc["_id"]) async for doc in cursor]
 
 

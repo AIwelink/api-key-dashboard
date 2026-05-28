@@ -277,10 +277,14 @@ async def list_accounts(
         "pool_status": "metadata.pool_status",
         "priority": "metadata.priority",
     }
-    sort_field = sort_fields.get(sort_by, "metadata.updated_at")
-    sort_direction = 1 if sort_dir == "asc" else -1
+    if sort_by == "reserve_order" or pool_status == "reserve":
+        sort_spec = [("metadata.reserve_pinned_at", -1), ("metadata.updated_at", 1), ("metadata.created_at", 1)]
+    else:
+        sort_field = sort_fields.get(sort_by, "metadata.updated_at")
+        sort_direction = 1 if sort_dir == "asc" else -1
+        sort_spec = [(sort_field, sort_direction)]
 
-    cursor = db.accounts.find(query, LIST_ACCOUNT_PROJECTION).sort(sort_field, sort_direction).skip(skip).limit(limit)
+    cursor = db.accounts.find(query, LIST_ACCOUNT_PROJECTION).sort(sort_spec).skip(skip).limit(limit)
     items = [serialize_doc(item) async for item in cursor]
     total = await db.accounts.count_documents(query)
     return {"items": items, "total": total, "skip": skip, "limit": limit}

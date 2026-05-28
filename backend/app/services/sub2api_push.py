@@ -867,7 +867,16 @@ async def _mark_push_completed(
         updates.update(failed_task_updates)
     result = await db.accounts.find_one_and_update(
         {"_id": account_oid},
-        {"$set": updates, "$unset": {"metadata.push_lock": "", "metadata.analysis.remote_uncertain": ""}},
+        {
+            "$set": updates,
+            "$unset": {
+                "metadata.push_lock": "",
+                "metadata.analysis.remote_uncertain": "",
+                "metadata.reserve_pinned_at": "",
+                "metadata.reserve_pinned_by_user_id": "",
+                "metadata.reserve_pinned_by_name": "",
+            },
+        },
         return_document=ReturnDocument.AFTER,
     )
     return result

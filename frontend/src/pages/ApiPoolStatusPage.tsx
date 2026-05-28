@@ -231,7 +231,7 @@ const emptySiteForm: SiteForm = {
   base_url: "",
   token: "",
   status: "active",
-  refresh_interval_minutes: 5,
+  refresh_interval_minutes: 30,
 };
 
 type CacheMeta = {
@@ -288,7 +288,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   const [loadingGroups, setLoadingGroups] = useState(false);
   const [loadingAccountsKey, setLoadingAccountsKey] = useState<string | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(() => initialCache?.lastLoadedAt || null);
-  const [refreshIntervalMinutes, setRefreshIntervalMinutes] = useState(() => initialCache?.refreshIntervalMinutes || 5);
+  const [refreshIntervalMinutes, setRefreshIntervalMinutes] = useState(() => initialCache?.refreshIntervalMinutes || 30);
   const [autoRemoveAbnormalAccounts, setAutoRemoveAbnormalAccounts] = useState(() => initialCache?.autoRemoveAbnormalAccounts || false);
   const [savingSite, setSavingSite] = useState(false);
   const [savingAutoRemove, setSavingAutoRemove] = useState(false);
@@ -558,7 +558,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     if (!site) return;
     setEditingSiteId(site.id);
     setSiteForm(siteToForm(site));
-    setRefreshIntervalMinutes(site?.refresh_interval_minutes || 5);
+    setRefreshIntervalMinutes(site?.refresh_interval_minutes || 30);
     setAutoRemoveAbnormalAccounts(autoRemoveOverridesRef.current[selectedSiteId] ?? site?.auto_remove_abnormal_accounts === true);
     if (getApiPoolPageCache()?.selectedSiteId === selectedSiteId && groups.length) return;
     setGroups([]);
@@ -636,7 +636,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
 
   useEffect(() => {
     if (!selectedSiteId) return;
-    const intervalMs = Math.max(1, refreshIntervalMinutes || 5) * 60_000;
+    const intervalMs = Math.max(30, refreshIntervalMinutes || 30) * 60_000;
     const timer = window.setInterval(() => {
       loadGroups(selectedSiteId)
         .then((nextGroups) => {
@@ -756,7 +756,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
       setSelectedSiteId(saved.id);
       setEditingSiteId(saved.id);
       setSiteForm(siteToForm(saved));
-      setRefreshIntervalMinutes(saved.refresh_interval_minutes || 5);
+      setRefreshIntervalMinutes(saved.refresh_interval_minutes || 30);
       setAutoRemoveAbnormalAccounts(saved.auto_remove_abnormal_accounts === true);
       showToast("站点配置已保存");
     } catch (error) {
@@ -880,7 +880,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
               <strong>自动刷新</strong>
             </span>
             <input
-              min={1}
+              min={30}
               max={1440}
               type="number"
               value={refreshIntervalMinutes}
@@ -1921,7 +1921,7 @@ function siteToForm(site: Site): SiteForm {
     base_url: site.base_url || "",
     token: "",
     status: site.status || "active",
-    refresh_interval_minutes: site.refresh_interval_minutes || 5,
+    refresh_interval_minutes: site.refresh_interval_minutes || 30,
   };
 }
 
@@ -1961,7 +1961,7 @@ function cacheAccounts(siteId: string, groupId: number, page: number, pageSize: 
       accountPageSize: pageSize,
       statusFilter,
       lastLoadedAt: value.lastLoadedAt,
-      refreshIntervalMinutes: 5,
+      refreshIntervalMinutes: 30,
       autoRemoveAbnormalAccounts: false,
       cachedAt: Date.now(),
     }),

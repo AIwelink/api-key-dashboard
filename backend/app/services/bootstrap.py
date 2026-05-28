@@ -20,6 +20,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.accounts.create_index("metadata.sub2api_account_id")
     await db.accounts.create_index("metadata.sub2api_site_id")
     await db.accounts.create_index([("metadata.sub2api_site_id", 1), ("metadata.pool_id", 1), ("metadata.pool_status", 1)])
+    await db.accounts.create_index([("metadata.pool_status", 1), ("metadata.sub2api_site_id", 1), ("metadata.sub2api_group_id", 1), ("metadata.reserve_pinned_at", -1), ("metadata.updated_at", 1)])
     await db.accounts.create_index("metadata.push_lock")
     await db.accounts.create_index("metadata.sub2api_return_lock")
     await db.accounts.create_index("metadata.sub2api_delete_status")
@@ -68,6 +69,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.sub2api_dashboard_models.create_index([("site_id", 1), ("range_type", 1), ("model", 1)])
     await db.sub2api_dashboard_snapshots.create_index([("site_id", 1), ("range_type", 1)])
     await db.sub2api_dashboard_meta.create_index("updated_at")
+    await db.sub2api_auto_refill_meta.create_index("last_finished_at")
 
 
 async def ensure_initial_owner(db: AsyncIOMotorDatabase) -> None:

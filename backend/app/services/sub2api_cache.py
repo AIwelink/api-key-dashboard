@@ -13,12 +13,12 @@ from app.utils import now_utc, serialize_doc
 logger = logging.getLogger("app.sub2api_cache")
 
 DEFAULT_SITE_ID = "default"
-DEFAULT_REFRESH_INTERVAL_MINUTES = 60
-AUTO_REFRESH_INTERVAL_MINUTES = 60
+DEFAULT_REFRESH_INTERVAL_MINUTES = 30
+AUTO_REFRESH_INTERVAL_MINUTES = 30
 REFRESH_DEBOUNCE_SECONDS = 3
 ACCOUNT_USAGE_CONCURRENCY = 50
 ACCOUNT_USAGE_BATCH_SIZE = 50
-ACCOUNT_USAGE_REFRESH_INTERVAL = timedelta(hours=2)
+ACCOUNT_USAGE_REFRESH_INTERVAL = timedelta(minutes=30)
 CAPACITY_ACCOUNT_LIMITS = {
     "plus": {"five_hour_usd": 28, "seven_day_usd": 140},
     "team": {"five_hour_usd": 15, "seven_day_usd": 75},

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.schemas import AccountCreate, AccountUpdate, EnterReserveRequest, ManualTransferRequest, PushToSub2ApiRequest, VerifyViaSub2ApiRequest
+from app.schemas import AccountCreate, AccountUpdate, EnterReserveRequest, ManualTransferRequest, PushToSub2ApiRequest, ReservePinRequest, VerifyViaSub2ApiRequest
 from app.security import get_current_user, require_roles
 from app.services.accounts import (
     create_account,
@@ -13,7 +13,7 @@ from app.services.accounts import (
 )
 from app.services.audit import write_audit_log
 from app.services.json_parser import extract_account_objects
-from app.services.pool_lifecycle import enter_reserve, manual_transfer_account
+from app.services.pool_lifecycle import enter_reserve, manual_transfer_account, set_reserve_pin
 from app.services.sub2api_binding import manually_unbind_sub2api_account
 from app.services.sub2api_push import push_account_to_sub2api
 from app.services.sub2api_verify import verify_account_via_sub2api_group
@@ -163,6 +163,25 @@ async def post_manual_transfer(
             "reason": payload.reason,
             "last_error": payload.last_error,
         },
+    )
+    return updated
+
+
+@router.post("/{account_id}/reserve-pin")
+async def post_reserve_pin(
+    account_id: str,
+    payload: ReservePinRequest,
+    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    updated = await set_reserve_pin(db, account_id=account_id, pinned=payload.pinned, actor=actor)
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="account.reserve_pin" if payload.pinned else "account.reserve_unpin",
+        resource_type="account",
+        resource_id=account_id,
+        after={"pinned": payload.pinned},
     )
     return updated
 

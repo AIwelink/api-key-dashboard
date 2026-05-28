@@ -1395,6 +1395,65 @@ legend {
   margin-top: 3px;
 }
 
+.reserve-pin-label {
+  color: #7f3df1;
+  font-weight: 700;
+}
+
+.refill-log-panel {
+  box-shadow: none;
+}
+
+.refill-log-list {
+  display: grid;
+  gap: 10px;
+}
+
+.refill-log-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fcfafb;
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.refill-log-head,
+.refill-log-account {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.refill-log-head span,
+.refill-log-account span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.refill-log-account span.success-text {
+  color: var(--success);
+}
+
+.refill-log-account span.danger {
+  color: var(--danger);
+}
+
+.refill-log-account {
+  border-top: 1px solid var(--line);
+  padding-top: 7px;
+}
+
+.refill-log-account:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.refill-log-account > strong {
+  font-size: 13px;
+}
+
 .filter-panel {
   box-shadow: none;
 }
@@ -1552,6 +1611,10 @@ th {
 
 .warning-text {
   color: var(--warning);
+}
+
+.success-text {
+  color: var(--success);
 }
 
 .status-pill.danger {

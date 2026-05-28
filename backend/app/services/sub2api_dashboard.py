@@ -17,7 +17,7 @@ DASHBOARD_TIMEZONE = "Asia/Shanghai"
 DASHBOARD_LOCAL_TZ = timezone(timedelta(hours=8))
 HOURLY_RANGE_DAYS = 6
 DAILY_RANGE_DAYS = 6
-DASHBOARD_REFRESH_INTERVAL = timedelta(hours=1)
+DASHBOARD_REFRESH_INTERVAL = timedelta(minutes=30)
 
 
 async def refresh_dashboard_snapshots(

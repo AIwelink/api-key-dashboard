@@ -125,6 +125,10 @@ class ManualTransferRequest(BaseModel):
     last_error: str | None = None
 
 
+class ReservePinRequest(BaseModel):
+    pinned: bool = True
+
+
 class PushToSub2ApiRequest(BaseModel):
     site_id: str = "default"
     group_id: int | None = None
