@@ -730,36 +730,37 @@ async def _capacity_summary_for_accounts(
     seven_day_used_estimated_usd = active_seven_day_capacity_usd * used_7d / 100
     seven_day_remaining_estimated_usd = seven_day_capacity_usd * max(0, 100 - used_7d) / 100
     seven_day_remaining_estimated_usd = max(0, seven_day_capacity_usd - seven_day_used_estimated_usd)
+    active_seven_day_remaining_estimated_usd = max(0, active_seven_day_capacity_usd - seven_day_used_estimated_usd)
     effective_used_5h = _ratio_percent(five_hour_used_estimated_usd, five_hour_capacity_usd)
     effective_used_7d = _ratio_percent(seven_day_used_estimated_usd, seven_day_capacity_usd)
     active_five_hour_peak_multiple = _ratio_or_none(active_five_hour_capacity_usd, five_hour_peak_cost)
     active_recent_day_five_hour_peak_multiple = _ratio_or_none(active_five_hour_capacity_usd, recent_day_five_hour_peak_cost)
-    active_current_speed_days = _ratio_or_none(active_seven_day_capacity_usd, recent_24h_cost)
-    active_five_x_speed_days = _ratio_or_none(active_seven_day_capacity_usd, recent_24h_cost * 5 if recent_24h_cost > 0 else 0)
+    active_current_speed_days = _ratio_or_none(active_seven_day_remaining_estimated_usd, recent_24h_cost)
+    active_five_x_speed_days = _ratio_or_none(active_seven_day_remaining_estimated_usd, recent_24h_cost * 5 if recent_24h_cost > 0 else 0)
     five_hour_peak_multiple = _ratio_or_none(five_hour_capacity_usd, five_hour_peak_cost)
     recent_day_five_hour_peak_multiple = _ratio_or_none(five_hour_capacity_usd, recent_day_five_hour_peak_cost)
     recent_5h_multiple = _ratio_or_none(five_hour_capacity_usd, recent_5h_cost)
     twenty_four_hour_peak_multiple = _ratio_or_none(twenty_four_hour_capacity_usd, seven_day_24h_peak_cost)
     recent_24h_multiple = _ratio_or_none(twenty_four_hour_capacity_usd, recent_24h_cost)
     current_speed_multiple = _ratio_or_none(seven_day_capacity_usd, recent_24h_cost * 7 if recent_24h_cost > 0 else 0)
-    current_speed_days = _ratio_or_none(seven_day_capacity_usd, recent_24h_cost)
-    five_x_speed_days = _ratio_or_none(seven_day_capacity_usd, recent_24h_cost * 5 if recent_24h_cost > 0 else 0)
+    current_speed_days = _ratio_or_none(seven_day_remaining_estimated_usd, recent_24h_cost)
+    five_x_speed_days = _ratio_or_none(seven_day_remaining_estimated_usd, recent_24h_cost * 5 if recent_24h_cost > 0 else 0)
     recent_day_five_hour_peak_daily_cost = recent_day_five_hour_peak_cost / 5 * 24 if recent_day_five_hour_peak_cost > 0 else 0
     seven_day_five_hour_peak_daily_cost = five_hour_peak_cost / 5 * 24 if five_hour_peak_cost > 0 else 0
-    recent_day_five_hour_peak_speed_days = _ratio_or_none(seven_day_capacity_usd, recent_day_five_hour_peak_daily_cost)
+    recent_day_five_hour_peak_speed_days = _ratio_or_none(seven_day_remaining_estimated_usd, recent_day_five_hour_peak_daily_cost)
     five_x_recent_day_five_hour_peak_speed_days = _ratio_or_none(
-        seven_day_capacity_usd,
+        seven_day_remaining_estimated_usd,
         recent_day_five_hour_peak_daily_cost * 5 if recent_day_five_hour_peak_daily_cost > 0 else 0,
     )
-    seven_day_five_hour_peak_speed_days = _ratio_or_none(seven_day_capacity_usd, seven_day_five_hour_peak_daily_cost)
+    seven_day_five_hour_peak_speed_days = _ratio_or_none(seven_day_remaining_estimated_usd, seven_day_five_hour_peak_daily_cost)
     five_x_seven_day_five_hour_peak_speed_days = _ratio_or_none(
-        seven_day_capacity_usd,
+        seven_day_remaining_estimated_usd,
         seven_day_five_hour_peak_daily_cost * 5 if seven_day_five_hour_peak_daily_cost > 0 else 0,
     )
-    seven_day_peak_speed_days = _ratio_or_none(seven_day_capacity_usd, seven_day_24h_peak_cost)
-    five_x_peak_speed_days = _ratio_or_none(seven_day_capacity_usd, seven_day_24h_peak_cost * 5 if seven_day_24h_peak_cost > 0 else 0)
-    active_seven_day_peak_speed_days = _ratio_or_none(active_seven_day_capacity_usd, seven_day_24h_peak_cost)
-    active_five_x_peak_speed_days = _ratio_or_none(active_seven_day_capacity_usd, seven_day_24h_peak_cost * 5 if seven_day_24h_peak_cost > 0 else 0)
+    seven_day_peak_speed_days = _ratio_or_none(seven_day_remaining_estimated_usd, seven_day_24h_peak_cost)
+    five_x_peak_speed_days = _ratio_or_none(seven_day_remaining_estimated_usd, seven_day_24h_peak_cost * 5 if seven_day_24h_peak_cost > 0 else 0)
+    active_seven_day_peak_speed_days = _ratio_or_none(active_seven_day_remaining_estimated_usd, seven_day_24h_peak_cost)
+    active_five_x_peak_speed_days = _ratio_or_none(active_seven_day_remaining_estimated_usd, seven_day_24h_peak_cost * 5 if seven_day_24h_peak_cost > 0 else 0)
     five_x_peak_multiple = _ratio_or_none(five_hour_capacity_usd, five_hour_peak_cost * 5 if five_hour_peak_cost > 0 else 0)
     five_x_recent_day_peak_multiple = _ratio_or_none(five_hour_capacity_usd, recent_day_five_hour_peak_cost * 5 if recent_day_five_hour_peak_cost > 0 else 0)
     five_x_24h_peak_multiple = _ratio_or_none(twenty_four_hour_capacity_usd, seven_day_24h_peak_cost * 5 if seven_day_24h_peak_cost > 0 else 0)
