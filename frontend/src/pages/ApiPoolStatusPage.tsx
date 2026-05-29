@@ -1308,7 +1308,6 @@ function RemoteAccountRow({
           >
             测试 {remoteTestLabel(account.codex_remote_test_status)}
             {account.codex_remote_tested_at ? ` · ${formatOptionalDate(account.codex_remote_tested_at)}` : ""}
-            {account.codex_remote_test_error ? ` · ${text(account.codex_remote_test_error)}` : ""}
           </div>
         )}
       </td>
