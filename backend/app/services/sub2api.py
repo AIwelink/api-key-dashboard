@@ -302,25 +302,6 @@ class Sub2ApiClient:
         data = payload if isinstance(payload, dict) else {"data": payload}
         return data.get("data", data)
 
-
-def _extract_test_error_text(events: list[dict[str, Any]], complete_event: dict[str, Any] | None) -> str | None:
-    if complete_event:
-        for key in ("error", "message", "detail", "reason"):
-            value = complete_event.get(key)
-            if value:
-                return str(value)
-        success = complete_event.get("success")
-        if success is False:
-            return "test_complete returned success=false"
-    for event in reversed(events):
-        if event.get("type") == "error":
-            for key in ("error", "message", "detail", "text"):
-                value = event.get(key)
-                if value:
-                    return str(value)
-            return json.dumps(event, ensure_ascii=False)
-    return None
-
     async def list_groups(self, *, page: int = 1, page_size: int = 100) -> dict[str, Any]:
         payload = await self.request_admin("GET", "/groups", params={"page": page, "page_size": page_size})
         return payload.get("data", payload)
@@ -437,6 +418,25 @@ def _extract_test_error_text(events: list[dict[str, Any]], complete_event: dict[
         except ValueError:
             result["message"] = response.text[:300]
         return result
+
+
+def _extract_test_error_text(events: list[dict[str, Any]], complete_event: dict[str, Any] | None) -> str | None:
+    if complete_event:
+        for key in ("error", "message", "detail", "reason"):
+            value = complete_event.get(key)
+            if value:
+                return str(value)
+        success = complete_event.get("success")
+        if success is False:
+            return "test_complete returned success=false"
+    for event in reversed(events):
+        if event.get("type") == "error":
+            for key in ("error", "message", "detail", "text"):
+                value = event.get(key)
+                if value:
+                    return str(value)
+            return json.dumps(event, ensure_ascii=False)
+    return None
 
 
 def account_in_group(account: dict[str, Any], group_id: int) -> bool:
