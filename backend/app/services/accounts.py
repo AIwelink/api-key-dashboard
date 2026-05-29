@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.services.pool_lifecycle import operation_actor_updates
 from app.utils import extract_email, now_utc, object_id, serialize_doc
 
 
@@ -207,8 +208,15 @@ async def soft_delete_account(
 ) -> None:
     account = await get_account_or_404(db, account_id)
     metadata = dict(account.get("metadata", {}))
-    metadata["deleted_at"] = now_utc()
+    now = now_utc()
+    metadata["deleted_at"] = now
     metadata["deleted_by"] = actor.get("_id")
+    metadata.update(
+        {
+            key.removeprefix("metadata."): value
+            for key, value in operation_actor_updates(actor, "删除本地账号", at=now).items()
+        }
+    )
     await db.accounts.update_one({"_id": account["_id"]}, {"$set": {"metadata": metadata}})
 
 

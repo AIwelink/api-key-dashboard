@@ -5,6 +5,7 @@ from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 
+from app.services.pool_lifecycle import operation_actor_updates
 from app.utils import now_utc, object_id, serialize_doc
 
 
@@ -189,8 +190,7 @@ async def start_free_to_plus(db: AsyncIOMotorDatabase, *, account_id: str, actor
                     "locked_at": now,
                     "expires_at": lock_expires_at,
                 },
-                "metadata.updated_by_user_id": actor.get("_id"),
-                "metadata.updated_by_name": actor_name(actor),
+                **operation_actor_updates(actor, "开始处理 free 升 plus", at=now),
             }
         },
         return_document=ReturnDocument.AFTER,
@@ -207,8 +207,7 @@ async def release_free_to_plus(db: AsyncIOMotorDatabase, *, account_id: str, act
         actor=actor,
         updates={
             "metadata.upgrade_status": STATUS_PENDING,
-            "metadata.updated_by_user_id": actor.get("_id"),
-            "metadata.updated_by_name": actor_name(actor),
+            **operation_actor_updates(actor, "取消处理 free 升 plus"),
         },
         unset={"metadata.upgrade_lock": "", "metadata.upgrade_returned_from_completed": ""},
         not_found_detail="Only the current handler can cancel this task",
@@ -233,6 +232,7 @@ async def complete_free_to_plus(
         "metadata.upgrade_note": note or "",
         "metadata.updated_by_user_id": actor.get("_id"),
         "metadata.updated_by_name": actor_name(actor),
+        **operation_actor_updates(actor, "完成 free 升 plus", at=now),
         "account_json.extra.account_type": "plus",
         "account_json.extra.payment_type": payment_type,
         "account_json.credentials.plan_type": "plus",
@@ -282,8 +282,7 @@ async def return_completed_free_to_plus(db: AsyncIOMotorDatabase, *, account_id:
                     "locked_at": now,
                     "expires_at": lock_expires_at,
                 },
-                "metadata.updated_by_user_id": actor.get("_id"),
-                "metadata.updated_by_name": actor_name(actor),
+                **operation_actor_updates(actor, "重新处理已完成 free 升 plus", at=now),
             },
             "$unset": {
                 "metadata.upgrade_error": "",
@@ -314,8 +313,7 @@ async def fail_free_to_plus(
             "metadata.upgrade_failed_at": now,
             "metadata.upgrade_error": error,
             "metadata.upgrade_note": note or "",
-            "metadata.updated_by_user_id": actor.get("_id"),
-            "metadata.updated_by_name": actor_name(actor),
+            **operation_actor_updates(actor, "标记 free 升 plus 失败", at=now),
         },
         unset={"metadata.upgrade_lock": "", "metadata.upgrade_returned_from_completed": ""},
         not_found_detail="Only the current handler can fail this task",

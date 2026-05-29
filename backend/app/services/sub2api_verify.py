@@ -7,7 +7,7 @@ from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 
-from app.services.pool_lifecycle import actor_name, write_pool_action
+from app.services.pool_lifecycle import actor_name, operation_actor_updates, write_pool_action
 from app.services.sub2api import Sub2ApiClient
 from app.services.sub2api_cache import get_site, refresh_site_cache
 from app.services.sub2api_push import build_sub2api_account_payload
@@ -147,7 +147,7 @@ async def verify_account_via_sub2api_group(
     account_json = locked.get("account_json") if isinstance(locked.get("account_json"), dict) else {}
     credentials = account_json.get("credentials") if isinstance(account_json.get("credentials"), dict) else None
     if not credentials:
-        await _mark_verification_failed(db, account_oid=account_oid, error="Account JSON is missing credentials", unset_lock=True)
+        await _mark_verification_failed(db, account_oid=account_oid, error="Account JSON is missing credentials", unset_lock=True, actor=actor)
         await _finish_action(db, action_id=action["id"], status_value="failed", error="Account JSON is missing credentials")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Account JSON is missing credentials")
 
@@ -235,6 +235,7 @@ async def verify_account_via_sub2api_group(
             error=str(exc.detail),
             unset_lock=True,
             remote_account=remote_account,
+            actor=actor,
         )
         await _finish_action(db, action_id=action["id"], status_value="failed", error=str(exc.detail))
         raise
@@ -246,6 +247,7 @@ async def verify_account_via_sub2api_group(
             error=str(exc),
             unset_lock=True,
             remote_account=remote_account,
+            actor=actor,
         )
         await _finish_action(db, action_id=action["id"], status_value="failed", error=str(exc))
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"verification state uncertain: {str(exc)}") from exc
@@ -282,8 +284,7 @@ async def _acquire_verification_lock(
                     "locked_by_user_id": actor.get("_id"),
                     "locked_by_name": actor_name(actor),
                 },
-                "metadata.updated_by_user_id": actor.get("_id"),
-                "metadata.updated_by_name": actor_name(actor),
+                **operation_actor_updates(actor, "开始测试账号", at=now),
             }
         },
         return_document=ReturnDocument.AFTER,
@@ -321,8 +322,7 @@ async def _mark_verification_completed(
         "metadata.verification_cleanup_status": cleanup_status,
         "metadata.verification_cleanup_error": cleanup.get("error"),
         "metadata.last_error": None if passed else str(verification.get("error") or "verification failed"),
-        "metadata.updated_by_user_id": actor.get("_id"),
-        "metadata.updated_by_name": actor_name(actor),
+        **operation_actor_updates(actor, "账号测试完成", at=now),
     }
     if cleanup_status == "failed":
         updates["metadata.analysis.verification_remote_leftover"] = True
@@ -336,12 +336,15 @@ async def _mark_verification_failed(
     error: str,
     unset_lock: bool,
     remote_account: dict[str, Any] | None = None,
+    actor: dict[str, Any] | None = None,
 ) -> None:
+    now = now_utc()
     updates: dict[str, Any] = {
         "metadata.verification_status": "failed",
-        "metadata.verification_checked_at": now_utc(),
+        "metadata.verification_checked_at": now,
         "metadata.verification_error": error,
         "metadata.last_error": error,
+        **operation_actor_updates(actor, "账号测试失败", at=now),
     }
     if remote_account is not None:
         updates["metadata.verification_remote_snapshot"] = remote_account
@@ -409,8 +412,7 @@ async def _write_local_remote_test_if_bound(
                 "metadata.remote_test_response_preview": verification.get("response_preview"),
                 "metadata.remote_test_latency_ms": verification.get("latency_ms"),
                 "metadata.remote_test_error": verification.get("error"),
-                "metadata.updated_by_user_id": actor.get("_id"),
-                "metadata.updated_by_name": actor_name(actor),
+                **operation_actor_updates(actor, "测试远端账号", at=now),
             }
         },
     )

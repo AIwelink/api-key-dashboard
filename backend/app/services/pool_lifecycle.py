@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from math import ceil
 from typing import Any
 
@@ -35,6 +36,21 @@ def actor_name(actor: dict[str, Any] | None) -> str | None:
     if not actor:
         return None
     return actor.get("name") or actor.get("email") or actor.get("_id")
+
+
+def operation_actor_updates(
+    actor: dict[str, Any] | None,
+    operation_name: str,
+    *,
+    at: datetime | None = None,
+) -> dict[str, Any]:
+    now = at or now_utc()
+    return {
+        "metadata.last_operation_name": operation_name,
+        "metadata.last_operation_at": now,
+        "metadata.last_operation_by_user_id": actor.get("_id") if actor else None,
+        "metadata.last_operation_by_name": actor_name(actor),
+    }
 
 
 async def write_pool_action(
@@ -142,8 +158,7 @@ async def enter_reserve(
                 "metadata.pool_id": pool_id,
                 "metadata.priority": priority,
                 "metadata.last_error": None,
-                "metadata.updated_by_user_id": actor.get("_id"),
-                "metadata.updated_by_name": actor_name(actor),
+                **operation_actor_updates(actor, "加入使用备选池", at=now),
             }
         },
         return_document=ReturnDocument.AFTER,
@@ -204,8 +219,7 @@ async def manual_transfer_account(
     now = now_utc()
     updates: dict[str, Any] = {
         "metadata.pool_status": target_status,
-        "metadata.updated_by_user_id": actor.get("_id"),
-        "metadata.updated_by_name": actor_name(actor),
+        **operation_actor_updates(actor, "手动移动账号池", at=now),
     }
     unsets: dict[str, str] = {}
 
@@ -299,7 +313,7 @@ async def set_reserve_pin(
 
     metadata = dict(account.get("metadata", {}))
     now = now_utc()
-    updates: dict[str, Any] = {}
+    updates: dict[str, Any] = operation_actor_updates(actor, "置顶使用备选池账号" if pinned else "取消置顶使用备选池账号", at=now)
     update_doc: dict[str, Any] = {"$set": updates}
     after: dict[str, Any]
     if pinned:

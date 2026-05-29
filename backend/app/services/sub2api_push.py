@@ -9,7 +9,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 
 from app.services.account_records import write_account_operation, write_account_problem
-from app.services.pool_lifecycle import actor_name, write_pool_action
+from app.services.pool_lifecycle import actor_name, operation_actor_updates, write_pool_action
 from app.services.sub2api import Sub2ApiClient, account_in_group
 from app.services.sub2api_cache import get_site, upsert_cached_account_snapshot
 from app.services.sub2api_return import remote_usage_snapshot
@@ -176,6 +176,7 @@ async def push_account_to_sub2api(
                     original_status=current_status,
                     error="Remote duplicate exists outside target group",
                     unset_lock=True,
+                    actor=actor,
                 )
                 await write_pool_action(
                     db,
@@ -314,6 +315,7 @@ async def push_account_to_sub2api(
             original_status=current_status,
             error=str(exc.detail),
             unset_lock=True,
+            actor=actor,
         )
         await _finish_pool_action(db, action_id=action_id, status_value="failed", error=str(exc.detail))
         await write_pool_action(
@@ -330,7 +332,7 @@ async def push_account_to_sub2api(
         raise
     except Exception as exc:
         logger.exception("push_to_sub2api_uncertain account_id=%s group_id=%s", account_id, target_group_id)
-        await _mark_push_uncertain(db, account_oid=account_oid, original_status=current_status, error=str(exc))
+        await _mark_push_uncertain(db, account_oid=account_oid, original_status=current_status, error=str(exc), actor=actor)
         await _finish_pool_action(db, action_id=action_id, status_value="failed", error=str(exc))
         await write_pool_action(
             db,
@@ -927,8 +929,7 @@ async def _acquire_push_lock(
                     "target_group_id": group_id,
                 },
                 "metadata.sub2api_push_status": "pushing",
-                "metadata.updated_by_user_id": actor.get("_id"),
-                "metadata.updated_by_name": actor_name(actor),
+                **operation_actor_updates(actor, "开始推送 sub2api", at=now),
             }
         },
         return_document=ReturnDocument.AFTER,
@@ -980,8 +981,7 @@ async def _mark_push_completed(
         "metadata.verification_checked_at": now,
         "metadata.verification_error": error,
         "metadata.last_error": error,
-        "metadata.updated_by_user_id": actor.get("_id"),
-        "metadata.updated_by_name": actor_name(actor),
+        **operation_actor_updates(actor, "推送 sub2api 完成", at=now),
         "account_json.name": remote_name,
     }
     if not verification_passed:
@@ -1012,6 +1012,7 @@ async def _mark_push_failed(
     original_status: str,
     error: str,
     unset_lock: bool,
+    actor: dict[str, Any],
 ) -> None:
     now = now_utc()
     update_doc: dict[str, Any] = {
@@ -1020,6 +1021,7 @@ async def _mark_push_failed(
             "metadata.sub2api_push_status": "failed",
             "metadata.sub2api_last_error": error,
             "metadata.last_error": error,
+            **operation_actor_updates(actor, "推送 sub2api 失败", at=now),
         }
     }
     if unset_lock:
@@ -1027,7 +1029,14 @@ async def _mark_push_failed(
     await db.accounts.update_one({"_id": account_oid}, update_doc)
 
 
-async def _mark_push_uncertain(db: AsyncIOMotorDatabase, *, account_oid: Any, original_status: str, error: str) -> None:
+async def _mark_push_uncertain(
+    db: AsyncIOMotorDatabase,
+    *,
+    account_oid: Any,
+    original_status: str,
+    error: str,
+    actor: dict[str, Any],
+) -> None:
     now = now_utc()
     await db.accounts.update_one(
         {"_id": account_oid},
@@ -1038,6 +1047,7 @@ async def _mark_push_uncertain(db: AsyncIOMotorDatabase, *, account_oid: Any, or
                 "metadata.sub2api_last_error": error,
                 "metadata.last_error": "push remote state unknown",
                 "metadata.analysis.remote_uncertain": True,
+                **operation_actor_updates(actor, "推送 sub2api 状态不确定", at=now),
             },
             "$unset": {"metadata.push_lock": ""},
         },

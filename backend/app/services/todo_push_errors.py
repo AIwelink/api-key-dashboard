@@ -8,7 +8,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 
 from app.services.account_records import write_account_operation, write_account_problem
-from app.services.pool_lifecycle import actor_name, write_pool_action
+from app.services.pool_lifecycle import actor_name, operation_actor_updates, write_pool_action
 from app.services.sub2api import Sub2ApiClient
 from app.services.sub2api_cache import get_site
 from app.services.sub2api_push import PROBLEM_CLASS_PUSH_TOKEN_EXPIRED, PUSH_ERROR_TASK_TYPE
@@ -123,8 +123,7 @@ async def start_push_error_task(db: AsyncIOMotorDatabase, *, account_id: str, ac
                     "locked_at": now,
                     "expires_at": now + LOCK_TTL,
                 },
-                "metadata.updated_by_user_id": actor.get("_id"),
-                "metadata.updated_by_name": actor_name(actor),
+                **operation_actor_updates(actor, "开始处理推送错误账号", at=now),
             }
         },
         return_document=ReturnDocument.AFTER,
@@ -149,8 +148,7 @@ async def release_push_error_task(db: AsyncIOMotorDatabase, *, account_id: str, 
         actor=actor,
         updates={
             "metadata.problem_task_status": STATUS_PENDING,
-            "metadata.updated_by_user_id": actor.get("_id"),
-            "metadata.updated_by_name": actor_name(actor),
+            **operation_actor_updates(actor, "取消处理推送错误账号"),
         },
         unset={"metadata.problem_lock": ""},
         not_found_detail="只有当前处理人可以取消处理",
@@ -201,8 +199,7 @@ async def test_push_error_account(
         "metadata.problem_last_test_at": now,
         "metadata.problem_last_test_error": None if verification.get("success") is True else str(verification.get("error") or "测试失败"),
         "metadata.problem_last_test_result": verification,
-        "metadata.updated_by_user_id": actor.get("_id"),
-        "metadata.updated_by_name": actor_name(actor),
+        **operation_actor_updates(actor, "推送错误账号人工测试", at=now),
     }
     await db.accounts.update_one({"_id": account["_id"]}, {"$set": updates})
     await write_account_operation(
@@ -262,8 +259,7 @@ async def decide_push_error_account(
             "metadata.plus_reprocess_reason": metadata.get("problem_error") or "push token expired",
             "metadata.plus_reprocess_created_at": now,
             "metadata.pool_status": "problem",
-            "metadata.updated_by_user_id": actor.get("_id"),
-            "metadata.updated_by_name": actor_name(actor),
+            **operation_actor_updates(actor, "推送错误账号加入 plus 重处理", at=now),
         }
         remark = "已决定加入 plus 账号重新处理待办。"
         operation_class = "push_error_decide_plus_reprocess"
@@ -277,8 +273,7 @@ async def decide_push_error_account(
             "metadata.problem_resolved_by_name": actor_name(actor),
             "metadata.problem_resolution_note": note or "",
             "metadata.pool_status": "problem",
-            "metadata.updated_by_user_id": actor.get("_id"),
-            "metadata.updated_by_name": actor_name(actor),
+            **operation_actor_updates(actor, "推送错误账号归档问题库", at=now),
         }
         remark = "已决定归档进入问题库。"
         operation_class = "push_error_decide_problem_library"

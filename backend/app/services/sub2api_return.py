@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from datetime import timedelta
 from typing import Any, Literal
@@ -8,8 +10,8 @@ from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 
-from app.services.accounts import apply_metadata_to_account_json, create_account, normalize_metadata
-from app.services.pool_lifecycle import actor_name, write_pool_action
+from app.services.accounts import apply_metadata_to_account_json, create_account
+from app.services.pool_lifecycle import actor_name, operation_actor_updates, write_pool_action
 from app.services.sub2api import Sub2ApiClient
 from app.services.sub2api_cache import get_site, refresh_site_cache
 from app.utils import extract_email, now_utc, object_id, serialize_doc
@@ -169,12 +171,21 @@ async def manual_delete_sub2api_account(
             if locked_account is None:
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account return is already running")
             next_account_json = apply_metadata_to_account_json(account_json, metadata_updates)
-            next_metadata = normalize_metadata(
-                next_account_json,
-                metadata_updates,
-                actor=actor,
-                existing=account_metadata,
+            next_metadata = dict(account_metadata)
+            next_metadata.update(metadata_updates)
+            next_metadata.update(
+                {
+                    key.removeprefix("metadata."): value
+                    for key, value in operation_actor_updates(actor, "删除远端账号", at=now).items()
+                }
             )
+            if not next_metadata.get("email"):
+                email = extract_email(next_account_json)
+                if email:
+                    next_metadata["email"] = email
+            next_metadata["sha256"] = hashlib.sha256(
+                json.dumps(next_account_json, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
             previous_deleted_remote = _previous_deleted_remote_history_item(
                 account_metadata,
                 site_id=site_id,
@@ -214,6 +225,7 @@ async def manual_delete_sub2api_account(
             error=None,
             delete_result=delete_result,
             release_lock=True,
+            actor=actor,
         )
         cache_refresh_error = None
         if refresh_cache:
@@ -266,6 +278,7 @@ async def manual_delete_sub2api_account(
                 error=str(exc.detail),
                 delete_result=None,
                 release_lock=True,
+                actor=actor,
             )
         if "action" in locals():
             await _finish_action(db, action_id=action["id"], status_value="failed", error=str(exc.detail))
@@ -281,6 +294,7 @@ async def manual_delete_sub2api_account(
                 error=str(exc),
                 delete_result=None,
                 release_lock=True,
+                actor=actor,
             )
         if "action" in locals():
             await _finish_action(db, action_id=action["id"], status_value="failed", error=str(exc))
@@ -459,8 +473,7 @@ async def _acquire_local_return_lock(
                     "locked_by_name": actor_name(actor),
                 },
                 "metadata.sub2api_delete_status": "pending",
-                "metadata.updated_by_user_id": actor.get("_id"),
-                "metadata.updated_by_name": actor_name(actor),
+                **operation_actor_updates(actor, "开始删除远端账号", at=now),
             }
         },
         return_document=ReturnDocument.AFTER,
@@ -584,14 +597,17 @@ async def _mark_local_delete_result(
     error: str | None,
     delete_result: dict[str, Any] | None,
     release_lock: bool,
+    actor: dict[str, Any] | None,
 ) -> None:
     try:
         oid = object_id(account_id)
     except ValueError:
         return
+    now = now_utc()
     updates: dict[str, Any] = {
         "metadata.sub2api_delete_status": status_value,
-        "metadata.sub2api_delete_finished_at": now_utc(),
+        "metadata.sub2api_delete_finished_at": now,
+        **operation_actor_updates(actor, "删除远端账号完成" if status_value == "succeeded" else "删除远端账号失败", at=now),
     }
     if error:
         updates["metadata.sub2api_delete_error"] = error

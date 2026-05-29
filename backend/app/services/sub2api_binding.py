@@ -4,7 +4,7 @@ from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.services.accounts import get_account_or_404
-from app.services.pool_lifecycle import actor_name, write_pool_action
+from app.services.pool_lifecycle import actor_name, operation_actor_updates, write_pool_action
 from app.utils import now_utc, serialize_doc
 
 
@@ -41,8 +41,7 @@ async def manually_unbind_sub2api_account(
                 "metadata.sub2api_manual_unbound_by_name": actor_name(actor),
                 "metadata.sub2api_last_error": None,
                 "metadata.last_error": None,
-                "metadata.updated_by_user_id": actor.get("_id"),
-                "metadata.updated_by_name": actor_name(actor),
+                **operation_actor_updates(actor, "手动解除 sub2api 绑定", at=now),
             },
             "$unset": {
                 "metadata.sub2api_account_id": "",

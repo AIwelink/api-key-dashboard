@@ -466,7 +466,7 @@ export function AccountsPage({ token, showToast }: Props) {
                 <th>使用过</th>
                 <th>本地状态</th>
                 <th>时间</th>
-                <th>上传 / 修改</th>
+                <th>上传 / 修改 / 操作</th>
                 <th>备注</th>
                 <th>操作</th>
               </tr>
@@ -508,7 +508,14 @@ export function AccountsPage({ token, showToast }: Props) {
                   </td>
                   <td>
                     <div>{text(account.metadata.uploader_name) || <span className="muted">未知</span>}</div>
-                    <div className="cell-sub">{text(account.metadata.updated_by_name)}</div>
+                    <div className="cell-sub">修改 {text(account.metadata.updated_by_name) || "-"}</div>
+                    <div className="cell-sub">操作 {text(account.metadata.last_operation_by_name) || "-"}</div>
+                    {text(account.metadata.last_operation_name) && (
+                      <div className="cell-sub">
+                        {text(account.metadata.last_operation_name)}
+                        {text(account.metadata.last_operation_at) ? ` · ${formatDateTime(account.metadata.last_operation_at)}` : ""}
+                      </div>
+                    )}
                   </td>
                   <td className="remark-cell">{text(account.metadata.remark) || <span className="muted">-</span>}</td>
                   <td>
