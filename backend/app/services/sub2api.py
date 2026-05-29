@@ -223,12 +223,15 @@ class Sub2ApiClient:
         content = "".join(str(event.get("text", "")) for event in events if event.get("type") == "content")
         complete_event = next((event for event in reversed(events) if event.get("type") == "test_complete"), None)
         success = bool(complete_event and complete_event.get("success") is True)
+        error_text = _extract_test_error_text(events, complete_event)
         return {
             "success": success,
             "model": model_id,
             "prompt": prompt,
             "latency_ms": latency_ms,
             "response_preview": content[:500],
+            "error": error_text,
+            "complete_event": complete_event,
             "events": events[-20:],
         }
 
@@ -298,6 +301,25 @@ class Sub2ApiClient:
             return {"ok": True, "status_code": response.status_code, "text": response.text[:300]}
         data = payload if isinstance(payload, dict) else {"data": payload}
         return data.get("data", data)
+
+
+def _extract_test_error_text(events: list[dict[str, Any]], complete_event: dict[str, Any] | None) -> str | None:
+    if complete_event:
+        for key in ("error", "message", "detail", "reason"):
+            value = complete_event.get(key)
+            if value:
+                return str(value)
+        success = complete_event.get("success")
+        if success is False:
+            return "test_complete returned success=false"
+    for event in reversed(events):
+        if event.get("type") == "error":
+            for key in ("error", "message", "detail", "text"):
+                value = event.get(key)
+                if value:
+                    return str(value)
+            return json.dumps(event, ensure_ascii=False)
+    return None
 
     async def list_groups(self, *, page: int = 1, page_size: int = 100) -> dict[str, Any]:
         payload = await self.request_admin("GET", "/groups", params={"page": page, "page_size": page_size})

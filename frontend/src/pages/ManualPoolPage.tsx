@@ -55,6 +55,8 @@ type PushToSub2ApiResponse = {
     model?: string;
     response_preview?: string;
     error?: string;
+    complete_event?: Record<string, unknown> | null;
+    events?: Record<string, unknown>[] | null;
   };
 };
 
@@ -357,7 +359,7 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
       } else if (verification?.status === "skipped") {
         showToast("已推送，测试已跳过");
       } else {
-        showToast(`已推送，但测试失败：${verification?.error || "请查看账号状态"}`, true);
+        showToast(`已推送，但测试失败：${formatVerificationError(verification)}`, true);
       }
       removeAccountFromPage(account.id);
     } catch (error) {
@@ -1131,6 +1133,20 @@ function verificationLabel(value: string) {
     not_tested: "未测试",
   };
   return labels[value] || value;
+}
+
+function formatVerificationError(verification?: PushToSub2ApiResponse["verification"]) {
+  if (!verification) return "请查看账号状态";
+  const parts = [verification.error, verification.response_preview]
+    .map((value) => text(value).trim())
+    .filter(Boolean);
+  if (verification.complete_event && Object.keys(verification.complete_event).length > 0) {
+    parts.push(`complete_event=${text(verification.complete_event)}`);
+  }
+  if (verification.events?.length) {
+    parts.push(`events=${text(verification.events)}`);
+  }
+  return parts.length ? parts.join(" | ") : "请查看账号状态";
 }
 
 async function runLimited<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>): Promise<BatchResult> {

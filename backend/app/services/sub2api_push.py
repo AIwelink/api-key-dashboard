@@ -191,7 +191,7 @@ async def push_account_to_sub2api(
                 "latency_ms": None,
                 "response_preview": "",
                 "status": "skipped",
-            }
+        }
 
         succeeded = verification.get("success") is True if run_verification else True
         problem_group_id: int | None = None
@@ -199,7 +199,7 @@ async def push_account_to_sub2api(
         failed_task_updates: dict[str, Any] | None = None
         if run_verification and not succeeded:
             if not _verification_requires_problem_group(verification):
-                error = str(verification.get("error") or "sub2api account verification failed")
+                error = _verification_error_detail(verification)
                 raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=error)
             problem_group_id, problem_group_name = await _resolve_push_problem_group(db, site_id)
             remote_snapshot = await _move_remote_to_problem_group(
@@ -428,6 +428,25 @@ def _is_401_verification_failure(verification: dict[str, Any]) -> bool:
     )
 
 
+def _verification_error_detail(verification: dict[str, Any]) -> str:
+    parts: list[str] = []
+    error = verification.get("error")
+    if error:
+        parts.append(f"error: {error}")
+    preview = verification.get("response_preview")
+    if preview:
+        parts.append(f"response_preview: {preview}")
+    complete_event = verification.get("complete_event")
+    if isinstance(complete_event, dict) and complete_event:
+        parts.append(f"complete_event: {serialize_doc(complete_event)}")
+    events = verification.get("events")
+    if events:
+        parts.append(f"events: {serialize_doc(events)}")
+    if not parts:
+        parts.append("sub2api account verification failed")
+    return " | ".join(parts)
+
+
 def _verification_requires_problem_group(verification: dict[str, Any]) -> bool:
     return bool(verification.get("retry_exhausted") and _is_401_verification_failure(verification))
 
@@ -563,19 +582,60 @@ async def _move_remote_to_problem_group(
     remote_id = remote_account.get("id")
     if remote_id is None:
         return remote_account
-    updated_remote = await client.update_account(
-        remote_id,
-        {
-            "group_id": problem_group_id,
-            "group_ids": [problem_group_id],
-            "status": remote_account.get("status") or "active",
-            "schedulable": remote_account.get("schedulable", True),
-        },
-    )
+    try:
+        updated_remote = await client.update_account(
+            remote_id,
+            {
+                "group_id": problem_group_id,
+                "group_ids": [problem_group_id],
+                "status": remote_account.get("status") or "active",
+                "schedulable": remote_account.get("schedulable", True),
+            },
+        )
+    except HTTPException as exc:
+        if not _is_sub2api_update_not_found(exc):
+            raise
+        logger.warning(
+            "sub2api_update_group_not_found_fallback site_id=%s remote_id=%s problem_group_id=%s error=%s",
+            site_id,
+            remote_id,
+            problem_group_id,
+            exc.detail,
+        )
+        updated_remote = await _recreate_remote_in_problem_group(
+            client=client,
+            remote_account=remote_account,
+            problem_group_id=problem_group_id,
+        )
     if not isinstance(updated_remote, dict) or updated_remote.get("id") is None:
         updated_remote = {**remote_account, "group_id": problem_group_id, "group_ids": [problem_group_id]}
     _ensure_single_remote_group(updated_remote, problem_group_id)
     return await upsert_cached_account_snapshot(db, site_id, updated_remote)
+
+
+def _is_sub2api_update_not_found(exc: HTTPException) -> bool:
+    detail = str(exc.detail or "").lower()
+    return "sub2api update failed with status 404" in detail or "404 page not found" in detail
+
+
+async def _recreate_remote_in_problem_group(
+    *,
+    client: Sub2ApiClient,
+    remote_account: dict[str, Any],
+    problem_group_id: int,
+) -> dict[str, Any]:
+    remote_id = remote_account.get("id")
+    payload = {key: value for key, value in remote_account.items() if key not in REMOTE_STRIP_FIELDS}
+    payload["group_id"] = problem_group_id
+    payload["group_ids"] = [problem_group_id]
+    payload["status"] = payload.get("status") or "active"
+    payload["schedulable"] = payload.get("schedulable", True)
+    payload["confirm_mixed_channel_risk"] = True
+    await client.delete_account(remote_id)
+    recreated = await client.create_account(payload)
+    if isinstance(recreated, dict):
+        recreated["recreated_from_remote_id"] = remote_id
+    return recreated
 
 
 def _ensure_single_remote_group(remote_account: dict[str, Any], group_id: int) -> None:
@@ -598,7 +658,11 @@ def build_sub2api_account_name(account_json: dict[str, Any], metadata: dict[str,
     source_part = "自产" if metadata.get("self_produced") is True else "购买"
     account_type = _name_account_type(account_json, metadata)
     payment_part = _name_payment_type(metadata.get("payment_type"))
-    return f"{date_part}-{source_part}{account_type}-{payment_part}"
+    purchase_source_part = _name_purchase_source(metadata)
+    name_parts = [date_part, f"{source_part}{account_type}", payment_part]
+    if purchase_source_part:
+        name_parts.append(purchase_source_part)
+    return "-".join(name_parts)
 
 
 def _name_date(metadata: dict[str, Any]) -> str:
@@ -642,6 +706,11 @@ def _name_payment_type(value: Any) -> str:
     }
     normalized = str(value or "").strip()
     return mapping.get(normalized, normalized or "未知绑卡")
+
+
+def _name_purchase_source(metadata: dict[str, Any]) -> str:
+    value = str(metadata.get("purchase_source") or "").strip()
+    return value
 
 
 def _parse_datetime(value: Any) -> datetime | None:
