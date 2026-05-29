@@ -114,7 +114,7 @@ async def push_account_to_sub2api(
 
     locked = await _acquire_push_lock(db, account_oid, action_id, target_group_id, actor)
     if locked is None:
-        await _finish_pool_action(db, action_id=action_id, status_value="failed", error="Account is locked or already bound")
+        await _finish_pool_action(db, action_id=action_id, status_value="failed", error="Account is locked or status changed")
         await write_pool_action(
             db,
             action_type="push_to_sub2api_group_failed",
@@ -125,45 +125,14 @@ async def push_account_to_sub2api(
             reason=reason,
             error="Account is locked or status changed",
         )
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account is locked, already pushing, or already bound to sub2api")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account is locked, already pushing, or status changed")
 
     client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
     remote_account: dict[str, Any] | None = None
     verification: dict[str, Any] | None = None
     try:
-        duplicate = await find_remote_duplicate(db, site_id=site_id, group_id=target_group_id, account=locked)
-        if duplicate and account_in_group(duplicate, target_group_id):
-            remote_account = duplicate
-            await write_pool_action(
-                db,
-                action_type="remote_duplicate_bound",
-                actor=actor,
-                account_id=account_id,
-                pool_id=str(target_group_id),
-                reason="matched existing remote account in target group",
-                after={"sub2api_account_id": remote_account.get("id"), "group_id": target_group_id},
-            )
-        elif duplicate:
-            await _mark_push_failed(
-                db,
-                account_oid=account_oid,
-                original_status=current_status,
-                error="Remote duplicate exists outside target group",
-                unset_lock=True,
-            )
-            await write_pool_action(
-                db,
-                action_type="push_to_sub2api_group_failed",
-                actor=actor,
-                account_id=account_id,
-                pool_id=str(target_group_id),
-                status_value="failed",
-                reason=reason,
-                remote_snapshot=duplicate,
-                error="Remote duplicate exists outside target group",
-            )
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Remote duplicate exists outside target group")
-        else:
+        bound_remote_id = _bound_remote_id(metadata)
+        if bound_remote_id is not None:
             payload = build_sub2api_account_payload(
                 account_json,
                 metadata=metadata,
@@ -172,7 +141,63 @@ async def push_account_to_sub2api(
                 load_factor=load_factor,
                 priority=priority,
             )
-            remote_account = await client.create_account(payload)
+            remote_account = await _refresh_bound_remote_account(
+                client=client,
+                remote_id=bound_remote_id,
+                payload=payload,
+            )
+            await write_pool_action(
+                db,
+                action_type="refresh_bound_sub2api_account",
+                actor=actor,
+                account_id=account_id,
+                pool_id=str(target_group_id),
+                reason="refresh existing bound sub2api account",
+                after={"sub2api_account_id": remote_account.get("id"), "group_id": target_group_id, "name": remote_account.get("name")},
+            )
+        else:
+            duplicate = await find_remote_duplicate(db, site_id=site_id, group_id=target_group_id, account=locked)
+            if duplicate and account_in_group(duplicate, target_group_id):
+                remote_account = duplicate
+                await write_pool_action(
+                    db,
+                    action_type="remote_duplicate_bound",
+                    actor=actor,
+                    account_id=account_id,
+                    pool_id=str(target_group_id),
+                    reason="matched existing remote account in target group",
+                    after={"sub2api_account_id": remote_account.get("id"), "group_id": target_group_id},
+                )
+            elif duplicate:
+                await _mark_push_failed(
+                    db,
+                    account_oid=account_oid,
+                    original_status=current_status,
+                    error="Remote duplicate exists outside target group",
+                    unset_lock=True,
+                )
+                await write_pool_action(
+                    db,
+                    action_type="push_to_sub2api_group_failed",
+                    actor=actor,
+                    account_id=account_id,
+                    pool_id=str(target_group_id),
+                    status_value="failed",
+                    reason=reason,
+                    remote_snapshot=duplicate,
+                    error="Remote duplicate exists outside target group",
+                )
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Remote duplicate exists outside target group")
+            else:
+                payload = build_sub2api_account_payload(
+                    account_json,
+                    metadata=metadata,
+                    group_id=target_group_id,
+                    concurrency=concurrency,
+                    load_factor=load_factor,
+                    priority=priority,
+                )
+                remote_account = await client.create_account(payload)
 
         remote_id = remote_account.get("id")
         if remote_id is None:
@@ -613,6 +638,37 @@ async def _move_remote_to_problem_group(
     return await upsert_cached_account_snapshot(db, site_id, updated_remote)
 
 
+async def _refresh_bound_remote_account(
+    *,
+    client: Sub2ApiClient,
+    remote_id: int | str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        updated_remote = await client.update_account(remote_id, payload)
+    except HTTPException as exc:
+        if not _is_sub2api_update_not_found(exc):
+            raise
+        logger.warning(
+            "sub2api_bound_update_not_found_fallback remote_id=%s error=%s",
+            remote_id,
+            exc.detail,
+        )
+        try:
+            await client.delete_account(remote_id)
+        except HTTPException as delete_exc:
+            if "404" not in str(delete_exc.detail or "").lower():
+                raise
+            logger.warning("sub2api_bound_delete_before_recreate_not_found remote_id=%s error=%s", remote_id, delete_exc.detail)
+        updated_remote = await client.create_account(payload)
+        if isinstance(updated_remote, dict):
+            updated_remote["recreated_from_remote_id"] = remote_id
+    if not isinstance(updated_remote, dict):
+        updated_remote = {"id": remote_id, **payload}
+    updated_remote.setdefault("id", remote_id)
+    return updated_remote
+
+
 def _is_sub2api_update_not_found(exc: HTTPException) -> bool:
     detail = str(exc.detail or "").lower()
     return "sub2api update failed with status 404" in detail or "404 page not found" in detail
@@ -750,14 +806,13 @@ def _ensure_push_can_start(metadata: dict[str, Any], *, target_group_id: int) ->
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account is already being pushed")
     if metadata.get("sub2api_push_status") == "pushing":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account is already being pushed")
+
+
+def _bound_remote_id(metadata: dict[str, Any]) -> int | str | None:
     remote_id = metadata.get("sub2api_account_id")
-    existing_group_id = _int_or_none(metadata.get("sub2api_group_id"))
-    deleted_remote = metadata.get("sub2api_delete_status") == "succeeded"
-    if remote_id is not None and not deleted_remote:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Account is already bound to sub2api account #{remote_id}",
-        )
+    if remote_id is None or metadata.get("sub2api_delete_status") == "succeeded":
+        return None
+    return remote_id
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -855,11 +910,6 @@ async def _acquire_push_lock(
             "metadata.pool_status": {"$in": list(ALLOWED_PUSH_STATUSES)},
             "metadata.push_lock": {"$exists": False},
             "metadata.sub2api_push_status": {"$ne": "pushing"},
-            "$or": [
-                {"metadata.sub2api_account_id": {"$exists": False}},
-                {"metadata.sub2api_account_id": None},
-                {"metadata.sub2api_delete_status": "succeeded"},
-            ],
         },
         {
             "$set": {
