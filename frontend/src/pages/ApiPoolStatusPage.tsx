@@ -457,9 +457,15 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     });
   };
 
+  const removeRemoteAccountFromCurrentPage = (accountId: number) => {
+    setAccounts((current) => current.filter((item) => item.id !== accountId));
+    setAccountsTotal((current) => Math.max(0, current - 1));
+  };
+
   const performManualDeleteRemoteAccount = async (account: RemoteAccount, targetStatus: "available" | "library" | "problem", label: string) => {
     if (!selectedSiteId) return;
     setRemoteActionBusyId(account.id);
+    let shouldRefreshAfterRelease = false;
     try {
       await api(`/sub2api-sites/${selectedSiteId}/accounts/${account.id}/manual-delete`, token, {
         method: "POST",
@@ -474,20 +480,31 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
         next.delete(account.id);
         return next;
       });
+      removeRemoteAccountFromCurrentPage(account.id);
       clearAccountCacheForSite(selectedSiteId);
-      const nextGroups = await loadGroups(selectedSiteId);
-      const nextGroupId =
-        selectedGroupId !== null && nextGroups.some((group) => group.id === selectedGroupId)
-          ? selectedGroupId
-          : nextGroups[0]?.id ?? null;
-      if (nextGroupId !== null) {
-        await loadAccounts(selectedSiteId, nextGroupId, accountPage);
-      }
+      shouldRefreshAfterRelease = true;
       window.dispatchEvent(new CustomEvent("sub2api-cache-updated"));
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
       setRemoteActionBusyId(null);
+    }
+
+    if (shouldRefreshAfterRelease) {
+      refreshAccountListAfterRemoteDelete(selectedSiteId, accountPage).catch((error) => {
+        showToast(`删除已完成，但刷新列表失败：${errorMessage(error)}`, true);
+      });
+    }
+  };
+
+  const refreshAccountListAfterRemoteDelete = async (siteId: string, page: number) => {
+    const nextGroups = await loadGroups(siteId);
+    const nextGroupId =
+      selectedGroupId !== null && nextGroups.some((group) => group.id === selectedGroupId)
+        ? selectedGroupId
+        : nextGroups[0]?.id ?? null;
+    if (nextGroupId !== null) {
+      await loadAccounts(siteId, nextGroupId, page);
     }
   };
 

@@ -37,6 +37,7 @@ export function ConfirmDialog({
     try {
       await onConfirm();
     } finally {
+      confirmingRef.current = false;
       setConfirming(false);
     }
   };
