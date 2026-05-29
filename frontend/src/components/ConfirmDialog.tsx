@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export type ConfirmDialogTone = "default" | "danger";
 
@@ -27,6 +27,11 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const confirmingRef = useRef(false);
   const [confirming, setConfirming] = useState(false);
+
+  useEffect(() => {
+    confirmingRef.current = false;
+    setConfirming(false);
+  }, [open, title]);
 
   if (!open) return null;
 

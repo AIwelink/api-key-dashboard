@@ -149,6 +149,10 @@ type RemoteAccount = {
   codex_secondary_used_percent?: unknown;
   codex_remote_test_status?: string;
   codex_remote_tested_at?: string;
+  codex_remote_test_error?: string | null;
+  codex_remote_test_response_preview?: string | null;
+  codex_remote_test_model?: string | null;
+  codex_remote_test_latency_ms?: number | null;
   last_used_at?: string;
   created_at?: string;
   updated_at?: string;
@@ -202,6 +206,8 @@ type RemoteAccountTestResponse = {
     success?: boolean | null;
     response_preview?: string;
     error?: string;
+    model?: string;
+    latency_ms?: number | null;
   };
 };
 
@@ -462,10 +468,28 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     setAccountsTotal((current) => Math.max(0, current - 1));
   };
 
+  const updateRemoteAccountTestState = (accountId: number, verification?: RemoteAccountTestResponse["verification"]) => {
+    const now = new Date().toISOString();
+    setAccounts((current) =>
+      current.map((item) =>
+        item.id === accountId
+          ? {
+              ...item,
+              codex_remote_test_status: verification?.success === true ? "passed" : "failed",
+              codex_remote_tested_at: now,
+              codex_remote_test_error: verification?.success === true ? null : verification?.error || "测试失败",
+              codex_remote_test_response_preview: verification?.response_preview || null,
+              codex_remote_test_model: verification?.model || "gpt-5.4-mini",
+              codex_remote_test_latency_ms: verification?.latency_ms ?? null,
+            }
+          : item,
+      ),
+    );
+  };
+
   const performManualDeleteRemoteAccount = async (account: RemoteAccount, targetStatus: "available" | "library" | "problem", label: string) => {
     if (!selectedSiteId) return;
     setRemoteActionBusyId(account.id);
-    let shouldRefreshAfterRelease = false;
     try {
       await api(`/sub2api-sites/${selectedSiteId}/accounts/${account.id}/manual-delete`, token, {
         method: "POST",
@@ -482,29 +506,10 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
       });
       removeRemoteAccountFromCurrentPage(account.id);
       clearAccountCacheForSite(selectedSiteId);
-      shouldRefreshAfterRelease = true;
-      window.dispatchEvent(new CustomEvent("sub2api-cache-updated"));
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
       setRemoteActionBusyId(null);
-    }
-
-    if (shouldRefreshAfterRelease) {
-      refreshAccountListAfterRemoteDelete(selectedSiteId, accountPage).catch((error) => {
-        showToast(`删除已完成，但刷新列表失败：${errorMessage(error)}`, true);
-      });
-    }
-  };
-
-  const refreshAccountListAfterRemoteDelete = async (siteId: string, page: number) => {
-    const nextGroups = await loadGroups(siteId);
-    const nextGroupId =
-      selectedGroupId !== null && nextGroups.some((group) => group.id === selectedGroupId)
-        ? selectedGroupId
-        : nextGroups[0]?.id ?? null;
-    if (nextGroupId !== null) {
-      await loadAccounts(siteId, nextGroupId, page);
     }
   };
 
@@ -547,8 +552,8 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
       } else {
         showToast(`测试失败：${verification?.error || "请查看远端状态"}`, true);
       }
+      updateRemoteAccountTestState(account.id, verification);
       clearAccountCacheForSite(selectedSiteId);
-      await loadAccounts(selectedSiteId, selectedGroupId, accountPage);
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
@@ -1297,9 +1302,13 @@ function RemoteAccountRow({
         )}
         {statusView.detail && <div className="cell-sub warning-text">{statusView.detail}</div>}
         {account.codex_remote_test_status && (
-          <div className="cell-sub">
+          <div
+            className={`cell-sub ${account.codex_remote_test_status === "failed" ? "danger" : ""}`}
+            title={text(account.codex_remote_test_error) || text(account.codex_remote_test_response_preview)}
+          >
             测试 {remoteTestLabel(account.codex_remote_test_status)}
             {account.codex_remote_tested_at ? ` · ${formatOptionalDate(account.codex_remote_tested_at)}` : ""}
+            {account.codex_remote_test_error ? ` · ${text(account.codex_remote_test_error)}` : ""}
           </div>
         )}
       </td>

@@ -523,14 +523,25 @@ async def _restore_cached_usage_snapshots(db: AsyncIOMotorDatabase, site_id: str
     cached_by_remote_id: dict[Any, dict[str, Any]] = {}
     cursor = db.sub2api_accounts_cache.find(
         {"site_id": site_id, "sub2api_account_id": {"$in": account_ids}},
-        {"sub2api_account_id": 1, "account": 1},
+        {
+            "sub2api_account_id": 1,
+            "account": 1,
+            "remote_test_status": 1,
+            "remote_tested_at": 1,
+            "remote_test_model": 1,
+            "remote_test_response_preview": 1,
+            "remote_test_latency_ms": 1,
+            "remote_test_error": 1,
+        },
     )
     async for doc in cursor:
-        cached_by_remote_id[doc.get("sub2api_account_id")] = doc.get("account", {})
+        cached_by_remote_id[doc.get("sub2api_account_id")] = doc
     for account in accounts:
         cached = cached_by_remote_id.get(account.get("id"))
         if isinstance(cached, dict):
-            _copy_cached_usage(account, cached)
+            cached_account = cached.get("account", {}) if isinstance(cached.get("account"), dict) else {}
+            _copy_cached_usage(account, cached_account)
+            _copy_cached_remote_test(account, cached)
 
 
 def _copy_cached_usage(account: dict[str, Any], cached: dict[str, Any]) -> None:
@@ -544,6 +555,25 @@ def _copy_cached_usage(account: dict[str, Any], cached: dict[str, Any]) -> None:
             account[key] = cached_value
         if extra.get(key) is None:
             extra[key] = cached_value
+    account["extra"] = extra
+
+
+def _copy_cached_remote_test(account: dict[str, Any], cached: dict[str, Any]) -> None:
+    cached_account = cached.get("account") if isinstance(cached.get("account"), dict) else {}
+    mappings = {
+        "codex_remote_test_status": cached.get("remote_test_status") or cached_account.get("codex_remote_test_status"),
+        "codex_remote_tested_at": cached.get("remote_tested_at") or cached_account.get("codex_remote_tested_at"),
+        "codex_remote_test_model": cached.get("remote_test_model") or cached_account.get("codex_remote_test_model"),
+        "codex_remote_test_response_preview": cached.get("remote_test_response_preview") or cached_account.get("codex_remote_test_response_preview"),
+        "codex_remote_test_latency_ms": cached.get("remote_test_latency_ms") or cached_account.get("codex_remote_test_latency_ms"),
+        "codex_remote_test_error": cached.get("remote_test_error") or cached_account.get("codex_remote_test_error"),
+    }
+    extra = dict(account.get("extra") if isinstance(account.get("extra"), dict) else {})
+    for key, value in mappings.items():
+        if value is None:
+            continue
+        account[key] = value
+        extra[key] = value
     account["extra"] = extra
 
 
@@ -686,6 +716,12 @@ def _account_cache_fields(account: dict[str, Any]) -> dict[str, Any]:
         "codex_total_actual_cost",
         "codex_total_cost",
         "codex_usage_updated_at",
+        "codex_remote_test_status",
+        "codex_remote_tested_at",
+        "codex_remote_test_model",
+        "codex_remote_test_response_preview",
+        "codex_remote_test_latency_ms",
+        "codex_remote_test_error",
     )
     return {field: account.get(field) for field in fields if account.get(field) is not None}
 
@@ -1197,6 +1233,7 @@ def _extract_group_ids(account: dict[str, Any]) -> list[int]:
 
 def _account_snapshot_with_cache_sync(doc: dict[str, Any]) -> dict[str, Any]:
     account = _normalize_account_snapshot(doc.get("account", {}))
+    _copy_cached_remote_test(account, doc)
     return account
 
 

@@ -376,6 +376,10 @@ async def _write_remote_test_cache(
                 "remote_tested_by_name": actor_name(actor),
                 "account.codex_remote_test_status": status_value,
                 "account.codex_remote_tested_at": now,
+                "account.codex_remote_test_model": verification.get("model"),
+                "account.codex_remote_test_response_preview": verification.get("response_preview"),
+                "account.codex_remote_test_latency_ms": verification.get("latency_ms"),
+                "account.codex_remote_test_error": verification.get("error"),
             }
         },
     )
