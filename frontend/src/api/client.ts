@@ -32,9 +32,9 @@ export async function api<T>(path: string, token: string, options: RequestInit =
   }
 
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
+  const data = parseResponseBody(text);
   if (!response.ok) {
-    const message = data?.detail || data?.error?.message || response.statusText;
+    const message = responseErrorMessage(data, text, response.statusText);
     if (response.status === 401 && token) {
       notifyAuthExpired();
       throw new Error("登录过期");
@@ -43,4 +43,28 @@ export async function api<T>(path: string, token: string, options: RequestInit =
   }
   notifySub2apiCacheUpdated(path, options);
   return data as T;
+}
+
+function parseResponseBody(text: string) {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function responseErrorMessage(data: unknown, text: string, fallback: string) {
+  if (data && typeof data === "object") {
+    const record = data as Record<string, unknown>;
+    const error = record.error && typeof record.error === "object" ? (record.error as Record<string, unknown>) : null;
+    return textValue(record.detail) || textValue(error?.message) || textValue(record.message) || text.trim() || fallback;
+  }
+  return text.trim() || fallback;
+}
+
+function textValue(value: unknown) {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return "";
+  return JSON.stringify(value);
 }
