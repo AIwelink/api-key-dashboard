@@ -39,6 +39,16 @@ class RequestIdFilter(logging.Filter):
         return True
 
 
+class SuppressSuccessfulUsageHttpxFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name != "httpx":
+            return True
+        message = record.getMessage()
+        if "/usage" not in message:
+            return True
+        return not any(f" {code} " in message for code in ("200", "201", "202", "204", "301", "302", "304"))
+
+
 def resolve_log_dir(settings: Settings) -> Path:
     path = Path(settings.log_dir)
     if not path.is_absolute():
@@ -59,6 +69,7 @@ def setup_logging(settings: Settings) -> None:
             "disable_existing_loggers": False,
             "filters": {
                 "request_id": {"()": "app.logging_config.RequestIdFilter"},
+                "suppress_success_usage_httpx": {"()": "app.logging_config.SuppressSuccessfulUsageHttpxFilter"},
             },
             "formatters": {
                 "standard": {
@@ -75,13 +86,13 @@ def setup_logging(settings: Settings) -> None:
                     "class": "logging.StreamHandler",
                     "level": console_level,
                     "formatter": "standard",
-                    "filters": ["request_id"],
+                    "filters": ["request_id", "suppress_success_usage_httpx"],
                 },
                 "app_file": {
                     "class": "logging.handlers.RotatingFileHandler",
                     "level": level,
                     "formatter": "standard",
-                    "filters": ["request_id"],
+                    "filters": ["request_id", "suppress_success_usage_httpx"],
                     "filename": str(log_dir / "app.log"),
                     "maxBytes": settings.log_max_bytes,
                     "backupCount": settings.log_backup_count,

@@ -112,7 +112,7 @@ export function AccountsPage({ token, showToast }: Props) {
     setSkip(0);
     setSelectedIds(new Set());
     setFilters((current) => {
-      if (nextScope === "problem") return { ...current, pool_status: "" };
+      if (nextScope === "problem") return { ...current, pool_status: "", sort_by: "last_operation_at", sort_dir: "desc" };
       if (current.pool_status === "problem" || current.pool_status === "discarded") return { ...current, pool_status: "" };
       return current;
     });
@@ -354,6 +354,7 @@ export function AccountsPage({ token, showToast }: Props) {
               <option value="payment_type">支付类型</option>
               <option value="pool_status">本地状态</option>
               <option value="priority">优先级</option>
+              <option value="last_operation_at">最后操作时间</option>
             </select>
           </label>
           <label>

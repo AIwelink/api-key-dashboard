@@ -1,5 +1,6 @@
 import json
 import asyncio
+import logging
 import time
 from typing import Any
 
@@ -10,6 +11,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.utils import now_utc
 
 
+logger = logging.getLogger("app.sub2api")
 TRANSIENT_STATUS_CODES = {500, 502, 503, 504}
 REQUEST_RETRY_ATTEMPTS = 3
 REQUEST_RETRY_BASE_DELAY_SECONDS = 0.8
@@ -122,8 +124,18 @@ class Sub2ApiClient:
         return response.get("data", response)
 
     async def get_account_usage(self, account_id: int | str, *, timezone: str = "Asia/Shanghai") -> dict[str, Any]:
-        response = await self.request_admin("GET", f"/accounts/{account_id}/usage", params={"timezone": timezone})
-        return response.get("data", response)
+        try:
+            response = await self.request_admin("GET", f"/accounts/{account_id}/usage", params={"timezone": timezone})
+            return response.get("data", response)
+        except HTTPException as exc:
+            logger.warning(
+                "sub2api_usage_request_failed base_url=%s account_id=%s status_code=%s detail=%s",
+                self.base_url,
+                account_id,
+                exc.status_code,
+                exc.detail,
+            )
+            raise
 
     async def get_dashboard_snapshot(
         self,

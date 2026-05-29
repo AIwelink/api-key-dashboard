@@ -283,6 +283,7 @@ async def list_accounts(
         "last_request_at": "metadata.last_request_at",
         "pool_status": "metadata.pool_status",
         "priority": "metadata.priority",
+        "last_operation_at": "metadata.last_operation_at",
     }
     if sort_by == "reserve_order" or pool_status == "reserve":
         sort_spec = [("metadata.reserve_pinned_at", -1), ("metadata.updated_at", 1), ("metadata.created_at", 1)]
