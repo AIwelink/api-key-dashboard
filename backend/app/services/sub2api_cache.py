@@ -3,6 +3,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReplaceOne, UpdateOne
 
@@ -352,6 +353,33 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
         except asyncio.CancelledError:
             logger.info("sub2api_refresh_cancelled site_id=%s", site_id)
             raise
+        except Exception as exc:
+            finished_at = now_utc()
+            message = str(exc) or exc.__class__.__name__
+            logger.exception("sub2api_refresh_failed site_id=%s error=%s", site_id, message)
+            try:
+                await db.sub2api_cache_meta.update_one(
+                    {"_id": site_id},
+                    {
+                        "$set": {
+                            "site_id": site_id,
+                            "status": "failed",
+                            "message": message,
+                            "error_type": exc.__class__.__name__,
+                            "finished_at": finished_at,
+                            "updated_at": finished_at,
+                        }
+                    },
+                    upsert=True,
+                )
+            except Exception as meta_exc:  # noqa: BLE001 - do not hide the original refresh failure.
+                logger.warning("sub2api_refresh_failed_meta_write_failed site_id=%s error=%s", site_id, meta_exc)
+            if isinstance(exc, HTTPException):
+                raise
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"sub2api refresh failed: {message}",
+            ) from exc
 
 
 async def request_debounced_refresh(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SITE_ID) -> dict[str, Any]:
