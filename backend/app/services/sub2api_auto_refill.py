@@ -11,7 +11,7 @@ from bson import ObjectId
 from app.services.pool_lifecycle import write_pool_action
 from app.services.sub2api_cache import CAPACITY_ACCOUNT_LIMITS
 from app.services.sub2api_push import push_account_to_sub2api
-from app.utils import extract_email, now_utc, serialize_doc
+from app.utils import credentials_email, now_utc, serialize_doc
 
 
 logger = logging.getLogger("app.sub2api_auto_refill")
@@ -122,7 +122,7 @@ async def auto_refill_group(db: AsyncIOMotorDatabase, *, group_doc: dict[str, An
             verification = response.get("verification") or {}
             return {
                 "account_id": account_id,
-                "email": metadata.get("email") or extract_email(account.get("account_json") or {}),
+                "email": credentials_email(account.get("account_json") or {}),
                 "succeeded": updated_metadata.get("pool_status") == "active",
                 "pool_status": updated_metadata.get("pool_status"),
                 "remote_id": updated_metadata.get("sub2api_account_id"),
@@ -133,7 +133,7 @@ async def auto_refill_group(db: AsyncIOMotorDatabase, *, group_doc: dict[str, An
         except HTTPException as exc:
             return {
                 "account_id": account_id,
-                "email": metadata.get("email") or extract_email(account.get("account_json") or {}),
+                "email": credentials_email(account.get("account_json") or {}),
                 "succeeded": False,
                 "pool_status": metadata.get("pool_status"),
                 "error": str(exc.detail),
@@ -142,7 +142,7 @@ async def auto_refill_group(db: AsyncIOMotorDatabase, *, group_doc: dict[str, An
             logger.exception("sub2api_auto_refill_push_failed site_id=%s group_id=%s account_id=%s", site_id, group_id, account_id)
             return {
                 "account_id": account_id,
-                "email": metadata.get("email") or extract_email(account.get("account_json") or {}),
+                "email": credentials_email(account.get("account_json") or {}),
                 "succeeded": False,
                 "pool_status": metadata.get("pool_status"),
                 "error": str(exc),
@@ -274,7 +274,7 @@ def _format_auto_refill_log(doc: dict[str, Any], account_map: dict[str, dict[str
         account_items.append(
             {
                 "account_id": account_id,
-                "email": metadata.get("email") or item.get("email") or extract_email(account_json),
+                "email": credentials_email(account_json) or item.get("email"),
                 "succeeded": item.get("succeeded") is True,
                 "result": "成功" if item.get("succeeded") is True else "失败",
                 "current_status": current_status,

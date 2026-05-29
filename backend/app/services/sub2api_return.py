@@ -14,7 +14,7 @@ from app.services.accounts import apply_metadata_to_account_json, create_account
 from app.services.pool_lifecycle import actor_name, operation_actor_updates, write_pool_action
 from app.services.sub2api import Sub2ApiClient
 from app.services.sub2api_cache import get_site, refresh_site_cache
-from app.utils import extract_email, now_utc, object_id, serialize_doc
+from app.utils import credentials_email, now_utc, object_id, serialize_doc
 
 
 logger = logging.getLogger("app.sub2api_return")
@@ -180,7 +180,7 @@ async def manual_delete_sub2api_account(
                 }
             )
             if not next_metadata.get("email"):
-                email = extract_email(next_account_json)
+                email = credentials_email(next_account_json)
                 if email:
                     next_metadata["email"] = email
             next_metadata["sha256"] = hashlib.sha256(
@@ -310,9 +310,7 @@ async def _find_local_account(
     remote_account_id: int,
     account_json: dict[str, Any],
 ) -> dict[str, Any] | None:
-    credentials = account_json.get("credentials") if isinstance(account_json.get("credentials"), dict) else {}
-    email = extract_email(account_json)
-    chatgpt_account_id = credentials.get("chatgpt_account_id")
+    email = credentials_email(account_json)
     exact = await db.accounts.find_one(
         {
             "metadata.deleted_at": {"$exists": False},
@@ -324,15 +322,8 @@ async def _find_local_account(
         return exact
 
     or_clauses: list[dict[str, Any]] = []
-    if chatgpt_account_id:
-        or_clauses.append({"account_json.credentials.chatgpt_account_id": chatgpt_account_id})
-        or_clauses.append({"metadata.chatgpt_account_id": chatgpt_account_id})
     if email:
-        or_clauses.append({"metadata.email": email})
         or_clauses.append({"account_json.credentials.email": email})
-        or_clauses.append({"account_json.extra.email": email})
-    if account_json.get("name"):
-        or_clauses.append({"account_json.name": account_json["name"]})
     if not or_clauses:
         return None
     return await db.accounts.find_one(

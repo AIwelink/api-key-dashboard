@@ -8,7 +8,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.services.accounts import create_account, update_account
 from app.services.json_parser import extract_account_objects
 from app.services.pool_lifecycle import write_pool_action
-from app.utils import extract_email, now_utc, serialize_doc
+from app.utils import credentials_email, now_utc, serialize_doc
 
 
 logger = logging.getLogger("app.import_batches")
@@ -82,7 +82,7 @@ async def create_import_batch(
                     blocked_item = {
                         "account_id": str(existing["_id"]),
                         "name": account_json.get("name"),
-                        "email": extract_email(account_json),
+                        "email": credentials_email(account_json),
                         "reason": "existing account is active; JSON update was blocked",
                     }
                     blocked.append(blocked_item)
@@ -178,21 +178,7 @@ async def create_import_batch(
 
 
 async def find_existing_account(db: AsyncIOMotorDatabase, account_json: dict[str, Any]) -> dict[str, Any] | None:
-    credentials = account_json.get("credentials") if isinstance(account_json.get("credentials"), dict) else {}
-    chatgpt_account_id = credentials.get("chatgpt_account_id")
-    email = extract_email(account_json)
-    name = account_json.get("name")
-
-    candidates: list[dict[str, Any]] = []
-    if chatgpt_account_id:
-        candidates.append({"account_json.credentials.chatgpt_account_id": chatgpt_account_id})
-        candidates.append({"metadata.chatgpt_account_id": chatgpt_account_id})
-    if email:
-        candidates.append({"metadata.email": email})
-        candidates.append({"account_json.credentials.email": email})
-        candidates.append({"account_json.extra.email": email})
-    if name:
-        candidates.append({"account_json.name": name})
-    if not candidates:
+    email = credentials_email(account_json)
+    if not email:
         return None
-    return await db.accounts.find_one({"$or": candidates, "metadata.deleted_at": {"$exists": False}})
+    return await db.accounts.find_one({"account_json.credentials.email": email, "metadata.deleted_at": {"$exists": False}})

@@ -6,7 +6,7 @@ from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.services.pool_lifecycle import operation_actor_updates
-from app.utils import extract_email, now_utc, object_id, serialize_doc
+from app.utils import credentials_email, now_utc, object_id, serialize_doc
 
 
 EXTRA_METADATA_KEYS = {
@@ -120,7 +120,7 @@ def normalize_metadata(
         current[key] = value
 
     if not current.get("email"):
-        email = extract_email(account_json)
+        email = credentials_email(account_json)
         if email:
             current["email"] = email
 

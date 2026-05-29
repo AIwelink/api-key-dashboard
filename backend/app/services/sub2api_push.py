@@ -13,7 +13,7 @@ from app.services.pool_lifecycle import actor_name, operation_actor_updates, wri
 from app.services.sub2api import Sub2ApiClient, account_in_group
 from app.services.sub2api_cache import get_site, upsert_cached_account_snapshot
 from app.services.sub2api_return import remote_usage_snapshot
-from app.utils import extract_email, now_utc, object_id, serialize_doc
+from app.utils import credentials_email, now_utc, object_id, serialize_doc
 
 
 logger = logging.getLogger("app.sub2api_push")
@@ -108,7 +108,7 @@ async def push_account_to_sub2api(
             "sub2api_account_id": metadata.get("sub2api_account_id"),
             "sub2api_group_ids": metadata.get("sub2api_group_ids"),
             "sha256": metadata.get("sha256"),
-            "email": metadata.get("email") or extract_email(account_json),
+            "email": credentials_email(account_json),
         },
     )
     action_id = push_action["id"]
@@ -865,8 +865,6 @@ async def find_remote_duplicate(
 ) -> dict[str, Any] | None:
     metadata = dict(account.get("metadata", {}))
     account_json = account.get("account_json") if isinstance(account.get("account_json"), dict) else {}
-    credentials = account_json.get("credentials") if isinstance(account_json.get("credentials"), dict) else {}
-    extra = account_json.get("extra") if isinstance(account_json.get("extra"), dict) else {}
 
     remote_id = metadata.get("sub2api_account_id")
     if remote_id is not None:
@@ -875,9 +873,7 @@ async def find_remote_duplicate(
             return doc.get("account", {})
 
     values = {
-        "chatgpt_account_id": credentials.get("chatgpt_account_id") or metadata.get("chatgpt_account_id"),
-        "email": metadata.get("email") or extract_email(account_json),
-        "name": account_json.get("name"),
+        "email": credentials_email(account_json),
     }
     candidates: list[dict[str, Any]] = []
     async for doc in db.sub2api_accounts_cache.find({"site_id": site_id}):
@@ -893,14 +889,10 @@ async def find_remote_duplicate(
 
 def _remote_matches(remote: dict[str, Any], values: dict[str, Any]) -> bool:
     credentials = remote.get("credentials") if isinstance(remote.get("credentials"), dict) else {}
-    extra = remote.get("extra") if isinstance(remote.get("extra"), dict) else {}
-    if values.get("chatgpt_account_id") and credentials.get("chatgpt_account_id") == values["chatgpt_account_id"]:
-        return True
     email = values.get("email")
-    if email and email in {credentials.get("email"), extra.get("email")}:
+    if email and credentials.get("email") == email:
         return True
-    name = values.get("name")
-    return bool(name and remote.get("name") == name)
+    return False
 
 
 async def _acquire_push_lock(

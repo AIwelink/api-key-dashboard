@@ -32,22 +32,16 @@ def serialize_doc(value: Any) -> Any:
 
 
 def extract_email(account_json: dict[str, Any]) -> str | None:
+    return credentials_email(account_json)
+
+
+def credentials_email(account_json: dict[str, Any]) -> str | None:
     credentials = account_json.get("credentials")
-    if isinstance(credentials, dict):
-        email = credentials.get("email")
-        if isinstance(email, str) and email.strip():
-            return email.strip()
-
-    extra = account_json.get("extra")
-    if isinstance(extra, dict):
-        email = extra.get("email")
-        if isinstance(email, str) and email.strip():
-            return email.strip()
-
-    name = account_json.get("name")
-    if isinstance(name, str) and "@" in name:
-        return name.strip()
-
+    if not isinstance(credentials, dict):
+        return None
+    email = credentials.get("email")
+    if isinstance(email, str) and email.strip():
+        return email.strip()
     return None
 
 

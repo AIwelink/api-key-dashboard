@@ -9,7 +9,7 @@ from app.security import require_roles
 from app.services.accounts import create_account
 from app.services.audit import write_audit_log
 from app.services.json_parser import extract_account_objects
-from app.utils import now_utc
+from app.utils import credentials_email, now_utc
 
 
 router = APIRouter(tags=["imports"])
@@ -28,18 +28,15 @@ async def preview_import(
     conflict_count = 0
     for account_json in accounts:
         name = account_json.get("name")
-        credentials = account_json.get("credentials", {})
-        email = credentials.get("email") if isinstance(credentials, dict) else None
-        existing = await db.accounts.find_one(
-            {
-                "$or": [
-                    {"account_json.name": name},
-                    {"metadata.email": name},
-                    {"metadata.email": email},
-                ],
-                "metadata.deleted_at": {"$exists": False},
-            }
-        )
+        email = credentials_email(account_json)
+        existing = None
+        if email:
+            existing = await db.accounts.find_one(
+                {
+                    "account_json.credentials.email": email,
+                    "metadata.deleted_at": {"$exists": False},
+                }
+            )
         action = "create"
         if existing:
             action = "update" if existing.get("account_json") == account_json else "conflict"

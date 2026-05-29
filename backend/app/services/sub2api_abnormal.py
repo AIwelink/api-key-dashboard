@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.services.sub2api_return import manual_delete_sub2api_account, remote_abnormal_reason, remote_usage_snapshot
-from app.utils import extract_email, now_utc, serialize_doc
+from app.utils import credentials_email, now_utc, serialize_doc
 
 
 logger = logging.getLogger("app.sub2api_abnormal")
@@ -133,14 +133,7 @@ def _group_candidates_by_identity(candidates: list[dict[str, Any]]) -> list[list
 
 
 def _candidate_identity_key(account: dict[str, Any]) -> str:
-    credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
-    chatgpt_account_id = credentials.get("chatgpt_account_id")
-    if chatgpt_account_id:
-        return f"chatgpt_account_id:{chatgpt_account_id}"
-    email = extract_email(account) or account.get("email") or account.get("account_claims_email")
+    email = credentials_email(account)
     if isinstance(email, str) and email.strip():
         return f"email:{email.strip().lower()}"
-    name = account.get("name")
-    if isinstance(name, str) and name.strip():
-        return f"name:{name.strip().lower()}"
     return f"remote_id:{account.get('id')}"
