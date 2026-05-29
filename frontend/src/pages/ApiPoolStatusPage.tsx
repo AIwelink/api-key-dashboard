@@ -457,7 +457,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     });
   };
 
-  const performManualDeleteRemoteAccount = async (account: RemoteAccount, targetStatus: "available" | "library", label: string) => {
+  const performManualDeleteRemoteAccount = async (account: RemoteAccount, targetStatus: "available" | "library" | "problem", label: string) => {
     if (!selectedSiteId) return;
     setRemoteActionBusyId(account.id);
     try {
@@ -491,8 +491,13 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     }
   };
 
-  const manualDeleteRemoteAccount = (account: RemoteAccount, targetStatus: "available" | "library") => {
-    const label = targetStatus === "available" ? "手动删除并退回可用池" : "手动删除并退回总库";
+  const manualDeleteRemoteAccount = (account: RemoteAccount, targetStatus: "available" | "library" | "problem") => {
+    const label =
+      targetStatus === "available"
+        ? "手动删除并退回可用池"
+        : targetStatus === "problem"
+          ? "标记错误并退回问题池"
+          : "手动删除并退回总库";
     setConfirmState({
       title: "确认删除远端账号",
       message: "删除前会先把账号快照写入本地库，然后从 sub2api 删除远端账号。",
@@ -501,7 +506,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
         ["远端 ID", account.id],
         ["处理方式", label],
       ],
-      confirmText: "删除远端账号",
+      confirmText: targetStatus === "problem" ? "标记错误并删除远端" : "删除远端账号",
       tone: "danger",
       onConfirm: () => performManualDeleteRemoteAccount(account, targetStatus, label),
     });
@@ -1224,7 +1229,7 @@ function RemoteAccountRow({
   account: RemoteAccount;
   busy: boolean;
   isSelected: boolean;
-  onManualDelete: (targetStatus: "available" | "library") => void;
+  onManualDelete: (targetStatus: "available" | "library" | "problem") => void;
   onSelect: (checked: boolean) => void;
   onTest: () => void;
 }) {
@@ -1313,6 +1318,9 @@ function RemoteAccountRow({
           </button>
           <button className="ghost compact-button" disabled={busy} onClick={() => onManualDelete("library")} type="button">
             退回总库
+          </button>
+          <button className="ghost compact-button danger-button" disabled={busy} onClick={() => onManualDelete("problem")} type="button">
+            标记错误
           </button>
         </div>
       </td>

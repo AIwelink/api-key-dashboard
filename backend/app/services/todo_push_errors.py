@@ -12,6 +12,7 @@ from app.services.pool_lifecycle import actor_name, write_pool_action
 from app.services.sub2api import Sub2ApiClient
 from app.services.sub2api_cache import get_site
 from app.services.sub2api_push import PROBLEM_CLASS_PUSH_TOKEN_EXPIRED, PUSH_ERROR_TASK_TYPE
+from app.services.sub2api_return import remote_usage_snapshot
 from app.utils import now_utc, object_id, serialize_doc
 
 
@@ -373,8 +374,23 @@ async def _delete_remote_problem_account(db: AsyncIOMotorDatabase, *, account: d
     if not site:
         return {"ok": False, "reason": "site not found", "site_id": site_id}
     client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
+    cached = await db.sub2api_accounts_cache.find_one({"site_id": site_id, "sub2api_account_id": remote_id})
+    remote_account = cached.get("account", {}) if cached and isinstance(cached.get("account"), dict) else {}
+    if not remote_account:
+        try:
+            remote_account = await client.get_account(remote_id)
+        except HTTPException:
+            remote_account = {}
+    snapshot_updates: dict[str, Any] = {
+        "metadata.sub2api_delete_remote_snapshot": remote_account,
+        "metadata.sub2api_delete_usage_snapshot": remote_usage_snapshot(remote_account) if remote_account else {},
+        "metadata.sub2api_delete_remote_last_used_at": remote_account.get("last_used_at") if remote_account else None,
+        "metadata.sub2api_delete_remote_status": remote_account.get("status") if remote_account else None,
+        "metadata.sub2api_delete_remote_error_message": remote_account.get("error_message") if remote_account else None,
+    }
     result = await client.delete_account(remote_id)
     await db.sub2api_accounts_cache.delete_one({"site_id": site_id, "sub2api_account_id": remote_id})
+    await db.accounts.update_one({"_id": account["_id"]}, {"$set": snapshot_updates})
     await write_account_operation(
         db,
         operation_class="push_error_remote_deleted",
@@ -382,7 +398,7 @@ async def _delete_remote_problem_account(db: AsyncIOMotorDatabase, *, account: d
         remark_zh="处理决定后，从远端推送错误池删除账号。",
         actor=actor,
         account_id=str(account["_id"]),
-        details={"site_id": site_id, "remote_account_id": remote_id, "delete_result": result},
+        details={"site_id": site_id, "remote_account_id": remote_id, "delete_result": result, "remote_snapshot": remote_account},
     )
     return {"ok": True, "site_id": site_id, "remote_account_id": remote_id, "delete_result": result}
 

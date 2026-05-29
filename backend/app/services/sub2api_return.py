@@ -95,6 +95,7 @@ async def manual_delete_sub2api_account(
     group_name = _remote_group_names(remote_account)[0] if _remote_group_names(remote_account) else None
     is_abnormal = _is_remote_abnormal(remote_account)
     abnormal_reason = remote_abnormal_reason(remote_account)
+    usage_snapshot = remote_usage_snapshot(remote_account)
     now = now_utc()
     account_json = _remote_to_account_json(remote_account)
     metadata_updates = {
@@ -114,18 +115,24 @@ async def manual_delete_sub2api_account(
         "sub2api_delete_target_status": target_status,
         "sub2api_delete_reason": reason,
         "sub2api_delete_status": "pending",
+        "sub2api_delete_remote_snapshot": remote_account,
+        "sub2api_delete_usage_snapshot": usage_snapshot,
+        "sub2api_delete_remote_last_used_at": remote_account.get("last_used_at"),
+        "sub2api_delete_remote_status": remote_account.get("status"),
+        "sub2api_delete_remote_error_message": remote_account.get("error_message"),
         "sub2api_return_snapshot": remote_account,
         "remote_status_at_return": remote_account.get("status"),
         "remote_schedulable_at_return": remote_account.get("schedulable"),
         "remote_error_at_return": remote_account.get("error_message"),
         "remote_last_used_at_return": remote_account.get("last_used_at"),
+        "remote_usage_snapshot_at_return": usage_snapshot,
         "return_is_abnormal": is_abnormal,
         "abnormal_detected_at": now if is_abnormal else None,
         "abnormal_status": remote_account.get("status") if is_abnormal else None,
         "abnormal_schedulable": remote_account.get("schedulable") if is_abnormal else None,
         "abnormal_error_message": remote_account.get("error_message") if is_abnormal else None,
         "abnormal_reason": abnormal_reason,
-        "abnormal_usage_snapshot": remote_usage_snapshot(remote_account),
+        "abnormal_usage_snapshot": usage_snapshot,
         "abnormal_remote_snapshot": remote_account if is_abnormal else None,
         "return_health_status": "abnormal" if is_abnormal else "normal",
         "return_test_status": "not_tested",

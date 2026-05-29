@@ -142,7 +142,7 @@ class PushToSub2ApiRequest(BaseModel):
 
 
 class Sub2ApiManualDeleteRequest(BaseModel):
-    target_status: Literal["available", "library"] = "available"
+    target_status: Literal["available", "library", "problem"] = "available"
     reason: str | None = None
 
 
