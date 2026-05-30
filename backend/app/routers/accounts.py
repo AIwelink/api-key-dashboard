@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.schemas import AccountCreate, AccountUpdate, EnterReserveRequest, ManualTransferRequest, PushToSub2ApiRequest, ReservePinRequest, VerifyViaSub2ApiRequest
+from app.schemas import AccountCreate, AccountCredentialsRefresh, AccountUpdate, EnterReserveRequest, ManualTransferRequest, PushToSub2ApiRequest, ReservePinRequest, VerifyViaSub2ApiRequest
 from app.security import get_current_user, require_roles
 from app.services.accounts import (
     create_account,
+    refresh_account_credentials_json,
     get_account_or_404,
     list_accounts,
     soft_delete_account,
@@ -109,6 +110,34 @@ async def patch_account(
         actor=actor,
     )
     await write_audit_log(db, actor=actor, action="account.update", resource_type="account", resource_id=account_id)
+    return updated
+
+
+@router.post("/{account_id}/refresh-credentials-json")
+async def post_refresh_credentials_json(
+    account_id: str,
+    payload: AccountCredentialsRefresh,
+    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    updated = await refresh_account_credentials_json(
+        db,
+        account_id=account_id,
+        refreshed_json=payload.account_json,
+        actor=actor,
+    )
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="account.refresh_credentials_json",
+        resource_type="account",
+        resource_id=account_id,
+        after={
+            "credentials_refreshed_at": updated.get("metadata", {}).get("credentials_refreshed_at"),
+            "credentials_refreshed_fields": updated.get("metadata", {}).get("credentials_refreshed_fields"),
+            "credentials_refreshed_exported_at": updated.get("metadata", {}).get("credentials_refreshed_exported_at"),
+        },
+    )
     return updated
 
 

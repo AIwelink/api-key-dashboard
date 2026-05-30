@@ -50,6 +50,10 @@ class AccountUpdate(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
+class AccountCredentialsRefresh(BaseModel):
+    account_json: dict[str, Any] | list[Any] | str
+
+
 class ImportPreviewRequest(BaseModel):
     payload: dict[str, Any] | list[Any] | str
     metadata_defaults: dict[str, Any] = Field(default_factory=dict)

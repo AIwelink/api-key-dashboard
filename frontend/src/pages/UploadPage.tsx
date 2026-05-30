@@ -101,17 +101,21 @@ export function UploadPage({ token, showToast }: Props) {
     setFields((current) => ({ ...current, [key]: value }));
   };
 
-  const applyPurchasedJinyaoDefaults = () => {
+  const applyPurchasedDefaults = (purchaseSource?: string) => {
     setUploadIntent("purchase");
     setFields((current) => ({
       ...current,
-      account_type: "free",
+      account_type: "plus",
       payment_type: "no_card",
       self_produced: "false",
-      purchase_source: current.purchase_source || "金幺",
-      purchase_account_type: "free",
+      purchase_source: purchaseSource ? current.purchase_source || purchaseSource : current.purchase_source,
+      purchase_account_type: "plus",
       phone_bound: "true",
     }));
+  };
+
+  const applyPurchasedJinyaoDefaults = () => {
+    applyPurchasedDefaults("金幺");
   };
 
   const loadParsedAccountIntoForm = (account: Record<string, unknown>) => {
@@ -123,12 +127,13 @@ export function UploadPage({ token, showToast }: Props) {
       account_json: pretty(account),
       email_session:
         current.email_session || text(extra.email_session) || text(extra.mailbox_connection) || text(credentials.email) || text(extra.email) || text(account.name),
-      account_type: normalizeAccountType(credentials.plan_type, current.account_type),
+      account_type: uploadTemplate === "purchased_jinyao" ? "plus" : normalizeAccountType(credentials.plan_type, current.account_type),
       twoFA: current.twoFA || text(extra["2FA"]),
       self_produced: uploadTemplate === "purchased_jinyao" ? "false" : current.self_produced,
       purchase_source: uploadTemplate === "purchased_jinyao" ? current.purchase_source || "金幺" : current.purchase_source,
-      purchase_account_type: uploadTemplate === "purchased_jinyao" ? current.purchase_account_type || "free" : current.purchase_account_type,
-      phone_bound: phoneNumber ? "true" : current.phone_bound,
+      payment_type: uploadTemplate === "purchased_jinyao" ? "no_card" : current.payment_type,
+      purchase_account_type: uploadTemplate === "purchased_jinyao" ? "plus" : current.purchase_account_type,
+      phone_bound: uploadTemplate === "purchased_jinyao" || phoneNumber ? "true" : current.phone_bound,
       phone_number: current.phone_number || phoneNumber,
     }));
   };
@@ -301,7 +306,17 @@ export function UploadPage({ token, showToast }: Props) {
                 <strong>上传意图</strong>
                 <span>（必填）</span>
               </span>
-              <select value={uploadIntent} onChange={(event) => setUploadIntent(event.target.value as typeof uploadIntent)} required>
+              <select
+                value={uploadIntent}
+                onChange={(event) => {
+                  const nextIntent = event.target.value as typeof uploadIntent;
+                  setUploadIntent(nextIntent);
+                  if (nextIntent === "purchase") {
+                    applyPurchasedDefaults();
+                  }
+                }}
+                required
+              >
                 <option value="new">new：新制作账号</option>
                 <option value="renew">renew：更新/续用旧账号 JSON</option>
                 <option value="purchase">purchase：购买账号</option>
@@ -321,7 +336,10 @@ export function UploadPage({ token, showToast }: Props) {
                   setFields((current) => ({
                     ...current,
                     self_produced: value,
-                    purchase_account_type: value === "false" ? current.purchase_account_type || "free" : current.purchase_account_type,
+                    account_type: value === "false" ? "plus" : current.account_type,
+                    payment_type: value === "false" ? "no_card" : current.payment_type,
+                    purchase_account_type: value === "false" ? "plus" : current.purchase_account_type,
+                    phone_bound: value === "false" ? "true" : current.phone_bound,
                   }));
                 }}
                 required

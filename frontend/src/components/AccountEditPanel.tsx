@@ -30,6 +30,9 @@ type EditFields = {
 export function AccountEditPanel({ account, token, showToast, onClose, onSaved }: Props) {
   const [fields, setFields] = useState<EditFields>(() => buildEditFields(account));
   const [saving, setSaving] = useState(false);
+  const [refreshJson, setRefreshJson] = useState("");
+  const [refreshingJson, setRefreshingJson] = useState(false);
+  const canRefreshCredentials = text(account.metadata.pool_status) === "problem";
 
   const setField = <K extends keyof EditFields>(key: K, value: EditFields[K]) => {
     setFields((current) => ({ ...current, [key]: value }));
@@ -54,6 +57,26 @@ export function AccountEditPanel({ account, token, showToast, onClose, onSaved }
       showToast(errorMessage(error), true);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const refreshCredentialsJson = async () => {
+    if (!refreshJson.trim()) {
+      showToast("请先粘贴新获取的账号 JSON", true);
+      return;
+    }
+    setRefreshingJson(true);
+    try {
+      await api<AccountDocument>(`/accounts/${account.id}/refresh-credentials-json`, token, {
+        method: "POST",
+        body: JSON.stringify({ account_json: refreshJson }),
+      });
+      showToast("凭证 JSON 已更新");
+      await onSaved();
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setRefreshingJson(false);
     }
   };
 
@@ -197,10 +220,30 @@ export function AccountEditPanel({ account, token, showToast, onClose, onSaved }
               required
             />
           </label>
+          {canRefreshCredentials && (
+            <label className="span-4">
+              <span className="field-label">
+                <strong>更新凭证 JSON</strong>
+                <span>只更新 access_token / refresh_token / id_token / session_token / expires_at</span>
+              </span>
+              <textarea
+                className="json-input edit-json-input"
+                value={refreshJson}
+                onChange={(event) => setRefreshJson(event.target.value)}
+                placeholder="粘贴新导出的 JSON，可以是单个账号对象，也可以是包含 accounts 的导出包"
+                spellCheck={false}
+              />
+            </label>
+          )}
           <div className="button-row span-4">
             <button type="submit" disabled={saving}>
               {saving ? "保存中..." : "保存修改"}
             </button>
+            {canRefreshCredentials && (
+              <button className="ghost" type="button" onClick={refreshCredentialsJson} disabled={refreshingJson || saving}>
+                {refreshingJson ? "更新中..." : "只更新凭证 JSON"}
+              </button>
+            )}
             <button className="ghost" type="button" onClick={onClose} disabled={saving}>
               取消
             </button>

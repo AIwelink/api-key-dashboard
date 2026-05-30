@@ -6,8 +6,17 @@ from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.services.pool_lifecycle import operation_actor_updates
+from app.services.json_parser import parse_loose_json
 from app.utils import credentials_email, now_utc, object_id, serialize_doc
 
+
+REFRESH_CREDENTIAL_KEYS = {
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "session_token",
+    "expires_at",
+}
 
 EXTRA_METADATA_KEYS = {
     "email_session",
@@ -198,6 +207,98 @@ async def update_account(
     )
     updated = await db.accounts.find_one({"_id": account["_id"]})
     return serialize_doc(updated)
+
+
+async def refresh_account_credentials_json(
+    db: AsyncIOMotorDatabase,
+    *,
+    account_id: str,
+    refreshed_json: Any,
+    actor: dict[str, Any],
+) -> dict[str, Any]:
+    account = await get_account_or_404(db, account_id)
+    current_json = account.get("account_json") if isinstance(account.get("account_json"), dict) else {}
+    current_email = credentials_email(current_json)
+    if not current_email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current account JSON is missing credentials.email")
+
+    exported_at, refreshed_account = _select_refreshed_account(refreshed_json, current_email)
+    refreshed_credentials = refreshed_account.get("credentials") if isinstance(refreshed_account.get("credentials"), dict) else {}
+    refreshed_email = credentials_email(refreshed_account)
+    if refreshed_email != current_email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Refreshed JSON credentials.email does not match current account")
+
+    current_credentials = dict(current_json.get("credentials") if isinstance(current_json.get("credentials"), dict) else {})
+    changed_keys: list[str] = []
+    for key in REFRESH_CREDENTIAL_KEYS:
+        if key not in refreshed_credentials:
+            continue
+        value = refreshed_credentials.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        if current_credentials.get(key) != value:
+            changed_keys.append(key)
+        current_credentials[key] = value
+
+    if not changed_keys:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No refreshed credential fields found to update")
+
+    next_account_json = dict(current_json)
+    next_account_json["credentials"] = current_credentials
+    if "expires_at" in changed_keys:
+        next_account_json["expires_at"] = current_credentials.get("expires_at")
+
+    now = now_utc()
+    next_metadata = normalize_metadata(
+        next_account_json,
+        {},
+        actor=actor,
+        existing=account.get("metadata", {}),
+    )
+    next_metadata["credentials_refreshed_at"] = now
+    next_metadata["credentials_refreshed_by_user_id"] = actor.get("_id")
+    next_metadata["credentials_refreshed_by_name"] = actor.get("name") or actor.get("email")
+    next_metadata["credentials_refreshed_fields"] = sorted(changed_keys)
+    if exported_at:
+        next_metadata["credentials_refreshed_exported_at"] = exported_at
+    next_metadata.update(
+        {
+            key.removeprefix("metadata."): value
+            for key, value in operation_actor_updates(actor, "更新账号凭证 JSON", at=now).items()
+        }
+    )
+
+    await db.accounts.update_one(
+        {"_id": account["_id"]},
+        {"$set": {"account_json": next_account_json, "metadata": next_metadata}},
+    )
+    updated = await db.accounts.find_one({"_id": account["_id"]})
+    return serialize_doc(updated)
+
+
+def _select_refreshed_account(payload: Any, current_email: str) -> tuple[Any, dict[str, Any]]:
+    parsed = parse_loose_json(payload)
+    exported_at = parsed.get("exported_at") if isinstance(parsed, dict) else None
+    candidates: list[Any] = []
+    if isinstance(parsed, dict) and isinstance(parsed.get("accounts"), list):
+        candidates = parsed["accounts"]
+    elif isinstance(parsed, list):
+        for item in parsed:
+            if isinstance(item, dict) and isinstance(item.get("accounts"), list):
+                candidates.extend(item["accounts"])
+            else:
+                candidates.append(item)
+    elif isinstance(parsed, dict):
+        candidates = [parsed]
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Refreshed JSON must contain account object")
+
+    matched = [item for item in candidates if isinstance(item, dict) and credentials_email(item) == current_email]
+    if not matched:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No account with matching credentials.email found in refreshed JSON")
+    if len(matched) > 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Multiple accounts with matching credentials.email found in refreshed JSON")
+    return exported_at, matched[0]
 
 
 async def soft_delete_account(
