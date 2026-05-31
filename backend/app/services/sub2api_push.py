@@ -357,8 +357,9 @@ def build_sub2api_account_payload(
     load_factor: int,
     priority: int,
 ) -> dict[str, Any]:
+    metadata = metadata or {}
     payload = {key: value for key, value in account_json.items() if key not in REMOTE_STRIP_FIELDS}
-    push_name = build_sub2api_account_name(account_json, metadata or {})
+    push_name = _push_account_name(account_json, metadata)
     payload["name"] = push_name
     payload["group_id"] = group_id
     payload["group_ids"] = [group_id]
@@ -369,6 +370,30 @@ def build_sub2api_account_payload(
     payload["schedulable"] = True
     payload["confirm_mixed_channel_risk"] = True
     return payload
+
+
+def _push_account_name(account_json: dict[str, Any], metadata: dict[str, Any]) -> str:
+    existing_name = str(account_json.get("name") or "").strip()
+    if _should_preserve_existing_name(metadata) and existing_name:
+        return existing_name
+    return build_sub2api_account_name(account_json, metadata)
+
+
+def _should_preserve_existing_name(metadata: dict[str, Any]) -> bool:
+    upload_intent = str(metadata.get("upload_intent") or "").strip().lower()
+    if upload_intent == "renew":
+        return True
+    if metadata.get("credentials_refreshed_at"):
+        return True
+    return _metadata_was_content_updated(metadata)
+
+
+def _metadata_was_content_updated(metadata: dict[str, Any]) -> bool:
+    created_at = _parse_datetime(metadata.get("created_at"))
+    updated_at = _parse_datetime(metadata.get("updated_at"))
+    if created_at is None or updated_at is None:
+        return False
+    return updated_at > created_at
 
 
 def _ensure_remote_group(remote_account: dict[str, Any], group_id: int) -> None:
