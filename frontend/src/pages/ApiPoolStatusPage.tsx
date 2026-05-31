@@ -40,12 +40,20 @@ type CapacitySummary = {
   five_hour_capacity_usd?: number;
   active_five_hour_capacity_usd?: number;
   reserve_five_hour_capacity_usd?: number;
+  dynamic_five_hour_capacity_usd?: number;
+  active_dynamic_five_hour_capacity_usd?: number;
+  reserve_dynamic_five_hour_capacity_usd?: number;
   twenty_four_hour_capacity_usd?: number;
   seven_day_capacity_usd?: number;
   active_seven_day_capacity_usd?: number;
   reserve_seven_day_capacity_usd?: number;
   five_hour_used_estimated_usd?: number;
   five_hour_remaining_estimated_usd?: number;
+  dynamic_five_hour_used_estimated_usd?: number;
+  dynamic_five_hour_remaining_estimated_usd?: number;
+  active_dynamic_five_hour_used_estimated_usd?: number;
+  active_dynamic_five_hour_remaining_estimated_usd?: number;
+  reserve_dynamic_five_hour_remaining_estimated_usd?: number;
   seven_day_used_estimated_usd?: number;
   seven_day_remaining_estimated_usd?: number;
   five_hour_peak_cost?: number;
@@ -99,6 +107,7 @@ type CapacitySummary = {
   used_7d_percent?: number;
   available_7d_percent?: number;
   active_used_5h_percent?: number;
+  active_dynamic_used_5h_percent?: number;
   active_used_7d_percent?: number;
   total_accounts?: number;
   active_available_accounts?: number;
@@ -1394,7 +1403,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
   const activeSevenDayPeak24hSpeedDays = summary?.active_seven_day_peak_speed_days;
   const fiveHourUsedPercent = summary?.used_5h_percent;
   const sevenDayUsedPercent = summary?.used_7d_percent;
-  const activeFiveHourUsedPercent = summary?.active_used_5h_percent;
+  const activeFiveHourUsedPercent = summary?.active_dynamic_used_5h_percent ?? summary?.active_used_5h_percent;
   const activeSevenDayUsedPercent = summary?.active_used_7d_percent;
   const fiveHourRemainingPercent = remainingPercent(fiveHourUsedPercent);
   const sevenDayRemainingPercent = remainingPercent(sevenDayUsedPercent);
@@ -1412,13 +1421,13 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
       </div>
       <div className="capacity-runway-grid">
         <CapacityMetric
-          label="总容量：5h"
-          value={formatUsd(summary?.five_hour_capacity_usd)}
+          label="动态5h总容量"
+          value={formatUsd(summary?.dynamic_five_hour_capacity_usd ?? summary?.five_hour_capacity_usd)}
           sideValues={[
             capacitySideValue("实际池", summary?.active_five_hour_capacity_usd),
             capacitySideValue("备用池", summary?.reserve_five_hour_capacity_usd),
           ]}
-          sub={`可用额度：当前已用 ${formatUsd(summary?.five_hour_used_estimated_usd)}，预估可用 ${formatUsd(summary?.five_hour_remaining_estimated_usd)}`}
+          sub={`动态可用额度：当前已用 ${formatUsd(summary?.dynamic_five_hour_used_estimated_usd ?? summary?.five_hour_used_estimated_usd)}，预估可用 ${formatUsd(summary?.dynamic_five_hour_remaining_estimated_usd ?? summary?.five_hour_remaining_estimated_usd)}`}
           percent={fiveHourRemainingPercent}
           tone={capacityAvailabilityTone(fiveHourUsedPercent, fiveHourRemainingPercent)}
           overlay={capacityOverlay("实际池", formatPercent(activeFiveHourRemainingPercent), activeFiveHourRemainingPercent, capacityAvailabilityTone(activeFiveHourUsedPercent, activeFiveHourRemainingPercent))}

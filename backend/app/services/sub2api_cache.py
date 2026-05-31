@@ -20,6 +20,7 @@ REFRESH_DEBOUNCE_SECONDS = 3
 ACCOUNT_USAGE_CONCURRENCY = 50
 ACCOUNT_USAGE_BATCH_SIZE = 50
 ACCOUNT_USAGE_REFRESH_INTERVAL = timedelta(minutes=30)
+FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60
 CAPACITY_ACCOUNT_LIMITS = {
     "plus": {"five_hour_usd": 28, "seven_day_usd": 140},
     "team": {"five_hour_usd": 15, "seven_day_usd": 75},
@@ -760,14 +761,21 @@ async def _capacity_summary_for_accounts(
     five_hour_capacity_usd = active_five_hour_capacity_usd + selected_reserve["five_hour_capacity_usd"]
     seven_day_capacity_usd = active_seven_day_capacity_usd + selected_reserve["seven_day_capacity_usd"]
     twenty_four_hour_capacity_usd = seven_day_capacity_usd / 7 if seven_day_capacity_usd > 0 else 0
-    five_hour_used_estimated_usd = active_five_hour_capacity_usd * used_5h / 100
-    five_hour_remaining_estimated_usd = five_hour_capacity_usd * max(0, 100 - used_5h) / 100
-    five_hour_remaining_estimated_usd = max(0, five_hour_capacity_usd - five_hour_used_estimated_usd)
+    active_dynamic_five_hour_used_usd = selected["five_hour_dynamic_used_usd"]
+    active_dynamic_five_hour_remaining_usd = selected["five_hour_dynamic_remaining_usd"]
+    active_dynamic_five_hour_capacity_usd = selected["five_hour_dynamic_capacity_usd"]
+    reserve_dynamic_five_hour_used_usd = selected_reserve["five_hour_dynamic_used_usd"]
+    reserve_dynamic_five_hour_remaining_usd = selected_reserve["five_hour_dynamic_remaining_usd"]
+    reserve_dynamic_five_hour_capacity_usd = selected_reserve["five_hour_dynamic_capacity_usd"]
+    dynamic_five_hour_used_estimated_usd = active_dynamic_five_hour_used_usd + reserve_dynamic_five_hour_used_usd
+    dynamic_five_hour_remaining_estimated_usd = active_dynamic_five_hour_remaining_usd + reserve_dynamic_five_hour_remaining_usd
+    dynamic_five_hour_capacity_usd = active_dynamic_five_hour_capacity_usd + reserve_dynamic_five_hour_capacity_usd
     seven_day_used_estimated_usd = active_seven_day_capacity_usd * used_7d / 100
     seven_day_remaining_estimated_usd = seven_day_capacity_usd * max(0, 100 - used_7d) / 100
     seven_day_remaining_estimated_usd = max(0, seven_day_capacity_usd - seven_day_used_estimated_usd)
     active_seven_day_remaining_estimated_usd = max(0, active_seven_day_capacity_usd - seven_day_used_estimated_usd)
-    effective_used_5h = _ratio_percent(five_hour_used_estimated_usd, five_hour_capacity_usd)
+    effective_used_5h = _ratio_percent(dynamic_five_hour_used_estimated_usd, five_hour_capacity_usd)
+    active_effective_used_5h = _ratio_percent(active_dynamic_five_hour_used_usd, active_five_hour_capacity_usd)
     effective_used_7d = _ratio_percent(seven_day_used_estimated_usd, seven_day_capacity_usd)
     active_five_hour_peak_multiple = _ratio_or_none(active_five_hour_capacity_usd, five_hour_peak_cost)
     active_recent_day_five_hour_peak_multiple = _ratio_or_none(active_five_hour_capacity_usd, recent_day_five_hour_peak_cost)
@@ -833,17 +841,26 @@ async def _capacity_summary_for_accounts(
         "available_5h_percent": _clamp_percent(100 - effective_used_5h),
         "used_7d_percent": effective_used_7d,
         "available_7d_percent": _clamp_percent(100 - effective_used_7d),
-        "active_used_5h_percent": used_5h,
+        "active_used_5h_percent": active_effective_used_5h,
+        "active_dynamic_used_5h_percent": active_effective_used_5h,
         "active_used_7d_percent": used_7d,
         "active_five_hour_capacity_usd": round(active_five_hour_capacity_usd, 4),
         "active_seven_day_capacity_usd": round(active_seven_day_capacity_usd, 4),
         "reserve_five_hour_capacity_usd": round(selected_reserve["five_hour_capacity_usd"], 4),
         "reserve_seven_day_capacity_usd": round(selected_reserve["seven_day_capacity_usd"], 4),
         "five_hour_capacity_usd": round(five_hour_capacity_usd, 4),
+        "dynamic_five_hour_capacity_usd": round(dynamic_five_hour_remaining_estimated_usd, 4),
+        "active_dynamic_five_hour_capacity_usd": round(active_dynamic_five_hour_remaining_usd, 4),
+        "reserve_dynamic_five_hour_capacity_usd": round(reserve_dynamic_five_hour_remaining_usd, 4),
         "seven_day_capacity_usd": round(seven_day_capacity_usd, 4),
         "twenty_four_hour_capacity_usd": round(twenty_four_hour_capacity_usd, 4),
-        "five_hour_used_estimated_usd": round(five_hour_used_estimated_usd, 4),
-        "five_hour_remaining_estimated_usd": round(five_hour_remaining_estimated_usd, 4),
+        "five_hour_used_estimated_usd": round(dynamic_five_hour_used_estimated_usd, 4),
+        "five_hour_remaining_estimated_usd": round(dynamic_five_hour_remaining_estimated_usd, 4),
+        "dynamic_five_hour_used_estimated_usd": round(dynamic_five_hour_used_estimated_usd, 4),
+        "dynamic_five_hour_remaining_estimated_usd": round(dynamic_five_hour_remaining_estimated_usd, 4),
+        "active_dynamic_five_hour_used_estimated_usd": round(active_dynamic_five_hour_used_usd, 4),
+        "active_dynamic_five_hour_remaining_estimated_usd": round(active_dynamic_five_hour_remaining_usd, 4),
+        "reserve_dynamic_five_hour_remaining_estimated_usd": round(reserve_dynamic_five_hour_remaining_usd, 4),
         "seven_day_used_estimated_usd": round(seven_day_used_estimated_usd, 4),
         "seven_day_remaining_estimated_usd": round(seven_day_remaining_estimated_usd, 4),
         "five_hour_peak_cost": round(five_hour_peak_cost, 4),
@@ -900,17 +917,33 @@ def _capacity_by_account_type(capacity_accounts: list[dict[str, Any]], five_hour
     five_hour_ids = {str(account.get("id")) for account in five_hour_capacity_accounts}
     for account in capacity_accounts:
         account_type = _capacity_account_type(account)
-        _add_capacity_account(result, account_type, five_hour_available=str(account.get("id")) in five_hour_ids)
+        _add_capacity_account(result, account_type, five_hour_available=str(account.get("id")) in five_hour_ids, account=account)
     return result
 
 
 def _empty_capacity_type_summary() -> dict[str, dict[str, Any]]:
     result = {
         **{
-            account_type: {"available_accounts": 0, "available_5h_accounts": 0, "five_hour_capacity_usd": 0.0, "seven_day_capacity_usd": 0.0}
+            account_type: {
+                "available_accounts": 0,
+                "available_5h_accounts": 0,
+                "five_hour_capacity_usd": 0.0,
+                "seven_day_capacity_usd": 0.0,
+                "five_hour_dynamic_capacity_usd": 0.0,
+                "five_hour_dynamic_used_usd": 0.0,
+                "five_hour_dynamic_remaining_usd": 0.0,
+            }
             for account_type in CAPACITY_ACCOUNT_LIMITS
         },
-        "total": {"available_accounts": 0, "available_5h_accounts": 0, "five_hour_capacity_usd": 0.0, "seven_day_capacity_usd": 0.0},
+        "total": {
+            "available_accounts": 0,
+            "available_5h_accounts": 0,
+            "five_hour_capacity_usd": 0.0,
+            "seven_day_capacity_usd": 0.0,
+            "five_hour_dynamic_capacity_usd": 0.0,
+            "five_hour_dynamic_used_usd": 0.0,
+            "five_hour_dynamic_remaining_usd": 0.0,
+        },
     }
     return result
 
@@ -929,23 +962,60 @@ async def _reserve_capacity_by_account_type(db: AsyncIOMotorDatabase, site_id: s
         ],
     }
     async for account in db.accounts.find(query, {"metadata.account_type": 1, "account_json.credentials.plan_type": 1, "account_json.extra.account_type": 1}):
-        _add_capacity_account(result, _local_capacity_account_type(account), five_hour_available=True)
+        _add_capacity_account(result, _local_capacity_account_type(account), five_hour_available=True, account=None)
     return result
 
 
-def _add_capacity_account(result: dict[str, dict[str, Any]], account_type: str, *, five_hour_available: bool) -> None:
+def _add_capacity_account(
+    result: dict[str, dict[str, Any]],
+    account_type: str,
+    *,
+    five_hour_available: bool,
+    account: dict[str, Any] | None = None,
+) -> None:
     if account_type not in CAPACITY_ACCOUNT_LIMITS:
         return
     limits = CAPACITY_ACCOUNT_LIMITS[account_type]
+    dynamic_five_hour = _dynamic_five_hour_usage(account, limits["five_hour_usd"], five_hour_available=five_hour_available)
     result[account_type]["available_accounts"] += 1
     result[account_type]["seven_day_capacity_usd"] += limits["seven_day_usd"]
     result[account_type]["five_hour_capacity_usd"] += limits["five_hour_usd"]
+    result[account_type]["five_hour_dynamic_capacity_usd"] += dynamic_five_hour["capacity_usd"]
+    result[account_type]["five_hour_dynamic_used_usd"] += dynamic_five_hour["used_usd"]
+    result[account_type]["five_hour_dynamic_remaining_usd"] += dynamic_five_hour["remaining_usd"]
     result["total"]["available_accounts"] += 1
     result["total"]["seven_day_capacity_usd"] += limits["seven_day_usd"]
     result["total"]["five_hour_capacity_usd"] += limits["five_hour_usd"]
+    result["total"]["five_hour_dynamic_capacity_usd"] += dynamic_five_hour["capacity_usd"]
+    result["total"]["five_hour_dynamic_used_usd"] += dynamic_five_hour["used_usd"]
+    result["total"]["five_hour_dynamic_remaining_usd"] += dynamic_five_hour["remaining_usd"]
     if five_hour_available:
         result[account_type]["available_5h_accounts"] += 1
         result["total"]["available_5h_accounts"] += 1
+
+
+def _dynamic_five_hour_usage(account: dict[str, Any] | None, limit_usd: float, *, five_hour_available: bool) -> dict[str, float]:
+    if not five_hour_available:
+        return {"capacity_usd": 0.0, "used_usd": 0.0, "remaining_usd": 0.0}
+    if account is None:
+        return {"capacity_usd": limit_usd, "used_usd": 0.0, "remaining_usd": limit_usd}
+
+    used_percent = _usage_number(account, "codex_5h_used_percent")
+    used_percent = _clamp_percent(used_percent if isinstance(used_percent, (int, float)) else 0)
+    reset_after_seconds = _usage_number(account, "codex_5h_reset_after_seconds")
+    if not isinstance(reset_after_seconds, (int, float)):
+        reset_at = _parse_datetime(_first_present(account, account.get("extra") if isinstance(account.get("extra"), dict) else {}, "codex_5h_reset_at", "5h_reset_at"))
+        reset_after_seconds = max(0, (reset_at - now_utc()).total_seconds()) if reset_at is not None else FIVE_HOUR_WINDOW_SECONDS
+    window_minutes = _usage_number(account, "codex_5h_window_minutes")
+    window_seconds = max(1.0, float(window_minutes) * 60) if isinstance(window_minutes, (int, float)) and window_minutes > 0 else FIVE_HOUR_WINDOW_SECONDS
+    reset_factor = max(0.0, min(1.0, float(reset_after_seconds) / window_seconds))
+    dynamic_used_usd = limit_usd * used_percent / 100 * reset_factor
+    dynamic_used_usd = max(0.0, min(limit_usd, dynamic_used_usd))
+    return {
+        "capacity_usd": limit_usd,
+        "used_usd": dynamic_used_usd,
+        "remaining_usd": max(0.0, limit_usd - dynamic_used_usd),
+    }
 
 
 def _primary_capacity_type(type_summary: dict[str, dict[str, Any]]) -> str:
