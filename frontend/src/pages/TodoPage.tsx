@@ -24,6 +24,13 @@ type FreeToPlusResponse = {
   };
 };
 
+type ProblemAccountsResponse = {
+  items: AccountDocument[];
+  total: number;
+  skip: number;
+  limit: number;
+};
+
 type PushErrorStatus = "open" | "pending" | "processing" | "archived" | "resolved" | "all";
 type PushErrorAccountType = "all" | "plus" | "team" | "free";
 
@@ -53,15 +60,21 @@ const paymentOptions = [
 
 export function TodoPage({ token, showToast }: Props) {
   const [accounts, setAccounts] = useState<AccountDocument[]>([]);
+  const [problemAccounts, setProblemAccounts] = useState<AccountDocument[]>([]);
+  const [problemTotal, setProblemTotal] = useState(0);
   const [total, setTotal] = useState(0);
   const [stats, setStats] = useState<FreeToPlusResponse["stats"]>({ pending: 0, processing: 0, completed: 0, failed: 0 });
   const [status, setStatus] = useState<TaskStatus>("open");
   const [query, setQuery] = useState("");
   const [skip, setSkip] = useState(0);
+  const [problemSkip, setProblemSkip] = useState(0);
   const [limit, setLimit] = useState(50);
+  const [problemLimit, setProblemLimit] = useState(50);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [paymentById, setPaymentById] = useState<Record<string, string>>({});
   const [editingAccount, setEditingAccount] = useState<AccountDocument | null>(null);
+  const [errorPanelOpen, setErrorPanelOpen] = useState(true);
+  const [upgradePanelOpen, setUpgradePanelOpen] = useState(true);
 
   const currentUserId = useMemo(() => {
     const raw = localStorage.getItem("user");
@@ -94,13 +107,33 @@ export function TodoPage({ token, showToast }: Props) {
     });
   };
 
+  const loadProblemAccounts = async () => {
+    const params = new URLSearchParams({
+      account_scope: "problem",
+      sort_by: "last_operation_at",
+      sort_dir: "desc",
+      skip: String(problemSkip),
+      limit: String(problemLimit),
+    });
+    if (query.trim()) params.set("q", query.trim());
+    const data = await api<ProblemAccountsResponse>(`/accounts?${params.toString()}`, token);
+    setProblemAccounts(sortMineFirst(data.items, currentUserId));
+    setProblemTotal(data.total);
+  };
+
   useEffect(() => {
     loadAccounts().catch((error) => showToast(errorMessage(error), true));
   }, [status, skip, limit]);
 
+  useEffect(() => {
+    loadProblemAccounts().catch((error) => showToast(errorMessage(error), true));
+  }, [problemSkip, problemLimit, currentUserId]);
+
   const refresh = () => {
+    if (skip !== 0) setSkip(0);
+    if (problemSkip !== 0) setProblemSkip(0);
     if (skip === 0) loadAccounts().catch((error) => showToast(errorMessage(error), true));
-    else setSkip(0);
+    if (problemSkip === 0) loadProblemAccounts().catch((error) => showToast(errorMessage(error), true));
   };
 
   const runAccountAction = async (account: AccountDocument, action: "start" | "release" | "return-processing" | "complete" | "fail") => {
@@ -164,6 +197,130 @@ export function TodoPage({ token, showToast }: Props) {
       <section className="panel">
         <div className="panel-header">
           <div>
+            <h3>错误账号处理</h3>
+            <p>显示账号列表里的问题账号；当前登录用户上传的账号会置顶，并标记为您的账号错误。</p>
+          </div>
+          <div className="button-row">
+            <label className="inline-select">
+              <span>每页</span>
+              <select
+                value={problemLimit}
+                onChange={(event) => {
+                  setProblemLimit(Number(event.target.value));
+                  setProblemSkip(0);
+                }}
+              >
+                <option value={50}>50</option>
+                <option value={200}>200</option>
+                <option value={500}>500</option>
+              </select>
+            </label>
+            <button className="ghost compact-button" onClick={() => setErrorPanelOpen((current) => !current)} type="button">
+              {errorPanelOpen ? "折叠" : "展开"}
+            </button>
+          </div>
+        </div>
+
+        {errorPanelOpen && (
+          <>
+            <CompactStats
+              items={[
+                ["问题账号", problemTotal],
+                ["您的账号错误", problemAccounts.filter((account) => isUploadedByCurrentUser(account, currentUserId)).length],
+              ]}
+            />
+
+            <div className="table-wrap account-table-wrap">
+              <table className="account-table">
+                <thead>
+                  <tr>
+                    <th>账号</th>
+                    <th>类型</th>
+                    <th>来源</th>
+                    <th>支付</th>
+                    <th>状态</th>
+                    <th>上传 / 操作</th>
+                    <th>时间</th>
+                    <th>错误/备注</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {problemAccounts.map((account) => {
+                    const isMine = isUploadedByCurrentUser(account, currentUserId);
+                    return (
+                      <tr className={isMine ? "selected-row" : ""} key={account.id}>
+                        <td>
+                          <div className="cell-main">{accountEmail(account)}</div>
+                          <div className="cell-sub">{text(account.account_json.name)}</div>
+                          {isMine && <div className="cell-sub"><StatusPill value="您的账号错误" tone="danger" /></div>}
+                        </td>
+                        <td>{text(account.metadata.account_type) || "-"}</td>
+                        <td>{text(account.metadata.purchase_source) || <span className="muted">-</span>}</td>
+                        <td>{formatPayment(account.metadata.payment_type) || <span className="muted">未填写</span>}</td>
+                        <td>
+                          <StatusPill value={poolStatusLabel(text(account.metadata.pool_status) || "problem")} tone="warning" />
+                        </td>
+                        <td>
+                          <div>{text(account.metadata.uploader_name) || <span className="muted">未知</span>}</div>
+                          <div className="cell-sub">操作 {text(account.metadata.last_operation_by_name) || "-"}</div>
+                          {text(account.metadata.last_operation_name) && (
+                            <div className="cell-sub">
+                              {text(account.metadata.last_operation_name)}
+                              {text(account.metadata.last_operation_at) ? ` · ${formatDateTime(account.metadata.last_operation_at)}` : ""}
+                            </div>
+                          )}
+                        </td>
+                        <td>
+                          <div className="cell-sub">创建 {formatDateTime(account.metadata.created_at)}</div>
+                          <div className="cell-sub">更新 {formatDateTime(account.metadata.updated_at)}</div>
+                        </td>
+                        <td className="remark-cell">
+                          {text(account.metadata.problem_remark_zh) ||
+                            text(account.metadata.problem_error) ||
+                            text(account.metadata.last_error) ||
+                            text(account.metadata.remark) ||
+                            <span className="muted">-</span>}
+                        </td>
+                        <td>
+                          <div className="button-row action-wrap">
+                            <button className="ghost compact-button" disabled={busyId === account.id} onClick={() => openEditAccount(account)} type="button">
+                              编辑
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {!problemAccounts.length && (
+                    <tr>
+                      <td className="muted" colSpan={9}>
+                        暂无问题账号
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="pagination">
+              <button className="ghost" type="button" disabled={problemSkip <= 0} onClick={() => setProblemSkip(Math.max(0, problemSkip - problemLimit))}>
+                上一页
+              </button>
+              <span className="muted">
+                {problemTotal ? problemSkip + 1 : 0}-{Math.min(problemSkip + problemLimit, problemTotal)} / {problemTotal}
+              </span>
+              <button className="ghost" type="button" disabled={problemSkip + problemLimit >= problemTotal} onClick={() => setProblemSkip(problemSkip + problemLimit)}>
+                下一页
+              </button>
+            </div>
+          </>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <div>
             <h3>free 升级 plus</h3>
             <p>候选账号要求：当前为 free、有邮箱和接码 session，并且在总库或可用池。点击开始处理会加锁，其他用户不能同时处理。</p>
           </div>
@@ -196,20 +353,25 @@ export function TodoPage({ token, showToast }: Props) {
                 <option value={500}>500</option>
               </select>
             </label>
+            <button className="ghost compact-button" onClick={() => setUpgradePanelOpen((current) => !current)} type="button">
+              {upgradePanelOpen ? "折叠" : "展开"}
+            </button>
           </div>
         </div>
 
-        <CompactStats
-          items={[
-            ["待处理", stats.pending],
-            ["处理中", stats.processing],
-            ["已完成", stats.completed],
-            ["失败", stats.failed],
-          ]}
-        />
+        {upgradePanelOpen && (
+          <>
+            <CompactStats
+              items={[
+                ["待处理", stats.pending],
+                ["处理中", stats.processing],
+                ["已完成", stats.completed],
+                ["失败", stats.failed],
+              ]}
+            />
 
-        <div className="table-wrap account-table-wrap">
-          <table className="account-table">
+            <div className="table-wrap account-table-wrap">
+              <table className="account-table">
             <thead>
               <tr>
                 <th>账号</th>
@@ -348,20 +510,22 @@ export function TodoPage({ token, showToast }: Props) {
                 </tr>
               )}
             </tbody>
-          </table>
-        </div>
+              </table>
+            </div>
 
-        <div className="pagination">
-          <button className="ghost" type="button" disabled={skip <= 0} onClick={() => setSkip(Math.max(0, skip - limit))}>
-            上一页
-          </button>
-          <span className="muted">
-            {total ? skip + 1 : 0}-{Math.min(skip + limit, total)} / {total}
-          </span>
-          <button className="ghost" type="button" disabled={skip + limit >= total} onClick={() => setSkip(skip + limit)}>
-            下一页
-          </button>
-        </div>
+            <div className="pagination">
+              <button className="ghost" type="button" disabled={skip <= 0} onClick={() => setSkip(Math.max(0, skip - limit))}>
+                上一页
+              </button>
+              <span className="muted">
+                {total ? skip + 1 : 0}-{Math.min(skip + limit, total)} / {total}
+              </span>
+              <button className="ghost" type="button" disabled={skip + limit >= total} onClick={() => setSkip(skip + limit)}>
+                下一页
+              </button>
+            </div>
+          </>
+        )}
       </section>
       {editingAccount && (
         <AccountEditPanel
@@ -721,6 +885,20 @@ function CompactStats({ items }: { items: Array<[string, string | number]> }) {
 
 function StatusPill({ value, tone = "muted" }: { value: string; tone?: "accent" | "success" | "warning" | "danger" | "muted" }) {
   return <span className={`status-pill ${tone}`}>{value}</span>;
+}
+
+function isUploadedByCurrentUser(account: AccountDocument, currentUserId: string) {
+  if (!currentUserId) return false;
+  return text(account.metadata.uploaded_by_user_id) === currentUserId;
+}
+
+function sortMineFirst(accounts: AccountDocument[], currentUserId: string) {
+  return [...accounts].sort((left, right) => {
+    const leftMine = isUploadedByCurrentUser(left, currentUserId) ? 1 : 0;
+    const rightMine = isUploadedByCurrentUser(right, currentUserId) ? 1 : 0;
+    if (leftMine !== rightMine) return rightMine - leftMine;
+    return 0;
+  });
 }
 
 function accountEmail(account: AccountDocument) {
