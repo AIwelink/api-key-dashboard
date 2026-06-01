@@ -17,8 +17,9 @@ async def write_audit_log(
 ) -> None:
     await db.audit_logs.insert_one(
         {
-            "actor_type": "user" if actor else "system",
+            "actor_type": actor.get("actor_type") if actor and actor.get("actor_type") else ("user" if actor else "system"),
             "actor_id": actor.get("_id") if actor else None,
+            "actor_name": actor.get("name") if actor else None,
             "action": action,
             "resource_type": resource_type,
             "resource_id": resource_id,
@@ -27,4 +28,3 @@ async def write_audit_log(
             "created_at": now_utc(),
         }
     )
-

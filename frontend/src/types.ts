@@ -8,6 +8,7 @@ export type ViewName =
   | "api-pools"
   | "pool-lifecycle"
   | "agent-analysis"
+  | "api-tokens"
   | "users"
   | "logs";
 

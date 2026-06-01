@@ -7,6 +7,10 @@ from app.utils import now_utc
 
 async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.users.create_index("email", unique=True)
+    await db.api_tokens.create_index("token_hash", unique=True)
+    await db.api_tokens.create_index("token_prefix")
+    await db.api_tokens.create_index("status")
+    await db.api_tokens.create_index("created_at")
     await db.accounts.create_index("metadata.email")
     await db.accounts.create_index("metadata.account_status")
     await db.accounts.create_index("metadata.payment_type")

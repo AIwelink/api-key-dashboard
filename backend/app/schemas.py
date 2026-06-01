@@ -40,6 +40,13 @@ class PasswordResetRequest(BaseModel):
     password: str = Field(min_length=8)
 
 
+class ApiTokenCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    role: Role = "maintainer"
+    expires_in_days: int | None = Field(default=None, ge=1, le=3650)
+    note: str | None = Field(default=None, max_length=500)
+
+
 class AccountCreate(BaseModel):
     account_json: dict[str, Any] | list[Any]
     metadata: dict[str, Any] = Field(default_factory=dict)

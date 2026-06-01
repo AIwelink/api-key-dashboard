@@ -41,6 +41,10 @@ def verify_password(password: str, stored_hash: str) -> bool:
     return hmac.compare_digest(recalculated, expected)
 
 
+def hash_api_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def _b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
@@ -102,11 +106,44 @@ async def get_current_user(
 ) -> dict[str, Any]:
     if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
+    if credentials.credentials.startswith("akd_"):
+        return await get_api_token_actor(credentials.credentials, db)
     payload = decode_access_token(credentials.credentials)
     user = await db.users.find_one({"_id": payload.get("sub")})
     if user is None or user.get("status") == "disabled":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     return user
+
+
+async def get_api_token_actor(token: str, db: AsyncIOMotorDatabase) -> dict[str, Any]:
+    token_hash = hash_api_token(token)
+    document = await db.api_tokens.find_one({"token_hash": token_hash})
+    now = now_utc()
+    if document is None or document.get("status") != "active":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API token")
+    expires_at = document.get("expires_at")
+    if isinstance(expires_at, datetime):
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        if expires_at < now:
+            await db.api_tokens.update_one({"_id": document["_id"]}, {"$set": {"status": "expired", "updated_at": now}})
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API token expired")
+
+    await db.api_tokens.update_one(
+        {"_id": document["_id"]},
+        {"$set": {"last_used_at": now}, "$inc": {"usage_count": 1}},
+    )
+    token_id = str(document["_id"])
+    return {
+        "_id": f"api_token:{token_id}",
+        "email": f"{document.get('name') or token_id}@api-token.local",
+        "name": document.get("name") or "API Token",
+        "role": document.get("role") or "viewer",
+        "status": "active",
+        "actor_type": "api_token",
+        "api_token_id": token_id,
+        "api_token_prefix": document.get("token_prefix"),
+    }
 
 
 def require_roles(*roles: str):

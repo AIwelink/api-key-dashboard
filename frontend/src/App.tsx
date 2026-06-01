@@ -3,6 +3,7 @@ import logoUrl from "../AIwelink_logo_bule_A.png";
 import { AccountPoolsPage } from "./pages/AccountPoolsPage";
 import { AccountsPage } from "./pages/AccountsPage";
 import { ApiPoolStatusPage } from "./pages/ApiPoolStatusPage";
+import { ApiTokensPage } from "./pages/ApiTokensPage";
 import { AuditPage } from "./pages/AuditPage";
 import { IntroPage } from "./pages/IntroPage";
 import { AvailablePoolPage, ReservePoolPage } from "./pages/ManualPoolPage";
@@ -33,6 +34,7 @@ const poolNavItems: Array<[ViewName, string]> = [
 
 const adminNavItems: Array<[ViewName, string]> = [
   ["agent-analysis", "Agent分析"],
+  ["api-tokens", "系统 Token"],
   ["users", "用户管理"],
   ["logs", "日志"],
 ];
@@ -145,6 +147,7 @@ function App() {
                 ]}
               />
             )}
+            {view === "api-tokens" && <ApiTokensPage token={token} showToast={showToast} />}
             {view === "users" && <UsersPage token={token} showToast={showToast} />}
             {view === "logs" && <AuditPage token={token} showToast={showToast} />}
           </>

@@ -434,9 +434,15 @@ export function UploadPage({ token, showToast }: Props) {
             </label>
             <label>
               <span className="field-label">
-                <strong>手机号</strong>
+                <strong>codex手机接码地址</strong>
+                {fields.phone_bound === "true" ? <span>（绑定手机后必填）</span> : null}
               </span>
-              <input value={fields.phone_number} onChange={(event) => setField("phone_number", event.target.value)} />
+              <input
+                value={fields.phone_number}
+                onChange={(event) => setField("phone_number", event.target.value)}
+                placeholder="https://cdc.smslease.link/adminapi/jsscript/smsInfo/ABC_sms?key=0ef4e643f7ab89fccd8e2790"
+                required={fields.phone_bound === "true"}
+              />
             </label>
             <label className="span-2">
               <span className="field-label">
@@ -606,13 +612,13 @@ function FieldHelp() {
             </td>
           </tr>
           <tr>
-            <td>手机号</td>
+            <td>codex手机接码地址</td>
             <td>
               <code>phone_number</code>
             </td>
-            <td>选填</td>
+            <td>绑定手机后必填</td>
             <td>
-              记录绑定手机号；当 <code>phone_bound = true</code> 时建议填写。
+              记录 codex 手机接码地址；当 <code>phone_bound = true</code> 时必须填写。
             </td>
           </tr>
           <tr>
@@ -683,6 +689,7 @@ function validateParsedAccountsForBulkSave(accounts: Record<string, unknown>[], 
     if (fields.self_produced === "false" && !fields.purchase_source.trim()) errors.push("购买账号缺少购买来源");
     if (fields.self_produced === "false" && !fields.purchase_account_type) errors.push("购买账号缺少购买时账号类型");
     if (fields.phone_bound !== "true" && fields.phone_bound !== "false") errors.push("是否绑定手机不是布尔值");
+    if (fields.phone_bound === "true" && !resolveAccountPhoneNumber(account, fields, true)) errors.push("绑定手机后缺少 codex手机接码地址");
     if (errors.length) {
       issues.push({
         index: index + 1,

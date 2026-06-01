@@ -1666,6 +1666,26 @@ th {
   padding: 12px;
 }
 
+.token-created-panel {
+  margin-bottom: 18px;
+}
+
+.token-created-panel textarea {
+  background: #f0f2f5;
+  color: #111827;
+}
+
+.token-list-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.token-list-item > div {
+  min-width: 0;
+}
+
 .selected-row {
   background: var(--accent-soft);
 }
