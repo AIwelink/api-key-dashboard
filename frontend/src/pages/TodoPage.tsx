@@ -10,6 +10,7 @@ type Props = {
 };
 
 type TaskStatus = "open" | "pending" | "processing" | "completed" | "failed" | "all";
+type TodoPanel = "problem" | "upgrade";
 
 type FreeToPlusResponse = {
   items: AccountDocument[];
@@ -73,8 +74,7 @@ export function TodoPage({ token, showToast }: Props) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [paymentById, setPaymentById] = useState<Record<string, string>>({});
   const [editingAccount, setEditingAccount] = useState<AccountDocument | null>(null);
-  const [errorPanelOpen, setErrorPanelOpen] = useState(true);
-  const [upgradePanelOpen, setUpgradePanelOpen] = useState(true);
+  const [activePanel, setActivePanel] = useState<TodoPanel>("problem");
 
   const currentUserId = useMemo(() => {
     const raw = localStorage.getItem("user");
@@ -194,7 +194,19 @@ export function TodoPage({ token, showToast }: Props) {
         </div>
       </div>
 
-      <section className="panel">
+      <div className="account-view-menu">
+        <button className={`account-view-menu-item ${activePanel === "problem" ? "active" : ""}`} onClick={() => setActivePanel("problem")} type="button">
+          错误账号处理
+          <span>{problemTotal} 个问题账号</span>
+        </button>
+        <button className={`account-view-menu-item ${activePanel === "upgrade" ? "active" : ""}`} onClick={() => setActivePanel("upgrade")} type="button">
+          free 升级 plus
+          <span>{stats.pending + stats.processing} 个待处理</span>
+        </button>
+      </div>
+
+      {activePanel === "problem" && (
+        <section className="panel">
         <div className="panel-header">
           <div>
             <h3>错误账号处理</h3>
@@ -215,14 +227,10 @@ export function TodoPage({ token, showToast }: Props) {
                 <option value={500}>500</option>
               </select>
             </label>
-            <button className="ghost compact-button" onClick={() => setErrorPanelOpen((current) => !current)} type="button">
-              {errorPanelOpen ? "折叠" : "展开"}
-            </button>
           </div>
         </div>
 
-        {errorPanelOpen && (
-          <>
+        <>
             <CompactStats
               items={[
                 ["问题账号", problemTotal],
@@ -249,7 +257,7 @@ export function TodoPage({ token, showToast }: Props) {
                   {problemAccounts.map((account) => {
                     const isMine = isUploadedByCurrentUser(account, currentUserId);
                     return (
-                      <tr className={isMine ? "selected-row" : ""} key={account.id}>
+                      <tr key={account.id}>
                         <td>
                           <div className="cell-main">{accountEmail(account)}</div>
                           <div className="cell-sub">{text(account.account_json.name)}</div>
@@ -315,10 +323,11 @@ export function TodoPage({ token, showToast }: Props) {
               </button>
             </div>
           </>
-        )}
-      </section>
+        </section>
+      )}
 
-      <section className="panel">
+      {activePanel === "upgrade" && (
+        <section className="panel">
         <div className="panel-header">
           <div>
             <h3>free 升级 plus</h3>
@@ -353,14 +362,10 @@ export function TodoPage({ token, showToast }: Props) {
                 <option value={500}>500</option>
               </select>
             </label>
-            <button className="ghost compact-button" onClick={() => setUpgradePanelOpen((current) => !current)} type="button">
-              {upgradePanelOpen ? "折叠" : "展开"}
-            </button>
           </div>
         </div>
 
-        {upgradePanelOpen && (
-          <>
+        <>
             <CompactStats
               items={[
                 ["待处理", stats.pending],
@@ -525,8 +530,8 @@ export function TodoPage({ token, showToast }: Props) {
               </button>
             </div>
           </>
-        )}
-      </section>
+        </section>
+      )}
       {editingAccount && (
         <AccountEditPanel
           account={editingAccount}
