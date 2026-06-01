@@ -20,8 +20,8 @@ type ToastState = {
 
 const navItems: Array<[ViewName, string]> = [
   ["upload", "上传账号"],
-  ["todos", "待办与处理"],
-  ["push-error-todos", "错误账号处理"],
+  ["todos", "代办与错误账号处理"],
+  ["push-error-todos", "疑问账号分配面板"],
   ["accounts", "账号列表"],
 ];
 

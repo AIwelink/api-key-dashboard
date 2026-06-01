@@ -150,8 +150,8 @@ export function TodoPage({ token, showToast }: Props) {
     <section className="view accounts-page">
       <div className="topbar">
         <div>
-          <h2>待办与处理</h2>
-          <p>待办与处理是人工任务池和执行台。账号只在总库或可用池时进入待办；一旦进入使用备选池或实际使用池，就不会出现在这里。</p>
+          <h2>代办与错误账号处理</h2>
+          <p>代办与错误账号处理是人工任务池和执行台。账号只在总库或可用池时进入待办；一旦进入使用备选池或实际使用池，就不会出现在这里。</p>
         </div>
         <div className="button-row">
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱、来源、备注、处理人" />
@@ -456,7 +456,7 @@ export function PushErrorTodoPage({ token, showToast }: Props) {
     <section className="view accounts-page">
       <div className="topbar">
         <div>
-          <h2>错误账号处理</h2>
+          <h2>疑问账号分配面板</h2>
           <p>这里处理推送到使用池后测试失败的账号。当前先接入 401/token_expired 类型，后续可以继续追加其他错误类型。</p>
         </div>
         <div className="button-row">
