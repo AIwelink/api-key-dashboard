@@ -21,6 +21,9 @@ type ToastState = {
 const navItems: Array<[ViewName, string]> = [
   ["upload", "上传账号"],
   ["todos", "代办与错误账号处理"],
+];
+
+const accountNavItems: Array<[ViewName, string]> = [
   ["push-error-todos", "疑问账号分配面板"],
   ["accounts", "账号列表"],
 ];
@@ -86,7 +89,7 @@ function App() {
         </div>
 
         <nav className="nav">
-          {[navItems, poolNavItems, adminNavItems].map((group, index) => (
+          {[navItems, accountNavItems, poolNavItems, adminNavItems].map((group, index) => (
             <div className="nav-group" key={index}>
               {group.map(([key, label]) => (
                 <button
