@@ -433,7 +433,7 @@ export function TodoPage({ token, showToast }: Props) {
       const auth = await api<AuthSession>(`/sub2api-sites/${resurrectionWorkspace.account.site_id}/openai/generate-auth-url`, token, { method: "POST" });
       setResurrectionWorkspace((current) => (current ? { ...current, auth } : current));
       if (auth.auth_url) {
-        await navigator.clipboard.writeText(auth.auth_url).catch(() => undefined);
+        await copyToClipboard(auth.auth_url).catch(() => undefined);
       }
       showToast("授权链接已生成");
     } catch (error) {
@@ -529,8 +529,12 @@ export function TodoPage({ token, showToast }: Props) {
   };
 
   const copyText = async (value: string, message: string) => {
-    await navigator.clipboard.writeText(value);
-    showToast(message);
+    try {
+      await copyToClipboard(value);
+      showToast(message);
+    } catch (error) {
+      showToast(`复制失败：${errorMessage(error)}。请手动选中文本复制。`, true);
+    }
   };
 
   const submitResurrectionInfoEdit = async () => {
@@ -1672,6 +1676,30 @@ function CopyFieldList({
       })}
     </div>
   );
+}
+
+async function copyToClipboard(value: string) {
+  if (!value) return;
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // Fall through to the textarea fallback for plain HTTP deployments.
+    }
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  if (!copied) throw new Error("浏览器阻止了复制");
 }
 
 function isUploadedByCurrentUser(account: AccountDocument, currentUserId: string) {
