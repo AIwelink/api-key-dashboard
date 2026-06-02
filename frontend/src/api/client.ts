@@ -14,6 +14,7 @@ function notifySub2apiCacheUpdated(path: string, options: RequestInit) {
 }
 
 export async function api<T>(path: string, token: string, options: RequestInit = {}): Promise<T> {
+  const requestUrl = `${API_BASE}${path}`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options.headers as Record<string, string> | undefined),
@@ -22,7 +23,7 @@ export async function api<T>(path: string, token: string, options: RequestInit =
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(requestUrl, {
     ...options,
     headers,
   });
@@ -34,7 +35,7 @@ export async function api<T>(path: string, token: string, options: RequestInit =
   const text = await response.text();
   const data = parseResponseBody(text);
   if (!response.ok) {
-    const message = responseErrorMessage(data, text, response.statusText);
+    const message = responseErrorMessage(data, text, response.statusText, requestUrl);
     if (response.status === 401 && token) {
       notifyAuthExpired();
       throw new Error("登录过期");
@@ -54,8 +55,9 @@ function parseResponseBody(text: string) {
   }
 }
 
-function responseErrorMessage(data: unknown, text: string, fallback: string) {
+function responseErrorMessage(data: unknown, text: string, fallback: string, requestUrl: string) {
   let raw = "";
+  const directHtml = !data && /<\/?[a-z][\s\S]*>/i.test(text);
   if (data && typeof data === "object") {
     const record = data as Record<string, unknown>;
     const error = record.error && typeof record.error === "object" ? (record.error as Record<string, unknown>) : null;
@@ -63,7 +65,8 @@ function responseErrorMessage(data: unknown, text: string, fallback: string) {
   } else {
     raw = text.trim() || fallback;
   }
-  return readableErrorMessage(raw, fallback);
+  const message = readableErrorMessage(raw, fallback);
+  return directHtml ? `${message} 请求目标：${requestUrl}` : message;
 }
 
 function textValue(value: unknown) {
@@ -80,16 +83,19 @@ function readableErrorMessage(value: string, fallback: string) {
 }
 
 function summarizeHtmlError(value: string) {
-  if (!/<\/?[a-z][\s\S]*>/i.test(value)) return "";
-  const title = htmlText(value.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "");
-  const code = htmlText(value.match(/Error code\s*<\/span>\s*<\/h1>|Error code\s*(\d+)/i)?.[1] || "");
-  const cloudflareHost = htmlText(value.match(/cf-host-status[\s\S]*?<span[^>]*>([^<]+)<\/span>/i)?.[1] || "");
-  const isCloudflare = /Cloudflare|cf-error|Bad gateway|Error code 5\d\d/i.test(value);
+  const htmlStart = value.search(/<!doctype|<html|<head|<body|<title/i);
+  if (htmlStart < 0 && !/<\/?[a-z][\s\S]*>/i.test(value)) return "";
+  const prefix = htmlStart > 0 ? value.slice(0, htmlStart).trim().replace(/[:：]\s*$/, "") : "";
+  const html = htmlStart >= 0 ? value.slice(htmlStart) : value;
+  const title = htmlText(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "");
+  const code = htmlText(html.match(/Error code\s*<\/span>\s*<\/h1>|Error code\s*(\d+)/i)?.[1] || "");
+  const cloudflareHost = htmlText(html.match(/cf-host-status[\s\S]*?<span[^>]*>([^<]+)<\/span>/i)?.[1] || "");
+  const isCloudflare = /Cloudflare|cf-error|Bad gateway|Error code 5\d\d/i.test(html);
   if (isCloudflare) {
     const parts = [title || "Cloudflare 错误", cloudflareHost ? `Host ${cloudflareHost}` : "", code ? `Error code ${code}` : ""].filter(Boolean);
-    return `${parts.join(" · ")}。这是上游服务不可用，不是回调 URL 格式错误。`;
+    return `${prefix ? `${prefix}：` : ""}${parts.join(" · ")}。这是上游服务不可用，不是回调 URL 格式错误。`;
   }
-  return title ? `${title}。服务返回了 HTML 错误页。` : "服务返回了 HTML 错误页。";
+  return title ? `${prefix ? `${prefix}：` : ""}${title}。服务返回了 HTML 错误页。` : `${prefix ? `${prefix}：` : ""}服务返回了 HTML 错误页。`;
 }
 
 function htmlText(value: string) {

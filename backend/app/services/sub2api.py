@@ -49,6 +49,7 @@ class Sub2ApiClient:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="sub2api site base_url is not configured",
             )
+        target_url = self.admin_url(path)
         response: httpx.Response | None = None
         last_error: httpx.RequestError | None = None
         async with httpx.AsyncClient(timeout=15) as client:
@@ -56,7 +57,7 @@ class Sub2ApiClient:
                 try:
                     response = await client.request(
                         method,
-                        self.admin_url(path),
+                        target_url,
                         headers=self.headers(),
                         params=params,
                         json=json,
@@ -71,12 +72,12 @@ class Sub2ApiClient:
         if last_error is not None:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"sub2api request failed after retries: {last_error}",
+                detail=f"sub2api {method} {target_url} failed after retries: {last_error}",
             ) from last_error
         if response is None:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="sub2api request did not return a response",
+                detail=f"sub2api {method} {target_url} did not return a response",
             )
         try:
             payload = response.json()
@@ -84,18 +85,18 @@ class Sub2ApiClient:
             if response.status_code >= 400:
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"sub2api request failed with status {response.status_code}: {response.text[:200]}",
+                    detail=f"sub2api {method} {target_url} failed with status {response.status_code}: {response.text[:200]}",
                 ) from exc
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"sub2api returned non-JSON response: {response.text[:200]}",
+                detail=f"sub2api {method} {target_url} returned non-JSON response: {response.text[:200]}",
             ) from exc
 
         if response.status_code >= 400:
             message = payload.get("message") if isinstance(payload, dict) else None
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=message or f"sub2api request failed with status {response.status_code}",
+                detail=message or f"sub2api {method} {target_url} failed with status {response.status_code}",
             )
         return payload if isinstance(payload, dict) else {"data": payload}
 
@@ -303,6 +304,7 @@ class Sub2ApiClient:
 
     def _admin_response_payload(self, response: httpx.Response, *, operation: str) -> dict[str, Any]:
         if response.status_code >= 400:
+            target_url = str(response.request.url) if response.request else "sub2api"
             message = response.text[:300]
             try:
                 payload = response.json()
@@ -312,7 +314,7 @@ class Sub2ApiClient:
                 pass
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"sub2api {operation} failed with status {response.status_code}: {message}",
+                detail=f"sub2api {operation} {target_url} failed with status {response.status_code}: {message}",
             )
         if response.status_code == 204 or not response.text.strip():
             return {"ok": True, "status_code": response.status_code}
