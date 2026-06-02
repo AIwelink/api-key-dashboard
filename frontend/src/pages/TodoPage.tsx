@@ -76,6 +76,10 @@ type RemoteResurrectionAccount = {
   local_account_id?: string;
   uploaded_by_user_id?: string;
   uploader_name?: string;
+  local_email_session?: string;
+  local_two_fa?: string;
+  local_phone_number?: string;
+  local_phone_bound?: boolean;
   site_id: string;
   pool_name: string;
   active_group_id: number;
@@ -368,7 +372,7 @@ export function TodoPage({ token, showToast }: Props) {
 
   const fetchRecentMail = async () => {
     if (!resurrectionWorkspace) return;
-    const session = text(resurrectionWorkspace.account.extra?.email_session);
+    const session = emailSessionValue(resurrectionWorkspace.account);
     const bearer = extractLikelyGraphToken(session);
     if (!bearer) {
       setResurrectionWorkspace((current) => (current ? { ...current, mailError: "未识别到可直接用于 Graph API 的前端 token；IMAP 不能在浏览器中直连。" } : current));
@@ -797,15 +801,26 @@ export function TodoPage({ token, showToast }: Props) {
             </button>
           </div>
           {resurrectionWorkspace && (
-            <div className="task-detail-panel resurrection-workspace">
+            <div className="resurrection-float-backdrop" role="dialog" aria-modal="true" onClick={() => setResurrectionWorkspace(null)}>
+              <aside className="resurrection-float-panel" onClick={(event) => event.stopPropagation()}>
+                <div className="resurrection-float-header">
+                  <div>
+                    <h3>账号复活</h3>
+                    <p>{remoteAccountEmail(resurrectionWorkspace.account)} · remote #{resurrectionWorkspace.account.id}</p>
+                  </div>
+                  <button className="ghost icon-button" type="button" aria-label="关闭账号复活窗口" onClick={() => setResurrectionWorkspace(null)}>
+                    ×
+                  </button>
+                </div>
+                <div className="task-detail-panel resurrection-workspace">
               <section>
                 <h4>登录信息</h4>
                 <LoginInfoBlock
                   items={[
                     ["邮箱", remoteAccountEmail(resurrectionWorkspace.account)],
-                    ["邮箱/接码 session", text(resurrectionWorkspace.account.extra?.email_session)],
-                    ["2FA", text(resurrectionWorkspace.account.extra?.["2FA"])],
-                    ["手机接码地址", text(resurrectionWorkspace.account.extra?.phone_number) || text(resurrectionWorkspace.account.extra?.phone)],
+                    ["邮箱/接码 session", emailSessionValue(resurrectionWorkspace.account)],
+                    ["2FA", twoFaDisplayValue(resurrectionWorkspace.account)],
+                    ["手机接码地址", phoneRawValue(resurrectionWorkspace.account)],
                   ]}
                 />
                 <div className="button-row action-wrap">
@@ -876,6 +891,8 @@ export function TodoPage({ token, showToast }: Props) {
                 {resurrectionWorkspace.auth?.auth_url && <div className="cell-sub truncate" title={resurrectionWorkspace.auth.auth_url}>{resurrectionWorkspace.auth.auth_url}</div>}
                 {resurrectionWorkspace.exchange && <pre className="json-preview">{JSON.stringify(redactOAuthPreview(resurrectionWorkspace.exchange), null, 2)}</pre>}
               </section>
+                </div>
+              </aside>
             </div>
           )}
         </section>
@@ -1552,8 +1569,16 @@ function phoneCodeUrl(account?: RemoteResurrectionAccount | null) {
   return phoneInfo(account).url;
 }
 
+function emailSessionValue(account?: RemoteResurrectionAccount | null) {
+  return text(account?.extra?.email_session) || text(account?.extra?.mailbox_connection) || text(account?.local_email_session);
+}
+
+function phoneRawValue(account?: RemoteResurrectionAccount | null) {
+  return text(account?.extra?.phone_number) || text(account?.extra?.phone) || text(account?.local_phone_number);
+}
+
 function phoneInfo(account?: RemoteResurrectionAccount | null): { status: "valid" | "missing" | "invalid"; url: string; message: string } {
-  const raw = text(account?.extra?.phone_number) || text(account?.extra?.phone);
+  const raw = phoneRawValue(account);
   if (!raw) return { status: "missing", url: "", message: "无手机信息，请及时补充" };
   const match = raw.match(/https?:\/\/[^\s]+/i);
   if (!match?.[0]) return { status: "invalid", url: "", message: "手机信息填写错误，请及时修改" };
@@ -1568,11 +1593,43 @@ function phoneInfo(account?: RemoteResurrectionAccount | null): { status: "valid
   }
 }
 
+function twoFaDisplayValue(account?: RemoteResurrectionAccount | null) {
+  return rawTwoFaValue(account);
+}
+
 function twoFaInfo(account?: RemoteResurrectionAccount | null): { status: "valid" | "missing" | "invalid"; value: string; message: string } {
-  const raw = text(account?.extra?.["2FA"]).replace(/\s+/g, "");
+  const raw = normalizeTotpSecret(rawTwoFaValue(account));
   if (!raw) return { status: "missing", value: "", message: "无2FA信息，请及时补充" };
   if (!isValidBase32Secret(raw)) return { status: "invalid", value: raw, message: "2FA信息填写错误，请及时修改" };
   return { status: "valid", value: raw, message: "" };
+}
+
+function rawTwoFaValue(account?: RemoteResurrectionAccount | null) {
+  const extra = account?.extra || {};
+  return (
+    text(extra["2FA"]) ||
+    text(extra["2fa"]) ||
+    text(extra.twoFA) ||
+    text(extra.totp_secret) ||
+    text(extra.totpSecret) ||
+    text(account?.local_two_fa)
+  );
+}
+
+function normalizeTotpSecret(value: string) {
+  const raw = value.trim();
+  if (!raw) return "";
+  if (raw.toLowerCase().startsWith("otpauth://")) {
+    try {
+      const url = new URL(raw);
+      return (url.searchParams.get("secret") || "").replace(/[\s-]+/g, "").toUpperCase();
+    } catch {
+      return "";
+    }
+  }
+  const secretMatch = raw.match(/(?:secret|totp_secret)\s*[:=]\s*([A-Z2-7=\s-]+)/i);
+  const source = secretMatch?.[1] || raw;
+  return source.replace(/[\s-]+/g, "").replace(/^"|"$/g, "").toUpperCase();
 }
 
 function extractVerificationCode(value?: string) {
