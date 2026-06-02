@@ -101,11 +101,7 @@ type AuthSession = {
   session_id?: string;
 };
 
-type RecentMailResponse = {
-  email?: string;
-  items: Array<{ subject?: string; from?: string; preview?: string; received_at?: string }>;
-  total: number;
-};
+type MailMessage = { subject?: string; from?: string; preview?: string; received_at?: string };
 
 type ResurrectionWorkspace = {
   account: RemoteResurrectionAccount;
@@ -118,7 +114,7 @@ type ResurrectionWorkspace = {
   totpCode?: string;
   totpSeconds?: number;
   totpError?: string;
-  mailMessages: Array<{ subject?: string; from?: string; preview?: string; received_at?: string }>;
+  mailMessages: MailMessage[];
   mailError?: string;
 };
 
@@ -416,30 +412,17 @@ export function TodoPage({ token, showToast }: Props) {
     const session = emailSessionValue(resurrectionWorkspace.account);
     const mailbox = parseOutlookSession(session);
     if (!mailbox) {
-      setResurrectionWorkspace((current) => (current ? { ...current, mailError: "邮件 session 格式错误，应为 email----password----client_id----refresh_token。" } : current));
+      setResurrectionWorkspace((current) => (current ? { ...current, mailError: "邮件 session 格式错误，应为 email----password----client_id----refresh_token 或小水滴长格式。" } : current));
       return;
     }
     try {
-      const result = await api<RecentMailResponse>("/sub2api-sites/mail/recent", token, {
-        method: "POST",
-        body: JSON.stringify({ email_session: session, limit: 2 }),
-      });
-      const messages = result.items || [];
+      const messages = await fetchRecentGraphMailFromBrowser(mailbox, 2);
       setResurrectionWorkspace((current) =>
         current ? { ...current, mailMessages: messages, mailError: messages.length ? undefined : `${mailbox.email} 最近两封邮件为空` } : current,
       );
     } catch (error) {
       const message = errorMessage(error);
-      setResurrectionWorkspace((current) =>
-        current
-          ? {
-              ...current,
-              mailError: message.includes("Failed to fetch")
-                ? "浏览器无法直接请求 Microsoft token/Graph 接口，通常是 CORS 限制；当前 session 已识别，但前端直连取件失败。"
-                : message,
-            }
-          : current,
-      );
+      setResurrectionWorkspace((current) => (current ? { ...current, mailError: message } : current));
     }
   };
 
@@ -1910,49 +1893,109 @@ function numberValue(value: unknown): number {
 
 function parseOutlookSession(session: string) {
   const parts = session.split("----").map((part) => part.trim());
-  if (parts.length < 4) return null;
-  const [email, password, clientId, ...tokenParts] = parts;
-  const refreshToken = tokenParts.join("----");
+  let email = "";
+  let password = "";
+  let clientId = "";
+  let refreshToken = "";
+  if (parts.length >= 18 && parts[16] && parts[17]) {
+    email = parts[0];
+    password = parts[1];
+    clientId = parts[16];
+    refreshToken = parts[17];
+  } else if (parts.length >= 4) {
+    [email, password, clientId] = parts;
+    refreshToken = parts.slice(3).join("----");
+  } else {
+    return null;
+  }
   if (!email || !clientId || !refreshToken) return null;
   return { email, password, clientId, refreshToken };
 }
 
-async function getGraphAccessToken(session: string) {
-  const accessToken = extractLikelyGraphAccessToken(session);
-  if (accessToken) return accessToken;
-  const mailbox = parseOutlookSession(session);
-  if (!mailbox) throw new Error("邮件 session 格式错误");
-  const body = new URLSearchParams({
-    client_id: mailbox.clientId,
-    refresh_token: mailbox.refreshToken,
-    grant_type: "refresh_token",
-    scope: "https://graph.microsoft.com/Mail.Read offline_access",
-  });
-  const response = await fetch("https://login.live.com/oauth20_token.srf", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || !text(asRecord(payload).access_token)) {
-    throw new Error(tokenErrorMessage(payload, response.status));
+async function fetchRecentGraphMailFromBrowser(mailbox: NonNullable<ReturnType<typeof parseOutlookSession>>, limit: number): Promise<MailMessage[]> {
+  const accessToken = await graphAccessTokenFromBrowser(mailbox);
+  const url = new URL("https://graph.microsoft.com/v1.0/me/messages");
+  url.searchParams.set("$top", String(limit));
+  url.searchParams.set("$orderby", "receivedDateTime desc");
+  url.searchParams.set("$select", "subject,from,bodyPreview,receivedDateTime");
+  let response: Response;
+  try {
+    response = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+  } catch (error) {
+    throw new Error(`浏览器请求 Graph 失败：${errorMessage(error)}`);
   }
-  return text(asRecord(payload).access_token);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(frontendMicrosoftError(payload, `Graph 取件失败 (${response.status})`));
+  }
+  const values = Array.isArray(asRecord(payload).value) ? (asRecord(payload).value as unknown[]) : [];
+  return values.map((item) => {
+    const record = asRecord(item);
+    const sender = asRecord(record.from);
+    const address = asRecord(sender.emailAddress);
+    return {
+      subject: text(record.subject),
+      from: text(address.address),
+      preview: text(record.bodyPreview),
+      received_at: text(record.receivedDateTime),
+    };
+  });
 }
 
-function extractLikelyGraphAccessToken(session: string) {
-  return session.split(/----|\s+/).find((part) => part.length > 80 && part.startsWith("eyJ")) || "";
+async function graphAccessTokenFromBrowser(mailbox: NonNullable<ReturnType<typeof parseOutlookSession>>) {
+  const attempts: Array<{ url: string; body: Record<string, string> }> = [
+    {
+      url: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+      body: {
+        client_id: mailbox.clientId,
+        refresh_token: mailbox.refreshToken,
+        grant_type: "refresh_token",
+        scope: "https://graph.microsoft.com/Mail.Read offline_access",
+      },
+    },
+    {
+      url: "https://login.live.com/oauth20_token.srf",
+      body: {
+        client_id: mailbox.clientId,
+        refresh_token: mailbox.refreshToken,
+        grant_type: "refresh_token",
+        scope: "https://graph.microsoft.com/Mail.Read offline_access",
+      },
+    },
+    {
+      url: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+      body: {
+        client_id: mailbox.clientId,
+        refresh_token: mailbox.refreshToken,
+        grant_type: "refresh_token",
+      },
+    },
+  ];
+  const errors: string[] = [];
+  for (const attempt of attempts) {
+    try {
+      const response = await fetch(attempt.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams(attempt.body),
+      });
+      const payload = await response.json().catch(() => ({}));
+      const accessToken = text(asRecord(payload).access_token);
+      if (response.ok && accessToken) return accessToken;
+      errors.push(frontendMicrosoftError(payload, `${attempt.url} token 换取失败 (${response.status})`));
+    } catch (error) {
+      errors.push(`${attempt.url} 浏览器请求失败：${errorMessage(error)}`);
+    }
+  }
+  throw new Error(errors.join("；"));
 }
 
-function tokenErrorMessage(payload: unknown, status: number) {
-  const data = asRecord(payload);
-  return text(data.error_description) || text(data.error) || `Microsoft token refresh failed (${status})`;
-}
-
-function graphErrorMessage(payload: unknown, status: number) {
+function frontendMicrosoftError(payload: unknown, fallback: string) {
   const data = asRecord(payload);
   const error = asRecord(data.error);
-  return text(error.message) || text(data.message) || `Graph mail request failed (${status})`;
+  return text(error.message) || text(data.error_description) || text(data.message) || text(data.error) || fallback;
 }
 
 function safeGenerateTotp(secret: string): { code: string; seconds: number } | { code?: undefined; seconds?: undefined; error: string } {
