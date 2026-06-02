@@ -363,7 +363,7 @@ export function TodoPage({ token, showToast }: Props) {
       totpError: twoFa.message,
     });
     if (twoFa.status === "valid") {
-      const code = await generateTotp(twoFa.value).catch((error) => ({ code: undefined, seconds: undefined, error: errorMessage(error) }));
+      const code = safeGenerateTotp(twoFa.value);
       setResurrectionWorkspace((current) =>
         current?.account.id === account.id ? { ...current, totpCode: code?.code, totpSeconds: code?.seconds, totpError: "error" in code ? code.error : undefined } : current,
       );
@@ -373,16 +373,20 @@ export function TodoPage({ token, showToast }: Props) {
   const fetchRecentMail = async () => {
     if (!resurrectionWorkspace) return;
     const session = emailSessionValue(resurrectionWorkspace.account);
-    const bearer = extractLikelyGraphToken(session);
-    if (!bearer) {
-      setResurrectionWorkspace((current) => (current ? { ...current, mailError: "未识别到可直接用于 Graph API 的前端 token；IMAP 不能在浏览器中直连。" } : current));
+    const mailbox = parseOutlookSession(session);
+    if (!mailbox) {
+      setResurrectionWorkspace((current) => (current ? { ...current, mailError: "邮件 session 格式错误，应为 email----password----client_id----refresh_token。" } : current));
       return;
     }
     try {
+      const bearer = await getGraphAccessToken(session);
       const response = await fetch("https://graph.microsoft.com/v1.0/me/messages?$top=2&$orderby=receivedDateTime desc", {
         headers: { Authorization: `Bearer ${bearer}` },
       });
       const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(graphErrorMessage(payload, response.status));
+      }
       const values = Array.isArray(payload.value) ? payload.value : [];
       const messages = values.slice(0, 2).map((item: Record<string, unknown>) => ({
         subject: text(item.subject),
@@ -390,9 +394,21 @@ export function TodoPage({ token, showToast }: Props) {
         preview: text(item.bodyPreview),
         received_at: text(item.receivedDateTime),
       }));
-      setResurrectionWorkspace((current) => (current ? { ...current, mailMessages: messages, mailError: undefined } : current));
+      setResurrectionWorkspace((current) =>
+        current ? { ...current, mailMessages: messages, mailError: messages.length ? undefined : `${mailbox.email} 最近两封邮件为空` } : current,
+      );
     } catch (error) {
-      setResurrectionWorkspace((current) => (current ? { ...current, mailError: errorMessage(error) } : current));
+      const message = errorMessage(error);
+      setResurrectionWorkspace((current) =>
+        current
+          ? {
+              ...current,
+              mailError: message.includes("Failed to fetch")
+                ? "浏览器无法直接请求 Microsoft token/Graph 接口，通常是 CORS 限制；当前 session 已识别，但前端直连取件失败。"
+                : message,
+            }
+          : current,
+      );
     }
   };
 
@@ -485,15 +501,15 @@ export function TodoPage({ token, showToast }: Props) {
       return;
     }
     let cancelled = false;
-    const tick = async () => {
-      const code = await generateTotp(twoFa.value).catch((error) => ({ code: undefined, seconds: undefined, error: errorMessage(error) }));
+    const tick = () => {
+      const code = safeGenerateTotp(twoFa.value);
       if (!cancelled) {
         setResurrectionWorkspace((current) =>
           current?.account.id === account.id ? { ...current, totpCode: code?.code, totpSeconds: code?.seconds, totpError: "error" in code ? code.error : undefined } : current,
         );
       }
     };
-    void tick();
+    tick();
     const timer = window.setInterval(tick, 1000);
     return () => {
       cancelled = true;
@@ -1642,8 +1658,59 @@ function numberValue(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function extractLikelyGraphToken(session: string) {
-  return session.split(/----|\s+/).find((part) => part.length > 80 && (part.startsWith("eyJ") || part.startsWith("Ew") || part.startsWith("M."))) || "";
+function parseOutlookSession(session: string) {
+  const parts = session.split("----").map((part) => part.trim());
+  if (parts.length < 4) return null;
+  const [email, password, clientId, ...tokenParts] = parts;
+  const refreshToken = tokenParts.join("----");
+  if (!email || !clientId || !refreshToken) return null;
+  return { email, password, clientId, refreshToken };
+}
+
+async function getGraphAccessToken(session: string) {
+  const accessToken = extractLikelyGraphAccessToken(session);
+  if (accessToken) return accessToken;
+  const mailbox = parseOutlookSession(session);
+  if (!mailbox) throw new Error("邮件 session 格式错误");
+  const body = new URLSearchParams({
+    client_id: mailbox.clientId,
+    refresh_token: mailbox.refreshToken,
+    grant_type: "refresh_token",
+    scope: "https://graph.microsoft.com/Mail.Read offline_access",
+  });
+  const response = await fetch("https://login.live.com/oauth20_token.srf", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !text(asRecord(payload).access_token)) {
+    throw new Error(tokenErrorMessage(payload, response.status));
+  }
+  return text(asRecord(payload).access_token);
+}
+
+function extractLikelyGraphAccessToken(session: string) {
+  return session.split(/----|\s+/).find((part) => part.length > 80 && part.startsWith("eyJ")) || "";
+}
+
+function tokenErrorMessage(payload: unknown, status: number) {
+  const data = asRecord(payload);
+  return text(data.error_description) || text(data.error) || `Microsoft token refresh failed (${status})`;
+}
+
+function graphErrorMessage(payload: unknown, status: number) {
+  const data = asRecord(payload);
+  const error = asRecord(data.error);
+  return text(error.message) || text(data.message) || `Graph mail request failed (${status})`;
+}
+
+function safeGenerateTotp(secret: string): { code: string; seconds: number } | { code?: undefined; seconds?: undefined; error: string } {
+  try {
+    return generateTotp(secret);
+  } catch (error) {
+    return { code: undefined, seconds: undefined, error: errorMessage(error) };
+  }
 }
 
 function oauthCredentialsFromExchange(exchange: Record<string, unknown>) {
@@ -1673,16 +1740,15 @@ function redactOAuthPreview(exchange: Record<string, unknown>) {
   };
 }
 
-async function generateTotp(secret: string) {
+function generateTotp(secret: string) {
   if (!isValidBase32Secret(secret)) throw new Error("2FA信息填写错误，请及时修改");
   const key = base32Decode(secret.replace(/\s+/g, ""));
   const epoch = Math.floor(Date.now() / 1000);
   const counter = Math.floor(epoch / 30);
-  const buffer = new ArrayBuffer(8);
-  const view = new DataView(buffer);
+  const counterBytes = new Uint8Array(8);
+  const view = new DataView(counterBytes.buffer);
   view.setUint32(4, counter, false);
-  const cryptoKey = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
-  const signature = new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, buffer));
+  const signature = hmacSha1(key, counterBytes);
   const offset = signature[signature.length - 1] & 0x0f;
   const binary =
     ((signature[offset] & 0x7f) << 24) |
@@ -1690,6 +1756,94 @@ async function generateTotp(secret: string) {
     ((signature[offset + 2] & 0xff) << 8) |
     (signature[offset + 3] & 0xff);
   return { code: String(binary % 1_000_000).padStart(6, "0"), seconds: 30 - (epoch % 30) };
+}
+
+function hmacSha1(key: Uint8Array, message: Uint8Array) {
+  const blockSize = 64;
+  let normalizedKey = key;
+  if (normalizedKey.length > blockSize) normalizedKey = sha1(normalizedKey);
+  const inner = new Uint8Array(blockSize);
+  const outer = new Uint8Array(blockSize);
+  for (let i = 0; i < blockSize; i += 1) {
+    const value = normalizedKey[i] || 0;
+    inner[i] = value ^ 0x36;
+    outer[i] = value ^ 0x5c;
+  }
+  const innerMessage = new Uint8Array(inner.length + message.length);
+  innerMessage.set(inner);
+  innerMessage.set(message, inner.length);
+  const innerHash = sha1(innerMessage);
+  const outerMessage = new Uint8Array(outer.length + innerHash.length);
+  outerMessage.set(outer);
+  outerMessage.set(innerHash, outer.length);
+  return sha1(outerMessage);
+}
+
+function sha1(message: Uint8Array) {
+  const bitLength = message.length * 8;
+  const paddedLength = (((message.length + 9 + 63) >> 6) << 6);
+  const padded = new Uint8Array(paddedLength);
+  padded.set(message);
+  padded[message.length] = 0x80;
+  const view = new DataView(padded.buffer);
+  view.setUint32(paddedLength - 4, bitLength, false);
+
+  let h0 = 0x67452301;
+  let h1 = 0xefcdab89;
+  let h2 = 0x98badcfe;
+  let h3 = 0x10325476;
+  let h4 = 0xc3d2e1f0;
+  const words = new Uint32Array(80);
+
+  for (let offset = 0; offset < paddedLength; offset += 64) {
+    for (let i = 0; i < 16; i += 1) words[i] = view.getUint32(offset + i * 4, false);
+    for (let i = 16; i < 80; i += 1) words[i] = rotl(words[i - 3] ^ words[i - 8] ^ words[i - 14] ^ words[i - 16], 1);
+
+    let a = h0;
+    let b = h1;
+    let c = h2;
+    let d = h3;
+    let e = h4;
+
+    for (let i = 0; i < 80; i += 1) {
+      let f = 0;
+      let k = 0;
+      if (i < 20) {
+        f = (b & c) | (~b & d);
+        k = 0x5a827999;
+      } else if (i < 40) {
+        f = b ^ c ^ d;
+        k = 0x6ed9eba1;
+      } else if (i < 60) {
+        f = (b & c) | (b & d) | (c & d);
+        k = 0x8f1bbcdc;
+      } else {
+        f = b ^ c ^ d;
+        k = 0xca62c1d6;
+      }
+      const temp = (rotl(a, 5) + f + e + k + words[i]) >>> 0;
+      e = d;
+      d = c;
+      c = rotl(b, 30);
+      b = a;
+      a = temp;
+    }
+
+    h0 = (h0 + a) >>> 0;
+    h1 = (h1 + b) >>> 0;
+    h2 = (h2 + c) >>> 0;
+    h3 = (h3 + d) >>> 0;
+    h4 = (h4 + e) >>> 0;
+  }
+
+  const digest = new Uint8Array(20);
+  const digestView = new DataView(digest.buffer);
+  [h0, h1, h2, h3, h4].forEach((value, index) => digestView.setUint32(index * 4, value, false));
+  return digest;
+}
+
+function rotl(value: number, bits: number) {
+  return ((value << bits) | (value >>> (32 - bits))) >>> 0;
 }
 
 function base32Decode(value: string) {
