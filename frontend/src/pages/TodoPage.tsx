@@ -95,11 +95,18 @@ type AuthSession = {
   session_id?: string;
 };
 
+type RecentMailResponse = {
+  email?: string;
+  items: Array<{ subject?: string; from?: string; preview?: string; received_at?: string }>;
+  total: number;
+};
+
 type ResurrectionWorkspace = {
   account: RemoteResurrectionAccount;
   auth?: AuthSession;
   callbackUrl: string;
   exchange?: Record<string, unknown>;
+  resurrectionResult?: string;
   phoneMessage?: string;
   phoneError?: string;
   totpCode?: string;
@@ -379,21 +386,11 @@ export function TodoPage({ token, showToast }: Props) {
       return;
     }
     try {
-      const bearer = await getGraphAccessToken(session);
-      const response = await fetch("https://graph.microsoft.com/v1.0/me/messages?$top=2&$orderby=receivedDateTime desc", {
-        headers: { Authorization: `Bearer ${bearer}` },
+      const result = await api<RecentMailResponse>("/sub2api-sites/mail/recent", token, {
+        method: "POST",
+        body: JSON.stringify({ email_session: session, limit: 2 }),
       });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(graphErrorMessage(payload, response.status));
-      }
-      const values = Array.isArray(payload.value) ? payload.value : [];
-      const messages = values.slice(0, 2).map((item: Record<string, unknown>) => ({
-        subject: text(item.subject),
-        from: text(asRecord(asRecord(item.from).emailAddress).address),
-        preview: text(item.bodyPreview),
-        received_at: text(item.receivedDateTime),
-      }));
+      const messages = result.items || [];
       setResurrectionWorkspace((current) =>
         current ? { ...current, mailMessages: messages, mailError: messages.length ? undefined : `${mailbox.email} 最近两封邮件为空` } : current,
       );
@@ -459,6 +456,33 @@ export function TodoPage({ token, showToast }: Props) {
       setResurrectionWorkspace(null);
       await loadResurrectionAccounts();
     } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setResurrectionBusy(null);
+    }
+  };
+
+  const submitOAuthCallbackAndRevive = async () => {
+    if (!resurrectionWorkspace?.auth?.session_id || !resurrectionWorkspace.callbackUrl) return;
+    setResurrectionBusy(`submit:${resurrectionWorkspace.account.id}`);
+    try {
+      const exchange = await api<Record<string, unknown>>(`/sub2api-sites/${resurrectionWorkspace.account.site_id}/openai/exchange-code`, token, {
+        method: "POST",
+        body: JSON.stringify({
+          session_id: resurrectionWorkspace.auth.session_id,
+          callback_url: resurrectionWorkspace.callbackUrl,
+        }),
+      });
+      const credentials = oauthCredentialsFromExchange(exchange);
+      await api(`/sub2api-sites/${resurrectionWorkspace.account.site_id}/accounts/${resurrectionWorkspace.account.id}/apply-oauth-credentials`, token, {
+        method: "POST",
+        body: JSON.stringify({ account_type: "oauth", credentials }),
+      });
+      setResurrectionWorkspace((current) => (current ? { ...current, exchange, resurrectionResult: "复活成功：OAuth 凭证已更新，账号已恢复调度。" } : current));
+      showToast("账号已自动交换 OAuth 凭证并复活");
+      await loadResurrectionAccounts();
+    } catch (error) {
+      setResurrectionWorkspace((current) => (current ? { ...current, resurrectionResult: `复活失败：${errorMessage(error)}` } : current));
       showToast(errorMessage(error), true);
     } finally {
       setResurrectionBusy(null);
@@ -894,10 +918,11 @@ export function TodoPage({ token, showToast }: Props) {
                     onChange={(event) => setResurrectionWorkspace((current) => (current ? { ...current, callbackUrl: event.target.value } : current))}
                     rows={3}
                   />
-                  <button className="ghost compact-button" disabled={!resurrectionWorkspace.auth?.session_id || !resurrectionWorkspace.callbackUrl || resurrectionBusy !== null} type="button" onClick={exchangeCode}>
+                  <button className="ghost compact-button submit-revive-button" disabled={!resurrectionWorkspace.auth?.session_id || !resurrectionWorkspace.callbackUrl || resurrectionBusy !== null} type="button" onClick={submitOAuthCallbackAndRevive}>
+                    <span>提交并复活</span>
                     交换 OAuth 凭证
                   </button>
-                  <button className="ghost compact-button" disabled={!resurrectionWorkspace.exchange || resurrectionBusy !== null} type="button" onClick={applyOAuthCredentials}>
+                  <button hidden className="ghost compact-button" disabled={!resurrectionWorkspace.exchange || resurrectionBusy !== null} type="button" onClick={applyOAuthCredentials}>
                     应用凭证并复活
                   </button>
                   <button className="ghost compact-button danger-button" disabled={resurrectionBusy !== null} type="button" onClick={() => markResurrectionFailed(resurrectionWorkspace.account)}>
@@ -912,7 +937,11 @@ export function TodoPage({ token, showToast }: Props) {
                     </button>
                   </div>
                 )}
-                {resurrectionWorkspace.exchange && <pre className="json-preview">{JSON.stringify(redactOAuthPreview(resurrectionWorkspace.exchange), null, 2)}</pre>}
+                {resurrectionWorkspace.resurrectionResult && (
+                  <div className={`resurrection-result ${resurrectionWorkspace.resurrectionResult.startsWith("复活成功") ? "success" : "danger"}`}>
+                    {resurrectionWorkspace.resurrectionResult}
+                  </div>
+                )}
               </section>
                 </div>
               </aside>

@@ -183,6 +183,11 @@ class Sub2ApiResurrectionFailRequest(BaseModel):
     reason: str
 
 
+class Sub2ApiRecentMailRequest(BaseModel):
+    email_session: str
+    limit: int = Field(default=2, ge=1, le=5)
+
+
 class VerifyViaSub2ApiRequest(BaseModel):
     site_id: str = "default"
     verification_group_id: int

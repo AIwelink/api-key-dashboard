@@ -1793,6 +1793,35 @@ th {
   font-size: 12px;
 }
 
+.submit-revive-button {
+  font-size: 0;
+}
+
+.submit-revive-button span {
+  font-size: 12px;
+}
+
+.resurrection-result {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.resurrection-result.success {
+  border-color: #b9e7cb;
+  background: #effaf4;
+  color: var(--success);
+}
+
+.resurrection-result.danger {
+  border-color: #f2bbcc;
+  background: #fff3f6;
+  color: var(--danger);
+}
+
 .task-action-panel {
   display: flex;
   flex-wrap: wrap;

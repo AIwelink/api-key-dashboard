@@ -1,11 +1,12 @@
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.schemas import Sub2ApiAccountTestRequest, Sub2ApiManualDeleteRequest, Sub2ApiOAuthApplyRequest, Sub2ApiOAuthExchangeRequest, Sub2ApiResurrectionFailRequest
+from app.schemas import Sub2ApiAccountTestRequest, Sub2ApiManualDeleteRequest, Sub2ApiOAuthApplyRequest, Sub2ApiOAuthExchangeRequest, Sub2ApiRecentMailRequest, Sub2ApiResurrectionFailRequest
 from app.security import require_roles
 from app.services.audit import write_audit_log
 from app.services.sub2api import Sub2ApiClient
@@ -27,6 +28,47 @@ from app.services.sub2api_verify import test_remote_sub2api_account
 
 
 router = APIRouter(prefix="/sub2api-sites", tags=["sub2api-sites"])
+
+
+def _parse_outlook_session(session: str) -> dict[str, str] | None:
+    parts = [part.strip() for part in session.split("----")]
+    if len(parts) < 4:
+        return None
+    email, password, client_id, *token_parts = parts
+    refresh_token = "----".join(token_parts).strip()
+    if not email or not client_id or not refresh_token:
+        return None
+    return {"email": email, "password": password, "client_id": client_id, "refresh_token": refresh_token}
+
+
+def _http_error_message(payload: Any, fallback: str) -> str:
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            return str(error.get("message") or error.get("error_description") or fallback)
+        return str(payload.get("error_description") or payload.get("message") or payload.get("error") or fallback)
+    return fallback
+
+
+async def _graph_access_token_from_session(session: str) -> tuple[str, str]:
+    parsed = _parse_outlook_session(session)
+    if not parsed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="email_session must be email----password----client_id----refresh_token")
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.post(
+            "https://login.live.com/oauth20_token.srf",
+            data={
+                "client_id": parsed["client_id"],
+                "refresh_token": parsed["refresh_token"],
+                "grant_type": "refresh_token",
+                "scope": "https://graph.microsoft.com/Mail.Read offline_access",
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+    payload = response.json() if response.content else {}
+    if response.status_code >= 400 or not isinstance(payload, dict) or not payload.get("access_token"):
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=_http_error_message(payload, f"Microsoft token refresh failed ({response.status_code})"))
+    return str(payload["access_token"]), parsed["email"]
 
 
 async def _client_for_site(db: AsyncIOMotorDatabase, site_id: str) -> Sub2ApiClient:
@@ -225,6 +267,39 @@ async def post_generate_openai_auth_url(
 ) -> dict:
     client = await _client_for_site(db, site_id)
     return await client.request_admin("POST", "/openai/generate-auth-url", json={})
+
+
+@router.post("/mail/recent")
+async def post_recent_mail(
+    payload: Sub2ApiRecentMailRequest,
+    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+) -> dict:
+    access_token, email = await _graph_access_token_from_session(payload.email_session)
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(
+            "https://graph.microsoft.com/v1.0/me/messages",
+            params={"$top": payload.limit, "$orderby": "receivedDateTime desc"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    data = response.json() if response.content else {}
+    if response.status_code >= 400:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=_http_error_message(data, f"Graph mail request failed ({response.status_code})"))
+    values = data.get("value") if isinstance(data, dict) else []
+    messages = []
+    for item in values if isinstance(values, list) else []:
+        if not isinstance(item, dict):
+            continue
+        sender = item.get("from") if isinstance(item.get("from"), dict) else {}
+        address = sender.get("emailAddress") if isinstance(sender.get("emailAddress"), dict) else {}
+        messages.append(
+            {
+                "subject": item.get("subject") or "",
+                "from": address.get("address") or "",
+                "preview": item.get("bodyPreview") or "",
+                "received_at": item.get("receivedDateTime") or "",
+            }
+        )
+    return {"email": email, "items": messages, "total": len(messages)}
 
 
 @router.post("/{site_id}/openai/exchange-code")
