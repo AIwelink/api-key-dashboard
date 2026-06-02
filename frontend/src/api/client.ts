@@ -55,16 +55,51 @@ function parseResponseBody(text: string) {
 }
 
 function responseErrorMessage(data: unknown, text: string, fallback: string) {
+  let raw = "";
   if (data && typeof data === "object") {
     const record = data as Record<string, unknown>;
     const error = record.error && typeof record.error === "object" ? (record.error as Record<string, unknown>) : null;
-    return textValue(record.detail) || textValue(error?.message) || textValue(record.message) || text.trim() || fallback;
+    raw = textValue(record.detail) || textValue(error?.message) || textValue(record.message) || text.trim() || fallback;
+  } else {
+    raw = text.trim() || fallback;
   }
-  return text.trim() || fallback;
+  return readableErrorMessage(raw, fallback);
 }
 
 function textValue(value: unknown) {
   if (typeof value === "string") return value;
   if (value === null || value === undefined) return "";
   return JSON.stringify(value);
+}
+
+function readableErrorMessage(value: string, fallback: string) {
+  const raw = value.trim();
+  if (!raw) return fallback;
+  const htmlSummary = summarizeHtmlError(raw);
+  return htmlSummary || raw;
+}
+
+function summarizeHtmlError(value: string) {
+  if (!/<\/?[a-z][\s\S]*>/i.test(value)) return "";
+  const title = htmlText(value.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "");
+  const code = htmlText(value.match(/Error code\s*<\/span>\s*<\/h1>|Error code\s*(\d+)/i)?.[1] || "");
+  const cloudflareHost = htmlText(value.match(/cf-host-status[\s\S]*?<span[^>]*>([^<]+)<\/span>/i)?.[1] || "");
+  const isCloudflare = /Cloudflare|cf-error|Bad gateway|Error code 5\d\d/i.test(value);
+  if (isCloudflare) {
+    const parts = [title || "Cloudflare 错误", cloudflareHost ? `Host ${cloudflareHost}` : "", code ? `Error code ${code}` : ""].filter(Boolean);
+    return `${parts.join(" · ")}。这是上游服务不可用，不是回调 URL 格式错误。`;
+  }
+  return title ? `${title}。服务返回了 HTML 错误页。` : "服务返回了 HTML 错误页。";
+}
+
+function htmlText(value: string) {
+  return value
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
 }
