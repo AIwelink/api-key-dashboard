@@ -341,6 +341,23 @@ export function TodoPage({ token, showToast }: Props) {
     }
   };
 
+  const openEditRemoteAccount = async (account: RemoteResurrectionAccount) => {
+    const localAccountId = text(account.local_account_id);
+    if (!localAccountId) {
+      showToast("该远端账号没有匹配到本地账号，无法编辑。请先同步账号池数据。", true);
+      return;
+    }
+    setResurrectionBusy(`edit:${account.id}`);
+    try {
+      const fullAccount = await api<AccountDocument>(`/accounts/${localAccountId}`, token);
+      setEditingAccount(fullAccount);
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setResurrectionBusy(null);
+    }
+  };
+
   const resolveProblemAfterCorrection = async (account: AccountDocument) => {
     const confirmed = window.confirm("确认账号信息已经修正，并将该账号移出问题账号状态、重新进入总库？");
     if (!confirmed) return;
@@ -808,6 +825,9 @@ export function TodoPage({ token, showToast }: Props) {
                     </td>
                     <td>
                       <div className="button-row action-wrap">
+                        <button className="ghost compact-button" disabled={resurrectionBusy !== null || !account.local_account_id} onClick={() => openEditRemoteAccount(account)} type="button">
+                          编辑账号
+                        </button>
                         <button className="ghost compact-button" disabled={resurrectionBusy !== null} onClick={() => startResurrection(account)} type="button">
                           开始复活
                         </button>
