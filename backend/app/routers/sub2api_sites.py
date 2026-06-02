@@ -447,7 +447,8 @@ async def post_generate_openai_auth_url(
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     client = await _client_for_site(db, site_id)
-    return await client.request_admin("POST", "/openai/generate-auth-url", json={})
+    response = await client.request_admin("POST", "/openai/generate-auth-url", json={})
+    return response.get("data", response) if isinstance(response, dict) else {"data": response}
 
 
 @router.post("/mail/recent")

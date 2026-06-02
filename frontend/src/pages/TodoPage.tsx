@@ -99,6 +99,10 @@ type RemoteAccountsResponse = {
 type AuthSession = {
   auth_url?: string;
   session_id?: string;
+  data?: {
+    auth_url?: string;
+    session_id?: string;
+  };
 };
 
 type MailMessage = { subject?: string; from?: string; preview?: string; received_at?: string };
@@ -177,6 +181,7 @@ export function TodoPage({ token, showToast }: Props) {
   const [resurrectionWorkspace, setResurrectionWorkspace] = useState<ResurrectionWorkspace | null>(null);
   const [resurrectionBusy, setResurrectionBusy] = useState<string | null>(null);
   const [resurrectionEdit, setResurrectionEdit] = useState<ResurrectionEditFields>(() => emptyResurrectionEditFields());
+  const [copyPopup, setCopyPopup] = useState<{ message: string; tone: "success" | "danger"; nonce: number } | null>(null);
 
   const currentUserId = useMemo(() => {
     const raw = localStorage.getItem("user");
@@ -292,6 +297,12 @@ export function TodoPage({ token, showToast }: Props) {
   useEffect(() => {
     loadAccounts().catch((error) => showToast(errorMessage(error), true));
   }, [status, skip, limit]);
+
+  useEffect(() => {
+    if (!copyPopup) return;
+    const timer = window.setTimeout(() => setCopyPopup(null), 2200);
+    return () => window.clearTimeout(timer);
+  }, [copyPopup]);
 
   useEffect(() => {
     loadProblemAccounts().catch((error) => showToast(errorMessage(error), true));
@@ -413,14 +424,16 @@ export function TodoPage({ token, showToast }: Props) {
     if (!resurrectionWorkspace) return;
     setResurrectionBusy(`auth:${resurrectionWorkspace.account.id}`);
     try {
-      const auth = await api<AuthSession>(`/sub2api-sites/${resurrectionWorkspace.account.site_id}/openai/generate-auth-url`, token, { method: "POST" });
+      const auth = normalizeAuthSession(await api<AuthSession>(`/sub2api-sites/${resurrectionWorkspace.account.site_id}/openai/generate-auth-url`, token, { method: "POST" }));
       setResurrectionWorkspace((current) => (current ? { ...current, auth } : current));
       if (auth.auth_url) {
         try {
           await copyToClipboard(auth.auth_url);
+          showCopyPopup("授权链接已生成并复制");
           showToast("授权链接已生成并复制");
           return;
         } catch {
+          showCopyPopup("授权链接已生成，请手动复制", "danger");
           showToast("授权链接已生成，请手动复制");
           return;
         }
@@ -521,10 +534,17 @@ export function TodoPage({ token, showToast }: Props) {
   const copyText = async (value: string, message: string) => {
     try {
       await copyToClipboard(value);
+      showCopyPopup(message);
       showToast(message);
     } catch (error) {
-      showToast(`复制失败：${errorMessage(error)}。请手动选中文本复制。`, true);
+      const message = `复制失败：${errorMessage(error)}。请手动选中文本复制。`;
+      showCopyPopup(message, "danger");
+      showToast(message, true);
     }
+  };
+
+  const showCopyPopup = (message: string, tone: "success" | "danger" = "success") => {
+    setCopyPopup({ message, tone, nonce: Date.now() });
   };
 
   const submitResurrectionInfoEdit = async () => {
@@ -912,6 +932,11 @@ export function TodoPage({ token, showToast }: Props) {
           {resurrectionWorkspace && (
             <div className="resurrection-float-backdrop" role="dialog" aria-modal="true" onClick={() => setResurrectionWorkspace(null)}>
               <aside className="resurrection-float-panel" onClick={(event) => event.stopPropagation()}>
+                {copyPopup && (
+                  <div className={`copy-feedback-popup ${copyPopup.tone}`} key={copyPopup.nonce}>
+                    {copyPopup.message}
+                  </div>
+                )}
                 <div className="resurrection-float-header">
                   <div>
                     <h3>账号复活</h3>
@@ -1918,6 +1943,14 @@ function latestMailVerificationCode(messages: MailMessage[]) {
 function compactUrl(value: string) {
   if (value.length <= 92) return value;
   return `${value.slice(0, 54)}...${value.slice(-32)}`;
+}
+
+function normalizeAuthSession(value: AuthSession): AuthSession {
+  const data = asRecord(value.data);
+  return {
+    auth_url: text(value.auth_url) || text(data.auth_url),
+    session_id: text(value.session_id) || text(data.session_id),
+  };
 }
 
 function numberValue(value: unknown): number {

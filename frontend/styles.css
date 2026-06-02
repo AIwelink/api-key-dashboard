@@ -1730,6 +1730,7 @@ th {
 }
 
 .resurrection-float-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   width: min(1040px, calc(100vw - 28px));
@@ -1739,6 +1740,41 @@ th {
   background: #fbfcfe;
   box-shadow: -18px 24px 70px rgba(15, 23, 42, 0.28);
   overflow: hidden;
+}
+
+.copy-feedback-popup {
+  position: absolute;
+  top: 14px;
+  right: 58px;
+  z-index: 4;
+  max-width: min(360px, calc(100% - 92px));
+  border: 1px solid #b9e7cb;
+  border-radius: 8px;
+  background: #f0fbf5;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
+  color: #17633a;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+  padding: 9px 12px;
+  animation: copy-feedback-in 0.16s ease-out;
+}
+
+.copy-feedback-popup.danger {
+  border-color: #f3b8c1;
+  background: #fff4f6;
+  color: #9f1d38;
+}
+
+@keyframes copy-feedback-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .resurrection-float-header {
