@@ -119,6 +119,15 @@ class Sub2ApiClient:
             )
         return self._admin_response_payload(response, operation="update")
 
+    async def set_account_schedulable(self, account_id: int | str, schedulable: bool) -> dict[str, Any]:
+        response = await self._request_admin_response_with_retries(
+            "POST",
+            f"/accounts/{account_id}/schedulable",
+            json={"schedulable": schedulable},
+            timeout=15,
+        )
+        return self._admin_response_payload(response, operation="set schedulable")
+
     async def get_account(self, account_id: int | str) -> dict[str, Any]:
         response = await self.request_admin("GET", f"/accounts/{account_id}")
         return response.get("data", response)

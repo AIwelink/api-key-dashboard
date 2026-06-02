@@ -512,8 +512,39 @@ async def post_apply_oauth_credentials(
 ) -> dict:
     client = await _client_for_site(db, site_id)
     apply_payload = {"type": payload.account_type, "credentials": payload.credentials}
-    result = await client.request_admin("POST", f"/accounts/{account_id}/apply-oauth-credentials", json=apply_payload)
-    refreshed = await client.update_account(account_id, {"status": "active", "schedulable": True})
+    update_payload = {**apply_payload, "status": "active", "schedulable": True}
+    try:
+        result = await client.request_admin("POST", f"/accounts/{account_id}/apply-oauth-credentials", json=apply_payload)
+    except HTTPException as exc:
+        detail = str(exc.detail)
+        if "404" not in detail and "not found" not in detail.lower():
+            raise
+        refreshed = await client.update_account(account_id, update_payload)
+        result = {
+            "ok": True,
+            "fallback": "update_account",
+            "message": "sub2api apply-oauth-credentials endpoint not found; credentials were applied through account update",
+            "original_error": detail,
+        }
+    else:
+        refreshed = await client.update_account(account_id, {"status": "active"})
+
+    schedulable_result: dict[str, Any]
+    try:
+        schedulable_result = await client.set_account_schedulable(account_id, True)
+        if isinstance(schedulable_result, dict) and schedulable_result.get("id") is not None:
+            refreshed = schedulable_result
+    except HTTPException as exc:
+        detail = str(exc.detail)
+        if "404" not in detail and "not found" not in detail.lower():
+            raise
+        refreshed = await client.update_account(account_id, {"status": "active", "schedulable": True})
+        schedulable_result = {
+            "ok": True,
+            "fallback": "update_account",
+            "message": "sub2api schedulable endpoint not found; schedulable was enabled through account update",
+            "original_error": detail,
+        }
     if isinstance(refreshed, dict) and refreshed.get("id") is not None:
         await upsert_cached_account_snapshot(db, site_id, refreshed)
     await write_audit_log(
@@ -524,7 +555,7 @@ async def post_apply_oauth_credentials(
         resource_id=str(account_id),
         after={"site_id": site_id, "status": "active", "schedulable": True},
     )
-    return {"apply": result, "account": refreshed}
+    return {"apply": result, "schedulable": schedulable_result, "account": refreshed}
 
 
 @router.post("/{site_id}/accounts/{account_id}/resurrection-fail")

@@ -473,12 +473,13 @@ export function TodoPage({ token, showToast }: Props) {
         }),
       });
       const credentials = oauthCredentialsFromExchange(exchange);
-      await api(`/sub2api-sites/${resurrectionWorkspace.account.site_id}/accounts/${resurrectionWorkspace.account.id}/apply-oauth-credentials`, token, {
+      const applyResult = await api<Record<string, unknown>>(`/sub2api-sites/${resurrectionWorkspace.account.site_id}/accounts/${resurrectionWorkspace.account.id}/apply-oauth-credentials`, token, {
         method: "POST",
         body: JSON.stringify({ account_type: "oauth", credentials }),
       });
-      setResurrectionWorkspace((current) => (current ? { ...current, exchange, resurrectionResult: "复活成功：OAuth 凭证已更新，账号已恢复调度。" } : current));
-      showToast("账号已自动交换 OAuth 凭证并复活");
+      const successMessage = resurrectionSuccessMessage(applyResult, resurrectionWorkspace.account.id);
+      setResurrectionWorkspace((current) => (current ? { ...current, exchange, resurrectionResult: successMessage } : current));
+      showToast(successMessage);
       await loadResurrectionAccounts();
     } catch (error) {
       setResurrectionWorkspace((current) => (current ? { ...current, resurrectionResult: `复活失败：${errorMessage(error)}` } : current));
@@ -1922,6 +1923,26 @@ function normalizeAuthSession(value: AuthSession): AuthSession {
     auth_url: text(value.auth_url) || text(data.auth_url),
     session_id: text(value.session_id) || text(data.session_id),
   };
+}
+
+function resurrectionSuccessMessage(result: Record<string, unknown>, fallbackAccountId: number) {
+  const account = asRecord(result.account);
+  const schedulable = asRecord(result.schedulable);
+  const apply = asRecord(result.apply);
+  const accountId = text(account.id) || String(fallbackAccountId);
+  const status = text(account.status) || "active";
+  const schedulableEnabled = account.schedulable === true || schedulable.schedulable === true || schedulable.ok === true;
+  const applyFallback = text(apply.fallback);
+  const schedulableFallback = text(schedulable.fallback);
+  const details = [
+    `账号 #${accountId}`,
+    "OAuth 凭证已更新",
+    `状态 ${status}`,
+    schedulableEnabled ? "调度已打开" : "已提交打开调度",
+  ];
+  if (applyFallback) details.push("凭证通过普通更新写入");
+  if (schedulableFallback) details.push("调度通过普通更新打开");
+  return `复活成功：${details.join("，")}。`;
 }
 
 function numberValue(value: unknown): number {
