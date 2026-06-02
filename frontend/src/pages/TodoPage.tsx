@@ -37,6 +37,17 @@ type ApiPoolResponse = {
   total: number;
 };
 
+type Sub2ApiSite = {
+  id: string;
+  name?: string;
+  status?: string;
+};
+
+type Sub2ApiSitesResponse = {
+  items: Sub2ApiSite[];
+  total: number;
+};
+
 type RemoteResurrectionAccount = {
   id: number;
   name?: string;
@@ -175,20 +186,34 @@ export function TodoPage({ token, showToast }: Props) {
   };
 
   const loadResurrectionAccounts = async () => {
-    const pools = await api<ApiPoolResponse>("/api-pools", token);
+    const [pools, sites] = await Promise.all([
+      api<ApiPoolResponse>("/api-pools", token),
+      api<Sub2ApiSitesResponse>("/sub2api-sites", token),
+    ]);
+    const activeSiteIds = new Set(sites.items.filter((site) => site.status !== "deleted" && site.status !== "disabled").map((site) => site.id));
+    const fallbackSiteId = activeSiteIds.size === 1 ? Array.from(activeSiteIds)[0] : "";
     const plusPools = pools.items.filter((pool) => pool.status === "active" && pool.account_type === "plus" && pool.site_id && pool.active_group_id);
     const candidates: RemoteResurrectionAccount[] = [];
+    let skippedPools = 0;
     for (const pool of plusPools) {
+      const siteId = resolvePoolSiteId(pool.site_id, activeSiteIds, fallbackSiteId);
+      if (!siteId) {
+        skippedPools += 1;
+        continue;
+      }
       const params = new URLSearchParams({ page: "1", page_size: "500" });
-      const data = await api<RemoteAccountsResponse>(`/sub2api-sites/${pool.site_id}/groups/${pool.active_group_id}/accounts?${params.toString()}`, token);
+      const data = await api<RemoteAccountsResponse>(`/sub2api-sites/${encodeURIComponent(siteId)}/groups/${pool.active_group_id}/accounts?${params.toString()}`, token);
       data.items.forEach((account) => {
-        const decorated = { ...account, site_id: pool.site_id, pool_name: pool.name, active_group_id: pool.active_group_id };
+        const decorated = { ...account, site_id: siteId, pool_name: pool.name, active_group_id: pool.active_group_id };
         if (isResurrectionCandidate(decorated, query)) candidates.push(decorated);
       });
     }
     candidates.sort((left, right) => numberValue(left.codex_7d_used_percent) - numberValue(right.codex_7d_used_percent));
     setResurrectionTotal(candidates.length);
     setResurrectionAccounts(candidates.slice(resurrectionSkip, resurrectionSkip + resurrectionLimit));
+    if (skippedPools > 0) {
+      showToast(`已跳过 ${skippedPools} 个站点配置失效的账号池`, true);
+    }
   };
 
   useEffect(() => {
@@ -1438,6 +1463,13 @@ function isResurrectionCandidate(account: RemoteResurrectionAccount, query: stri
 
 function remoteAccountEmail(account: RemoteResurrectionAccount) {
   return text(account.credentials?.email) || text(account.extra?.email) || text(account.name) || `#${account.id}`;
+}
+
+function resolvePoolSiteId(siteId: string, activeSiteIds: Set<string>, fallbackSiteId: string) {
+  const normalized = text(siteId);
+  if (normalized && activeSiteIds.has(normalized)) return normalized;
+  if (fallbackSiteId && (!normalized || normalized === "default" || !activeSiteIds.has(normalized))) return fallbackSiteId;
+  return "";
 }
 
 function remoteAccountStatusLabel(account: RemoteResurrectionAccount) {
