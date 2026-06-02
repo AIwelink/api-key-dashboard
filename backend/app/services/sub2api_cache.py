@@ -195,8 +195,10 @@ async def list_cached_group_accounts(
         .limit(page_size)
     )
     docs = [doc async for doc in cursor]
+    accounts = [_account_snapshot_with_cache_sync(doc) for doc in docs]
+    await _attach_local_account_metadata(db, accounts)
     return {
-        "items": [serialize_doc(_account_snapshot_with_cache_sync(doc)) for doc in docs],
+        "items": [serialize_doc(account) for account in accounts],
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -1305,6 +1307,60 @@ def _account_snapshot_with_cache_sync(doc: dict[str, Any]) -> dict[str, Any]:
     account = _normalize_account_snapshot(doc.get("account", {}))
     _copy_cached_remote_test(account, doc)
     return account
+
+
+async def _attach_local_account_metadata(db: AsyncIOMotorDatabase, accounts: list[dict[str, Any]]) -> None:
+    email_by_account: dict[int, str] = {}
+    emails: set[str] = set()
+    for index, account in enumerate(accounts):
+        email = _account_email_key(account)
+        if not email:
+            continue
+        email_by_account[index] = email
+        emails.add(email)
+    if not emails:
+        return
+
+    local_by_email: dict[str, dict[str, Any]] = {}
+    cursor = db.accounts.find(
+        {"metadata.deleted_at": {"$exists": False}, "metadata.email": {"$in": list(emails)}},
+        {
+            "_id": 1,
+            "metadata.email": 1,
+            "metadata.uploaded_by_user_id": 1,
+            "metadata.uploader_name": 1,
+            "metadata.last_operation_at": 1,
+            "metadata.last_operation_by": 1,
+            "metadata.last_operation_by_name": 1,
+        },
+    )
+    async for local in cursor:
+        metadata = local.get("metadata") if isinstance(local.get("metadata"), dict) else {}
+        email = _normalize_email(metadata.get("email"))
+        if email and email not in local_by_email:
+            local_by_email[email] = local
+
+    for index, email in email_by_account.items():
+        local = local_by_email.get(email)
+        if not local:
+            continue
+        metadata = local.get("metadata") if isinstance(local.get("metadata"), dict) else {}
+        accounts[index]["local_account_id"] = str(local.get("_id"))
+        accounts[index]["uploaded_by_user_id"] = metadata.get("uploaded_by_user_id")
+        accounts[index]["uploader_name"] = metadata.get("uploader_name")
+        accounts[index]["last_operation_at"] = metadata.get("last_operation_at")
+        accounts[index]["last_operation_by"] = metadata.get("last_operation_by")
+        accounts[index]["last_operation_by_name"] = metadata.get("last_operation_by_name")
+
+
+def _account_email_key(account: dict[str, Any]) -> str:
+    credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
+    extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+    return _normalize_email(account.get("email") or credentials.get("email") or extra.get("email") or account.get("name"))
+
+
+def _normalize_email(value: Any) -> str:
+    return str(value or "").strip().lower()
 
 
 def _normalize_account_snapshot(account: dict[str, Any]) -> dict[str, Any]:

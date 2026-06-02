@@ -73,6 +73,9 @@ type RemoteResurrectionAccount = {
   codex_7d_used_percent?: unknown;
   codex_5h_used_percent?: unknown;
   group_ids?: number[];
+  local_account_id?: string;
+  uploaded_by_user_id?: string;
+  uploader_name?: string;
   site_id: string;
   pool_name: string;
   active_group_id: number;
@@ -250,7 +253,12 @@ export function TodoPage({ token, showToast }: Props) {
       await appendCandidatesForTargets(fallbackTargets);
     }
 
-    candidates.sort((left, right) => numberValue(left.codex_7d_used_percent) - numberValue(right.codex_7d_used_percent));
+    candidates.sort((left, right) => {
+      const leftMine = isRemoteUploadedByCurrentUser(left, currentUserId) ? 1 : 0;
+      const rightMine = isRemoteUploadedByCurrentUser(right, currentUserId) ? 1 : 0;
+      if (leftMine !== rightMine) return rightMine - leftMine;
+      return numberValue(left.codex_7d_used_percent) - numberValue(right.codex_7d_used_percent);
+    });
     setResurrectionTotal(candidates.length);
     setResurrectionAccounts(candidates.slice(resurrectionSkip, resurrectionSkip + resurrectionLimit));
     if (skippedPools > 0) {
@@ -732,6 +740,7 @@ export function TodoPage({ token, showToast }: Props) {
                   <tr key={account.id}>
                     <td>
                       <div className="cell-main">{remoteAccountEmail(account)}</div>
+                      {isRemoteUploadedByCurrentUser(account, currentUserId) && <div className="cell-sub"><StatusPill value="您的账号错误" tone="danger" /></div>}
                       <div className="cell-sub">{text(account.name) || `#${account.id}`}</div>
                       <div className="cell-sub">{account.pool_name} · group #{account.active_group_id}</div>
                     </td>
@@ -1465,6 +1474,10 @@ function sortMineFirst(accounts: AccountDocument[], currentUserId: string) {
     if (leftMine !== rightMine) return rightMine - leftMine;
     return 0;
   });
+}
+
+function isRemoteUploadedByCurrentUser(account: RemoteResurrectionAccount, currentUserId: string) {
+  return Boolean(currentUserId) && text(account.uploaded_by_user_id) === currentUserId;
 }
 
 function accountEmail(account: AccountDocument) {
