@@ -1437,6 +1437,10 @@ def _normalize_account_snapshot(account: dict[str, Any]) -> dict[str, Any]:
     _refresh_window_from_reset_at(normalized, extra, "5h")
     _refresh_window_from_reset_at(normalized, extra, "7d")
     _clear_expired_transient_limits(normalized, extra)
+    if normalized.get("schedulable") is None:
+        inferred_schedulable = _infer_schedulable_from_snapshot(normalized, extra)
+        if inferred_schedulable is not None:
+            normalized["schedulable"] = inferred_schedulable
 
     normalized["extra"] = extra
     return normalized
@@ -1456,6 +1460,21 @@ def _clear_expired_transient_limits(account: dict[str, Any], extra: dict[str, An
         for key in ("temp_unschedulable_until", "temp_unschedulable_reason"):
             account.pop(key, None)
             extra.pop(key, None)
+
+
+def _infer_schedulable_from_snapshot(account: dict[str, Any], extra: dict[str, Any]) -> bool | None:
+    status = str(account.get("status") or extra.get("status") or "").lower()
+    if status in {"error", "disabled", "paused", "banned", "invalid", "failed"}:
+        return False
+    if status != "active":
+        return None
+    if account.get("error_message") or extra.get("error_message") or extra.get("last_error"):
+        return None
+    rate_limit_reset_at = _parse_datetime(account.get("rate_limit_reset_at") or extra.get("rate_limit_reset_at"))
+    temp_unschedulable_until = _parse_datetime(account.get("temp_unschedulable_until") or extra.get("temp_unschedulable_until"))
+    if any(value is not None and value > now_utc() for value in (rate_limit_reset_at, temp_unschedulable_until)):
+        return None
+    return True
 
 
 def _first_present(*items: Any) -> Any:

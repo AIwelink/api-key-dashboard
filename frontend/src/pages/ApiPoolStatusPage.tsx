@@ -976,6 +976,7 @@ function RemoteAccountRow({
   const credentialExpiresAt = account.credential_expires_at ?? account.expires_at ?? credentials.expires_at;
   const subscriptionExpiresAt = account.subscription_expires_at ?? credentials.subscription_expires_at;
   const statusView = accountStatusView(account);
+  const schedulableView = accountSchedulableView(account);
 
   return (
     <tr>
@@ -1024,7 +1025,7 @@ function RemoteAccountRow({
         )}
       </td>
       <td>
-        <StatusPill value={account.schedulable ? "可调度" : "不可调度"} tone={account.schedulable ? "success" : "warning"} />
+        <StatusPill value={schedulableView.label} tone={schedulableView.tone} />
         <div className="cell-sub">priority {numberValue(account.priority)}</div>
       </td>
       <td>
@@ -1473,6 +1474,20 @@ function accountStatusView(account: RemoteAccount): { label: string; tone: "acce
     return { label: "异常", tone: "danger" };
   }
   return { label: displayStatus(account.status), tone: statusTone(account.status) };
+}
+
+function accountSchedulableView(account: RemoteAccount): { label: string; tone: "success" | "warning" | "muted" } {
+  if (account.schedulable === false) {
+    return { label: "不可调度", tone: "warning" };
+  }
+  if (account.schedulable === true) {
+    return { label: "可调度", tone: "success" };
+  }
+  const status = (account.status || "").toLowerCase();
+  if (status === "active" && !account.error_message && !isFutureDate(account.temp_unschedulable_until) && !isTemporaryRateLimit(account)) {
+    return { label: "可调度", tone: "success" };
+  }
+  return { label: "未知", tone: "muted" };
 }
 
 function statusTone(value?: string): "accent" | "success" | "warning" | "danger" | "muted" {
