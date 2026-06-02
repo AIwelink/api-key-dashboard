@@ -353,23 +353,6 @@ export function TodoPage({ token, showToast }: Props) {
     }
   };
 
-  const openEditRemoteAccount = async (account: RemoteResurrectionAccount) => {
-    const localAccountId = text(account.local_account_id);
-    if (!localAccountId) {
-      showToast("该远端账号没有匹配到本地账号，无法编辑。请先同步账号池数据。", true);
-      return;
-    }
-    setResurrectionBusy(`edit:${account.id}`);
-    try {
-      const fullAccount = await api<AccountDocument>(`/accounts/${localAccountId}`, token);
-      setEditingAccount(fullAccount);
-    } catch (error) {
-      showToast(errorMessage(error), true);
-    } finally {
-      setResurrectionBusy(null);
-    }
-  };
-
   const resolveProblemAfterCorrection = async (account: AccountDocument) => {
     const confirmed = window.confirm("确认账号信息已经修正，并将该账号移出问题账号状态、重新进入总库？");
     if (!confirmed) return;
@@ -990,12 +973,6 @@ export function TodoPage({ token, showToast }: Props) {
                     保存复活信息
                   </button>
                 </div>
-                <div className="button-row action-wrap">
-                  <button className="ghost compact-button" type="button" onClick={fetchRecentMail}>
-                    前端取最近邮件
-                  </button>
-                  {phoneInfo(resurrectionWorkspace.account).status === "valid" && <span className="muted">手机验证码每 3 秒自动刷新</span>}
-                </div>
               </section>
               <section>
                 <h4>验证码</h4>
@@ -1011,6 +988,22 @@ export function TodoPage({ token, showToast }: Props) {
                     <button className="verification-code" type="button" onClick={() => extractVerificationCode(resurrectionWorkspace.phoneMessage) && copyText(extractVerificationCode(resurrectionWorkspace.phoneMessage), "手机验证码已复制")}>{extractVerificationCode(resurrectionWorkspace.phoneMessage) || "-"}</button>
                     <em className="copy-hint">点击验证码即可复制</em>
                     <small>{resurrectionWorkspace.phoneMessage || resurrectionWorkspace.phoneError || "等待短信"}</small>
+                  </div>
+                  <div className="verification-card">
+                    <span>邮件验证码</span>
+                    <button
+                      className={`verification-code ${latestMailVerificationCode(resurrectionWorkspace.mailMessages) ? "" : "verification-code-action"}`}
+                      type="button"
+                      onClick={() => {
+                        const code = latestMailVerificationCode(resurrectionWorkspace.mailMessages);
+                        if (code) copyText(code, "邮件验证码已复制");
+                        else fetchRecentMail();
+                      }}
+                    >
+                      {latestMailVerificationCode(resurrectionWorkspace.mailMessages) || "取件"}
+                    </button>
+                    <em className="copy-hint">点击取件；取到验证码后点击即可复制</em>
+                    <small>{resurrectionWorkspace.mailMessages.length ? `已取 ${resurrectionWorkspace.mailMessages.length} 封最近邮件` : "前端 Graph 取最近两封邮件"}</small>
                   </div>
                 </div>
                 <div className="mail-preview-list">
@@ -1915,6 +1908,14 @@ function normalizeTotpSecret(value: string) {
 
 function extractVerificationCode(value?: string) {
   return text(value).match(/\b\d{6}\b/)?.[0] || "";
+}
+
+function latestMailVerificationCode(messages: MailMessage[]) {
+  for (const message of messages) {
+    const code = extractVerificationCode(`${message.subject || ""} ${message.preview || ""}`);
+    if (code) return code;
+  }
+  return "";
 }
 
 function numberValue(value: unknown): number {

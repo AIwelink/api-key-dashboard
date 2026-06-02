@@ -1853,6 +1853,12 @@ th {
   background: #fafdff;
 }
 
+.verification-code-action {
+  font-family: inherit;
+  font-size: 18px;
+  font-weight: 700;
+}
+
 .copy-hint {
   display: block;
   margin: -2px 0 6px;
