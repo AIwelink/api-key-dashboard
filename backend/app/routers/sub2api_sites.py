@@ -1,10 +1,11 @@
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.schemas import Sub2ApiAccountTestRequest, Sub2ApiManualDeleteRequest
+from app.schemas import Sub2ApiAccountTestRequest, Sub2ApiManualDeleteRequest, Sub2ApiOAuthApplyRequest, Sub2ApiOAuthExchangeRequest, Sub2ApiResurrectionFailRequest
 from app.security import require_roles
 from app.services.audit import write_audit_log
 from app.services.sub2api import Sub2ApiClient
@@ -17,8 +18,10 @@ from app.services.sub2api_cache import (
     list_sites as list_cached_sites,
     request_debounced_refresh,
     update_site_config,
+    upsert_cached_account_snapshot,
 )
 from app.services.sub2api_dashboard import get_stored_dashboard_snapshots, refresh_dashboard_snapshots
+from app.services.sub2api_push import _move_remote_to_problem_group, _resolve_push_problem_group
 from app.services.sub2api_return import manual_delete_sub2api_account
 from app.services.sub2api_verify import test_remote_sub2api_account
 
@@ -212,6 +215,95 @@ async def post_manual_delete_remote_account(
         },
     )
     return result
+
+
+@router.post("/{site_id}/openai/generate-auth-url")
+async def post_generate_openai_auth_url(
+    site_id: str,
+    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    client = await _client_for_site(db, site_id)
+    return await client.request_admin("POST", "/openai/generate-auth-url", json={})
+
+
+@router.post("/{site_id}/openai/exchange-code")
+async def post_exchange_openai_code(
+    site_id: str,
+    payload: Sub2ApiOAuthExchangeRequest,
+    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    code = payload.code
+    state = payload.state
+    if payload.callback_url:
+        parsed = parse_qs(urlparse(payload.callback_url).query)
+        code = code or (parsed.get("code") or [None])[0]
+        state = state or (parsed.get("state") or [None])[0]
+    if not payload.session_id or not code or not state:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="session_id, code and state are required")
+    client = await _client_for_site(db, site_id)
+    return await client.request_admin(
+        "POST",
+        "/openai/exchange-code",
+        json={"session_id": payload.session_id, "code": code, "state": state},
+    )
+
+
+@router.post("/{site_id}/accounts/{account_id}/apply-oauth-credentials")
+async def post_apply_oauth_credentials(
+    site_id: str,
+    account_id: int,
+    payload: Sub2ApiOAuthApplyRequest,
+    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    client = await _client_for_site(db, site_id)
+    apply_payload = {"type": payload.account_type, "credentials": payload.credentials}
+    result = await client.request_admin("POST", f"/accounts/{account_id}/apply-oauth-credentials", json=apply_payload)
+    refreshed = await client.update_account(account_id, {"status": "active", "schedulable": True})
+    if isinstance(refreshed, dict) and refreshed.get("id") is not None:
+        await upsert_cached_account_snapshot(db, site_id, refreshed)
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="sub2api.account.resurrection_apply_oauth",
+        resource_type="sub2api_account",
+        resource_id=str(account_id),
+        after={"site_id": site_id, "status": "active", "schedulable": True},
+    )
+    return {"apply": result, "account": refreshed}
+
+
+@router.post("/{site_id}/accounts/{account_id}/resurrection-fail")
+async def post_resurrection_fail(
+    site_id: str,
+    account_id: int,
+    payload: Sub2ApiResurrectionFailRequest,
+    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    if not payload.reason.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="reason is required")
+    client = await _client_for_site(db, site_id)
+    remote_account = await client.get_account(account_id)
+    problem_group_id, problem_group_name = await _resolve_push_problem_group(db, site_id)
+    moved = await _move_remote_to_problem_group(
+        db,
+        client=client,
+        site_id=site_id,
+        remote_account={**remote_account, "error_message": payload.reason},
+        problem_group_id=problem_group_id,
+    )
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="sub2api.account.resurrection_failed",
+        resource_type="sub2api_account",
+        resource_id=str(account_id),
+        after={"site_id": site_id, "reason": payload.reason, "problem_group_id": problem_group_id},
+    )
+    return {"account": moved, "problem_group_id": problem_group_id, "problem_group_name": problem_group_name}
 
 
 @router.post("/{site_id}/accounts/{account_id}/test")

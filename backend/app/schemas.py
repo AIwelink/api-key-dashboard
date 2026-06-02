@@ -167,6 +167,22 @@ class Sub2ApiAccountTestRequest(BaseModel):
     reason: str | None = None
 
 
+class Sub2ApiOAuthExchangeRequest(BaseModel):
+    session_id: str
+    callback_url: str | None = None
+    code: str | None = None
+    state: str | None = None
+
+
+class Sub2ApiOAuthApplyRequest(BaseModel):
+    credentials: dict[str, Any]
+    account_type: str = "oauth"
+
+
+class Sub2ApiResurrectionFailRequest(BaseModel):
+    reason: str
+
+
 class VerifyViaSub2ApiRequest(BaseModel):
     site_id: str = "default"
     verification_group_id: int

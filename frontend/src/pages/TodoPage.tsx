@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { AccountEditPanel } from "../components/AccountEditPanel";
-import type { AccountDocument } from "../types";
+import type { AccountDocument, ApiPool } from "../types";
 import { errorMessage, formatDateTime, formatPayment, text } from "../utils/format";
 
 type Props = {
@@ -10,7 +10,7 @@ type Props = {
 };
 
 type TaskStatus = "open" | "pending" | "processing" | "completed" | "failed" | "all";
-type TodoPanel = "problem" | "upgrade";
+type TodoPanel = "problem" | "resurrection" | "upgrade";
 
 type FreeToPlusResponse = {
   items: AccountDocument[];
@@ -30,6 +30,53 @@ type ProblemAccountsResponse = {
   total: number;
   skip: number;
   limit: number;
+};
+
+type ApiPoolResponse = {
+  items: ApiPool[];
+  total: number;
+};
+
+type RemoteResurrectionAccount = {
+  id: number;
+  name?: string;
+  status?: string;
+  error_message?: string;
+  schedulable?: boolean;
+  credentials?: Record<string, unknown>;
+  extra?: Record<string, unknown>;
+  plan_type?: string;
+  priority?: number;
+  codex_7d_used_percent?: unknown;
+  codex_5h_used_percent?: unknown;
+  group_ids?: number[];
+  site_id: string;
+  pool_name: string;
+  active_group_id: number;
+};
+
+type RemoteAccountsResponse = {
+  items: RemoteResurrectionAccount[];
+  total: number;
+};
+
+type AuthSession = {
+  auth_url?: string;
+  session_id?: string;
+};
+
+type ResurrectionWorkspace = {
+  account: RemoteResurrectionAccount;
+  auth?: AuthSession;
+  callbackUrl: string;
+  exchange?: Record<string, unknown>;
+  phoneMessage?: string;
+  phoneError?: string;
+  totpCode?: string;
+  totpSeconds?: number;
+  totpError?: string;
+  mailMessages: Array<{ subject?: string; from?: string; preview?: string; received_at?: string }>;
+  mailError?: string;
 };
 
 type PushErrorStatus = "open" | "pending" | "processing" | "archived" | "resolved" | "all";
@@ -62,19 +109,25 @@ const paymentOptions = [
 export function TodoPage({ token, showToast }: Props) {
   const [accounts, setAccounts] = useState<AccountDocument[]>([]);
   const [problemAccounts, setProblemAccounts] = useState<AccountDocument[]>([]);
+  const [resurrectionAccounts, setResurrectionAccounts] = useState<RemoteResurrectionAccount[]>([]);
   const [problemTotal, setProblemTotal] = useState(0);
+  const [resurrectionTotal, setResurrectionTotal] = useState(0);
   const [total, setTotal] = useState(0);
   const [stats, setStats] = useState<FreeToPlusResponse["stats"]>({ pending: 0, processing: 0, completed: 0, failed: 0 });
   const [status, setStatus] = useState<TaskStatus>("open");
   const [query, setQuery] = useState("");
   const [skip, setSkip] = useState(0);
   const [problemSkip, setProblemSkip] = useState(0);
+  const [resurrectionSkip, setResurrectionSkip] = useState(0);
   const [limit, setLimit] = useState(50);
   const [problemLimit, setProblemLimit] = useState(50);
+  const [resurrectionLimit, setResurrectionLimit] = useState(50);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [paymentById, setPaymentById] = useState<Record<string, string>>({});
   const [editingAccount, setEditingAccount] = useState<AccountDocument | null>(null);
-  const [activePanel, setActivePanel] = useState<TodoPanel>("problem");
+  const [activePanel, setActivePanel] = useState<TodoPanel>("resurrection");
+  const [resurrectionWorkspace, setResurrectionWorkspace] = useState<ResurrectionWorkspace | null>(null);
+  const [resurrectionBusy, setResurrectionBusy] = useState<string | null>(null);
 
   const currentUserId = useMemo(() => {
     const raw = localStorage.getItem("user");
@@ -121,6 +174,23 @@ export function TodoPage({ token, showToast }: Props) {
     setProblemTotal(data.total);
   };
 
+  const loadResurrectionAccounts = async () => {
+    const pools = await api<ApiPoolResponse>("/api-pools", token);
+    const plusPools = pools.items.filter((pool) => pool.status === "active" && pool.account_type === "plus" && pool.site_id && pool.active_group_id);
+    const candidates: RemoteResurrectionAccount[] = [];
+    for (const pool of plusPools) {
+      const params = new URLSearchParams({ page: "1", page_size: "500" });
+      const data = await api<RemoteAccountsResponse>(`/sub2api-sites/${pool.site_id}/groups/${pool.active_group_id}/accounts?${params.toString()}`, token);
+      data.items.forEach((account) => {
+        const decorated = { ...account, site_id: pool.site_id, pool_name: pool.name, active_group_id: pool.active_group_id };
+        if (isResurrectionCandidate(decorated, query)) candidates.push(decorated);
+      });
+    }
+    candidates.sort((left, right) => numberValue(left.codex_7d_used_percent) - numberValue(right.codex_7d_used_percent));
+    setResurrectionTotal(candidates.length);
+    setResurrectionAccounts(candidates.slice(resurrectionSkip, resurrectionSkip + resurrectionLimit));
+  };
+
   useEffect(() => {
     loadAccounts().catch((error) => showToast(errorMessage(error), true));
   }, [status, skip, limit]);
@@ -129,11 +199,17 @@ export function TodoPage({ token, showToast }: Props) {
     loadProblemAccounts().catch((error) => showToast(errorMessage(error), true));
   }, [problemSkip, problemLimit, currentUserId]);
 
+  useEffect(() => {
+    loadResurrectionAccounts().catch((error) => showToast(errorMessage(error), true));
+  }, [resurrectionSkip, resurrectionLimit]);
+
   const refresh = () => {
     if (skip !== 0) setSkip(0);
     if (problemSkip !== 0) setProblemSkip(0);
+    if (resurrectionSkip !== 0) setResurrectionSkip(0);
     if (skip === 0) loadAccounts().catch((error) => showToast(errorMessage(error), true));
     if (problemSkip === 0) loadProblemAccounts().catch((error) => showToast(errorMessage(error), true));
+    if (resurrectionSkip === 0) loadResurrectionAccounts().catch((error) => showToast(errorMessage(error), true));
   };
 
   const runAccountAction = async (account: AccountDocument, action: "start" | "release" | "return-processing" | "complete" | "fail") => {
@@ -191,12 +267,197 @@ export function TodoPage({ token, showToast }: Props) {
       });
       showToast("已记录错误账号信息修正，账号已重新进入总库");
       await loadProblemAccounts();
+      await loadResurrectionAccounts();
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
       setBusyId(null);
     }
   };
+
+  const startResurrection = async (account: RemoteResurrectionAccount) => {
+    const twoFa = twoFaInfo(account);
+    setResurrectionWorkspace({
+      account,
+      callbackUrl: "",
+      mailMessages: [],
+      totpError: twoFa.message,
+    });
+    if (twoFa.status === "valid") {
+      const code = await generateTotp(twoFa.value).catch((error) => ({ code: undefined, seconds: undefined, error: errorMessage(error) }));
+      setResurrectionWorkspace((current) =>
+        current?.account.id === account.id ? { ...current, totpCode: code?.code, totpSeconds: code?.seconds, totpError: "error" in code ? code.error : undefined } : current,
+      );
+    }
+  };
+
+  const fetchRecentMail = async () => {
+    if (!resurrectionWorkspace) return;
+    const session = text(resurrectionWorkspace.account.extra?.email_session);
+    const bearer = extractLikelyGraphToken(session);
+    if (!bearer) {
+      setResurrectionWorkspace((current) => (current ? { ...current, mailError: "未识别到可直接用于 Graph API 的前端 token；IMAP 不能在浏览器中直连。" } : current));
+      return;
+    }
+    try {
+      const response = await fetch("https://graph.microsoft.com/v1.0/me/messages?$top=2&$orderby=receivedDateTime desc", {
+        headers: { Authorization: `Bearer ${bearer}` },
+      });
+      const payload = await response.json();
+      const values = Array.isArray(payload.value) ? payload.value : [];
+      const messages = values.slice(0, 2).map((item: Record<string, unknown>) => ({
+        subject: text(item.subject),
+        from: text(asRecord(asRecord(item.from).emailAddress).address),
+        preview: text(item.bodyPreview),
+        received_at: text(item.receivedDateTime),
+      }));
+      setResurrectionWorkspace((current) => (current ? { ...current, mailMessages: messages, mailError: undefined } : current));
+    } catch (error) {
+      setResurrectionWorkspace((current) => (current ? { ...current, mailError: errorMessage(error) } : current));
+    }
+  };
+
+  const generateAuthUrl = async () => {
+    if (!resurrectionWorkspace) return;
+    setResurrectionBusy(`auth:${resurrectionWorkspace.account.id}`);
+    try {
+      const auth = await api<AuthSession>(`/sub2api-sites/${resurrectionWorkspace.account.site_id}/openai/generate-auth-url`, token, { method: "POST" });
+      setResurrectionWorkspace((current) => (current ? { ...current, auth } : current));
+      showToast("授权链接已生成");
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setResurrectionBusy(null);
+    }
+  };
+
+  const exchangeCode = async () => {
+    if (!resurrectionWorkspace?.auth?.session_id) return;
+    setResurrectionBusy(`exchange:${resurrectionWorkspace.account.id}`);
+    try {
+      const exchange = await api<Record<string, unknown>>(`/sub2api-sites/${resurrectionWorkspace.account.site_id}/openai/exchange-code`, token, {
+        method: "POST",
+        body: JSON.stringify({
+          session_id: resurrectionWorkspace.auth.session_id,
+          callback_url: resurrectionWorkspace.callbackUrl,
+        }),
+      });
+      setResurrectionWorkspace((current) => (current ? { ...current, exchange } : current));
+      showToast("OAuth 凭证已交换成功");
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setResurrectionBusy(null);
+    }
+  };
+
+  const applyOAuthCredentials = async () => {
+    if (!resurrectionWorkspace?.exchange) return;
+    const credentials = oauthCredentialsFromExchange(resurrectionWorkspace.exchange);
+    setResurrectionBusy(`apply:${resurrectionWorkspace.account.id}`);
+    try {
+      await api(`/sub2api-sites/${resurrectionWorkspace.account.site_id}/accounts/${resurrectionWorkspace.account.id}/apply-oauth-credentials`, token, {
+        method: "POST",
+        body: JSON.stringify({ account_type: "oauth", credentials }),
+      });
+      showToast("账号已应用新 OAuth 凭证并恢复调度");
+      setResurrectionWorkspace(null);
+      await loadResurrectionAccounts();
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setResurrectionBusy(null);
+    }
+  };
+
+  const markResurrectionFailed = async (account: RemoteResurrectionAccount) => {
+    const reason = window.prompt("请输入复活失败原因");
+    if (!reason) return;
+    setResurrectionBusy(`fail:${account.id}`);
+    try {
+      await api(`/sub2api-sites/${account.site_id}/accounts/${account.id}/resurrection-fail`, token, {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      });
+      showToast("已记录复活失败，并转入推送问题账户池");
+      if (resurrectionWorkspace?.account.id === account.id) setResurrectionWorkspace(null);
+      await loadResurrectionAccounts();
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setResurrectionBusy(null);
+    }
+  };
+
+  const copyText = async (value: string, message: string) => {
+    await navigator.clipboard.writeText(value);
+    showToast(message);
+  };
+
+  useEffect(() => {
+    const account = resurrectionWorkspace?.account;
+    const twoFa = twoFaInfo(account);
+    if (!account || twoFa.status !== "valid") {
+      if (account && twoFa.message) {
+        setResurrectionWorkspace((current) =>
+          current?.account.id === account.id ? { ...current, totpCode: undefined, totpSeconds: undefined, totpError: twoFa.message } : current,
+        );
+      }
+      return;
+    }
+    let cancelled = false;
+    const tick = async () => {
+      const code = await generateTotp(twoFa.value).catch((error) => ({ code: undefined, seconds: undefined, error: errorMessage(error) }));
+      if (!cancelled) {
+        setResurrectionWorkspace((current) =>
+          current?.account.id === account.id ? { ...current, totpCode: code?.code, totpSeconds: code?.seconds, totpError: "error" in code ? code.error : undefined } : current,
+        );
+      }
+    };
+    void tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [resurrectionWorkspace?.account.id]);
+
+  useEffect(() => {
+    const account = resurrectionWorkspace?.account;
+    const phone = phoneInfo(account);
+    if (!account || phone.status !== "valid") {
+      if (account && phone.message) {
+        setResurrectionWorkspace((current) =>
+          current?.account.id === account.id ? { ...current, phoneMessage: undefined, phoneError: phone.message } : current,
+        );
+      }
+      return;
+    }
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const response = await fetch(phone.url, { cache: "no-store" });
+        const body = await response.text();
+        if (!cancelled) {
+          setResurrectionWorkspace((current) =>
+            current?.account.id === account.id ? { ...current, phoneMessage: body, phoneError: undefined } : current,
+          );
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setResurrectionWorkspace((current) =>
+            current?.account.id === account.id ? { ...current, phoneError: errorMessage(error) } : current,
+          );
+        }
+      }
+    };
+    void tick();
+    const timer = window.setInterval(tick, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [resurrectionWorkspace?.account.id]);
 
   return (
     <section className="view accounts-page">
@@ -214,6 +475,10 @@ export function TodoPage({ token, showToast }: Props) {
       </div>
 
       <div className="account-view-menu">
+        <button className={`account-view-menu-item ${activePanel === "resurrection" ? "active" : ""}`} onClick={() => setActivePanel("resurrection")} type="button">
+          账号复活
+          <span>{resurrectionTotal} 个待复活账号</span>
+        </button>
         <button className={`account-view-menu-item ${activePanel === "problem" ? "active" : ""}`} onClick={() => setActivePanel("problem")} type="button">
           错误账号处理
           <span>{problemTotal} 个问题账号</span>
@@ -345,6 +610,198 @@ export function TodoPage({ token, showToast }: Props) {
               </button>
             </div>
           </>
+        </section>
+      )}
+
+      {activePanel === "resurrection" && (
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <h3>账号复活</h3>
+              <p>显示已经完成“错误账号信息修正”并重新进入总库的账号，方便复查修正记录和后续继续处理。</p>
+            </div>
+            <div className="button-row">
+              <label className="inline-select">
+                <span>每页</span>
+                <select
+                  value={resurrectionLimit}
+                  onChange={(event) => {
+                    setResurrectionLimit(Number(event.target.value));
+                    setResurrectionSkip(0);
+                  }}
+                >
+                  <option value={50}>50</option>
+                  <option value={200}>200</option>
+                  <option value={500}>500</option>
+                </select>
+              </label>
+            </div>
+          </div>
+
+          <CompactStats
+            items={[
+              ["已复活账号", resurrectionTotal],
+              ["本页账号", resurrectionAccounts.length],
+            ]}
+          />
+
+          <div className="table-wrap account-table-wrap">
+            <table className="account-table">
+              <thead>
+                <tr>
+                  <th>账号</th>
+                  <th>类型</th>
+                  <th>来源</th>
+                  <th>支付</th>
+                  <th>当前状态</th>
+                  <th>修正记录</th>
+                  <th>时间</th>
+                  <th>备注</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {resurrectionAccounts.map((account) => (
+                  <tr key={account.id}>
+                    <td>
+                      <div className="cell-main">{remoteAccountEmail(account)}</div>
+                      <div className="cell-sub">{text(account.name) || `#${account.id}`}</div>
+                      <div className="cell-sub">{account.pool_name} · group #{account.active_group_id}</div>
+                    </td>
+                    <td>{text(account.plan_type) || text(account.credentials?.plan_type) || "plus"}</td>
+                    <td>{text(account.extra?.source_template) || <span className="muted">-</span>}</td>
+                    <td>{formatPayment(account.extra?.payment_type) || <span className="muted">未填写</span>}</td>
+                    <td>
+                      <StatusPill value={remoteAccountStatusLabel(account)} tone={remoteAccountStatusTone(account)} />
+                      <div className="cell-sub">7d {numberValue(account.codex_7d_used_percent)}%</div>
+                    </td>
+                    <td>
+                      <div>{account.schedulable === false ? "调度关闭" : "错误账号"}</div>
+                      <div className="cell-sub">priority {text(account.priority) || "-"}</div>
+                    </td>
+                    <td>
+                      <div className="cell-sub">site {account.site_id}</div>
+                      <div className="cell-sub">remote #{account.id}</div>
+                    </td>
+                    <td className="remark-cell">
+                      {text(account.error_message) || text(account.extra?.last_error) || text(account.extra?.temp_unschedulable_reason) || <span className="muted">-</span>}
+                    </td>
+                    <td>
+                      <div className="button-row action-wrap">
+                        <button className="ghost compact-button" disabled={resurrectionBusy !== null} onClick={() => startResurrection(account)} type="button">
+                          开始复活
+                        </button>
+                        <button className="ghost compact-button danger-button" disabled={resurrectionBusy !== null} onClick={() => markResurrectionFailed(account)} type="button">
+                          复活失败
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {!resurrectionAccounts.length && (
+                  <tr>
+                    <td className="muted" colSpan={9}>
+                      暂无复活账号
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="pagination">
+            <button className="ghost" type="button" disabled={resurrectionSkip <= 0} onClick={() => setResurrectionSkip(Math.max(0, resurrectionSkip - resurrectionLimit))}>
+              上一页
+            </button>
+            <span className="muted">
+              {resurrectionTotal ? resurrectionSkip + 1 : 0}-{Math.min(resurrectionSkip + resurrectionLimit, resurrectionTotal)} / {resurrectionTotal}
+            </span>
+            <button className="ghost" type="button" disabled={resurrectionSkip + resurrectionLimit >= resurrectionTotal} onClick={() => setResurrectionSkip(resurrectionSkip + resurrectionLimit)}>
+              下一页
+            </button>
+          </div>
+          {resurrectionWorkspace && (
+            <div className="task-detail-panel resurrection-workspace">
+              <section>
+                <h4>登录信息</h4>
+                <LoginInfoBlock
+                  items={[
+                    ["邮箱", remoteAccountEmail(resurrectionWorkspace.account)],
+                    ["邮箱/接码 session", text(resurrectionWorkspace.account.extra?.email_session)],
+                    ["2FA", text(resurrectionWorkspace.account.extra?.["2FA"])],
+                    ["手机接码地址", text(resurrectionWorkspace.account.extra?.phone_number) || text(resurrectionWorkspace.account.extra?.phone)],
+                  ]}
+                />
+                <div className="button-row action-wrap">
+                  <StatusPill value={twoFaInfo(resurrectionWorkspace.account).message || "2FA 信息可用"} tone={twoFaInfo(resurrectionWorkspace.account).status === "valid" ? "success" : "warning"} />
+                  <StatusPill value={phoneInfo(resurrectionWorkspace.account).message || "手机信息可用"} tone={phoneInfo(resurrectionWorkspace.account).status === "valid" ? "success" : "warning"} />
+                </div>
+                <div className="button-row action-wrap">
+                  <button className="ghost compact-button" type="button" onClick={fetchRecentMail}>
+                    前端取最近邮件
+                  </button>
+                  {phoneInfo(resurrectionWorkspace.account).status === "valid" && <span className="muted">手机验证码每 3 秒自动刷新</span>}
+                </div>
+              </section>
+              <section>
+                <h4>验证码</h4>
+                <div className="compact-stats">
+                  <div className="compact-stat">
+                    <span>2FA 动态码</span>
+                    <strong>{resurrectionWorkspace.totpCode || "-"}</strong>
+                    <small>{resurrectionWorkspace.totpError || (resurrectionWorkspace.totpSeconds !== undefined ? `${resurrectionWorkspace.totpSeconds}s` : "本地计算")}</small>
+                  </div>
+                  <div className="compact-stat">
+                    <span>手机验证码</span>
+                    <strong>{extractVerificationCode(resurrectionWorkspace.phoneMessage) || "-"}</strong>
+                    <small>{resurrectionWorkspace.phoneMessage || resurrectionWorkspace.phoneError || "等待短信"}</small>
+                  </div>
+                </div>
+                <div className="mail-preview-list">
+                  {resurrectionWorkspace.mailMessages.map((message, index) => (
+                    <div className="mail-preview" key={`${message.received_at || index}`}>
+                      <strong>{message.subject || "无主题"}</strong>
+                      <span>{message.from || "-"}</span>
+                      <p>{message.preview || "-"}</p>
+                      <small>{message.received_at || ""}</small>
+                    </div>
+                  ))}
+                  {resurrectionWorkspace.mailError && <div className="cell-sub danger">{resurrectionWorkspace.mailError}</div>}
+                </div>
+              </section>
+              <section>
+                <h4>重新授权</h4>
+                <div className="task-action-panel">
+                  <button className="ghost compact-button" disabled={resurrectionBusy !== null} type="button" onClick={generateAuthUrl}>
+                    获取授权链接
+                  </button>
+                  {resurrectionWorkspace.auth?.auth_url && (
+                    <button className="ghost compact-button" type="button" onClick={() => copyText(resurrectionWorkspace.auth?.auth_url || "", "授权链接已复制")}>
+                      复制授权链接
+                    </button>
+                  )}
+                  <textarea
+                    className="json-input"
+                    placeholder="粘贴 http://localhost:1455/auth/callback?... 回调 URL"
+                    value={resurrectionWorkspace.callbackUrl}
+                    onChange={(event) => setResurrectionWorkspace((current) => (current ? { ...current, callbackUrl: event.target.value } : current))}
+                    rows={3}
+                  />
+                  <button className="ghost compact-button" disabled={!resurrectionWorkspace.auth?.session_id || !resurrectionWorkspace.callbackUrl || resurrectionBusy !== null} type="button" onClick={exchangeCode}>
+                    交换 OAuth 凭证
+                  </button>
+                  <button className="ghost compact-button" disabled={!resurrectionWorkspace.exchange || resurrectionBusy !== null} type="button" onClick={applyOAuthCredentials}>
+                    应用凭证并复活
+                  </button>
+                  <button className="ghost compact-button danger-button" disabled={resurrectionBusy !== null} type="button" onClick={() => markResurrectionFailed(resurrectionWorkspace.account)}>
+                    复活失败
+                  </button>
+                </div>
+                {resurrectionWorkspace.auth?.auth_url && <div className="cell-sub truncate" title={resurrectionWorkspace.auth.auth_url}>{resurrectionWorkspace.auth.auth_url}</div>}
+                {resurrectionWorkspace.exchange && <pre className="json-preview">{JSON.stringify(redactOAuthPreview(resurrectionWorkspace.exchange), null, 2)}</pre>}
+              </section>
+            </div>
+          )}
         </section>
       )}
 
@@ -564,6 +1021,7 @@ export function TodoPage({ token, showToast }: Props) {
             setEditingAccount(null);
             await loadAccounts();
             await loadProblemAccounts();
+            await loadResurrectionAccounts();
           }}
         />
       )}
@@ -915,6 +1373,19 @@ function StatusPill({ value, tone = "muted" }: { value: string; tone?: "accent" 
   return <span className={`status-pill ${tone}`}>{value}</span>;
 }
 
+function LoginInfoBlock({ items }: { items: Array<[string, string | undefined]> }) {
+  return (
+    <div className="login-info">
+      {items.map(([label, value]) => (
+        <div key={label}>
+          <span>{label}</span>
+          <code>{value || "-"}</code>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function isUploadedByCurrentUser(account: AccountDocument, currentUserId: string) {
   if (!currentUserId) return false;
   return text(account.metadata.uploaded_by_user_id) === currentUserId;
@@ -943,6 +1414,151 @@ function accountLoginInfo(account: AccountDocument) {
     twoFA: text(account.metadata["2FA"]) || text(extra["2FA"]),
     password: text(extra.password),
   };
+}
+
+function isResurrectionCandidate(account: RemoteResurrectionAccount, query: string) {
+  const plan = (text(account.plan_type) || text(account.credentials?.plan_type) || text(account.extra?.account_type)).toLowerCase();
+  const used7d = numberValue(account.codex_7d_used_percent ?? account.extra?.codex_7d_used_percent);
+  const status = text(account.status).toLowerCase();
+  const hasError =
+    status !== "active" ||
+    account.schedulable === false ||
+    Boolean(text(account.error_message)) ||
+    Boolean(text(account.extra?.last_error)) ||
+    Boolean(text(account.extra?.temp_unschedulable_reason));
+  const haystack = [
+    remoteAccountEmail(account),
+    account.name,
+    account.pool_name,
+    account.error_message,
+    account.extra?.last_error,
+  ].map((value) => text(value).toLowerCase()).join(" ");
+  return plan === "plus" && used7d < 100 && hasError && (!query.trim() || haystack.includes(query.trim().toLowerCase()));
+}
+
+function remoteAccountEmail(account: RemoteResurrectionAccount) {
+  return text(account.credentials?.email) || text(account.extra?.email) || text(account.name) || `#${account.id}`;
+}
+
+function remoteAccountStatusLabel(account: RemoteResurrectionAccount) {
+  if (account.schedulable === false) return "调度关闭";
+  if (text(account.error_message)) return "错误";
+  return text(account.status) || "unknown";
+}
+
+function remoteAccountStatusTone(account: RemoteResurrectionAccount): "accent" | "success" | "warning" | "danger" | "muted" {
+  if (text(account.error_message)) return "danger";
+  if (account.schedulable === false) return "warning";
+  if (text(account.status).toLowerCase() === "active") return "success";
+  return "muted";
+}
+
+function phoneCodeUrl(account?: RemoteResurrectionAccount | null) {
+  return phoneInfo(account).url;
+}
+
+function phoneInfo(account?: RemoteResurrectionAccount | null): { status: "valid" | "missing" | "invalid"; url: string; message: string } {
+  const raw = text(account?.extra?.phone_number) || text(account?.extra?.phone);
+  if (!raw) return { status: "missing", url: "", message: "无手机信息，请及时补充" };
+  const match = raw.match(/https?:\/\/[^\s]+/i);
+  if (!match?.[0]) return { status: "invalid", url: "", message: "手机信息填写错误，请及时修改" };
+  try {
+    const url = new URL(match[0]);
+    if (!url.hostname.endsWith("cdc.smslease.link") || !url.searchParams.get("key")) {
+      return { status: "invalid", url: "", message: "手机接码地址格式错误，请及时修改" };
+    }
+    return { status: "valid", url: url.toString(), message: "" };
+  } catch {
+    return { status: "invalid", url: "", message: "手机接码地址无法请求，请及时修改" };
+  }
+}
+
+function twoFaInfo(account?: RemoteResurrectionAccount | null): { status: "valid" | "missing" | "invalid"; value: string; message: string } {
+  const raw = text(account?.extra?.["2FA"]).replace(/\s+/g, "");
+  if (!raw) return { status: "missing", value: "", message: "无2FA信息，请及时补充" };
+  if (!isValidBase32Secret(raw)) return { status: "invalid", value: raw, message: "2FA信息填写错误，请及时修改" };
+  return { status: "valid", value: raw, message: "" };
+}
+
+function extractVerificationCode(value?: string) {
+  return text(value).match(/\b\d{6}\b/)?.[0] || "";
+}
+
+function numberValue(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const parsed = Number(text(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function extractLikelyGraphToken(session: string) {
+  return session.split(/----|\s+/).find((part) => part.length > 80 && (part.startsWith("eyJ") || part.startsWith("Ew") || part.startsWith("M."))) || "";
+}
+
+function oauthCredentialsFromExchange(exchange: Record<string, unknown>) {
+  const data = asRecord(exchange.data);
+  const source = Object.keys(data).length ? data : exchange;
+  return {
+    access_token: text(source.access_token),
+    refresh_token: text(source.refresh_token),
+    id_token: text(source.id_token),
+    expires_at: numberValue(source.expires_at),
+    chatgpt_account_id: text(source.chatgpt_account_id),
+    chatgpt_user_id: text(source.chatgpt_user_id),
+    organization_id: text(source.organization_id),
+    plan_type: text(source.plan_type) || "plus",
+    email: text(source.email),
+    client_id: text(source.client_id),
+  };
+}
+
+function redactOAuthPreview(exchange: Record<string, unknown>) {
+  const credentials = oauthCredentialsFromExchange(exchange);
+  return {
+    ...credentials,
+    access_token: credentials.access_token ? `${credentials.access_token.slice(0, 24)}...` : "",
+    refresh_token: credentials.refresh_token ? `${credentials.refresh_token.slice(0, 16)}...` : "",
+    id_token: credentials.id_token ? `${credentials.id_token.slice(0, 24)}...` : "",
+  };
+}
+
+async function generateTotp(secret: string) {
+  if (!isValidBase32Secret(secret)) throw new Error("2FA信息填写错误，请及时修改");
+  const key = base32Decode(secret.replace(/\s+/g, ""));
+  const epoch = Math.floor(Date.now() / 1000);
+  const counter = Math.floor(epoch / 30);
+  const buffer = new ArrayBuffer(8);
+  const view = new DataView(buffer);
+  view.setUint32(4, counter, false);
+  const cryptoKey = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const signature = new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, buffer));
+  const offset = signature[signature.length - 1] & 0x0f;
+  const binary =
+    ((signature[offset] & 0x7f) << 24) |
+    ((signature[offset + 1] & 0xff) << 16) |
+    ((signature[offset + 2] & 0xff) << 8) |
+    (signature[offset + 3] & 0xff);
+  return { code: String(binary % 1_000_000).padStart(6, "0"), seconds: 30 - (epoch % 30) };
+}
+
+function base32Decode(value: string) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = "";
+  value.toUpperCase().replace(/=+$/g, "").split("").forEach((char) => {
+    const index = alphabet.indexOf(char);
+    if (index >= 0) bits += index.toString(2).padStart(5, "0");
+  });
+  const bytes: number[] = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) {
+    bytes.push(parseInt(bits.slice(i, i + 8), 2));
+  }
+  return new Uint8Array(bytes);
+}
+
+function isValidBase32Secret(value: string) {
+  const normalized = value.replace(/\s+/g, "").replace(/=+$/g, "").toUpperCase();
+  if (normalized.length < 16) return false;
+  if (!/^[A-Z2-7]+$/.test(normalized)) return false;
+  return base32Decode(normalized).length >= 10;
 }
 
 function upgradeStatus(account: AccountDocument) {
@@ -976,6 +1592,14 @@ function poolStatusLabel(value: string) {
     discarded: "弃用",
   };
   return labels[value] || value;
+}
+
+function poolStatusTone(value: string): "accent" | "success" | "warning" | "danger" | "muted" {
+  if (value === "available" || value === "active") return "success";
+  if (value === "reserve") return "accent";
+  if (value === "problem") return "warning";
+  if (value === "discarded") return "danger";
+  return "muted";
 }
 
 function lockInfo(account: AccountDocument) {
