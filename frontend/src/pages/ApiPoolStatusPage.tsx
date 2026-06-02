@@ -234,24 +234,7 @@ type ConfirmState = {
   tone?: "default" | "danger";
 };
 
-type SiteForm = {
-  id: string;
-  name: string;
-  base_url: string;
-  token: string;
-  status: string;
-  refresh_interval_minutes: number;
-};
-
 const DEFAULT_ACCOUNT_PAGE_SIZE = 50;
-const emptySiteForm: SiteForm = {
-  id: "",
-  name: "",
-  base_url: "",
-  token: "",
-  status: "active",
-  refresh_interval_minutes: 30,
-};
 
 type CacheMeta = {
   status?: string;
@@ -274,8 +257,6 @@ type ApiPoolPageCache = {
   accountPageSize: number;
   statusFilter: string;
   lastLoadedAt: string | null;
-  refreshIntervalMinutes: number;
-  autoRemoveAbnormalAccounts: boolean;
   cachedAt: number;
   accountPages: Record<string, CachedAccounts>;
 };
@@ -307,12 +288,6 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   const [loadingGroups, setLoadingGroups] = useState(false);
   const [loadingAccountsKey, setLoadingAccountsKey] = useState<string | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(() => initialCache?.lastLoadedAt || null);
-  const [refreshIntervalMinutes, setRefreshIntervalMinutes] = useState(() => initialCache?.refreshIntervalMinutes || 30);
-  const [autoRemoveAbnormalAccounts, setAutoRemoveAbnormalAccounts] = useState(() => initialCache?.autoRemoveAbnormalAccounts || false);
-  const [savingSite, setSavingSite] = useState(false);
-  const [savingAutoRemove, setSavingAutoRemove] = useState(false);
-  const [editingSiteId, setEditingSiteId] = useState<string | null>(() => initialCache?.selectedSiteId || null);
-  const [siteForm, setSiteForm] = useState<SiteForm>(emptySiteForm);
   const [refreshingRemote, setRefreshingRemote] = useState(false);
   const [refreshingFrontend, setRefreshingFrontend] = useState(false);
   const [remoteRefreshFeedback, setRemoteRefreshFeedback] = useState<InlineFeedback | null>(null);
@@ -320,6 +295,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 
   const selectedSite = sites.find((site) => site.id === selectedSiteId) || null;
+  const refreshIntervalMinutes = selectedSite?.refresh_interval_minutes || 30;
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) || null;
   const currentAccountKey = useMemo(
     () => (selectedSiteId && selectedGroupId !== null ? accountCacheKey(selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter) : ""),
@@ -339,7 +315,6 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   const allPageSelected = visibleAccounts.length > 0 && selectedVisibleAccounts.length === visibleAccounts.length;
   const somePageSelected = selectedVisibleAccounts.length > 0 && !allPageSelected;
   const totalPages = Math.max(1, Math.ceil(visibleAccountsTotal / accountPageSize));
-  const autoRemoveOverridesRef = useRef<Record<string, boolean>>({});
 
   useEffect(() => {
     currentAccountKeyRef.current = currentAccountKey;
@@ -352,7 +327,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
 
   const loadSites = async () => {
     const data = await api<SitesResponse>("/sub2api-sites", token);
-    setSites(mergeSitesWithAutoRemoveOverrides(data.items, autoRemoveOverridesRef.current));
+    setSites(data.items);
     if (!selectedSiteId && data.items[0]) {
       setSelectedSiteId(data.items[0].id);
     }
@@ -596,10 +571,6 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     if (!selectedSiteId) return;
     const site = sites.find((item) => item.id === selectedSiteId);
     if (!site) return;
-    setEditingSiteId(site.id);
-    setSiteForm(siteToForm(site));
-    setRefreshIntervalMinutes(site?.refresh_interval_minutes || 30);
-    setAutoRemoveAbnormalAccounts(autoRemoveOverridesRef.current[selectedSiteId] ?? site?.auto_remove_abnormal_accounts === true);
     if (getApiPoolPageCache()?.selectedSiteId === selectedSiteId && groups.length) return;
     setGroups([]);
     setAccounts([]);
@@ -638,12 +609,10 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
       accountPageSize,
       statusFilter,
       lastLoadedAt,
-      refreshIntervalMinutes,
-      autoRemoveAbnormalAccounts,
       cachedAt: Date.now(),
       accountPages: apiPoolPageCache?.accountPages || {},
     };
-  }, [sites, selectedSiteId, groups, selectedGroupId, accounts, accountsTotal, accountsDataKey, accountPage, accountPageSize, statusFilter, lastLoadedAt, refreshIntervalMinutes, autoRemoveAbnormalAccounts]);
+  }, [sites, selectedSiteId, groups, selectedGroupId, accounts, accountsTotal, accountsDataKey, accountPage, accountPageSize, statusFilter, lastLoadedAt]);
 
   useEffect(() => {
     const handleCacheUpdated = () => {
@@ -743,153 +712,6 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     }
   };
 
-  const saveSiteConfig = async () => {
-    if (!selectedSiteId) return;
-    setSavingSite(true);
-    try {
-      const updated = await api<Site>(`/sub2api-sites/${selectedSiteId}`, token, {
-        method: "PATCH",
-        body: JSON.stringify({
-          refresh_interval_minutes: refreshIntervalMinutes,
-        }),
-      });
-      setSites((current) => current.map((site) => (site.id === updated.id ? { ...site, ...updated } : site)));
-      showToast("站点刷新间隔已保存");
-    } catch (error) {
-      showToast(errorMessage(error), true);
-    } finally {
-      setSavingSite(false);
-    }
-  };
-
-  const startCreateSite = () => {
-    setEditingSiteId(null);
-    setSiteForm(emptySiteForm);
-  };
-
-  const saveSiteForm = async () => {
-    const payload = {
-      id: siteForm.id.trim(),
-      name: siteForm.name.trim(),
-      base_url: siteForm.base_url.trim(),
-      status: siteForm.status,
-      refresh_interval_minutes: siteForm.refresh_interval_minutes,
-      ...(siteForm.token.trim() ? { token: siteForm.token.trim() } : {}),
-    };
-    if (!payload.id || !payload.base_url) {
-      showToast("站点 ID 和 Base URL 必填", true);
-      return;
-    }
-    setSavingSite(true);
-    try {
-      const saved = editingSiteId
-        ? await api<Site>(`/sub2api-sites/${editingSiteId}`, token, {
-            method: "PATCH",
-            body: JSON.stringify(payload),
-          })
-        : await api<Site>("/sub2api-sites", token, {
-            method: "POST",
-            body: JSON.stringify(payload),
-          });
-      const data = await api<SitesResponse>("/sub2api-sites", token);
-      setSites(mergeSitesWithAutoRemoveOverrides(data.items, autoRemoveOverridesRef.current));
-      setSelectedSiteId(saved.id);
-      setEditingSiteId(saved.id);
-      setSiteForm(siteToForm(saved));
-      setRefreshIntervalMinutes(saved.refresh_interval_minutes || 30);
-      setAutoRemoveAbnormalAccounts(saved.auto_remove_abnormal_accounts === true);
-      showToast("站点配置已保存");
-    } catch (error) {
-      showToast(errorMessage(error), true);
-    } finally {
-      setSavingSite(false);
-    }
-  };
-
-  const deleteCurrentSite = () => {
-    if (!editingSiteId) return;
-    setConfirmState({
-      title: "确认删除站点",
-      message: "删除后该站点不会再出现在切换列表中，历史缓存和本地账号记录不会被删除。",
-      details: [
-        ["站点", siteForm.name || editingSiteId],
-        ["Base URL", siteForm.base_url],
-      ],
-      confirmText: "删除站点",
-      tone: "danger",
-      onConfirm: async () => {
-        setSavingSite(true);
-        try {
-          await api<null>(`/sub2api-sites/${editingSiteId}`, token, { method: "DELETE" });
-          const data = await api<SitesResponse>("/sub2api-sites", token);
-          setSites(data.items);
-          const nextSiteId = data.items[0]?.id || "";
-          setSelectedSiteId(nextSiteId);
-          setEditingSiteId(nextSiteId || null);
-          setSiteForm(data.items[0] ? siteToForm(data.items[0]) : emptySiteForm);
-          showToast("站点已删除");
-        } catch (error) {
-          showToast(errorMessage(error), true);
-        } finally {
-          setSavingSite(false);
-        }
-      },
-    });
-  };
-
-  const toggleAutoRemoveAbnormal = async (nextValue: boolean) => {
-    if (!selectedSiteId) return;
-    const siteId = selectedSiteId;
-    const previousValue = autoRemoveAbnormalAccounts;
-    autoRemoveOverridesRef.current[siteId] = nextValue;
-    setAutoRemoveAbnormalAccounts(nextValue);
-    setSavingAutoRemove(true);
-    try {
-      const updated = await api<Site>(`/sub2api-sites/${siteId}`, token, {
-        method: "PATCH",
-        body: JSON.stringify({ auto_remove_abnormal_accounts: nextValue }),
-      });
-      if (updated.auto_remove_abnormal_accounts !== nextValue) {
-        const verified = await api<SitesResponse>("/sub2api-sites", token);
-        const verifiedSite = verified.items.find((site) => site.id === siteId);
-        if (verifiedSite?.auto_remove_abnormal_accounts !== nextValue) {
-          throw new Error("自动移除异常账号保存未生效，请重启后端后再试");
-        }
-        setSites(mergeSitesWithAutoRemoveOverrides(verified.items, autoRemoveOverridesRef.current));
-      } else {
-        setSites((current) => current.map((site) => (site.id === siteId ? { ...site, ...updated } : site)));
-      }
-      setAutoRemoveAbnormalAccounts(nextValue);
-      if (nextValue && updated.auto_remove_refresh) {
-        clearAccountCacheForSite(siteId);
-        const nextGroups = await loadGroups(siteId);
-        const nextGroupId =
-          selectedGroupId !== null && nextGroups.some((group) => group.id === selectedGroupId)
-            ? selectedGroupId
-            : nextGroups[0]?.id ?? null;
-        if (nextGroupId !== null) {
-          setSelectedGroupId(nextGroupId);
-          await loadAccounts(siteId, nextGroupId, accountPage);
-        }
-        if (updated.auto_remove_refresh.ok === false) {
-          showToast(`自动移除异常账号已开启，但扫描失败：${updated.auto_remove_refresh.message || "请查看后端日志"}`, true);
-        } else {
-          showToast(`自动移除异常账号已开启，已扫描并移除 ${numberValue(updated.auto_remove_refresh.auto_removed_abnormal_accounts)} 个异常账号`);
-        }
-      } else {
-        showToast(nextValue ? "自动移除异常账号已开启" : "自动移除异常账号已关闭");
-      }
-    } catch (error) {
-      if (autoRemoveOverridesRef.current[siteId] === nextValue) {
-        delete autoRemoveOverridesRef.current[siteId];
-      }
-      setAutoRemoveAbnormalAccounts(previousValue);
-      showToast(errorMessage(error), true);
-    } finally {
-      setSavingAutoRemove(false);
-    }
-  };
-
   return (
     <section className="view pool-status-page">
       <section className="panel pool-compact-toolbar">
@@ -914,41 +736,6 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
           <span>{selectedSite?.token_configured ? "密钥已配置" : "密钥未配置"}</span>
           <span>最后刷新：{lastLoadedAt ? formatDateTime(lastLoadedAt) : "-"}</span>
         </div>
-        <div className="refresh-config">
-          <label>
-            <span className="field-label">
-              <strong>自动刷新</strong>
-            </span>
-            <input
-              min={30}
-              max={1440}
-              type="number"
-              value={refreshIntervalMinutes}
-              onChange={(event) => setRefreshIntervalMinutes(Number(event.target.value))}
-            />
-          </label>
-          <span>分钟</span>
-          <button className="ghost compact-button" type="button" onClick={saveSiteConfig} disabled={savingSite || !selectedSiteId}>
-            保存
-          </button>
-        </div>
-        <label className="switch-field">
-          <input
-            type="checkbox"
-            checked={autoRemoveAbnormalAccounts}
-            disabled={savingAutoRemove || !selectedSiteId}
-            onChange={(event) => {
-              void toggleAutoRemoveAbnormal(event.target.checked);
-            }}
-          />
-          <span className="switch-track" aria-hidden="true">
-            <span className="switch-thumb" />
-          </span>
-          <span className="switch-copy">
-            <strong>自动移除异常账号</strong>
-            <em>{savingAutoRemove ? "保存中" : autoRemoveAbnormalAccounts ? "已开启" : "已关闭"}</em>
-          </span>
-        </label>
         <div className="pool-toolbar-actions">
           <button className="ghost compact-button" type="button" onClick={testConnection} disabled={!selectedSiteId}>
             测试连接
@@ -956,95 +743,19 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
           <button className="compact-button" type="button" onClick={refreshAll} disabled={!selectedSiteId || refreshingRemote}>
             {refreshingRemote ? "同步中..." : "同步账号池数据"}
           </button>
+          <button
+            className="ghost compact-button frontend-refresh-button"
+            type="button"
+            onClick={refreshFrontendData}
+            disabled={!selectedSiteId || refreshingFrontend}
+          >
+            {refreshingFrontend ? "前端刷新中..." : "前端数据刷新"}
+          </button>
           {remoteRefreshFeedback && (
             <span className={`refresh-feedback ${remoteRefreshFeedback.isError ? "danger" : ""}`}>
               {remoteRefreshFeedback.message}
             </span>
           )}
-        </div>
-      </section>
-
-      <section className="panel site-config-panel">
-        <div className="panel-header">
-          <div>
-            <h3>站点配置</h3>
-          </div>
-          <div className="button-row">
-            <button className="compact-button" type="button" onClick={saveSiteForm} disabled={savingSite}>
-              {savingSite ? "保存中..." : editingSiteId ? "保存站点" : "创建站点"}
-            </button>
-            <button className="ghost compact-button" type="button" onClick={startCreateSite}>
-              新增站点
-            </button>
-            <button className="ghost compact-button danger-button" type="button" onClick={deleteCurrentSite} disabled={!editingSiteId || savingSite}>
-              删除站点
-            </button>
-          </div>
-        </div>
-        <div className="site-config-grid">
-          <label>
-            <span className="field-label">
-              <strong>站点 ID</strong>
-            </span>
-            <input
-              value={siteForm.id}
-              disabled={Boolean(editingSiteId)}
-              onChange={(event) => setSiteForm((current) => ({ ...current, id: event.target.value }))}
-              placeholder="api-5001"
-            />
-          </label>
-          <label>
-            <span className="field-label">
-              <strong>显示名称</strong>
-            </span>
-            <input
-              value={siteForm.name}
-              onChange={(event) => setSiteForm((current) => ({ ...current, name: event.target.value }))}
-              placeholder="sub2api 5001"
-            />
-          </label>
-          <label className="span-2">
-            <span className="field-label">
-              <strong>Base URL</strong>
-            </span>
-            <input
-              value={siteForm.base_url}
-              onChange={(event) => setSiteForm((current) => ({ ...current, base_url: event.target.value }))}
-              placeholder="http://216.167.70.204:5001"
-            />
-          </label>
-          <label>
-            <span className="field-label">
-              <strong>API Key</strong>
-            </span>
-            <input
-              value={siteForm.token}
-              onChange={(event) => setSiteForm((current) => ({ ...current, token: event.target.value }))}
-              placeholder={editingSiteId ? "留空不修改" : "x-api-key"}
-              type="password"
-            />
-          </label>
-          <label>
-            <span className="field-label">
-              <strong>状态</strong>
-            </span>
-            <select value={siteForm.status} onChange={(event) => setSiteForm((current) => ({ ...current, status: event.target.value }))}>
-              <option value="active">active</option>
-              <option value="disabled">disabled</option>
-            </select>
-          </label>
-          <label>
-            <span className="field-label">
-              <strong>刷新间隔</strong>
-            </span>
-            <input
-              min={1}
-              max={1440}
-              type="number"
-              value={siteForm.refresh_interval_minutes}
-              onChange={(event) => setSiteForm((current) => ({ ...current, refresh_interval_minutes: Number(event.target.value) }))}
-            />
-          </label>
         </div>
       </section>
 
@@ -1086,14 +797,6 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
               <div className="account-pool-title-row">
                 <h3>{selectedGroup?.name || "账号"}</h3>
                 {selectedGroup && <span className="account-pool-id-chip">ID = {selectedGroup.id}</span>}
-                <button
-                  className="ghost compact-button frontend-refresh-button"
-                  type="button"
-                  onClick={refreshFrontendData}
-                  disabled={!selectedSiteId || refreshingFrontend}
-                >
-                  {refreshingFrontend ? "前端刷新中..." : "前端数据刷新"}
-                </button>
               </div>
               {!selectedGroup && <p>请选择一个 group</p>}
             </div>
@@ -1977,29 +1680,6 @@ function getApiPoolPageCache(): ApiPoolPageCache | null {
   return apiPoolPageCache.cacheVersion === getSub2apiCacheVersion() ? apiPoolPageCache : null;
 }
 
-function siteToForm(site: Site): SiteForm {
-  return {
-    id: site.id,
-    name: site.name || site.id,
-    base_url: site.base_url || "",
-    token: "",
-    status: site.status || "active",
-    refresh_interval_minutes: site.refresh_interval_minutes || 30,
-  };
-}
-
-function mergeSitesWithAutoRemoveOverrides(sites: Site[], overrides: Record<string, boolean>): Site[] {
-  return sites.map((site) => {
-    const override = overrides[site.id];
-    if (override === undefined) return site;
-    if (site.auto_remove_abnormal_accounts === override) {
-      delete overrides[site.id];
-      return site;
-    }
-    return { ...site, auto_remove_abnormal_accounts: override };
-  });
-}
-
 function getCachedAccounts(siteId: string, groupId: number, page: number, pageSize: number, statusFilter: string): CachedAccounts | null {
   return getApiPoolPageCache()?.accountPages?.[accountCacheKey(siteId, groupId, page, pageSize, statusFilter)] || null;
 }
@@ -2024,8 +1704,6 @@ function cacheAccounts(siteId: string, groupId: number, page: number, pageSize: 
       accountPageSize: pageSize,
       statusFilter,
       lastLoadedAt: value.lastLoadedAt,
-      refreshIntervalMinutes: 30,
-      autoRemoveAbnormalAccounts: false,
       cachedAt: Date.now(),
     }),
     cacheVersion: getSub2apiCacheVersion(),

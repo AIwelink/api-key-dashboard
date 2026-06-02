@@ -32,7 +32,7 @@ const poolNavItems: Array<[ViewName, string]> = [
   ["available-pool", "可用池"],
   ["reserve-pool", "使用备选池"],
   ["api-pools", "API 账号池状态"],
-  ["pool-lifecycle", "账号池逻辑管理"],
+  ["pool-lifecycle", "账号池管理"],
 ];
 
 const adminNavItems: Array<[ViewName, string]> = [

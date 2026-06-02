@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import type { ApiPool } from "../types";
 import { errorMessage, formatDateTime, text } from "../utils/format";
 
@@ -15,6 +16,7 @@ type Site = {
   status: string;
   token_configured: boolean;
   refresh_interval_minutes?: number;
+  auto_remove_abnormal_accounts?: boolean;
 };
 
 type Group = {
@@ -57,6 +59,35 @@ type RefreshResponse = {
   message?: string;
 };
 
+type SiteForm = {
+  id: string;
+  name: string;
+  base_url: string;
+  token: string;
+  status: string;
+  refresh_interval_minutes: number;
+  auto_remove_abnormal_accounts: boolean;
+};
+
+type ConfirmState = {
+  confirmText?: string;
+  details?: Array<[string, string | number | null | undefined]>;
+  message?: string;
+  onConfirm: () => void;
+  title: string;
+  tone?: "default" | "danger";
+};
+
+const emptySiteForm: SiteForm = {
+  id: "",
+  name: "",
+  base_url: "",
+  token: "",
+  status: "active",
+  refresh_interval_minutes: 30,
+  auto_remove_abnormal_accounts: false,
+};
+
 export function AccountPoolsPage({ token, showToast }: Props) {
   const [sites, setSites] = useState<Site[]>([]);
   const [selectedSiteId, setSelectedSiteId] = useState("");
@@ -68,6 +99,10 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingReserveSummary, setLoadingReserveSummary] = useState(false);
+  const [editingSiteId, setEditingSiteId] = useState<string | null>(null);
+  const [siteForm, setSiteForm] = useState<SiteForm>(emptySiteForm);
+  const [savingSite, setSavingSite] = useState(false);
+  const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 
   const selectedSite = sites.find((site) => site.id === selectedSiteId) || null;
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) || null;
@@ -79,6 +114,81 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     if (!selectedSiteId && data.items[0]) {
       setSelectedSiteId(data.items[0].id);
     }
+  };
+
+  const startCreateSite = () => {
+    setEditingSiteId(null);
+    setSiteForm(emptySiteForm);
+  };
+
+  const saveSiteForm = async () => {
+    const payload = {
+      id: siteForm.id.trim(),
+      name: siteForm.name.trim(),
+      base_url: siteForm.base_url.trim(),
+      status: siteForm.status,
+      refresh_interval_minutes: siteForm.refresh_interval_minutes,
+      auto_remove_abnormal_accounts: siteForm.auto_remove_abnormal_accounts,
+      ...(siteForm.token.trim() ? { token: siteForm.token.trim() } : {}),
+    };
+    if (!payload.id || !payload.base_url) {
+      showToast("站点 ID 和 Base URL 必填", true);
+      return;
+    }
+    setSavingSite(true);
+    try {
+      const saved = editingSiteId
+        ? await api<Site>(`/sub2api-sites/${editingSiteId}`, token, {
+            method: "PATCH",
+            body: JSON.stringify(payload),
+          })
+        : await api<Site>("/sub2api-sites", token, {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+      const data = await api<SitesResponse>("/sub2api-sites", token);
+      setSites(data.items);
+      setSelectedSiteId(saved.id);
+      setEditingSiteId(saved.id);
+      setSiteForm(siteToForm(saved));
+      showToast("站点配置已保存");
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setSavingSite(false);
+    }
+  };
+
+  const deleteCurrentSite = () => {
+    if (!editingSiteId) return;
+    setConfirmState({
+      title: "确认删除站点",
+      message: "删除后该站点不会再出现在切换列表中，历史缓存和本地账号记录不会被删除。",
+      details: [
+        ["站点", siteForm.name || editingSiteId],
+        ["Base URL", siteForm.base_url],
+      ],
+      confirmText: "删除站点",
+      tone: "danger",
+      onConfirm: async () => {
+        setSavingSite(true);
+        try {
+          await api<null>(`/sub2api-sites/${editingSiteId}`, token, { method: "DELETE" });
+          const data = await api<SitesResponse>("/sub2api-sites", token);
+          setSites(data.items);
+          const nextSite = data.items[0] || null;
+          setSelectedSiteId(nextSite?.id || "");
+          setEditingSiteId(nextSite?.id || null);
+          setSiteForm(nextSite ? siteToForm(nextSite) : emptySiteForm);
+          showToast("站点已删除");
+        } catch (error) {
+          showToast(errorMessage(error), true);
+        } finally {
+          setSavingSite(false);
+          setConfirmState(null);
+        }
+      },
+    });
   };
 
   const loadGroups = async (siteId = selectedSiteId) => {
@@ -173,10 +283,15 @@ export function AccountPoolsPage({ token, showToast }: Props) {
 
   useEffect(() => {
     if (!selectedSiteId) return;
+    const site = sites.find((item) => item.id === selectedSiteId);
+    if (site) {
+      setEditingSiteId(site.id);
+      setSiteForm(siteToForm(site));
+    }
     setGroups([]);
     setSelectedGroupId(null);
     loadGroups(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
-  }, [selectedSiteId]);
+  }, [selectedSiteId, sites]);
 
   useEffect(() => {
     loadReserveSummary().catch((error) => showToast(errorMessage(error), true));
@@ -186,8 +301,8 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     <section className="view accounts-page">
       <div className="topbar">
         <div>
-          <h2>账号池逻辑管理</h2>
-          <p>当前页面读取统一的 sub2api 账号池缓存；分组和账号状态只同步一份，前端按页面需要展示。</p>
+          <h2>账号池管理</h2>
+          <p>管理 sub2api 站点配置、目标分组、本地备选池和后续账号池策略。</p>
         </div>
         <div className="button-row">
           <button className="ghost" type="button" onClick={() => loadGroups().catch((error) => showToast(errorMessage(error), true))}>
@@ -198,6 +313,101 @@ export function AccountPoolsPage({ token, showToast }: Props) {
           </button>
         </div>
       </div>
+
+      <section className="panel site-config-panel">
+        <div className="panel-header">
+          <div>
+            <h3>站点配置</h3>
+            <p>配置 sub2api 站点、API Key、刷新间隔和异常账号自动处理。</p>
+          </div>
+          <div className="button-row">
+            <button className="compact-button" type="button" onClick={saveSiteForm} disabled={savingSite}>
+              {savingSite ? "保存中..." : editingSiteId ? "保存站点" : "创建站点"}
+            </button>
+            <button className="ghost compact-button" type="button" onClick={startCreateSite}>
+              新增站点
+            </button>
+            <button className="ghost compact-button danger-button" type="button" onClick={deleteCurrentSite} disabled={!editingSiteId || savingSite}>
+              删除站点
+            </button>
+          </div>
+        </div>
+        <div className="site-config-grid">
+          <label>
+            <span className="field-label">
+              <strong>站点 ID</strong>
+            </span>
+            <input
+              value={siteForm.id}
+              disabled={Boolean(editingSiteId)}
+              onChange={(event) => setSiteForm((current) => ({ ...current, id: event.target.value }))}
+              placeholder="api-5001"
+            />
+          </label>
+          <label>
+            <span className="field-label">
+              <strong>显示名称</strong>
+            </span>
+            <input value={siteForm.name} onChange={(event) => setSiteForm((current) => ({ ...current, name: event.target.value }))} placeholder="sub2api 5001" />
+          </label>
+          <label className="span-2">
+            <span className="field-label">
+              <strong>Base URL</strong>
+            </span>
+            <input
+              value={siteForm.base_url}
+              onChange={(event) => setSiteForm((current) => ({ ...current, base_url: event.target.value }))}
+              placeholder="http://216.167.70.204:5001"
+            />
+          </label>
+          <label>
+            <span className="field-label">
+              <strong>API Key</strong>
+            </span>
+            <input
+              value={siteForm.token}
+              onChange={(event) => setSiteForm((current) => ({ ...current, token: event.target.value }))}
+              placeholder={editingSiteId ? "留空不修改" : "x-api-key"}
+              type="password"
+            />
+          </label>
+          <label>
+            <span className="field-label">
+              <strong>状态</strong>
+            </span>
+            <select value={siteForm.status} onChange={(event) => setSiteForm((current) => ({ ...current, status: event.target.value }))}>
+              <option value="active">active</option>
+              <option value="disabled">disabled</option>
+            </select>
+          </label>
+          <label>
+            <span className="field-label">
+              <strong>刷新间隔</strong>
+            </span>
+            <input
+              min={1}
+              max={1440}
+              type="number"
+              value={siteForm.refresh_interval_minutes}
+              onChange={(event) => setSiteForm((current) => ({ ...current, refresh_interval_minutes: Number(event.target.value) }))}
+            />
+          </label>
+          <label className="switch-field site-config-switch">
+            <input
+              type="checkbox"
+              checked={siteForm.auto_remove_abnormal_accounts}
+              onChange={(event) => setSiteForm((current) => ({ ...current, auto_remove_abnormal_accounts: event.target.checked }))}
+            />
+            <span className="switch-track" aria-hidden="true">
+              <span className="switch-thumb" />
+            </span>
+            <span className="switch-copy">
+              <strong>自动移除异常账号</strong>
+              <em>{siteForm.auto_remove_abnormal_accounts ? "已开启" : "已关闭"}</em>
+            </span>
+          </label>
+        </div>
+      </section>
 
       <section className="compact-stats">
         <div className="compact-stat">
@@ -361,6 +571,20 @@ export function AccountPoolsPage({ token, showToast }: Props) {
           {!localPools.length && <div className="empty-state">暂无本地池配置</div>}
         </div>
       </section>
+      <ConfirmDialog
+        confirmText={confirmState?.confirmText}
+        details={confirmState?.details}
+        message={confirmState?.message}
+        onCancel={() => setConfirmState(null)}
+        onConfirm={() => {
+          const action = confirmState?.onConfirm;
+          setConfirmState(null);
+          action?.();
+        }}
+        open={Boolean(confirmState)}
+        title={confirmState?.title || ""}
+        tone={confirmState?.tone}
+      />
     </section>
   );
 }
@@ -387,4 +611,16 @@ function displayValue(value: unknown) {
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function siteToForm(site: Site): SiteForm {
+  return {
+    id: site.id,
+    name: site.name || site.id,
+    base_url: site.base_url || "",
+    token: "",
+    status: site.status || "active",
+    refresh_interval_minutes: site.refresh_interval_minutes || 30,
+    auto_remove_abnormal_accounts: site.auto_remove_abnormal_accounts === true,
+  };
 }
