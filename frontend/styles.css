@@ -115,21 +115,35 @@ p {
   display: grid;
   grid-template-columns: 196px 1fr;
   min-height: 100vh;
+  transition: grid-template-columns 180ms ease;
+}
+
+.app-shell.sidebar-collapsed {
+  grid-template-columns: 72px 1fr;
 }
 
 .sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
   border-right: 1px solid var(--line);
   background: #fff;
   display: flex;
   flex-direction: column;
-  padding: 16px 14px;
+  padding: 14px;
   gap: 18px;
+  overflow: hidden auto;
 }
 
 .brand {
   display: flex;
   align-items: center;
   gap: 9px;
+  min-height: 40px;
+}
+
+.brand-copy {
+  min-width: 0;
 }
 
 .brand-logo {
@@ -141,6 +155,22 @@ p {
 
 .brand h1 {
   font-size: 15px;
+}
+
+.sidebar-toggle {
+  min-height: 30px;
+  width: 100%;
+  border: 1px solid var(--line);
+  background: #fafbfc;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  padding: 0;
+}
+
+.sidebar-toggle:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
 }
 
 .brand p,
@@ -166,6 +196,9 @@ p {
 }
 
 .nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   background: transparent;
   color: var(--text);
   font-size: 13px;
@@ -174,6 +207,17 @@ p {
   padding: 0 10px;
   text-align: left;
   border: 1px solid transparent;
+}
+
+.nav-short {
+  display: none;
+}
+
+.nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nav-item.active,
@@ -191,6 +235,68 @@ p {
   gap: 8px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.session-user {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.session-logout-short {
+  display: none;
+}
+
+.sidebar-collapsed .sidebar {
+  padding-inline: 10px;
+  align-items: stretch;
+}
+
+.sidebar-collapsed .brand {
+  justify-content: center;
+}
+
+.sidebar-collapsed .brand-copy,
+.sidebar-collapsed .nav-label,
+.sidebar-collapsed .session-user,
+.sidebar-collapsed .session-logout-full {
+  display: none;
+}
+
+.sidebar-collapsed .nav {
+  gap: 12px;
+}
+
+.sidebar-collapsed .nav-group {
+  gap: 7px;
+}
+
+.sidebar-collapsed .nav-item {
+  justify-content: center;
+  min-height: 38px;
+  padding: 0;
+}
+
+.sidebar-collapsed .nav-short {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  font-weight: 850;
+}
+
+.sidebar-collapsed .session-box {
+  justify-items: center;
+}
+
+.sidebar-collapsed .session-box button {
+  width: 42px;
+  padding: 0;
+}
+
+.sidebar-collapsed .session-logout-short {
+  display: inline;
 }
 
 .main {
@@ -493,7 +599,8 @@ legend {
 
 .pool-status-page {
   display: grid;
-  gap: 16px;
+  gap: 14px;
+  max-width: 100%;
 }
 
 .site-config-panel {
@@ -502,16 +609,16 @@ legend {
 
 .site-config-grid {
   display: grid;
-  grid-template-columns: minmax(120px, 0.8fr) minmax(150px, 1fr) minmax(220px, 1.6fr) minmax(180px, 1.2fr) minmax(110px, 0.7fr) minmax(100px, 0.6fr);
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 10px 12px;
   align-items: end;
 }
 
 .pool-compact-toolbar {
   display: grid;
-  grid-template-columns: minmax(180px, 0.8fr) minmax(190px, 250px) minmax(230px, 1fr) minmax(190px, auto) minmax(156px, auto) auto;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(190px, 260px) minmax(260px, 1fr) minmax(210px, auto);
   gap: 12px;
-  align-items: center;
+  align-items: end;
   box-shadow: none;
   padding: 12px 14px;
 }
@@ -528,6 +635,7 @@ legend {
 
 .pool-site-select {
   gap: 4px;
+  min-width: 0;
 }
 
 .site-meta {
@@ -542,13 +650,18 @@ legend {
   color: var(--text);
   width: 100%;
   font-size: 13px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pool-toolbar-actions {
+  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 8px;
 }
 
@@ -566,9 +679,10 @@ legend {
 
 .refresh-config {
   display: grid;
-  grid-template-columns: 76px auto auto;
+  grid-template-columns: minmax(74px, 92px) auto auto;
   gap: 6px;
   align-items: end;
+  min-width: 0;
 }
 
 .refresh-config label {
@@ -588,7 +702,7 @@ legend {
 
 .group-strip-panel {
   display: grid;
-  grid-template-columns: minmax(380px, 0.95fr) minmax(460px, 1.25fr);
+  grid-template-columns: minmax(320px, 0.9fr) minmax(360px, 1.25fr);
   gap: 16px;
   align-items: center;
   padding: 12px 14px;
@@ -647,6 +761,7 @@ legend {
 
 .account-pool-title-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   min-width: 0;
@@ -681,7 +796,9 @@ legend {
   padding: 12px;
   margin-bottom: 12px;
   display: grid;
-  gap: 10px;
+  grid-template-columns: minmax(180px, 0.55fr) minmax(260px, 1fr);
+  gap: 12px;
+  align-items: center;
 }
 
 .pool-health-card.success {
@@ -745,14 +862,18 @@ legend {
   gap: 6px;
 }
 
+.pool-health-card p {
+  grid-column: 1 / -1;
+}
+
 .capacity-runway-card {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fff;
-  padding: 14px;
+  padding: 13px;
   margin-bottom: 12px;
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .capacity-runway-card.success {
@@ -841,7 +962,7 @@ legend {
 
 .capacity-runway-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
   gap: 10px;
 }
 
@@ -850,7 +971,7 @@ legend {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fcfafb;
-  padding: 13px 14px;
+  padding: 12px;
   display: grid;
   gap: 8px;
 }
@@ -882,6 +1003,7 @@ legend {
 .capacity-metric-value-row {
   display: flex;
   align-items: baseline;
+  flex-wrap: wrap;
   gap: 12px;
   min-width: 0;
 }
@@ -906,12 +1028,12 @@ legend {
 
 .capacity-metric-side-values {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: flex-end;
   gap: 12px;
   min-width: 0;
   margin-left: auto;
-  white-space: nowrap;
 }
 
 .capacity-metric-side-value {
@@ -1147,59 +1269,64 @@ legend {
 }
 
 .pool-account-table {
-  min-width: 1350px;
+  min-width: 1220px;
   table-layout: fixed;
 }
 
 .pool-account-table-wrap {
-  max-height: calc(100vh - 340px);
+  max-height: min(68vh, 760px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
 }
 
 .pool-account-table th,
 .pool-account-table td {
-  padding: 8px 9px;
+  padding: 7px 8px;
 }
 
 .pool-account-table th {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 2;
+  background: #fff7fa;
+  box-shadow: 0 1px 0 var(--line);
 }
 
 .pool-account-table .col-name {
-  width: 300px;
+  width: 260px;
 }
 
 .pool-account-table .col-platform {
-  width: 128px;
+  width: 118px;
 }
 
 .pool-account-table .col-capacity {
-  width: 88px;
+  width: 78px;
 }
 
 .pool-account-table .col-status {
-  width: 130px;
+  width: 120px;
 }
 
 .pool-account-table .col-schedule {
-  width: 112px;
+  width: 104px;
 }
 
 .pool-account-table .col-usage {
-  width: 170px;
+  width: 160px;
 }
 
 .pool-account-table .col-time {
-  width: 116px;
+  width: 108px;
 }
 
 .pool-account-table .col-expire {
-  width: 116px;
+  width: 108px;
 }
 
 .pool-account-table .col-action {
-  width: 190px;
+  width: 170px;
 }
 
 .select-col {
@@ -1900,6 +2027,12 @@ code {
 
   .sidebar {
     position: static;
+    height: auto;
+    overflow: visible;
+  }
+
+  .app-shell.sidebar-collapsed {
+    grid-template-columns: 1fr;
   }
 
   .grid.two,
@@ -1915,6 +2048,10 @@ code {
 
   .pool-toolbar-actions {
     justify-content: flex-start;
+  }
+
+  .pool-health-card {
+    grid-template-columns: 1fr;
   }
 
   .capacity-runway-grid {

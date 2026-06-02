@@ -42,13 +42,58 @@ const adminNavItems: Array<[ViewName, string]> = [
   ["logs", "日志"],
 ];
 
+const navShortLabels: Record<ViewName, string> = {
+  upload: "传",
+  todos: "办",
+  "push-error-todos": "疑",
+  accounts: "账",
+  "available-pool": "可",
+  "reserve-pool": "备",
+  "api-pools": "池",
+  "pool-lifecycle": "逻",
+  "agent-analysis": "析",
+  "api-tokens": "令",
+  users: "用",
+  logs: "志",
+};
+
+const viewPaths: Record<ViewName, string> = {
+  upload: "/upload-accounts",
+  todos: "/todo-and-error-accounts",
+  "push-error-todos": "/question-account-assignment",
+  accounts: "/accounts",
+  "available-pool": "/available-pool",
+  "reserve-pool": "/reserve-pool",
+  "api-pools": "/api-pool-status",
+  "pool-lifecycle": "/pool-lifecycle",
+  "agent-analysis": "/agent-analysis",
+  "api-tokens": "/api-tokens",
+  users: "/users",
+  logs: "/logs",
+};
+
+const pathAliases: Record<string, ViewName> = {
+  "/": "upload",
+  "/upload": "upload",
+  "/todos": "todos",
+  "/push-error-todos": "push-error-todos",
+  "/api-pools": "api-pools",
+};
+
+function viewFromPath(pathname: string): ViewName {
+  const normalized = pathname.replace(/\/+$/, "") || "/";
+  const matched = Object.entries(viewPaths).find(([, path]) => path === normalized);
+  return matched ? (matched[0] as ViewName) : pathAliases[normalized] || "upload";
+}
+
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem("token") || "");
   const [user, setUser] = useState<User | null>(() => {
     const raw = localStorage.getItem("user");
     return raw ? (JSON.parse(raw) as User) : null;
   });
-  const [view, setView] = useState<ViewName>("upload");
+  const [view, setView] = useState<ViewName>(() => viewFromPath(window.location.pathname));
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "true");
   const [toast, setToast] = useState<ToastState>(null);
 
   const showToast = (message: string, isError = false) => {
@@ -63,11 +108,35 @@ function App() {
     localStorage.removeItem("user");
   };
 
+  const navigateToView = (nextView: ViewName) => {
+    setView(nextView);
+    const nextPath = viewPaths[nextView];
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState({ view: nextView }, "", nextPath);
+    }
+  };
+
+  const toggleSidebar = () => {
+    setSidebarCollapsed((current) => {
+      const next = !current;
+      localStorage.setItem("sidebarCollapsed", String(next));
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setView(viewFromPath(window.location.pathname));
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
   useEffect(() => {
     const handleAuthExpired = () => {
       setToken("");
       setUser(null);
-      setView("upload");
+      navigateToView("upload");
       localStorage.removeItem("token");
       localStorage.removeItem("user");
       showToast("登录过期", true);
@@ -78,15 +147,18 @@ function App() {
   }, []);
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
         <div className="brand">
           <img className="brand-logo" src={logoUrl} alt="AIwelink" />
-          <div>
+          <div className="brand-copy">
             <h1>AIwelink</h1>
             <p>sub2api 账号管理</p>
           </div>
         </div>
+        <button className="sidebar-toggle" onClick={toggleSidebar} title={sidebarCollapsed ? "展开菜单" : "收起菜单"} type="button">
+          {sidebarCollapsed ? "›" : "‹"}
+        </button>
 
         <nav className="nav">
           {[navItems, accountNavItems, poolNavItems, adminNavItems].map((group, index) => (
@@ -96,10 +168,12 @@ function App() {
                   className={`nav-item ${view === key ? "active" : ""}`}
                   disabled={!token}
                   key={key}
-                  onClick={() => setView(key)}
+                  onClick={() => navigateToView(key)}
+                  title={label}
                   type="button"
                 >
-                  {label}
+                  <span className="nav-short">{navShortLabels[key]}</span>
+                  <span className="nav-label">{label}</span>
                 </button>
               ))}
             </div>
@@ -107,10 +181,11 @@ function App() {
         </nav>
 
         <div className="session-box">
-          <div>{user ? `${user.name || user.email} (${user.role})` : "未登录"}</div>
+          <div className="session-user">{user ? `${user.name || user.email} (${user.role})` : "未登录"}</div>
           {token && (
             <button className="ghost" onClick={logout} type="button">
-              退出
+              <span className="session-logout-full">退出</span>
+              <span className="session-logout-short">退</span>
             </button>
           )}
         </div>
@@ -124,7 +199,7 @@ function App() {
               setUser(nextUser);
               localStorage.setItem("token", nextToken);
               localStorage.setItem("user", JSON.stringify(nextUser));
-              setView("upload");
+              if (window.location.pathname === "/") navigateToView("upload");
               showToast("登录成功");
             }}
             showToast={showToast}
