@@ -1923,10 +1923,19 @@ th {
   white-space: nowrap;
 }
 
-.copyable-link-row input {
+.copyable-link-value {
   min-width: 0;
+  border: 1px solid #dce3eb;
+  border-radius: 7px;
+  background: #f8fafc;
+  padding: 8px 10px;
+  color: #172033;
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 12px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .submit-revive-button {

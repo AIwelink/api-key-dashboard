@@ -1024,11 +1024,6 @@ export function TodoPage({ token, showToast }: Props) {
                   <button className="ghost compact-button" disabled={resurrectionBusy !== null} type="button" onClick={generateAuthUrl}>
                     获取授权链接
                   </button>
-                  {resurrectionWorkspace.auth?.auth_url && (
-                    <button className="ghost compact-button" type="button" onClick={() => copyText(resurrectionWorkspace.auth?.auth_url || "", "授权链接已复制")}>
-                      复制授权链接
-                    </button>
-                  )}
                   <textarea
                     className="json-input"
                     placeholder="粘贴 http://localhost:1455/auth/callback?... 回调 URL"
@@ -1050,7 +1045,9 @@ export function TodoPage({ token, showToast }: Props) {
                 {resurrectionWorkspace.auth?.auth_url && (
                   <div className="copyable-link-row">
                     <span className="copyable-link-label">授权链接</span>
-                    <input readOnly value={resurrectionWorkspace.auth.auth_url} onFocus={(event) => event.currentTarget.select()} />
+                    <code className="copyable-link-value" title={resurrectionWorkspace.auth.auth_url}>
+                      {compactUrl(resurrectionWorkspace.auth.auth_url)}
+                    </code>
                     <button className="ghost compact-button" type="button" onClick={() => copyText(resurrectionWorkspace.auth?.auth_url || "", "授权链接已复制")}>
                       复制链接
                     </button>
@@ -1916,6 +1913,11 @@ function latestMailVerificationCode(messages: MailMessage[]) {
     if (code) return code;
   }
   return "";
+}
+
+function compactUrl(value: string) {
+  if (value.length <= 92) return value;
+  return `${value.slice(0, 54)}...${value.slice(-32)}`;
 }
 
 function numberValue(value: unknown): number {
