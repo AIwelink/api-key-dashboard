@@ -2,13 +2,14 @@ from fastapi import APIRouter, Depends, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.schemas import AccountCreate, AccountCredentialsRefresh, AccountUpdate, EnterReserveRequest, ManualTransferRequest, PushToSub2ApiRequest, ReservePinRequest, VerifyViaSub2ApiRequest
+from app.schemas import AccountCreate, AccountCredentialsRefresh, AccountUpdate, EnterReserveRequest, ManualTransferRequest, ProblemInfoCorrectedRequest, PushToSub2ApiRequest, ReservePinRequest, VerifyViaSub2ApiRequest
 from app.security import get_current_user, require_roles
 from app.services.accounts import (
     create_account,
     refresh_account_credentials_json,
     get_account_or_404,
     list_accounts,
+    resolve_problem_account_after_info_correction,
     soft_delete_account,
     update_account,
 )
@@ -192,6 +193,30 @@ async def post_manual_transfer(
             "reason": payload.reason,
             "last_error": payload.last_error,
         },
+    )
+    return updated
+
+
+@router.post("/{account_id}/resolve-problem-info-correction")
+async def post_resolve_problem_info_correction(
+    account_id: str,
+    payload: ProblemInfoCorrectedRequest,
+    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    updated = await resolve_problem_account_after_info_correction(
+        db,
+        account_id=account_id,
+        note=payload.note,
+        actor=actor,
+    )
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="account.problem_info_corrected",
+        resource_type="account",
+        resource_id=account_id,
+        after={"pool_status": "library", "note": payload.note},
     )
     return updated
 

@@ -136,6 +136,10 @@ class ManualTransferRequest(BaseModel):
     last_error: str | None = None
 
 
+class ProblemInfoCorrectedRequest(BaseModel):
+    note: str | None = None
+
+
 class ReservePinRequest(BaseModel):
     pinned: bool = True
 

@@ -5,7 +5,8 @@ from typing import Any
 from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.services.pool_lifecycle import operation_actor_updates
+from app.services.account_records import write_account_operation
+from app.services.pool_lifecycle import operation_actor_updates, pool_reference_unsets, write_pool_action
 from app.services.json_parser import parse_loose_json
 from app.utils import credentials_email, now_utc, object_id, serialize_doc
 
@@ -273,6 +274,82 @@ async def refresh_account_credentials_json(
         {"$set": {"account_json": next_account_json, "metadata": next_metadata}},
     )
     updated = await db.accounts.find_one({"_id": account["_id"]})
+    return serialize_doc(updated)
+
+
+async def resolve_problem_account_after_info_correction(
+    db: AsyncIOMotorDatabase,
+    *,
+    account_id: str,
+    note: str | None,
+    actor: dict[str, Any],
+) -> dict[str, Any]:
+    account = await get_account_or_404(db, account_id)
+    metadata = dict(account.get("metadata", {}))
+    current_status = metadata.get("pool_status", "library")
+    if current_status != "problem":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account is not in problem status")
+
+    now = now_utc()
+    updates: dict[str, Any] = {
+        "metadata.pool_status": "library",
+        "metadata.priority": 0,
+        "metadata.last_error": None,
+        "metadata.problem_status": "closed",
+        "metadata.problem_task_status": "resolved",
+        "metadata.problem_resolution": "info_corrected",
+        "metadata.problem_resolved_at": now,
+        "metadata.problem_resolved_by_user_id": actor.get("_id"),
+        "metadata.problem_resolved_by_name": actor.get("name") or actor.get("email"),
+        "metadata.problem_resolution_note": note or "",
+        **operation_actor_updates(actor, "错误账号信息修正", at=now),
+    }
+    unsets: dict[str, str] = {
+        "metadata.pool_id": "",
+        "metadata.push_lock": "",
+        "metadata.problem_lock": "",
+        "metadata.reserve_pinned_at": "",
+        "metadata.reserve_pinned_by_user_id": "",
+        "metadata.reserve_pinned_by_name": "",
+    }
+    unsets.update(pool_reference_unsets())
+
+    await db.accounts.update_one({"_id": account["_id"]}, {"$set": updates, "$unset": unsets})
+    updated = await db.accounts.find_one({"_id": account["_id"]})
+
+    before = {
+        "pool_status": current_status,
+        "problem_status": metadata.get("problem_status"),
+        "problem_task_status": metadata.get("problem_task_status"),
+        "problem_class": metadata.get("problem_class"),
+        "last_error": metadata.get("last_error"),
+    }
+    after_metadata = dict(updated.get("metadata", {})) if updated else {}
+    after = {
+        "pool_status": after_metadata.get("pool_status"),
+        "problem_status": after_metadata.get("problem_status"),
+        "problem_task_status": after_metadata.get("problem_task_status"),
+        "problem_resolution": after_metadata.get("problem_resolution"),
+        "last_error": after_metadata.get("last_error"),
+    }
+    await write_account_operation(
+        db,
+        operation_class="problem_info_corrected",
+        operation_name="错误账号信息修正",
+        remark_zh=note or "账号信息已修正，移出问题账号状态并重新进入总库。",
+        actor=actor,
+        account_id=account_id,
+        details={"before": before, "after": after},
+    )
+    await write_pool_action(
+        db,
+        action_type="problem_info_corrected",
+        actor=actor,
+        account_id=account_id,
+        reason=note or "账号信息已修正",
+        before=before,
+        after=after,
+    )
     return serialize_doc(updated)
 
 

@@ -179,6 +179,25 @@ export function TodoPage({ token, showToast }: Props) {
     }
   };
 
+  const resolveProblemAfterCorrection = async (account: AccountDocument) => {
+    const confirmed = window.confirm("确认账号信息已经修正，并将该账号移出问题账号状态、重新进入总库？");
+    if (!confirmed) return;
+    const note = window.prompt("备注：本次修正了什么信息？", "账号信息已修正") || "";
+    setBusyId(account.id);
+    try {
+      await api<AccountDocument>(`/accounts/${account.id}/resolve-problem-info-correction`, token, {
+        method: "POST",
+        body: JSON.stringify({ note }),
+      });
+      showToast("已记录错误账号信息修正，账号已重新进入总库");
+      await loadProblemAccounts();
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   return (
     <section className="view accounts-page">
       <div className="topbar">
@@ -294,6 +313,9 @@ export function TodoPage({ token, showToast }: Props) {
                           <div className="button-row action-wrap">
                             <button className="ghost compact-button" disabled={busyId === account.id} onClick={() => openEditAccount(account)} type="button">
                               编辑
+                            </button>
+                            <button className="ghost compact-button" disabled={busyId === account.id} onClick={() => resolveProblemAfterCorrection(account)} type="button">
+                              修正后回总库
                             </button>
                           </div>
                         </td>
@@ -541,6 +563,7 @@ export function TodoPage({ token, showToast }: Props) {
           onSaved={async () => {
             setEditingAccount(null);
             await loadAccounts();
+            await loadProblemAccounts();
           }}
         />
       )}
