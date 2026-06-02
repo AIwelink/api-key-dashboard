@@ -611,7 +611,7 @@ function AccountEditPanel({
   const [saving, setSaving] = useState(false);
   const [refreshJson, setRefreshJson] = useState("");
   const [refreshingJson, setRefreshingJson] = useState(false);
-  const canRefreshCredentials = text(account.metadata.pool_status) === "problem";
+  const canRefreshCredentials = false;
 
   const setField = <K extends keyof EditFields>(key: K, value: EditFields[K]) => {
     setFields((current) => ({ ...current, [key]: value }));
@@ -621,12 +621,9 @@ function AccountEditPanel({
     event.preventDefault();
     setSaving(true);
     try {
-      const parsed = parseLooseJsonLocal(fields.account_json);
-      const accountJson = normalizeEditedAccountJson(parsed);
       await api<AccountDocument>(`/accounts/${account.id}`, token, {
         method: "PATCH",
         body: JSON.stringify({
-          account_json: accountJson,
           metadata: buildEditMetadata(fields),
         }),
       });
@@ -786,7 +783,7 @@ function AccountEditPanel({
             </span>
             <input value={fields.manual_status_label} onChange={(event) => setField("manual_status_label", event.target.value)} />
           </label>
-          <label className="span-4">
+          <label className="span-4" hidden>
             <span className="field-label">
               <strong>account_json</strong>
               <span>（必填）</span>
@@ -796,6 +793,7 @@ function AccountEditPanel({
               value={fields.account_json}
               onChange={(event) => setField("account_json", event.target.value)}
               spellCheck={false}
+              disabled
               required
             />
           </label>

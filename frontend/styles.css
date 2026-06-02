@@ -1854,12 +1854,53 @@ th {
   overflow-wrap: anywhere;
 }
 
+.resurrection-inline-edit {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.resurrection-inline-edit label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.resurrection-inline-edit label:nth-child(1),
+.resurrection-inline-edit label:nth-child(4),
+.resurrection-inline-edit label:nth-child(5),
+.resurrection-inline-edit label:nth-child(6) {
+  grid-column: 1 / -1;
+}
+
+.resurrection-inline-edit span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.resurrection-inline-edit button {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
 .copyable-link-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
   gap: 8px;
   width: 100%;
   margin-top: 10px;
+}
+
+.copyable-link-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .copyable-link-row input {
@@ -2060,6 +2101,10 @@ th {
   }
 
   .verification-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .resurrection-inline-edit {
     grid-template-columns: 1fr;
   }
 }

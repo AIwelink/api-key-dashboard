@@ -116,6 +116,15 @@ type ResurrectionWorkspace = {
   mailError?: string;
 };
 
+type ResurrectionEditFields = {
+  email_session: string;
+  twoFA: string;
+  phone_bound: "true" | "false";
+  phone_number: string;
+  remark: string;
+  manual_status_label: string;
+};
+
 type PushErrorStatus = "open" | "pending" | "processing" | "archived" | "resolved" | "all";
 type PushErrorAccountType = "all" | "plus" | "team" | "free";
 
@@ -165,6 +174,7 @@ export function TodoPage({ token, showToast }: Props) {
   const [activePanel, setActivePanel] = useState<TodoPanel>("resurrection");
   const [resurrectionWorkspace, setResurrectionWorkspace] = useState<ResurrectionWorkspace | null>(null);
   const [resurrectionBusy, setResurrectionBusy] = useState<string | null>(null);
+  const [resurrectionEdit, setResurrectionEdit] = useState<ResurrectionEditFields>(() => emptyResurrectionEditFields());
 
   const currentUserId = useMemo(() => {
     const raw = localStorage.getItem("user");
@@ -380,6 +390,7 @@ export function TodoPage({ token, showToast }: Props) {
 
   const startResurrection = async (account: RemoteResurrectionAccount) => {
     const twoFa = twoFaInfo(account);
+    setResurrectionEdit(buildResurrectionEditFields(account));
     setResurrectionWorkspace({
       account,
       callbackUrl: "",
@@ -432,6 +443,9 @@ export function TodoPage({ token, showToast }: Props) {
     try {
       const auth = await api<AuthSession>(`/sub2api-sites/${resurrectionWorkspace.account.site_id}/openai/generate-auth-url`, token, { method: "POST" });
       setResurrectionWorkspace((current) => (current ? { ...current, auth } : current));
+      if (auth.auth_url) {
+        await navigator.clipboard.writeText(auth.auth_url).catch(() => undefined);
+      }
       showToast("授权链接已生成");
     } catch (error) {
       showToast(errorMessage(error), true);
@@ -530,6 +544,63 @@ export function TodoPage({ token, showToast }: Props) {
     showToast(message);
   };
 
+  const submitResurrectionInfoEdit = async () => {
+    const account = resurrectionWorkspace?.account;
+    const localAccountId = text(account?.local_account_id);
+    if (!account || !localAccountId) {
+      showToast("该远端账号没有匹配到本地账号，无法保存复活信息。", true);
+      return;
+    }
+    if (resurrectionEdit.phone_bound === "true" && !resurrectionEdit.phone_number.trim()) {
+      showToast("绑定手机后必须填写 codex 手机接码地址", true);
+      return;
+    }
+    setResurrectionBusy(`info:${account.id}`);
+    try {
+      await api<AccountDocument>(`/accounts/${localAccountId}`, token, {
+        method: "PATCH",
+        body: JSON.stringify({ metadata: buildResurrectionEditMetadata(resurrectionEdit) }),
+      });
+      const nextAccount: RemoteResurrectionAccount = {
+        ...account,
+        local_email_session: resurrectionEdit.email_session,
+        local_two_fa: resurrectionEdit.twoFA,
+        local_phone_number: resurrectionEdit.phone_number,
+        local_phone_bound: resurrectionEdit.phone_bound === "true",
+        extra: {
+          ...(account.extra || {}),
+          email_session: resurrectionEdit.email_session,
+          "2FA": resurrectionEdit.twoFA,
+          phone_bound: resurrectionEdit.phone_bound === "true",
+          phone_number: resurrectionEdit.phone_number,
+          remark: resurrectionEdit.remark,
+          manual_status_label: resurrectionEdit.manual_status_label,
+        },
+      };
+      const twoFa = twoFaInfo(nextAccount);
+      const code = twoFa.status === "valid" ? safeGenerateTotp(twoFa.value) : { code: undefined, seconds: undefined, error: twoFa.message };
+      setResurrectionWorkspace((current) =>
+        current?.account.id === account.id
+          ? {
+              ...current,
+              account: nextAccount,
+              phoneMessage: undefined,
+              phoneError: undefined,
+              totpCode: code.code,
+              totpSeconds: code.seconds,
+              totpError: "error" in code ? code.error : undefined,
+            }
+          : current,
+      );
+      showToast("复活信息已更新");
+      await loadResurrectionAccounts();
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setResurrectionBusy(null);
+    }
+  };
+
   useEffect(() => {
     const account = resurrectionWorkspace?.account;
     const twoFa = twoFaInfo(account);
@@ -556,7 +627,7 @@ export function TodoPage({ token, showToast }: Props) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [resurrectionWorkspace?.account.id]);
+  }, [resurrectionWorkspace?.account.id, twoFaInfo(resurrectionWorkspace?.account).value]);
 
   useEffect(() => {
     const account = resurrectionWorkspace?.account;
@@ -593,7 +664,7 @@ export function TodoPage({ token, showToast }: Props) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [resurrectionWorkspace?.account.id]);
+  }, [resurrectionWorkspace?.account.id, phoneCodeUrl(resurrectionWorkspace?.account)]);
 
   return (
     <section className="view accounts-page">
@@ -888,6 +959,42 @@ export function TodoPage({ token, showToast }: Props) {
                   <StatusPill value={twoFaInfo(resurrectionWorkspace.account).message || "2FA 信息可用"} tone={twoFaInfo(resurrectionWorkspace.account).status === "valid" ? "success" : "warning"} />
                   <StatusPill value={phoneInfo(resurrectionWorkspace.account).message || "手机信息可用"} tone={phoneInfo(resurrectionWorkspace.account).status === "valid" ? "success" : "warning"} />
                 </div>
+                <div className="resurrection-inline-edit">
+                  <label>
+                    <span>邮箱和接码 session</span>
+                    <input value={resurrectionEdit.email_session} onChange={(event) => setResurrectionEdit((current) => ({ ...current, email_session: event.target.value }))} />
+                  </label>
+                  <label>
+                    <span>2FA</span>
+                    <input value={resurrectionEdit.twoFA} onChange={(event) => setResurrectionEdit((current) => ({ ...current, twoFA: event.target.value }))} />
+                  </label>
+                  <label>
+                    <span>是否绑定手机</span>
+                    <select value={resurrectionEdit.phone_bound} onChange={(event) => setResurrectionEdit((current) => ({ ...current, phone_bound: event.target.value as ResurrectionEditFields["phone_bound"] }))}>
+                      <option value="true">是</option>
+                      <option value="false">否</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>codex手机接码地址</span>
+                    <input
+                      value={resurrectionEdit.phone_number}
+                      onChange={(event) => setResurrectionEdit((current) => ({ ...current, phone_number: event.target.value }))}
+                      placeholder="https://cdc.smslease.link/adminapi/jsscript/smsInfo/ABC_sms?key=..."
+                    />
+                  </label>
+                  <label>
+                    <span>备注</span>
+                    <input value={resurrectionEdit.remark} onChange={(event) => setResurrectionEdit((current) => ({ ...current, remark: event.target.value }))} />
+                  </label>
+                  <label>
+                    <span>状态标注</span>
+                    <input value={resurrectionEdit.manual_status_label} onChange={(event) => setResurrectionEdit((current) => ({ ...current, manual_status_label: event.target.value }))} />
+                  </label>
+                  <button className="ghost compact-button" type="button" disabled={resurrectionBusy !== null || !resurrectionWorkspace.account.local_account_id} onClick={submitResurrectionInfoEdit}>
+                    保存复活信息
+                  </button>
+                </div>
                 <div className="button-row action-wrap">
                   <button className="ghost compact-button" type="button" onClick={fetchRecentMail}>
                     前端取最近邮件
@@ -952,6 +1059,7 @@ export function TodoPage({ token, showToast }: Props) {
                 </div>
                 {resurrectionWorkspace.auth?.auth_url && (
                   <div className="copyable-link-row">
+                    <span className="copyable-link-label">授权链接</span>
                     <input readOnly value={resurrectionWorkspace.auth.auth_url} onFocus={(event) => event.currentTarget.select()} />
                     <button className="ghost compact-button" type="button" onClick={() => copyText(resurrectionWorkspace.auth?.auth_url || "", "授权链接已复制")}>
                       复制链接
@@ -1608,6 +1716,40 @@ function accountLoginInfo(account: AccountDocument) {
     emailSession: text(account.metadata.email_session) || text(extra.email_session) || text(extra.mailbox_connection),
     twoFA: text(account.metadata["2FA"]) || text(extra["2FA"]),
     password: text(extra.password),
+  };
+}
+
+function emptyResurrectionEditFields(): ResurrectionEditFields {
+  return {
+    email_session: "",
+    twoFA: "",
+    phone_bound: "true",
+    phone_number: "",
+    remark: "",
+    manual_status_label: "",
+  };
+}
+
+function buildResurrectionEditFields(account: RemoteResurrectionAccount): ResurrectionEditFields {
+  return {
+    email_session: emailSessionValue(account),
+    twoFA: twoFaDisplayValue(account),
+    phone_bound: (account.local_phone_bound ?? account.extra?.phone_bound) === false ? "false" : "true",
+    phone_number: phoneRawValue(account),
+    remark: text(account.extra?.remark),
+    manual_status_label: text(account.extra?.manual_status_label),
+  };
+}
+
+function buildResurrectionEditMetadata(fields: ResurrectionEditFields) {
+  return {
+    email_session: fields.email_session,
+    "2FA": fields.twoFA,
+    phone_bound: fields.phone_bound === "true",
+    phone_number: fields.phone_number,
+    remark: fields.remark,
+    manual_status_label: fields.manual_status_label,
+    source: "resurrection_edit",
   };
 }
 
