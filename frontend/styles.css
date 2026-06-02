@@ -1974,6 +1974,13 @@ th {
   white-space: nowrap;
 }
 
+.callback-url-input {
+  min-width: min(100%, 240px);
+  height: 36px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
 .submit-revive-button {
   font-size: 0;
 }

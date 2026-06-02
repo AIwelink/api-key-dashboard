@@ -971,7 +971,7 @@ export function TodoPage({ token, showToast }: Props) {
                     <input value={resurrectionEdit.manual_status_label} onChange={(event) => setResurrectionEdit((current) => ({ ...current, manual_status_label: event.target.value }))} />
                   </label>
                   <button className="ghost compact-button" type="button" disabled={resurrectionBusy !== null || !resurrectionWorkspace.account.local_account_id} onClick={submitResurrectionInfoEdit}>
-                    保存复活信息
+                    保存账号信息
                   </button>
                 </div>
               </section>
@@ -998,12 +998,11 @@ export function TodoPage({ token, showToast }: Props) {
                   <button className="ghost compact-button" disabled={resurrectionBusy !== null} type="button" onClick={generateAuthUrl}>
                     获取授权链接
                   </button>
-                  <textarea
-                    className="json-input"
+                  <input
+                    className="callback-url-input"
                     placeholder="粘贴 http://localhost:1455/auth/callback?... 回调 URL"
                     value={resurrectionWorkspace.callbackUrl}
                     onChange={(event) => setResurrectionWorkspace((current) => (current ? { ...current, callbackUrl: event.target.value } : current))}
-                    rows={3}
                   />
                   <button className="ghost compact-button submit-revive-button" disabled={!resurrectionWorkspace.auth?.session_id || !resurrectionWorkspace.callbackUrl || resurrectionBusy !== null} type="button" onClick={submitOAuthCallbackAndRevive}>
                     <span>提交并复活</span>
