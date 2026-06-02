@@ -48,6 +48,18 @@ type Sub2ApiSitesResponse = {
   total: number;
 };
 
+type Sub2ApiGroup = {
+  id: number;
+  name?: string;
+  status?: string;
+  subscription_type?: string;
+};
+
+type Sub2ApiGroupsResponse = {
+  items: Sub2ApiGroup[];
+  total: number;
+};
+
 type RemoteResurrectionAccount = {
   id: number;
   name?: string;
@@ -194,6 +206,8 @@ export function TodoPage({ token, showToast }: Props) {
     const fallbackSiteId = activeSiteIds.size === 1 ? Array.from(activeSiteIds)[0] : "";
     const plusPools = pools.items.filter((pool) => pool.status === "active" && pool.account_type === "plus" && pool.site_id && pool.active_group_id);
     const candidates: RemoteResurrectionAccount[] = [];
+    const seenAccounts = new Set<string>();
+    const targetGroups = new Map<string, { siteId: string; groupId: number; poolName: string }>();
     let skippedPools = 0;
     for (const pool of plusPools) {
       const siteId = resolvePoolSiteId(pool.site_id, activeSiteIds, fallbackSiteId);
@@ -201,13 +215,41 @@ export function TodoPage({ token, showToast }: Props) {
         skippedPools += 1;
         continue;
       }
-      const params = new URLSearchParams({ page: "1", page_size: "500" });
-      const data = await api<RemoteAccountsResponse>(`/sub2api-sites/${encodeURIComponent(siteId)}/groups/${pool.active_group_id}/accounts?${params.toString()}`, token);
-      data.items.forEach((account) => {
-        const decorated = { ...account, site_id: siteId, pool_name: pool.name, active_group_id: pool.active_group_id };
-        if (isResurrectionCandidate(decorated, query)) candidates.push(decorated);
-      });
+      targetGroups.set(`${siteId}:${pool.active_group_id}`, { siteId, groupId: pool.active_group_id, poolName: pool.name });
     }
+
+    const appendCandidatesForTargets = async (targets: Array<{ siteId: string; groupId: number; poolName: string }>) => {
+      for (const target of targets) {
+        const params = new URLSearchParams({ page: "1", page_size: "500" });
+        const data = await api<RemoteAccountsResponse>(`/sub2api-sites/${encodeURIComponent(target.siteId)}/groups/${target.groupId}/accounts?${params.toString()}`, token);
+        data.items.forEach((account) => {
+          const accountKey = `${target.siteId}:${account.id}`;
+          if (seenAccounts.has(accountKey)) return;
+          const decorated = { ...account, site_id: target.siteId, pool_name: target.poolName, active_group_id: target.groupId };
+          if (isResurrectionCandidate(decorated, query)) {
+            candidates.push(decorated);
+            seenAccounts.add(accountKey);
+          }
+        });
+      }
+    };
+
+    await appendCandidatesForTargets(Array.from(targetGroups.values()));
+
+    if (candidates.length === 0) {
+      const fallbackTargets: Array<{ siteId: string; groupId: number; poolName: string }> = [];
+      for (const siteId of activeSiteIds) {
+        const groups = await api<Sub2ApiGroupsResponse>(`/sub2api-sites/${encodeURIComponent(siteId)}/groups?page=1&page_size=500`, token);
+        groups.items.forEach((group) => {
+          if (!isResurrectionPoolGroup(group)) return;
+          const key = `${siteId}:${group.id}`;
+          if (targetGroups.has(key)) return;
+          fallbackTargets.push({ siteId, groupId: group.id, poolName: text(group.name) || `group #${group.id}` });
+        });
+      }
+      await appendCandidatesForTargets(fallbackTargets);
+    }
+
     candidates.sort((left, right) => numberValue(left.codex_7d_used_percent) - numberValue(right.codex_7d_used_percent));
     setResurrectionTotal(candidates.length);
     setResurrectionAccounts(candidates.slice(resurrectionSkip, resurrectionSkip + resurrectionLimit));
@@ -1459,6 +1501,14 @@ function isResurrectionCandidate(account: RemoteResurrectionAccount, query: stri
     account.extra?.last_error,
   ].map((value) => text(value).toLowerCase()).join(" ");
   return plan === "plus" && used7d < 100 && hasError && (!query.trim() || haystack.includes(query.trim().toLowerCase()));
+}
+
+function isResurrectionPoolGroup(group: Sub2ApiGroup) {
+  const status = text(group.status).toLowerCase();
+  if (status === "deleted" || status === "disabled") return false;
+  const name = text(group.name).toLowerCase();
+  const excluded = ["问题", "错误", "验证", "备选", "备用", "problem", "error", "verify", "verification", "reserve", "test"];
+  return !excluded.some((keyword) => name.includes(keyword));
 }
 
 function remoteAccountEmail(account: RemoteResurrectionAccount) {
