@@ -105,8 +105,6 @@ type AuthSession = {
   };
 };
 
-type MailMessage = { subject?: string; from?: string; preview?: string; received_at?: string };
-
 type ResurrectionWorkspace = {
   account: RemoteResurrectionAccount;
   auth?: AuthSession;
@@ -118,8 +116,6 @@ type ResurrectionWorkspace = {
   totpCode?: string;
   totpSeconds?: number;
   totpError?: string;
-  mailMessages: MailMessage[];
-  mailError?: string;
 };
 
 type ResurrectionEditFields = {
@@ -390,7 +386,6 @@ export function TodoPage({ token, showToast }: Props) {
     setResurrectionWorkspace({
       account,
       callbackUrl: "",
-      mailMessages: [],
       totpError: twoFa.message,
     });
     if (twoFa.status === "valid") {
@@ -398,25 +393,6 @@ export function TodoPage({ token, showToast }: Props) {
       setResurrectionWorkspace((current) =>
         current?.account.id === account.id ? { ...current, totpCode: code?.code, totpSeconds: code?.seconds, totpError: "error" in code ? code.error : undefined } : current,
       );
-    }
-  };
-
-  const fetchRecentMail = async () => {
-    if (!resurrectionWorkspace) return;
-    const session = emailSessionValue(resurrectionWorkspace.account);
-    const mailbox = parseOutlookSession(session);
-    if (!mailbox) {
-      setResurrectionWorkspace((current) => (current ? { ...current, mailError: "邮件 session 格式错误，应为 email----password----client_id----refresh_token 或小水滴长格式。" } : current));
-      return;
-    }
-    try {
-      const messages = await fetchRecentGraphMailFromBrowser(mailbox, 2);
-      setResurrectionWorkspace((current) =>
-        current ? { ...current, mailMessages: messages, mailError: messages.length ? undefined : `${mailbox.email} 最近两封邮件为空` } : current,
-      );
-    } catch (error) {
-      const message = errorMessage(error);
-      setResurrectionWorkspace((current) => (current ? { ...current, mailError: message } : current));
     }
   };
 
@@ -1014,33 +990,6 @@ export function TodoPage({ token, showToast }: Props) {
                     <em className="copy-hint">点击验证码即可复制</em>
                     <small>{resurrectionWorkspace.phoneMessage || resurrectionWorkspace.phoneError || "等待短信"}</small>
                   </div>
-                  <div className="verification-card">
-                    <span>邮件验证码</span>
-                    <button
-                      className={`verification-code ${latestMailVerificationCode(resurrectionWorkspace.mailMessages) ? "" : "verification-code-action"}`}
-                      type="button"
-                      onClick={() => {
-                        const code = latestMailVerificationCode(resurrectionWorkspace.mailMessages);
-                        if (code) copyText(code, "邮件验证码已复制");
-                        else fetchRecentMail();
-                      }}
-                    >
-                      {latestMailVerificationCode(resurrectionWorkspace.mailMessages) || "取件"}
-                    </button>
-                    <em className="copy-hint">点击取件；取到验证码后点击即可复制</em>
-                    <small>{resurrectionWorkspace.mailMessages.length ? `已取 ${resurrectionWorkspace.mailMessages.length} 封最近邮件` : "前端 Graph 取最近两封邮件"}</small>
-                  </div>
-                </div>
-                <div className="mail-preview-list">
-                  {resurrectionWorkspace.mailMessages.map((message, index) => (
-                    <div className="mail-preview" key={`${message.received_at || index}`}>
-                      <strong>{message.subject || "无主题"}</strong>
-                      <span>{message.from || "-"}</span>
-                      <p>{message.preview || "-"}</p>
-                      <small>{message.received_at || ""}</small>
-                    </div>
-                  ))}
-                  {resurrectionWorkspace.mailError && <div className="cell-sub danger">{resurrectionWorkspace.mailError}</div>}
                 </div>
               </section>
               <section>
@@ -1932,14 +1881,6 @@ function extractVerificationCode(value?: string) {
   return text(value).match(/\b\d{6}\b/)?.[0] || "";
 }
 
-function latestMailVerificationCode(messages: MailMessage[]) {
-  for (const message of messages) {
-    const code = extractVerificationCode(`${message.subject || ""} ${message.preview || ""}`);
-    if (code) return code;
-  }
-  return "";
-}
-
 function compactUrl(value: string) {
   if (value.length <= 92) return value;
   return `${value.slice(0, 54)}...${value.slice(-32)}`;
@@ -1957,113 +1898,6 @@ function numberValue(value: unknown): number {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   const parsed = Number(text(value));
   return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function parseOutlookSession(session: string) {
-  const parts = session.split("----").map((part) => part.trim());
-  let email = "";
-  let password = "";
-  let clientId = "";
-  let refreshToken = "";
-  if (parts.length >= 18 && parts[16] && parts[17]) {
-    email = parts[0];
-    password = parts[1];
-    clientId = parts[16];
-    refreshToken = parts[17];
-  } else if (parts.length >= 4) {
-    [email, password, clientId] = parts;
-    refreshToken = parts.slice(3).join("----");
-  } else {
-    return null;
-  }
-  if (!email || !clientId || !refreshToken) return null;
-  return { email, password, clientId, refreshToken };
-}
-
-async function fetchRecentGraphMailFromBrowser(mailbox: NonNullable<ReturnType<typeof parseOutlookSession>>, limit: number): Promise<MailMessage[]> {
-  const accessToken = await graphAccessTokenFromBrowser(mailbox);
-  const url = new URL("https://graph.microsoft.com/v1.0/me/messages");
-  url.searchParams.set("$top", String(limit));
-  url.searchParams.set("$orderby", "receivedDateTime desc");
-  url.searchParams.set("$select", "subject,from,bodyPreview,receivedDateTime");
-  let response: Response;
-  try {
-    response = await fetch(url.toString(), {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-  } catch (error) {
-    throw new Error(`浏览器请求 Graph 失败：${errorMessage(error)}`);
-  }
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(frontendMicrosoftError(payload, `Graph 取件失败 (${response.status})`));
-  }
-  const values = Array.isArray(asRecord(payload).value) ? (asRecord(payload).value as unknown[]) : [];
-  return values.map((item) => {
-    const record = asRecord(item);
-    const sender = asRecord(record.from);
-    const address = asRecord(sender.emailAddress);
-    return {
-      subject: text(record.subject),
-      from: text(address.address),
-      preview: text(record.bodyPreview),
-      received_at: text(record.receivedDateTime),
-    };
-  });
-}
-
-async function graphAccessTokenFromBrowser(mailbox: NonNullable<ReturnType<typeof parseOutlookSession>>) {
-  const attempts: Array<{ url: string; body: Record<string, string> }> = [
-    {
-      url: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-      body: {
-        client_id: mailbox.clientId,
-        refresh_token: mailbox.refreshToken,
-        grant_type: "refresh_token",
-        scope: "https://graph.microsoft.com/Mail.Read offline_access",
-      },
-    },
-    {
-      url: "https://login.live.com/oauth20_token.srf",
-      body: {
-        client_id: mailbox.clientId,
-        refresh_token: mailbox.refreshToken,
-        grant_type: "refresh_token",
-        scope: "https://graph.microsoft.com/Mail.Read offline_access",
-      },
-    },
-    {
-      url: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-      body: {
-        client_id: mailbox.clientId,
-        refresh_token: mailbox.refreshToken,
-        grant_type: "refresh_token",
-      },
-    },
-  ];
-  const errors: string[] = [];
-  for (const attempt of attempts) {
-    try {
-      const response = await fetch(attempt.url, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams(attempt.body),
-      });
-      const payload = await response.json().catch(() => ({}));
-      const accessToken = text(asRecord(payload).access_token);
-      if (response.ok && accessToken) return accessToken;
-      errors.push(frontendMicrosoftError(payload, `${attempt.url} token 换取失败 (${response.status})`));
-    } catch (error) {
-      errors.push(`${attempt.url} 浏览器请求失败：${errorMessage(error)}`);
-    }
-  }
-  throw new Error(errors.join("；"));
-}
-
-function frontendMicrosoftError(payload: unknown, fallback: string) {
-  const data = asRecord(payload);
-  const error = asRecord(data.error);
-  return text(error.message) || text(data.error_description) || text(data.message) || text(data.error) || fallback;
 }
 
 function safeGenerateTotp(secret: string): { code: string; seconds: number } | { code?: undefined; seconds?: undefined; error: string } {
