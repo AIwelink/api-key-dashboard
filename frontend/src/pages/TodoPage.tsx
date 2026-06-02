@@ -433,7 +433,14 @@ export function TodoPage({ token, showToast }: Props) {
       const auth = await api<AuthSession>(`/sub2api-sites/${resurrectionWorkspace.account.site_id}/openai/generate-auth-url`, token, { method: "POST" });
       setResurrectionWorkspace((current) => (current ? { ...current, auth } : current));
       if (auth.auth_url) {
-        await copyToClipboard(auth.auth_url).catch(() => undefined);
+        try {
+          await copyToClipboard(auth.auth_url);
+          showToast("授权链接已生成并复制");
+          return;
+        } catch {
+          showToast("授权链接已生成，请手动复制");
+          return;
+        }
       }
       showToast("授权链接已生成");
     } catch (error) {
@@ -887,9 +894,6 @@ export function TodoPage({ token, showToast }: Props) {
                     </td>
                     <td>
                       <div className="button-row action-wrap">
-                        <button className="ghost compact-button" disabled={resurrectionBusy !== null || !account.local_account_id} onClick={() => openEditRemoteAccount(account)} type="button">
-                          编辑账号
-                        </button>
                         <button className="ghost compact-button" disabled={resurrectionBusy !== null} onClick={() => startResurrection(account)} type="button">
                           开始复活
                         </button>
