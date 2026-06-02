@@ -481,6 +481,7 @@ export function TodoPage({ token, showToast }: Props) {
       setResurrectionWorkspace((current) => (current ? { ...current, exchange, resurrectionResult: successMessage } : current));
       showToast(successMessage);
       await loadResurrectionAccounts();
+      removeResurrectionAccountFromList(resurrectionWorkspace.account);
     } catch (error) {
       setResurrectionWorkspace((current) => (current ? { ...current, resurrectionResult: `复活失败：${errorMessage(error)}` } : current));
       showToast(errorMessage(error), true);
@@ -522,6 +523,11 @@ export function TodoPage({ token, showToast }: Props) {
 
   const showCopyPopup = (message: string, tone: "success" | "danger" = "success") => {
     setCopyPopup({ message, tone, nonce: Date.now() });
+  };
+
+  const removeResurrectionAccountFromList = (account: RemoteResurrectionAccount) => {
+    setResurrectionAccounts((current) => current.filter((item) => !(item.site_id === account.site_id && item.id === account.id)));
+    setResurrectionTotal((current) => Math.max(0, current - 1));
   };
 
   const refreshPhoneCode = async () => {
