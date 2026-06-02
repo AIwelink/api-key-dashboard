@@ -70,6 +70,12 @@ type RemoteResurrectionAccount = {
   extra?: Record<string, unknown>;
   plan_type?: string;
   priority?: number;
+  updated_at?: string;
+  last_used_at?: string;
+  codex_usage_updated_at?: unknown;
+  codex_remote_tested_at?: string;
+  rate_limited_at?: string | null;
+  temp_unschedulable_until?: string | null;
   codex_7d_used_percent?: unknown;
   codex_5h_used_percent?: unknown;
   group_ids?: number[];
@@ -857,12 +863,10 @@ export function TodoPage({ token, showToast }: Props) {
               <thead>
                 <tr>
                   <th>账号</th>
-                  <th>类型</th>
-                  <th>来源</th>
-                  <th>支付</th>
+                  <th>上传人</th>
+                  <th>失败时间</th>
                   <th>当前状态</th>
                   <th>修正记录</th>
-                  <th>时间</th>
                   <th>备注</th>
                   <th>操作</th>
                 </tr>
@@ -876,9 +880,13 @@ export function TodoPage({ token, showToast }: Props) {
                       <div className="cell-sub">{text(account.name) || `#${account.id}`}</div>
                       <div className="cell-sub">{account.pool_name} · group #{account.active_group_id}</div>
                     </td>
-                    <td>{text(account.plan_type) || text(account.credentials?.plan_type) || "plus"}</td>
-                    <td>{text(account.extra?.source_template) || <span className="muted">-</span>}</td>
-                    <td>{formatPayment(account.extra?.payment_type) || <span className="muted">未填写</span>}</td>
+                    <td>
+                      <div>{text(account.uploader_name) || <span className="muted">未知</span>}</div>
+                      {text(account.uploaded_by_user_id) && <div className="cell-sub">{text(account.uploaded_by_user_id)}</div>}
+                    </td>
+                    <td>
+                      <div>{formatDateTime(remoteFailureTime(account))}</div>
+                    </td>
                     <td>
                       <StatusPill value={remoteAccountStatusLabel(account)} tone={remoteAccountStatusTone(account)} />
                       <div className="cell-sub">7d {numberValue(account.codex_7d_used_percent)}%</div>
@@ -886,10 +894,6 @@ export function TodoPage({ token, showToast }: Props) {
                     <td>
                       <div>{account.schedulable === false ? "调度关闭" : "错误账号"}</div>
                       <div className="cell-sub">priority {text(account.priority) || "-"}</div>
-                    </td>
-                    <td>
-                      <div className="cell-sub">site {account.site_id}</div>
-                      <div className="cell-sub">remote #{account.id}</div>
                     </td>
                     <td className="remark-cell">
                       {text(account.error_message) || text(account.extra?.last_error) || text(account.extra?.temp_unschedulable_reason) || <span className="muted">-</span>}
@@ -911,7 +915,7 @@ export function TodoPage({ token, showToast }: Props) {
                 ))}
                 {!resurrectionAccounts.length && (
                   <tr>
-                    <td className="muted" colSpan={9}>
+                    <td className="muted" colSpan={7}>
                       暂无复活账号
                     </td>
                   </tr>
@@ -1008,11 +1012,13 @@ export function TodoPage({ token, showToast }: Props) {
                   <div className="verification-card">
                     <span>2FA 动态码</span>
                     <button className="verification-code" type="button" onClick={() => resurrectionWorkspace.totpCode && copyText(resurrectionWorkspace.totpCode, "2FA 动态码已复制")}>{resurrectionWorkspace.totpCode || "-"}</button>
+                    <em className="copy-hint">点击验证码即可复制</em>
                     <small>{resurrectionWorkspace.totpError || (resurrectionWorkspace.totpSeconds !== undefined ? `${resurrectionWorkspace.totpSeconds}s` : "本地计算")}</small>
                   </div>
                   <div className="verification-card">
                     <span>手机验证码</span>
                     <button className="verification-code" type="button" onClick={() => extractVerificationCode(resurrectionWorkspace.phoneMessage) && copyText(extractVerificationCode(resurrectionWorkspace.phoneMessage), "手机验证码已复制")}>{extractVerificationCode(resurrectionWorkspace.phoneMessage) || "-"}</button>
+                    <em className="copy-hint">点击验证码即可复制</em>
                     <small>{resurrectionWorkspace.phoneMessage || resurrectionWorkspace.phoneError || "等待短信"}</small>
                   </div>
                 </div>
@@ -1803,6 +1809,26 @@ function remoteAccountStatusTone(account: RemoteResurrectionAccount): "accent" |
   if (account.schedulable === false) return "warning";
   if (text(account.status).toLowerCase() === "active") return "success";
   return "muted";
+}
+
+function remoteFailureTime(account: RemoteResurrectionAccount) {
+  const extra = asRecord(account.extra);
+  return (
+    text(extra.error_at) ||
+    text(extra.last_error_at) ||
+    text(extra.failed_at) ||
+    text(extra.problem_detected_at) ||
+    text(extra.problem_last_test_at) ||
+    text(account.codex_remote_tested_at) ||
+    text(extra.codex_remote_tested_at) ||
+    text(account.updated_at) ||
+    text(extra.updated_at) ||
+    text(account.codex_usage_updated_at) ||
+    text(extra.codex_usage_updated_at) ||
+    text(account.last_used_at) ||
+    text(account.rate_limited_at) ||
+    text(account.temp_unschedulable_until)
+  );
 }
 
 function phoneCodeUrl(account?: RemoteResurrectionAccount | null) {

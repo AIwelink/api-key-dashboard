@@ -1845,6 +1845,20 @@ th {
   letter-spacing: 0;
   line-height: 1.15;
   padding: 10px 8px;
+  cursor: pointer;
+}
+
+.verification-code:hover {
+  border-color: #9fb3c8;
+  background: #fafdff;
+}
+
+.copy-hint {
+  display: block;
+  margin: -2px 0 6px;
+  color: #64748b;
+  font-size: 12px;
+  font-style: normal;
 }
 
 .verification-card small {
