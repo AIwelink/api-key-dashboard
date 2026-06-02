@@ -1779,6 +1779,20 @@ th {
   padding: 12px;
 }
 
+.copyable-link-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  width: 100%;
+  margin-top: 10px;
+}
+
+.copyable-link-row input {
+  min-width: 0;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
 .task-action-panel {
   display: flex;
   flex-wrap: wrap;

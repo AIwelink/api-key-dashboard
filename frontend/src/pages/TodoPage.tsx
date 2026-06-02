@@ -904,7 +904,14 @@ export function TodoPage({ token, showToast }: Props) {
                     复活失败
                   </button>
                 </div>
-                {resurrectionWorkspace.auth?.auth_url && <div className="cell-sub truncate" title={resurrectionWorkspace.auth.auth_url}>{resurrectionWorkspace.auth.auth_url}</div>}
+                {resurrectionWorkspace.auth?.auth_url && (
+                  <div className="copyable-link-row">
+                    <input readOnly value={resurrectionWorkspace.auth.auth_url} onFocus={(event) => event.currentTarget.select()} />
+                    <button className="ghost compact-button" type="button" onClick={() => copyText(resurrectionWorkspace.auth?.auth_url || "", "授权链接已复制")}>
+                      复制链接
+                    </button>
+                  </div>
+                )}
                 {resurrectionWorkspace.exchange && <pre className="json-preview">{JSON.stringify(redactOAuthPreview(resurrectionWorkspace.exchange), null, 2)}</pre>}
               </section>
                 </div>
