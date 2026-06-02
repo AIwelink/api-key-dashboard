@@ -1424,8 +1424,7 @@ function accountHealth(account: RemoteAccount): "healthy" | "warning" | "error" 
   if (["error", "disabled", "paused", "banned", "invalid", "failed"].includes(status)) return "error";
   if (account.error_message) return "error";
   if (isFutureDate(account.temp_unschedulable_until) || isFutureDate(account.rate_limit_reset_at)) return "warning";
-  if (status === "active" && account.schedulable === false) return "warning";
-  if (status === "active" && account.schedulable === true) return "healthy";
+  if (status === "active") return "healthy";
   return "unknown";
 }
 
@@ -1467,9 +1466,6 @@ function accountStatusView(account: RemoteAccount): { label: string; tone: "acce
       detail: account.rate_limit_reset_at ? `重置 ${formatOptionalDate(account.rate_limit_reset_at)}` : undefined,
     };
   }
-  if (status === "active" && account.schedulable === false) {
-    return { label: "不可调度", tone: "warning", detail: "schedulable=false" };
-  }
   if (account.error_message) {
     return { label: "异常", tone: "danger" };
   }
@@ -1477,17 +1473,13 @@ function accountStatusView(account: RemoteAccount): { label: string; tone: "acce
 }
 
 function accountSchedulableView(account: RemoteAccount): { label: string; tone: "success" | "warning" | "muted" } {
-  if (account.schedulable === false) {
-    return { label: "不可调度", tone: "warning" };
-  }
   if (account.schedulable === true) {
-    return { label: "可调度", tone: "success" };
+    return { label: "调度开启", tone: "success" };
   }
-  const status = (account.status || "").toLowerCase();
-  if (status === "active" && !account.error_message && !isFutureDate(account.temp_unschedulable_until) && !isTemporaryRateLimit(account)) {
-    return { label: "可调度", tone: "success" };
+  if (account.schedulable === false) {
+    return { label: "调度关闭", tone: "warning" };
   }
-  return { label: "未知", tone: "muted" };
+  return { label: "未返回", tone: "muted" };
 }
 
 function statusTone(value?: string): "accent" | "success" | "warning" | "danger" | "muted" {
