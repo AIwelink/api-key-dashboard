@@ -611,7 +611,7 @@ function AccountEditPanel({
   const [saving, setSaving] = useState(false);
   const [refreshJson, setRefreshJson] = useState("");
   const [refreshingJson, setRefreshingJson] = useState(false);
-  const canRefreshCredentials = false;
+  const canRefreshCredentials = true;
 
   const setField = <K extends keyof EditFields>(key: K, value: EditFields[K]) => {
     setFields((current) => ({ ...current, [key]: value }));
@@ -647,7 +647,7 @@ function AccountEditPanel({
         method: "POST",
         body: JSON.stringify({ account_json: refreshJson }),
       });
-      showToast("凭证 JSON 已更新");
+      showToast("账号 JSON 参数已更新");
       await onSaved();
     } catch (error) {
       showToast(errorMessage(error), true);
@@ -800,14 +800,14 @@ function AccountEditPanel({
           {canRefreshCredentials && (
             <label className="span-4">
               <span className="field-label">
-                <strong>更新凭证 JSON</strong>
+                <strong>更新 JSON</strong>
                 <span>只更新 access_token / refresh_token / id_token / session_token / expires_at</span>
               </span>
               <textarea
                 className="json-input edit-json-input"
                 value={refreshJson}
                 onChange={(event) => setRefreshJson(event.target.value)}
-                placeholder="粘贴新导出的 JSON，可以是单个账号对象，也可以是包含 accounts 的导出包"
+                placeholder="粘贴新导出的 JSON，可以是单个账号对象，也可以是包含 accounts 的导出包。只会更新重新获取的凭证字段，不会替换完整账号 JSON。"
                 spellCheck={false}
               />
             </label>
@@ -818,7 +818,7 @@ function AccountEditPanel({
             </button>
             {canRefreshCredentials && (
               <button className="ghost" type="button" onClick={refreshCredentialsJson} disabled={refreshingJson || saving}>
-                {refreshingJson ? "更新中..." : "只更新凭证 JSON"}
+                {refreshingJson ? "更新中..." : "更新 JSON"}
               </button>
             )}
             <button className="ghost" type="button" onClick={onClose} disabled={saving}>
