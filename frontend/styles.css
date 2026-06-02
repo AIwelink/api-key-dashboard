@@ -1949,13 +1949,23 @@ th {
   justify-self: start;
 }
 
+.reauth-panel {
+  display: grid;
+  gap: 13px;
+}
+
+.reauth-auth-block {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
 .copyable-link-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   width: 100%;
-  margin-top: 10px;
 }
 
 .copyable-link-label {
@@ -1987,12 +1997,41 @@ th {
   font-size: 12px;
 }
 
+.callback-url-field {
+  display: grid;
+  gap: 6px;
+}
+
+.callback-url-field span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.reauth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .submit-revive-button {
   font-size: 0;
 }
 
 .submit-revive-button span {
   font-size: 12px;
+}
+
+button.ghost.success-button {
+  border-color: #9bd8b7;
+  background: #2f8a5b;
+  color: #fff;
+}
+
+button.ghost.success-button:hover {
+  border-color: #247349;
+  background: #247349;
 }
 
 .resurrection-result {

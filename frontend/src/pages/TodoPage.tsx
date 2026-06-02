@@ -178,6 +178,7 @@ export function TodoPage({ token, showToast }: Props) {
   const [resurrectionBusy, setResurrectionBusy] = useState<string | null>(null);
   const [resurrectionEdit, setResurrectionEdit] = useState<ResurrectionEditFields>(() => emptyResurrectionEditFields());
   const [copyPopup, setCopyPopup] = useState<{ message: string; tone: "success" | "danger"; nonce: number } | null>(null);
+  const [resurrectionAuthByAccount, setResurrectionAuthByAccount] = useState<Record<string, AuthSession>>({});
 
   const currentUserId = useMemo(() => {
     const raw = localStorage.getItem("user");
@@ -385,6 +386,7 @@ export function TodoPage({ token, showToast }: Props) {
     setResurrectionEdit(buildResurrectionEditFields(account));
     setResurrectionWorkspace({
       account,
+      auth: resurrectionAuthByAccount[remoteAccountKey(account)],
       callbackUrl: "",
       totpError: twoFa.message,
     });
@@ -401,6 +403,7 @@ export function TodoPage({ token, showToast }: Props) {
     setResurrectionBusy(`auth:${resurrectionWorkspace.account.id}`);
     try {
       const auth = normalizeAuthSession(await api<AuthSession>(`/sub2api-sites/${resurrectionWorkspace.account.site_id}/openai/generate-auth-url`, token, { method: "POST" }));
+      setResurrectionAuthByAccount((current) => ({ ...current, [remoteAccountKey(resurrectionWorkspace.account)]: auth }));
       setResurrectionWorkspace((current) => (current ? { ...current, auth } : current));
       if (auth.auth_url) {
         try {
@@ -1003,7 +1006,7 @@ export function TodoPage({ token, showToast }: Props) {
                     <span>状态标注</span>
                     <input value={resurrectionEdit.manual_status_label} onChange={(event) => setResurrectionEdit((current) => ({ ...current, manual_status_label: event.target.value }))} />
                   </label>
-                  <button className="ghost compact-button" type="button" disabled={resurrectionBusy !== null || !resurrectionWorkspace.account.local_account_id} onClick={submitResurrectionInfoEdit}>
+                  <button className="ghost compact-button success-button" type="button" disabled={resurrectionBusy !== null || !resurrectionWorkspace.account.local_account_id} onClick={submitResurrectionInfoEdit}>
                     保存账号信息
                   </button>
                 </div>
@@ -1032,38 +1035,45 @@ export function TodoPage({ token, showToast }: Props) {
               </section>
               <section>
                 <h4>重新授权</h4>
-                <div className="task-action-panel">
-                  <button className="ghost compact-button" disabled={resurrectionBusy !== null} type="button" onClick={generateAuthUrl}>
-                    获取授权链接
-                  </button>
-                  <input
-                    className="callback-url-input"
-                    placeholder="粘贴 http://localhost:1455/auth/callback?... 回调 URL"
-                    value={resurrectionWorkspace.callbackUrl}
-                    onChange={(event) => setResurrectionWorkspace((current) => (current ? { ...current, callbackUrl: event.target.value } : current))}
-                  />
-                  <button className="ghost compact-button submit-revive-button" disabled={!resurrectionWorkspace.auth?.session_id || !resurrectionWorkspace.callbackUrl || resurrectionBusy !== null} type="button" onClick={submitOAuthCallbackAndRevive}>
-                    <span>提交并复活</span>
-                    交换 OAuth 凭证
-                  </button>
-                  <button hidden className="ghost compact-button" disabled={!resurrectionWorkspace.exchange || resurrectionBusy !== null} type="button" onClick={applyOAuthCredentials}>
-                    应用凭证并复活
-                  </button>
-                  <button className="ghost compact-button danger-button" disabled={resurrectionBusy !== null} type="button" onClick={() => markResurrectionFailed(resurrectionWorkspace.account)}>
-                    复活失败
-                  </button>
-                </div>
-                {resurrectionWorkspace.auth?.auth_url && (
-                  <div className="copyable-link-row">
-                    <span className="copyable-link-label">授权链接</span>
-                    <code className="copyable-link-value" title={resurrectionWorkspace.auth.auth_url}>
-                      {compactUrl(resurrectionWorkspace.auth.auth_url)}
-                    </code>
-                    <button className="ghost compact-button" type="button" onClick={() => copyText(resurrectionWorkspace.auth?.auth_url || "", "授权链接已复制")}>
-                      复制链接
+                <div className="reauth-panel">
+                  <div className="reauth-auth-block">
+                    <button className="ghost compact-button" disabled={resurrectionBusy !== null} type="button" onClick={generateAuthUrl}>
+                      获取授权链接
+                    </button>
+                    {resurrectionWorkspace.auth?.auth_url && (
+                      <div className="copyable-link-row">
+                        <span className="copyable-link-label">授权链接</span>
+                        <code className="copyable-link-value" title={resurrectionWorkspace.auth.auth_url}>
+                          {compactUrl(resurrectionWorkspace.auth.auth_url)}
+                        </code>
+                        <button className="ghost compact-button" type="button" onClick={() => copyText(resurrectionWorkspace.auth?.auth_url || "", "授权链接已复制")}>
+                          复制链接
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <label className="callback-url-field">
+                    <span>回调 URL</span>
+                    <input
+                      className="callback-url-input"
+                      placeholder="粘贴 http://localhost:1455/auth/callback?... 回调 URL"
+                      value={resurrectionWorkspace.callbackUrl}
+                      onChange={(event) => setResurrectionWorkspace((current) => (current ? { ...current, callbackUrl: event.target.value } : current))}
+                    />
+                  </label>
+                  <div className="reauth-actions">
+                    <button className="ghost compact-button submit-revive-button success-button" disabled={!resurrectionWorkspace.auth?.session_id || !resurrectionWorkspace.callbackUrl || resurrectionBusy !== null} type="button" onClick={submitOAuthCallbackAndRevive}>
+                      <span>提交并复活</span>
+                      交换 OAuth 凭证
+                    </button>
+                    <button hidden className="ghost compact-button" disabled={!resurrectionWorkspace.exchange || resurrectionBusy !== null} type="button" onClick={applyOAuthCredentials}>
+                      应用凭证并复活
+                    </button>
+                    <button className="ghost compact-button danger-button" disabled={resurrectionBusy !== null} type="button" onClick={() => markResurrectionFailed(resurrectionWorkspace.account)}>
+                      复活失败
                     </button>
                   </div>
-                )}
+                </div>
                 {resurrectionWorkspace.resurrectionResult && (
                   <div className={`resurrection-result ${resurrectionWorkspace.resurrectionResult.startsWith("复活成功") ? "success" : "danger"}`}>
                     {resurrectionWorkspace.resurrectionResult}
@@ -1723,6 +1733,10 @@ function sortMineFirst(accounts: AccountDocument[], currentUserId: string) {
 
 function isRemoteUploadedByCurrentUser(account: RemoteResurrectionAccount, currentUserId: string) {
   return Boolean(currentUserId) && text(account.uploaded_by_user_id) === currentUserId;
+}
+
+function remoteAccountKey(account: RemoteResurrectionAccount) {
+  return `${account.site_id}:${account.id}`;
 }
 
 function accountEmail(account: AccountDocument) {
