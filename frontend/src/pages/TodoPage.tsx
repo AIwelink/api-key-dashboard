@@ -875,7 +875,8 @@ export function TodoPage({ token, showToast }: Props) {
                 <div className="task-detail-panel resurrection-workspace">
               <section>
                 <h4>登录信息</h4>
-                <LoginInfoBlock
+                <CopyFieldList
+                  copyText={copyText}
                   items={[
                     ["邮箱", remoteAccountEmail(resurrectionWorkspace.account)],
                     ["邮箱/接码 session", emailSessionValue(resurrectionWorkspace.account)],
@@ -896,15 +897,15 @@ export function TodoPage({ token, showToast }: Props) {
               </section>
               <section>
                 <h4>验证码</h4>
-                <div className="compact-stats">
-                  <div className="compact-stat">
+                <div className="verification-card-grid">
+                  <div className="verification-card">
                     <span>2FA 动态码</span>
-                    <strong>{resurrectionWorkspace.totpCode || "-"}</strong>
+                    <button className="verification-code" type="button" onClick={() => resurrectionWorkspace.totpCode && copyText(resurrectionWorkspace.totpCode, "2FA 动态码已复制")}>{resurrectionWorkspace.totpCode || "-"}</button>
                     <small>{resurrectionWorkspace.totpError || (resurrectionWorkspace.totpSeconds !== undefined ? `${resurrectionWorkspace.totpSeconds}s` : "本地计算")}</small>
                   </div>
-                  <div className="compact-stat">
+                  <div className="verification-card">
                     <span>手机验证码</span>
-                    <strong>{extractVerificationCode(resurrectionWorkspace.phoneMessage) || "-"}</strong>
+                    <button className="verification-code" type="button" onClick={() => extractVerificationCode(resurrectionWorkspace.phoneMessage) && copyText(extractVerificationCode(resurrectionWorkspace.phoneMessage), "手机验证码已复制")}>{extractVerificationCode(resurrectionWorkspace.phoneMessage) || "-"}</button>
                     <small>{resurrectionWorkspace.phoneMessage || resurrectionWorkspace.phoneError || "等待短信"}</small>
                   </div>
                 </div>
@@ -1547,6 +1548,31 @@ function LoginInfoBlock({ items }: { items: Array<[string, string | undefined]> 
           <code>{value || "-"}</code>
         </div>
       ))}
+    </div>
+  );
+}
+
+function CopyFieldList({
+  copyText,
+  items,
+}: {
+  copyText: (value: string, message: string) => Promise<void>;
+  items: Array<[string, string | undefined]>;
+}) {
+  return (
+    <div className="copy-field-list">
+      {items.map(([label, value]) => {
+        const displayValue = value || "-";
+        return (
+          <div className="copy-field" key={label}>
+            <div className="copy-field-label">{label}</div>
+            <div className="copy-field-value" title={displayValue}>{displayValue}</div>
+            <button className="ghost compact-button" type="button" disabled={!value} onClick={() => value && copyText(value, `${label}已复制`)}>
+              复制
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }
