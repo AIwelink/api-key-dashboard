@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -1322,18 +1323,21 @@ async def _attach_local_account_metadata(db: AsyncIOMotorDatabase, accounts: lis
         return
 
     local_by_email: dict[str, dict[str, Any]] = {}
+    email_matchers = [re.compile(f"^{re.escape(email)}$", re.IGNORECASE) for email in emails]
     cursor = db.accounts.find(
         {
             "metadata.deleted_at": {"$exists": False},
             "$or": [
-                {"metadata.email": {"$in": list(emails)}},
-                {"account_json.credentials.email": {"$in": list(emails)}},
+                {"metadata.email": {"$in": email_matchers}},
+                {"account_json.credentials.email": {"$in": email_matchers}},
+                {"account_json.extra.email": {"$in": email_matchers}},
             ],
         },
         {
             "_id": 1,
             "metadata.email": 1,
             "account_json.credentials.email": 1,
+            "account_json.extra.email": 1,
             "metadata.uploaded_by_user_id": 1,
             "metadata.uploader_name": 1,
             "metadata.email_session": 1,
@@ -1349,18 +1353,33 @@ async def _attach_local_account_metadata(db: AsyncIOMotorDatabase, accounts: lis
         metadata = local.get("metadata") if isinstance(local.get("metadata"), dict) else {}
         account_json = local.get("account_json") if isinstance(local.get("account_json"), dict) else {}
         credentials = account_json.get("credentials") if isinstance(account_json.get("credentials"), dict) else {}
-        email = _normalize_email(metadata.get("email") or credentials.get("email"))
+        extra = account_json.get("extra") if isinstance(account_json.get("extra"), dict) else {}
+        email = _normalize_email(metadata.get("email") or credentials.get("email") or extra.get("email"))
         if email and email not in local_by_email:
             local_by_email[email] = local
+
+    uploader_ids = {
+        metadata.get("uploaded_by_user_id")
+        for local in local_by_email.values()
+        if isinstance((metadata := local.get("metadata") if isinstance(local.get("metadata"), dict) else {}), dict)
+        and metadata.get("uploaded_by_user_id")
+        and not metadata.get("uploader_name")
+    }
+    users_by_id: dict[str, dict[str, Any]] = {}
+    if uploader_ids:
+        async for user in db.users.find({"_id": {"$in": list(uploader_ids)}}, {"name": 1, "email": 1}):
+            users_by_id[str(user.get("_id"))] = user
 
     for index, email in email_by_account.items():
         local = local_by_email.get(email)
         if not local:
             continue
         metadata = local.get("metadata") if isinstance(local.get("metadata"), dict) else {}
+        uploader_id = metadata.get("uploaded_by_user_id")
+        uploader_user = users_by_id.get(str(uploader_id)) if uploader_id else None
         accounts[index]["local_account_id"] = str(local.get("_id"))
-        accounts[index]["uploaded_by_user_id"] = metadata.get("uploaded_by_user_id")
-        accounts[index]["uploader_name"] = metadata.get("uploader_name")
+        accounts[index]["uploaded_by_user_id"] = uploader_id
+        accounts[index]["uploader_name"] = metadata.get("uploader_name") or (uploader_user or {}).get("name") or (uploader_user or {}).get("email") or uploader_id
         accounts[index]["local_email_session"] = metadata.get("email_session")
         accounts[index]["local_two_fa"] = metadata.get("2FA")
         accounts[index]["local_phone_number"] = metadata.get("phone_number")

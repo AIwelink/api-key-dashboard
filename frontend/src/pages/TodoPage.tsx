@@ -523,6 +523,32 @@ export function TodoPage({ token, showToast }: Props) {
     setCopyPopup({ message, tone, nonce: Date.now() });
   };
 
+  const refreshPhoneCode = async () => {
+    const account = resurrectionWorkspace?.account;
+    const phone = phoneInfo(account);
+    if (!account) return;
+    if (phone.status !== "valid") {
+      setResurrectionWorkspace((current) =>
+        current?.account.id === account.id ? { ...current, phoneMessage: undefined, phoneError: phone.message || "手机接码地址不可用" } : current,
+      );
+      return;
+    }
+    try {
+      const response = await fetch(phone.url, { cache: "no-store" });
+      const body = await response.text();
+      setResurrectionWorkspace((current) =>
+        current?.account.id === account.id ? { ...current, phoneMessage: body, phoneError: undefined } : current,
+      );
+      showCopyPopup("手机验证码已刷新");
+    } catch (error) {
+      const message = errorMessage(error);
+      setResurrectionWorkspace((current) =>
+        current?.account.id === account.id ? { ...current, phoneError: message } : current,
+      );
+      showCopyPopup(`刷新失败：${message}`, "danger");
+    }
+  };
+
   const submitResurrectionInfoEdit = async () => {
     const account = resurrectionWorkspace?.account;
     const localAccountId = text(account?.local_account_id);
@@ -988,6 +1014,11 @@ export function TodoPage({ token, showToast }: Props) {
                     <span>手机验证码</span>
                     <button className="verification-code" type="button" onClick={() => extractVerificationCode(resurrectionWorkspace.phoneMessage) && copyText(extractVerificationCode(resurrectionWorkspace.phoneMessage), "手机验证码已复制")}>{extractVerificationCode(resurrectionWorkspace.phoneMessage) || "-"}</button>
                     <em className="copy-hint">点击验证码即可复制</em>
+                    <div className="verification-card-actions">
+                      <button className="ghost compact-button" type="button" disabled={phoneInfo(resurrectionWorkspace.account).status !== "valid"} onClick={refreshPhoneCode}>
+                        手动刷新
+                      </button>
+                    </div>
                     <small>{resurrectionWorkspace.phoneMessage || resurrectionWorkspace.phoneError || "等待短信"}</small>
                   </div>
                 </div>

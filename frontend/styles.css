@@ -1903,6 +1903,12 @@ th {
   font-style: normal;
 }
 
+.verification-card-actions {
+  display: flex;
+  justify-content: flex-start;
+  margin: 2px 0 7px;
+}
+
 .verification-card small {
   display: block;
   color: var(--muted);
