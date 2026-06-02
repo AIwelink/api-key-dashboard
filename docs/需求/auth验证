@@ -1,1 +1,367 @@
 http://localhost:1455/auth/callback?code=ac_NTIeVeJWnK5Sq8OVgRdOnoXbrR6ngXSltE9IBLSJTK4.C68vtbQabde5ZA-Q25CJLHyvSG9l0P0JSRlxc-2Xx6g&scope=openid+profile+email+offline_access&state=9b9bca68a5c9452284ae6fb48507a89c0fb4653066b5a080ff5fd63fd6b3bc5c
+
+ac_NTIeVeJWnK5Sq8OVgRdOnoXbrR6ngXSltE9IBLSJTK4.C68vtbQabde5ZA-Q25CJLHyvSG9l0P0JSRlxc-2Xx6g
+
+
+获取url
+请求 URL
+http://216.167.70.204:5001/api/v1/admin/openai/generate-auth-url
+请求方法
+POST
+负载
+{}
+响应
+{
+    "code": 0,
+    "message": "success",
+    "data": {
+        "auth_url": "https://auth.openai.com/oauth/authorize?client_id=app_EMoamEEZ73f0CkXaXp7hrann\u0026code_challenge=22w5pWrGyoHrl6RhSNV84lzhX4CQMVbo-wSL_qqqtNI\u0026code_challenge_method=S256\u0026codex_cli_simplified_flow=true\u0026id_token_add_organizations=true\u0026redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback\u0026response_type=code\u0026scope=openid+profile+email+offline_access\u0026state=5a2e4ea3618520807614d1ea71996df02fe37c0f15c08222c246abe85fecd763",
+        "session_id": "4b1091101770a17e0c83719482464e6b"
+    }
+}
+
+
+
+请求 URL
+http://216.167.70.204:5001/api/v1/admin/openai/exchange-code
+请求方法
+POST
+负载
+{"session_id":"4b1091101770a17e0c83719482464e6b","code":"ac_rYKN-dnlR60R1_hh-fhfqr0oEeZItT6vsHDTpejwhCg.FHLzdLpy3-cMOINXDijt89qpJo5cp-eIZoeS6aSKFV4","state":"d10d51d6a6fcc7975d9810c4a2dd9b3fc904a601dc16a6b9abcd0a7dfd8a1c9c"}
+响应
+{
+    "code": 0,
+    "message": "success",
+    "data": {
+        "access_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIiwiZXhwIjoxNzgxMjU2Njg4LCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYmZlOGNiOWEtZjI4YS00NjcxLWIzNmEtZjhmZWY0ZDAwNWY4IiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJ1c2VyLWpxazR0UEtwODg1ZnFKUWdmMjZTREV6VF9fYmZlOGNiOWEtZjI4YS00NjcxLWIzNmEtZjhmZWY0ZDAwNWY4IiwiY2hhdGdwdF9jb21wdXRlX3Jlc2lkZW5jeSI6Im5vX2NvbnN0cmFpbnQiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InBsdXMiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWpxazR0UEtwODg1ZnFKUWdmMjZTREV6VCIsImxvY2FsaG9zdCI6dHJ1ZSwidXNlcl9pZCI6InVzZXItanFrNHRQS3A4ODVmcUpRZ2YyNlNERXpUIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6Im9sd2VuYnV0dGVyY3VwMjQzMUBvdXRsb29rLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfSwiaWF0IjoxNzgwMzkyNjg4LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6IjI2NWMyNDZhLTllNTgtNGViMy1iYmZiLTAyYWYyYjFlNzE1NiIsIm5iZiI6MTc4MDM5MjY4OCwicHdkX2F1dGhfdGltZSI6MTc4MDM5MjY3NzM0MSwic2NwIjpbIm9wZW5pZCIsInByb2ZpbGUiLCJlbWFpbCIsIm9mZmxpbmVfYWNjZXNzIl0sInNlc3Npb25faWQiOiJhdXRoc2Vzc19GY1NCcHJIRmZ1dlFHa21yRGlkMGlSaEgiLCJzbCI6dHJ1ZSwic3ViIjoiYXV0aDB8ajVTNUxCNlRkelB3WDNEaXpvd3YzcFZjIn0.ZIxbGc57w56-Xkxs8WK1jHUvU8CfUDvntr5EgIVJ5zpIT29WmZdiLTLY8xWh9pb_4DRxITCvcMp3KTzKuoPUQz2_HdJmduSlS0B8NOcHtNBFyVcQy9pAQ_oQ8DmRzyqSYyhpnYhkllgBS-9LqxkCocTpm-K7U51CsRUtBunIQ_aj4ugTq3_QKuByTn9TM-qSd62dZcYxDEECeo6P4_O4qxtuq9TcaMQRXJSGN1hoCykO4CLEtk8w_jPoo3FJeEcJkqTkKSmUXcqqmLEcvQ0QHDxeLr9_osbnA5NB8er5wkk_Dn_Micx-jngvhMZ69eELFm4BV8XPSgfP6qMGcOvROKuvXljSidAQdXY-NsZ7uM7THc25E3h9aPaPu-7XiCbsdP6G8B6VXZ2ppY4BuPgSlKIdxTF3v_PmlVIWlaNvSIPoUnZyZteQKkhjHUNXpsKuArPT--7LDfNJ4xpqEMCKNnsQgcdGSH9_71verwKzKfq_Toxx8SEK7SFiZJp8Qnx6kpvCA3qeNQhF9RgbqofCAjBZ4B8mXga-Gpu3FHH9Nt9p8OKzyrbStaQqJjxm3XmfRli5n_b8IqnXzeaowkifY3gVZLHcy8uKRfP2t7zOWQWJXX2-kGgx5vhHsDSPdWh0iy4GAqUbaa2vOhbJO0erhd4c-E1X51ivGyIOvBOD5c8",
+        "refresh_token": "rt_gxK0pct_eJ43Q678gf6xplmyVmC8M-cvv-6h0IiFDYE.kiRxE3zLTIGETmxnpsDhqASWm6GR_r3D3-krI2vwEwI",
+        "id_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImIxZGQzZjhmLTlhYWQtNDdmZS1iMGU3LWVkYjAwOTc3N2Q2YiIsInR5cCI6IkpXVCJ9.eyJhdF9oYXNoIjoibkp3Q2NDb0w3ZnRIREJGbmwxUkdnUSIsImF1ZCI6WyJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIl0sImF1dGhfcHJvdmlkZXIiOiJwYXNzd29yZGxlc3MiLCJhdXRoX3RpbWUiOjE3ODAzOTI2NzcsImVtYWlsIjoib2x3ZW5idXR0ZXJjdXAyNDMxQG91dGxvb2suY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImV4cCI6MTc4MDM5NjI4OCwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImJmZThjYjlhLWYyOGEtNDY3MS1iMzZhLWY4ZmVmNGQwMDVmOCIsImNoYXRncHRfcGxhbl90eXBlIjoicGx1cyIsImNoYXRncHRfc3Vic2NyaXB0aW9uX2FjdGl2ZV9zdGFydCI6IjIwMjYtMDUtMzBUMTY6MDQ6MDcrMDA6MDAiLCJjaGF0Z3B0X3N1YnNjcmlwdGlvbl9hY3RpdmVfdW50aWwiOiIyMDI2LTA2LTMwVDE2OjA0OjA3KzAwOjAwIiwiY2hhdGdwdF9zdWJzY3JpcHRpb25fbGFzdF9jaGVja2VkIjoiMjAyNi0wNi0wMlQwOTozMToxNy4zNDE0NjErMDA6MDAiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWpxazR0UEtwODg1ZnFKUWdmMjZTREV6VCIsImdyb3VwcyI6W10sImxvY2FsaG9zdCI6dHJ1ZSwib3JnYW5pemF0aW9ucyI6W3siaWQiOiJvcmctWjY4QXRYSWhZN3FxNEkzMk1RYXdycEpYIiwiaXNfZGVmYXVsdCI6dHJ1ZSwicm9sZSI6Im93bmVyIiwidGl0bGUiOiJQZXJzb25hbCJ9XSwidXNlcl9pZCI6InVzZXItanFrNHRQS3A4ODVmcUpRZ2YyNlNERXpUIn0sImlhdCI6MTc4MDM5MjY4OCwiaXNzIjoiaHR0cHM6Ly9hdXRoLm9wZW5haS5jb20iLCJqdGkiOiI4YzgzMzJlYi1hMjM4LTQ4OGUtOThjNC0zOGUwNGIxMzQ1ZmIiLCJuYW1lIjoiTWljaGFlbCBHYXJjaWEiLCJyYXQiOjE3ODAzOTI2NjQsInNpZCI6IjA5NWNmN2IxLTBlYzUtNGJiNy1iNDI3LTg0NmRhMjVhNTM3NSIsInN1YiI6ImF1dGgwfGo1UzVMQjZUZHpQd1gzRGl6b3d2M3BWYyJ9.OqM73TJCiGBz8JVtCTe_J__5jWkBYCw2U-rSB2E4f-gXHmshRF_M5gZTOcT6kblIJIcICSeHbJcybvvcoiR49QKe8tyMRkOvrorBeSMRkFbZ3I0z59iRIyGhyUU4HuPaORwgBaYCFp0RQR_BuWsfuhpX7Zh29ak1kaj1GOACBzbnvkomCFjgD2BdUxdStl8Vzh8PpzOL2pt5ikbVwfI07YVmNMebltk5gr9eJElIBznPbq0jNR5hANe7vXwNQRxAB5fMZwE_liQG0FHbqnpHh1OI0II69o4AoLpSNW77Haoz29do6yBK2n2ZqHlQH9qXbgmJ_AFIyVrbnaFM6F-GGS7QiOF_pDx4mo59CnyXM9NmsFTtoDD4CKcsIEIZucvyxUrzHGSfMVjbKlt-WJu4rvUECuPTeh4kzUPi-aL4RJZEog-uO5fV8gL_XP7hKkAqnsu8FN-eo_HdhU2PoUhQUhCXMV4VkvR1nsT-Vh3xQohdT_2YC39ajsczsRUgwMCl5mJCwRFno8G4sn2zUlplHdRhVNIK7jIhgj--8veh8SXjl2maCwcq3IQo12rpAkQLc-2HpzXfYai3s3QiINaOlsLRInbg9j4AxelsemFLhe88XMJnHw_q77FQDczU9lHZOBUbyPno1i_1hSBJgNAoDF2ONmGX3iyBVI8_hAA-yGg",
+        "expires_in": 863999,
+        "expires_at": 1781256687,
+        "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+        "email": "olwenbuttercup2431@outlook.com",
+        "chatgpt_account_id": "bfe8cb9a-f28a-4671-b36a-f8fef4d005f8",
+        "chatgpt_user_id": "user-jqk4tPKp885fqJQgf26SDEzT",
+        "organization_id": "org-Z68AtXIhY7qq4I32MQawrpJX",
+        "plan_type": "plus"
+    }
+}
+
+
+
+
+请求 URL
+http://216.167.70.204:5001/api/v1/admin/accounts/993/apply-oauth-credentials
+请求方法
+POST
+负载
+{"type":"oauth","credentials":{"access_token":"eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIiwiZXhwIjoxNzgxMjU2Njg4LCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYmZlOGNiOWEtZjI4YS00NjcxLWIzNmEtZjhmZWY0ZDAwNWY4IiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJ1c2VyLWpxazR0UEtwODg1ZnFKUWdmMjZTREV6VF9fYmZlOGNiOWEtZjI4YS00NjcxLWIzNmEtZjhmZWY0ZDAwNWY4IiwiY2hhdGdwdF9jb21wdXRlX3Jlc2lkZW5jeSI6Im5vX2NvbnN0cmFpbnQiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InBsdXMiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWpxazR0UEtwODg1ZnFKUWdmMjZTREV6VCIsImxvY2FsaG9zdCI6dHJ1ZSwidXNlcl9pZCI6InVzZXItanFrNHRQS3A4ODVmcUpRZ2YyNlNERXpUIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6Im9sd2VuYnV0dGVyY3VwMjQzMUBvdXRsb29rLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfSwiaWF0IjoxNzgwMzkyNjg4LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6IjI2NWMyNDZhLTllNTgtNGViMy1iYmZiLTAyYWYyYjFlNzE1NiIsIm5iZiI6MTc4MDM5MjY4OCwicHdkX2F1dGhfdGltZSI6MTc4MDM5MjY3NzM0MSwic2NwIjpbIm9wZW5pZCIsInByb2ZpbGUiLCJlbWFpbCIsIm9mZmxpbmVfYWNjZXNzIl0sInNlc3Npb25faWQiOiJhdXRoc2Vzc19GY1NCcHJIRmZ1dlFHa21yRGlkMGlSaEgiLCJzbCI6dHJ1ZSwic3ViIjoiYXV0aDB8ajVTNUxCNlRkelB3WDNEaXpvd3YzcFZjIn0.ZIxbGc57w56-Xkxs8WK1jHUvU8CfUDvntr5EgIVJ5zpIT29WmZdiLTLY8xWh9pb_4DRxITCvcMp3KTzKuoPUQz2_HdJmduSlS0B8NOcHtNBFyVcQy9pAQ_oQ8DmRzyqSYyhpnYhkllgBS-9LqxkCocTpm-K7U51CsRUtBunIQ_aj4ugTq3_QKuByTn9TM-qSd62dZcYxDEECeo6P4_O4qxtuq9TcaMQRXJSGN1hoCykO4CLEtk8w_jPoo3FJeEcJkqTkKSmUXcqqmLEcvQ0QHDxeLr9_osbnA5NB8er5wkk_Dn_Micx-jngvhMZ69eELFm4BV8XPSgfP6qMGcOvROKuvXljSidAQdXY-NsZ7uM7THc25E3h9aPaPu-7XiCbsdP6G8B6VXZ2ppY4BuPgSlKIdxTF3v_PmlVIWlaNvSIPoUnZyZteQKkhjHUNXpsKuArPT--7LDfNJ4xpqEMCKNnsQgcdGSH9_71verwKzKfq_Toxx8SEK7SFiZJp8Qnx6kpvCA3qeNQhF9RgbqofCAjBZ4B8mXga-Gpu3FHH9Nt9p8OKzyrbStaQqJjxm3XmfRli5n_b8IqnXzeaowkifY3gVZLHcy8uKRfP2t7zOWQWJXX2-kGgx5vhHsDSPdWh0iy4GAqUbaa2vOhbJO0erhd4c-E1X51ivGyIOvBOD5c8","expires_at":1781256687,"refresh_token":"rt_gxK0pct_eJ43Q678gf6xplmyVmC8M-cvv-6h0IiFDYE.kiRxE3zLTIGETmxnpsDhqASWm6GR_r3D3-krI2vwEwI","id_token":"eyJhbGciOiJSUzI1NiIsImtpZCI6ImIxZGQzZjhmLTlhYWQtNDdmZS1iMGU3LWVkYjAwOTc3N2Q2YiIsInR5cCI6IkpXVCJ9.eyJhdF9oYXNoIjoibkp3Q2NDb0w3ZnRIREJGbmwxUkdnUSIsImF1ZCI6WyJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIl0sImF1dGhfcHJvdmlkZXIiOiJwYXNzd29yZGxlc3MiLCJhdXRoX3RpbWUiOjE3ODAzOTI2NzcsImVtYWlsIjoib2x3ZW5idXR0ZXJjdXAyNDMxQG91dGxvb2suY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImV4cCI6MTc4MDM5NjI4OCwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImJmZThjYjlhLWYyOGEtNDY3MS1iMzZhLWY4ZmVmNGQwMDVmOCIsImNoYXRncHRfcGxhbl90eXBlIjoicGx1cyIsImNoYXRncHRfc3Vic2NyaXB0aW9uX2FjdGl2ZV9zdGFydCI6IjIwMjYtMDUtMzBUMTY6MDQ6MDcrMDA6MDAiLCJjaGF0Z3B0X3N1YnNjcmlwdGlvbl9hY3RpdmVfdW50aWwiOiIyMDI2LTA2LTMwVDE2OjA0OjA3KzAwOjAwIiwiY2hhdGdwdF9zdWJzY3JpcHRpb25fbGFzdF9jaGVja2VkIjoiMjAyNi0wNi0wMlQwOTozMToxNy4zNDE0NjErMDA6MDAiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWpxazR0UEtwODg1ZnFKUWdmMjZTREV6VCIsImdyb3VwcyI6W10sImxvY2FsaG9zdCI6dHJ1ZSwib3JnYW5pemF0aW9ucyI6W3siaWQiOiJvcmctWjY4QXRYSWhZN3FxNEkzMk1RYXdycEpYIiwiaXNfZGVmYXVsdCI6dHJ1ZSwicm9sZSI6Im93bmVyIiwidGl0bGUiOiJQZXJzb25hbCJ9XSwidXNlcl9pZCI6InVzZXItanFrNHRQS3A4ODVmcUpRZ2YyNlNERXpUIn0sImlhdCI6MTc4MDM5MjY4OCwiaXNzIjoiaHR0cHM6Ly9hdXRoLm9wZW5haS5jb20iLCJqdGkiOiI4YzgzMzJlYi1hMjM4LTQ4OGUtOThjNC0zOGUwNGIxMzQ1ZmIiLCJuYW1lIjoiTWljaGFlbCBHYXJjaWEiLCJyYXQiOjE3ODAzOTI2NjQsInNpZCI6IjA5NWNmN2IxLTBlYzUtNGJiNy1iNDI3LTg0NmRhMjVhNTM3NSIsInN1YiI6ImF1dGgwfGo1UzVMQjZUZHpQd1gzRGl6b3d2M3BWYyJ9.OqM73TJCiGBz8JVtCTe_J__5jWkBYCw2U-rSB2E4f-gXHmshRF_M5gZTOcT6kblIJIcICSeHbJcybvvcoiR49QKe8tyMRkOvrorBeSMRkFbZ3I0z59iRIyGhyUU4HuPaORwgBaYCFp0RQR_BuWsfuhpX7Zh29ak1kaj1GOACBzbnvkomCFjgD2BdUxdStl8Vzh8PpzOL2pt5ikbVwfI07YVmNMebltk5gr9eJElIBznPbq0jNR5hANe7vXwNQRxAB5fMZwE_liQG0FHbqnpHh1OI0II69o4AoLpSNW77Haoz29do6yBK2n2ZqHlQH9qXbgmJ_AFIyVrbnaFM6F-GGS7QiOF_pDx4mo59CnyXM9NmsFTtoDD4CKcsIEIZucvyxUrzHGSfMVjbKlt-WJu4rvUECuPTeh4kzUPi-aL4RJZEog-uO5fV8gL_XP7hKkAqnsu8FN-eo_HdhU2PoUhQUhCXMV4VkvR1nsT-Vh3xQohdT_2YC39ajsczsRUgwMCl5mJCwRFno8G4sn2zUlplHdRhVNIK7jIhgj--8veh8SXjl2maCwcq3IQo12rpAkQLc-2HpzXfYai3s3QiINaOlsLRInbg9j4AxelsemFLhe88XMJnHw_q77FQDczU9lHZOBUbyPno1i_1hSBJgNAoDF2ONmGX3iyBVI8_hAA-yGg","email":"olwenbuttercup2431@outlook.com","chatgpt_account_id":"bfe8cb9a-f28a-4671-b36a-f8fef4d005f8","chatgpt_user_id":"user-jqk4tPKp885fqJQgf26SDEzT","organization_id":"org-Z68AtXIhY7qq4I32MQawrpJX","plan_type":"plus","client_id":"app_EMoamEEZ73f0CkXaXp7hrann"},"extra":{"email":"olwenbuttercup2431@outlook.com"}}
+响应
+{
+    "code": 0,
+    "message": "success",
+    "data": {
+        "id": 993,
+        "name": "0531-购买plus-无卡-sp.az0.cn",
+        "notes": null,
+        "platform": "openai",
+        "type": "oauth",
+        "credentials": {
+            "chatgpt_account_id": "bfe8cb9a-f28a-4671-b36a-f8fef4d005f8",
+            "chatgpt_user_id": "user-jqk4tPKp885fqJQgf26SDEzT",
+            "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+            "email": "olwenbuttercup2431@outlook.com",
+            "expires_at": 1781256687,
+            "organization_id": "org-Z68AtXIhY7qq4I32MQawrpJX",
+            "plan_type": "plus"
+        },
+        "credentials_status": {
+            "has_access_token": true,
+            "has_id_token": true,
+            "has_refresh_token": true
+        },
+        "extra": {
+            "2FA": "CC6J7VZTZI4FV7B6GCPGPALXWHLWZIJQ",
+            "account_type": "plus",
+            "codex_5h_reset_after_seconds": 17816,
+            "codex_5h_reset_at": "2026-06-02T22:20:40+08:00",
+            "codex_5h_used_percent": 13,
+            "codex_5h_window_minutes": 300,
+            "codex_7d_reset_after_seconds": 604616,
+            "codex_7d_reset_at": "2026-06-09T17:20:40+08:00",
+            "codex_7d_used_percent": 2,
+            "codex_7d_window_minutes": 10080,
+            "codex_primary_over_secondary_percent": 0,
+            "codex_primary_reset_after_seconds": 17816,
+            "codex_primary_used_percent": 13,
+            "codex_primary_window_minutes": 300,
+            "codex_secondary_reset_after_seconds": 604616,
+            "codex_secondary_used_percent": 2,
+            "codex_secondary_window_minutes": 10080,
+            "codex_usage_updated_at": "2026-06-02T17:23:44+08:00",
+            "email": "olwenbuttercup2431@outlook.com",
+            "email_session": "OlwenButtercup2431@outlook.com----cq366592----9e5f94bc-e8a4-4e73-b8be-63364c29d753----M.C510_BAY.0.U.MsaArtifacts.-CrNjUPW9li5dEdOPnSCszlQDbPgfdjgK7ydsLwB9iq3TW!wIXbBhhS*uqr6xT2dGmQ6908egWJ0BkphidMAP3j*3CE1vqCGY9U8YFP34UesonpbuyrjrWoOrOC0DTGgLaunnrUXsysNnwe1AHqj0g9ixJ6yghNZwBCoKASH0qSKdDK8WsKSnpwWUoPnTjQQiOksr1fsqZLlk4WJzHeaaXNOsCmPprrs9VjCKhb!ClC7o!EFSE2gfIWmibtHICVagnehmTTrKu5V2bLcJTbibItzmhO7WGsHIMzyguzgEXmWT3JSA*ZnM6aJCxUrG0LPVCIJ5ajMOkqy!mhwxE4evyfHUoGRG*Ny4WL47IXzGK7fvwNrBUOcot31JO93r06cu6M3taWU9kLMdZVFBGibqwqZzbQuziu80H0OK70WYwLs0",
+            "openai_oauth_responses_websockets_v2_enabled": false,
+            "openai_oauth_responses_websockets_v2_mode": "off",
+            "payment_type": "no_card",
+            "phone_bound": true,
+            "phone_number": "https://cdc.smslease.link/adminapi/jsscript/smsInfo/ABC_sms?key=2c96ba09467136c24f168589f29c0da0",
+            "privacy_mode": "training_off",
+            "purchase_account_type": "plus",
+            "purchase_source": "sp.az0.cn",
+            "self_produced": false,
+            "source_template": "sub2api"
+        },
+        "proxy_id": null,
+        "concurrency": 10,
+        "load_factor": 10,
+        "priority": 100,
+        "rate_multiplier": 1,
+        "status": "active",
+        "error_message": "",
+        "last_used_at": "2026-06-02T17:23:44.882895+08:00",
+        "expires_at": null,
+        "auto_pause_on_expired": true,
+        "created_at": "2026-06-02T17:20:08.785868+08:00",
+        "updated_at": "2026-06-02T17:31:28.82618+08:00",
+        "schedulable": false,
+        "rate_limited_at": null,
+        "rate_limit_reset_at": null,
+        "overload_until": null,
+        "temp_unschedulable_until": null,
+        "temp_unschedulable_reason": "",
+        "session_window_start": null,
+        "session_window_end": null,
+        "session_window_status": "",
+        "account_groups": [
+            {
+                "account_id": 993,
+                "group_id": 3,
+                "priority": 1,
+                "created_at": "2026-06-02T17:20:08.790941+08:00",
+                "group": {
+                    "id": 3,
+                    "name": "plus 账号池 01",
+                    "description": "",
+                    "platform": "openai",
+                    "rate_multiplier": 1,
+                    "is_exclusive": false,
+                    "status": "active",
+                    "subscription_type": "standard",
+                    "daily_limit_usd": 0,
+                    "weekly_limit_usd": 0,
+                    "monthly_limit_usd": 0,
+                    "allow_image_generation": true,
+                    "image_rate_independent": true,
+                    "image_rate_multiplier": 1,
+                    "image_price_1k": 2,
+                    "image_price_2k": 3,
+                    "image_price_4k": 4,
+                    "claude_code_only": false,
+                    "fallback_group_id": null,
+                    "fallback_group_id_on_invalid_request": null,
+                    "allow_messages_dispatch": true,
+                    "require_oauth_only": false,
+                    "require_privacy_set": false,
+                    "rpm_limit": 0,
+                    "created_at": "2026-05-17T23:20:21.12382+08:00",
+                    "updated_at": "2026-05-21T16:42:58.668307+08:00"
+                }
+            }
+        ],
+        "group_ids": [
+            3
+        ],
+        "groups": [
+            {
+                "id": 3,
+                "name": "plus 账号池 01",
+                "description": "",
+                "platform": "openai",
+                "rate_multiplier": 1,
+                "is_exclusive": false,
+                "status": "active",
+                "subscription_type": "standard",
+                "daily_limit_usd": 0,
+                "weekly_limit_usd": 0,
+                "monthly_limit_usd": 0,
+                "allow_image_generation": true,
+                "image_rate_independent": true,
+                "image_rate_multiplier": 1,
+                "image_price_1k": 2,
+                "image_price_2k": 3,
+                "image_price_4k": 4,
+                "claude_code_only": false,
+                "fallback_group_id": null,
+                "fallback_group_id_on_invalid_request": null,
+                "allow_messages_dispatch": true,
+                "require_oauth_only": false,
+                "require_privacy_set": false,
+                "rpm_limit": 0,
+                "created_at": "2026-05-17T23:20:21.12382+08:00",
+                "updated_at": "2026-05-21T16:42:58.668307+08:00"
+            }
+        ],
+        "current_concurrency": 0
+    }
+}
+
+
+请求 URL
+http://216.167.70.204:5001/api/v1/admin/accounts/993/schedulable
+请求方法
+POST
+负载
+请求 URL
+http://216.167.70.204:5001/api/v1/admin/accounts/993/schedulable
+请求方法
+{"schedulable":true}
+响应
+{
+    "code": 0,
+    "message": "success",
+    "data": {
+        "id": 993,
+        "name": "0531-购买plus-无卡-sp.az0.cn",
+        "notes": null,
+        "platform": "openai",
+        "type": "oauth",
+        "credentials": {
+            "chatgpt_account_id": "bfe8cb9a-f28a-4671-b36a-f8fef4d005f8",
+            "chatgpt_user_id": "user-jqk4tPKp885fqJQgf26SDEzT",
+            "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+            "email": "olwenbuttercup2431@outlook.com",
+            "expires_at": 1781256687,
+            "organization_id": "org-Z68AtXIhY7qq4I32MQawrpJX",
+            "plan_type": "plus"
+        },
+        "credentials_status": {
+            "has_access_token": true,
+            "has_id_token": true,
+            "has_refresh_token": true
+        },
+        "extra": {
+            "2FA": "CC6J7VZTZI4FV7B6GCPGPALXWHLWZIJQ",
+            "account_type": "plus",
+            "codex_5h_reset_after_seconds": 17816,
+            "codex_5h_reset_at": "2026-06-02T22:20:40+08:00",
+            "codex_5h_used_percent": 13,
+            "codex_5h_window_minutes": 300,
+            "codex_7d_reset_after_seconds": 604616,
+            "codex_7d_reset_at": "2026-06-09T17:20:40+08:00",
+            "codex_7d_used_percent": 2,
+            "codex_7d_window_minutes": 10080,
+            "codex_primary_over_secondary_percent": 0,
+            "codex_primary_reset_after_seconds": 17816,
+            "codex_primary_used_percent": 13,
+            "codex_primary_window_minutes": 300,
+            "codex_secondary_reset_after_seconds": 604616,
+            "codex_secondary_used_percent": 2,
+            "codex_secondary_window_minutes": 10080,
+            "codex_usage_updated_at": "2026-06-02T17:23:44+08:00",
+            "email": "olwenbuttercup2431@outlook.com",
+            "email_session": "OlwenButtercup2431@outlook.com----cq366592----9e5f94bc-e8a4-4e73-b8be-63364c29d753----M.C510_BAY.0.U.MsaArtifacts.-CrNjUPW9li5dEdOPnSCszlQDbPgfdjgK7ydsLwB9iq3TW!wIXbBhhS*uqr6xT2dGmQ6908egWJ0BkphidMAP3j*3CE1vqCGY9U8YFP34UesonpbuyrjrWoOrOC0DTGgLaunnrUXsysNnwe1AHqj0g9ixJ6yghNZwBCoKASH0qSKdDK8WsKSnpwWUoPnTjQQiOksr1fsqZLlk4WJzHeaaXNOsCmPprrs9VjCKhb!ClC7o!EFSE2gfIWmibtHICVagnehmTTrKu5V2bLcJTbibItzmhO7WGsHIMzyguzgEXmWT3JSA*ZnM6aJCxUrG0LPVCIJ5ajMOkqy!mhwxE4evyfHUoGRG*Ny4WL47IXzGK7fvwNrBUOcot31JO93r06cu6M3taWU9kLMdZVFBGibqwqZzbQuziu80H0OK70WYwLs0",
+            "openai_oauth_responses_websockets_v2_enabled": false,
+            "openai_oauth_responses_websockets_v2_mode": "off",
+            "payment_type": "no_card",
+            "phone_bound": true,
+            "phone_number": "https://cdc.smslease.link/adminapi/jsscript/smsInfo/ABC_sms?key=2c96ba09467136c24f168589f29c0da0",
+            "privacy_mode": "training_off",
+            "purchase_account_type": "plus",
+            "purchase_source": "sp.az0.cn",
+            "self_produced": false,
+            "source_template": "sub2api"
+        },
+        "proxy_id": null,
+        "concurrency": 10,
+        "load_factor": 10,
+        "priority": 100,
+        "rate_multiplier": 1,
+        "status": "active",
+        "error_message": "",
+        "last_used_at": "2026-06-02T17:23:44.882895+08:00",
+        "expires_at": null,
+        "auto_pause_on_expired": true,
+        "created_at": "2026-06-02T17:20:08.785868+08:00",
+        "updated_at": "2026-06-02T17:34:56.014182+08:00",
+        "schedulable": true,
+        "rate_limited_at": null,
+        "rate_limit_reset_at": null,
+        "overload_until": null,
+        "temp_unschedulable_until": null,
+        "temp_unschedulable_reason": "",
+        "session_window_start": null,
+        "session_window_end": null,
+        "session_window_status": "",
+        "account_groups": [
+            {
+                "account_id": 993,
+                "group_id": 3,
+                "priority": 1,
+                "created_at": "2026-06-02T17:20:08.790941+08:00",
+                "group": {
+                    "id": 3,
+                    "name": "plus 账号池 01",
+                    "description": "",
+                    "platform": "openai",
+                    "rate_multiplier": 1,
+                    "is_exclusive": false,
+                    "status": "active",
+                    "subscription_type": "standard",
+                    "daily_limit_usd": 0,
+                    "weekly_limit_usd": 0,
+                    "monthly_limit_usd": 0,
+                    "allow_image_generation": true,
+                    "image_rate_independent": true,
+                    "image_rate_multiplier": 1,
+                    "image_price_1k": 2,
+                    "image_price_2k": 3,
+                    "image_price_4k": 4,
+                    "claude_code_only": false,
+                    "fallback_group_id": null,
+                    "fallback_group_id_on_invalid_request": null,
+                    "allow_messages_dispatch": true,
+                    "require_oauth_only": false,
+                    "require_privacy_set": false,
+                    "rpm_limit": 0,
+                    "created_at": "2026-05-17T23:20:21.12382+08:00",
+                    "updated_at": "2026-05-21T16:42:58.668307+08:00"
+                }
+            }
+        ],
+        "group_ids": [
+            3
+        ],
+        "groups": [
+            {
+                "id": 3,
+                "name": "plus 账号池 01",
+                "description": "",
+                "platform": "openai",
+                "rate_multiplier": 1,
+                "is_exclusive": false,
+                "status": "active",
+                "subscription_type": "standard",
+                "daily_limit_usd": 0,
+                "weekly_limit_usd": 0,
+                "monthly_limit_usd": 0,
+                "allow_image_generation": true,
+                "image_rate_independent": true,
+                "image_rate_multiplier": 1,
+                "image_price_1k": 2,
+                "image_price_2k": 3,
+                "image_price_4k": 4,
+                "claude_code_only": false,
+                "fallback_group_id": null,
+                "fallback_group_id_on_invalid_request": null,
+                "allow_messages_dispatch": true,
+                "require_oauth_only": false,
+                "require_privacy_set": false,
+                "rpm_limit": 0,
+                "created_at": "2026-05-17T23:20:21.12382+08:00",
+                "updated_at": "2026-05-21T16:42:58.668307+08:00"
+            }
+        ],
+        "current_concurrency": 0
+    }
+}

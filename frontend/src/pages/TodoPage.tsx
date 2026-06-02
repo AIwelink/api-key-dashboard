@@ -429,11 +429,17 @@ export function TodoPage({ token, showToast }: Props) {
     if (!resurrectionWorkspace?.auth?.session_id) return;
     setResurrectionBusy(`exchange:${resurrectionWorkspace.account.id}`);
     try {
+      const callback = parseCallbackUrl(resurrectionWorkspace.callbackUrl);
+      if (!callback) {
+        throw new Error("请粘贴包含 code 和 state 的 localhost 回调 URL");
+      }
       const exchange = await api<Record<string, unknown>>(`/sub2api-sites/${resurrectionWorkspace.account.site_id}/openai/exchange-code`, token, {
         method: "POST",
         body: JSON.stringify({
           session_id: resurrectionWorkspace.auth.session_id,
           callback_url: resurrectionWorkspace.callbackUrl,
+          code: callback.code,
+          state: callback.state,
         }),
       });
       setResurrectionWorkspace((current) => (current ? { ...current, exchange } : current));
@@ -468,11 +474,17 @@ export function TodoPage({ token, showToast }: Props) {
     if (!resurrectionWorkspace?.auth?.session_id || !resurrectionWorkspace.callbackUrl) return;
     setResurrectionBusy(`submit:${resurrectionWorkspace.account.id}`);
     try {
+      const callback = parseCallbackUrl(resurrectionWorkspace.callbackUrl);
+      if (!callback) {
+        throw new Error("请粘贴包含 code 和 state 的 localhost 回调 URL");
+      }
       const exchange = await api<Record<string, unknown>>(`/sub2api-sites/${resurrectionWorkspace.account.site_id}/openai/exchange-code`, token, {
         method: "POST",
         body: JSON.stringify({
           session_id: resurrectionWorkspace.auth.session_id,
           callback_url: resurrectionWorkspace.callbackUrl,
+          code: callback.code,
+          state: callback.state,
         }),
       });
       const credentials = oauthCredentialsFromExchange(exchange);
@@ -1935,6 +1947,20 @@ function extractVerificationCode(value?: string) {
 function compactUrl(value: string) {
   if (value.length <= 92) return value;
   return `${value.slice(0, 54)}...${value.slice(-32)}`;
+}
+
+function parseCallbackUrl(value: string) {
+  const raw = value.replace(/&amp;/g, "&").trim();
+  const source = raw.match(/https?:\/\/[^\s"'<>]+/i)?.[0] || raw;
+  const querySource = source.includes("?") ? source : `http://localhost/callback?${source.replace(/^\?/, "")}`;
+  try {
+    const url = new URL(querySource);
+    const code = url.searchParams.get("code") || "";
+    const state = url.searchParams.get("state") || "";
+    return code && state ? { code, state } : null;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeAuthSession(value: AuthSession): AuthSession {

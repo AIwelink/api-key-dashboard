@@ -489,11 +489,12 @@ async def post_exchange_openai_code(
     code = payload.code
     state = payload.state
     if payload.callback_url:
-        parsed = parse_qs(urlparse(payload.callback_url).query)
+        callback_url = payload.callback_url.replace("&amp;", "&").strip()
+        parsed = parse_qs(urlparse(callback_url).query)
         code = code or (parsed.get("code") or [None])[0]
         state = state or (parsed.get("state") or [None])[0]
     if not payload.session_id or not code or not state:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="session_id, code and state are required")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="session_id, code and state are required. 请先获取授权链接，并粘贴包含 code 和 state 的 localhost 回调 URL。")
     client = await _client_for_site(db, site_id)
     return await client.request_admin(
         "POST",
@@ -527,7 +528,7 @@ async def post_apply_oauth_credentials(
             "original_error": detail,
         }
     else:
-        refreshed = await client.update_account(account_id, {"status": "active"})
+        refreshed = result.get("data", result) if isinstance(result, dict) else {}
 
     schedulable_result: dict[str, Any]
     try:
