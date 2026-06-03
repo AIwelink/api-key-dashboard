@@ -546,6 +546,21 @@ async def post_apply_oauth_credentials(
             "message": "sub2api schedulable endpoint not found; schedulable was enabled through account update",
             "original_error": detail,
         }
+    recover_result: dict[str, Any]
+    try:
+        recover_result = await client.recover_account_state(account_id)
+        if isinstance(recover_result, dict) and recover_result.get("id") is not None:
+            refreshed = recover_result
+    except HTTPException as exc:
+        detail = str(exc.detail)
+        if "404" not in detail and "not found" not in detail.lower():
+            raise
+        recover_result = {
+            "ok": False,
+            "skipped": True,
+            "message": "sub2api recover-state endpoint not found; state reset was skipped",
+            "original_error": detail,
+        }
     if isinstance(refreshed, dict) and refreshed.get("id") is not None:
         await upsert_cached_account_snapshot(db, site_id, refreshed)
     await write_audit_log(
@@ -554,9 +569,9 @@ async def post_apply_oauth_credentials(
         action="sub2api.account.resurrection_apply_oauth",
         resource_type="sub2api_account",
         resource_id=str(account_id),
-        after={"site_id": site_id, "status": "active", "schedulable": True},
+        after={"site_id": site_id, "status": "active", "schedulable": True, "recover_state": recover_result},
     )
-    return {"apply": result, "schedulable": schedulable_result, "account": refreshed}
+    return {"apply": result, "schedulable": schedulable_result, "recover_state": recover_result, "account": refreshed}
 
 
 @router.post("/{site_id}/accounts/{account_id}/resurrection-fail")

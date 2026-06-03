@@ -197,7 +197,7 @@ async def list_cached_group_accounts(
     )
     docs = [doc async for doc in cursor]
     accounts = [_account_snapshot_with_cache_sync(doc) for doc in docs]
-    await _attach_local_account_metadata(db, accounts)
+    await _attach_local_account_metadata(db, accounts, site_id=site_id)
     return {
         "items": [serialize_doc(account) for account in accounts],
         "total": total,
@@ -1310,32 +1310,53 @@ def _account_snapshot_with_cache_sync(doc: dict[str, Any]) -> dict[str, Any]:
     return account
 
 
-async def _attach_local_account_metadata(db: AsyncIOMotorDatabase, accounts: list[dict[str, Any]]) -> None:
+async def _attach_local_account_metadata(db: AsyncIOMotorDatabase, accounts: list[dict[str, Any]], *, site_id: str | None = None) -> None:
     email_by_account: dict[int, str] = {}
+    remote_id_by_account: dict[int, str] = {}
     emails: set[str] = set()
+    remote_ids: set[Any] = set()
     for index, account in enumerate(accounts):
         email = _account_email_key(account)
-        if not email:
-            continue
-        email_by_account[index] = email
-        emails.add(email)
-    if not emails:
+        if email:
+            email_by_account[index] = email
+            emails.add(email)
+        remote_id = account.get("id")
+        if remote_id is not None:
+            remote_id_key = str(remote_id)
+            remote_id_by_account[index] = remote_id_key
+            remote_ids.add(remote_id)
+            remote_ids.add(remote_id_key)
+    if not emails and not remote_ids:
         return
 
-    local_by_email: dict[str, dict[str, Any]] = {}
-    email_matchers = [re.compile(f"^{re.escape(email)}$", re.IGNORECASE) for email in emails]
-    cursor = db.accounts.find(
-        {
-            "metadata.deleted_at": {"$exists": False},
-            "$or": [
+    matchers: list[dict[str, Any]] = []
+    if remote_ids:
+        remote_match: dict[str, Any] = {"metadata.sub2api_account_id": {"$in": list(remote_ids)}}
+        if site_id:
+            remote_match["metadata.sub2api_site_id"] = site_id
+        matchers.append(remote_match)
+    if emails:
+        email_matchers = [re.compile(f"^{re.escape(email)}$", re.IGNORECASE) for email in emails]
+        matchers.extend(
+            [
                 {"metadata.email": {"$in": email_matchers}},
                 {"account_json.credentials.email": {"$in": email_matchers}},
                 {"account_json.extra.email": {"$in": email_matchers}},
-            ],
+            ]
+        )
+
+    local_by_email: dict[str, dict[str, Any]] = {}
+    local_by_remote_id: dict[str, dict[str, Any]] = {}
+    cursor = db.accounts.find(
+        {
+            "metadata.deleted_at": {"$exists": False},
+            "$or": matchers,
         },
         {
             "_id": 1,
             "metadata.email": 1,
+            "metadata.sub2api_site_id": 1,
+            "metadata.sub2api_account_id": 1,
             "account_json.credentials.email": 1,
             "account_json.extra.email": 1,
             "metadata.uploaded_by_user_id": 1,
@@ -1357,10 +1378,14 @@ async def _attach_local_account_metadata(db: AsyncIOMotorDatabase, accounts: lis
         email = _normalize_email(metadata.get("email") or credentials.get("email") or extra.get("email"))
         if email and email not in local_by_email:
             local_by_email[email] = local
+        remote_id = metadata.get("sub2api_account_id")
+        remote_site_id = str(metadata.get("sub2api_site_id") or "")
+        if remote_id is not None and (not site_id or remote_site_id == site_id):
+            local_by_remote_id.setdefault(str(remote_id), local)
 
     uploader_ids = {
         metadata.get("uploaded_by_user_id")
-        for local in local_by_email.values()
+        for local in [*local_by_remote_id.values(), *local_by_email.values()]
         if isinstance((metadata := local.get("metadata") if isinstance(local.get("metadata"), dict) else {}), dict)
         and metadata.get("uploaded_by_user_id")
         and not metadata.get("uploader_name")
@@ -1370,8 +1395,8 @@ async def _attach_local_account_metadata(db: AsyncIOMotorDatabase, accounts: lis
         async for user in db.users.find({"_id": {"$in": list(uploader_ids)}}, {"name": 1, "email": 1}):
             users_by_id[str(user.get("_id"))] = user
 
-    for index, email in email_by_account.items():
-        local = local_by_email.get(email)
+    for index, account in enumerate(accounts):
+        local = local_by_remote_id.get(remote_id_by_account.get(index, "")) or local_by_email.get(email_by_account.get(index, ""))
         if not local:
             continue
         metadata = local.get("metadata") if isinstance(local.get("metadata"), dict) else {}

@@ -129,6 +129,14 @@ class Sub2ApiClient:
         )
         return self._admin_response_payload(response, operation="set schedulable")
 
+    async def recover_account_state(self, account_id: int | str) -> dict[str, Any]:
+        response = await self._request_admin_response_with_retries(
+            "POST",
+            f"/accounts/{account_id}/recover-state",
+            timeout=15,
+        )
+        return self._admin_response_payload(response, operation="recover state")
+
     async def get_account(self, account_id: int | str) -> dict[str, Any]:
         response = await self.request_admin("GET", f"/accounts/{account_id}")
         return response.get("data", response)
