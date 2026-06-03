@@ -113,7 +113,8 @@ async def push_account_to_sub2api(
     )
     action_id = push_action["id"]
 
-    locked = await _acquire_push_lock(db, account_oid, action_id, target_group_id, actor)
+    push_name = _push_account_name(account_json, metadata)
+    locked = await _acquire_push_lock(db, account_oid, action_id, target_group_id, actor, push_name=push_name)
     if locked is None:
         await _finish_pool_action(db, action_id=action_id, status_value="failed", error="Account is locked or status changed")
         await write_pool_action(
@@ -135,7 +136,7 @@ async def push_account_to_sub2api(
         bound_remote_id = _bound_remote_id(metadata)
         if bound_remote_id is not None:
             payload = build_sub2api_account_payload(
-                account_json,
+                {**account_json, "name": push_name},
                 metadata=metadata,
                 group_id=target_group_id,
                 concurrency=concurrency,
@@ -159,40 +160,62 @@ async def push_account_to_sub2api(
         else:
             duplicate = await find_remote_duplicate(db, site_id=site_id, group_id=target_group_id, account=locked)
             if duplicate and account_in_group(duplicate, target_group_id):
-                remote_account = duplicate
+                payload = build_sub2api_account_payload(
+                    {**account_json, "name": push_name},
+                    metadata=metadata,
+                    group_id=target_group_id,
+                    concurrency=concurrency,
+                    load_factor=load_factor,
+                    priority=priority,
+                )
+                duplicate_id = duplicate.get("id")
+                if duplicate_id is None:
+                    raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Remote duplicate is missing account id")
+                remote_account = await _refresh_bound_remote_account(
+                    client=client,
+                    remote_id=duplicate_id,
+                    payload=payload,
+                )
                 await write_pool_action(
                     db,
-                    action_type="remote_duplicate_bound",
+                    action_type="remote_duplicate_refreshed",
                     actor=actor,
                     account_id=account_id,
                     pool_id=str(target_group_id),
-                    reason="matched existing remote account in target group",
-                    after={"sub2api_account_id": remote_account.get("id"), "group_id": target_group_id},
+                    reason="matched existing remote account in target group and refreshed",
+                    remote_snapshot=duplicate,
+                    after={"sub2api_account_id": remote_account.get("id"), "group_id": target_group_id, "name": remote_account.get("name")},
                 )
             elif duplicate:
-                await _mark_push_failed(
-                    db,
-                    account_oid=account_oid,
-                    original_status=current_status,
-                    error="Remote duplicate exists outside target group",
-                    unset_lock=True,
-                    actor=actor,
+                payload = build_sub2api_account_payload(
+                    {**account_json, "name": push_name},
+                    metadata=metadata,
+                    group_id=target_group_id,
+                    concurrency=concurrency,
+                    load_factor=load_factor,
+                    priority=priority,
+                )
+                duplicate_id = duplicate.get("id")
+                if duplicate_id is None:
+                    raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Remote duplicate is missing account id")
+                remote_account = await _refresh_bound_remote_account(
+                    client=client,
+                    remote_id=duplicate_id,
+                    payload=payload,
                 )
                 await write_pool_action(
                     db,
-                    action_type="push_to_sub2api_group_failed",
+                    action_type="remote_duplicate_refreshed",
                     actor=actor,
                     account_id=account_id,
                     pool_id=str(target_group_id),
-                    status_value="failed",
-                    reason=reason,
+                    reason="matched existing remote account outside target group and refreshed into target group",
                     remote_snapshot=duplicate,
-                    error="Remote duplicate exists outside target group",
+                    after={"sub2api_account_id": remote_account.get("id"), "group_id": target_group_id, "name": remote_account.get("name")},
                 )
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Remote duplicate exists outside target group")
             else:
                 payload = build_sub2api_account_payload(
-                    account_json,
+                    {**account_json, "name": push_name},
                     metadata=metadata,
                     group_id=target_group_id,
                     concurrency=concurrency,
@@ -209,7 +232,18 @@ async def push_account_to_sub2api(
         remote_snapshot = await upsert_cached_account_snapshot(db, site_id, remote_account)
 
         if run_verification:
-            verification = await _test_pushed_account_with_retries(client, remote_id, model_id=model_id, prompt=prompt)
+            try:
+                verification = await _test_pushed_account_with_retries(client, remote_id, model_id=model_id, prompt=prompt)
+            except HTTPException as exc:
+                verification = {
+                    "success": False,
+                    "model": model_id,
+                    "prompt": prompt,
+                    "latency_ms": None,
+                    "response_preview": "",
+                    "error": str(exc.detail),
+                    "status": "failed",
+                }
         else:
             verification = {
                 "success": None,
@@ -221,58 +255,33 @@ async def push_account_to_sub2api(
         }
 
         succeeded = verification.get("success") is True if run_verification else True
-        problem_group_id: int | None = None
-        problem_group_name: str | None = None
+        verification_error = None if succeeded else _verification_error_detail(verification)
         failed_task_updates: dict[str, Any] | None = None
-        if run_verification and not succeeded:
-            if not _verification_requires_problem_group(verification):
-                error = _verification_error_detail(verification)
-                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=error)
-            problem_group_id, problem_group_name = await _resolve_push_problem_group(db, site_id)
-            remote_snapshot = await _move_remote_to_problem_group(
-                db,
-                client=client,
-                site_id=site_id,
-                remote_account=remote_snapshot,
-                problem_group_id=problem_group_id,
-            )
-            failed_task_updates = await _build_push_error_task_updates(
-                db,
-                client=client,
-                site_id=site_id,
-                account_id=account_id,
-                account_json=account_json,
-                metadata=metadata,
-                remote_account=remote_snapshot,
-                verification=verification,
-                problem_group_id=problem_group_id,
-                problem_group_name=problem_group_name,
-                actor=actor,
-            )
         updated = await _mark_push_completed(
             db,
             account_oid=account_oid,
             site_id=site_id,
-            group_id=problem_group_id if problem_group_id is not None else target_group_id,
-            group_name=problem_group_name if problem_group_name is not None else group_name,
+            group_id=target_group_id,
+            group_name=group_name,
             remote_account=remote_snapshot,
             verification=verification,
-            verification_passed=succeeded,
+            verification_passed=True,
+            verification_error=verification_error,
             failed_task_updates=failed_task_updates,
             actor=actor,
         )
         await _finish_pool_action(
             db,
             action_id=action_id,
-            status_value="succeeded" if succeeded else "failed",
+            status_value="succeeded",
             after={
                 "pool_status": updated.get("metadata", {}).get("pool_status"),
                 "sub2api_account_id": remote_id,
                 "verification_status": updated.get("metadata", {}).get("verification_status"),
                 "target_group_id": target_group_id,
-                "problem_group_id": problem_group_id,
+                "kept_in_target_group": True,
             },
-            error=None if succeeded else updated.get("metadata", {}).get("verification_error"),
+            error=None,
         )
 
         await write_pool_action(
@@ -281,7 +290,7 @@ async def push_account_to_sub2api(
             actor=actor,
             account_id=account_id,
             pool_id=str(target_group_id),
-            status_value="succeeded" if succeeded else "failed",
+            status_value="succeeded",
             reason=reason,
             remote_snapshot=remote_snapshot,
             after={
@@ -290,9 +299,9 @@ async def push_account_to_sub2api(
                 "sub2api_group_ids": updated.get("metadata", {}).get("sub2api_group_ids"),
                 "sub2api_push_status": updated.get("metadata", {}).get("sub2api_push_status"),
                 "verification_status": updated.get("metadata", {}).get("verification_status"),
-                "problem_group_id": problem_group_id,
+                "kept_in_target_group": True,
             },
-            error=None if succeeded else updated.get("metadata", {}).get("verification_error"),
+            error=verification_error,
         )
         logger.info(
             "push_to_sub2api_finished account_id=%s remote_id=%s group_id=%s verification=%s actor=%s",
@@ -926,6 +935,8 @@ async def _acquire_push_lock(
     action_id: str,
     group_id: int,
     actor: dict[str, Any],
+    *,
+    push_name: str,
 ) -> dict[str, Any] | None:
     now = now_utc()
     return await db.accounts.find_one_and_update(
@@ -946,6 +957,8 @@ async def _acquire_push_lock(
                     "target_group_id": group_id,
                 },
                 "metadata.sub2api_push_status": "pushing",
+                "metadata.sub2api_account_name": push_name,
+                "account_json.name": push_name,
                 **operation_actor_updates(actor, "开始推送 sub2api", at=now),
             }
         },
@@ -965,14 +978,15 @@ async def _mark_push_completed(
     verification_passed: bool,
     failed_task_updates: dict[str, Any] | None,
     actor: dict[str, Any],
+    verification_error: str | None = None,
 ) -> dict[str, Any]:
     now = now_utc()
     remote_id = remote_account.get("id")
     remote_name = remote_account.get("name") or build_sub2api_account_name(remote_account, {})
     remote_account["name"] = remote_name
-    verification_status = "skipped" if verification.get("status") == "skipped" else ("passed" if verification_passed else "failed")
+    verification_status = "skipped" if verification.get("status") == "skipped" else ("passed" if verification_passed and not verification_error else "failed")
     pool_status = "active" if verification_passed else "problem"
-    error = None if verification_passed else str(verification.get("error") or "sub2api account test failed")
+    error = verification_error if verification_error else (None if verification_passed else str(verification.get("error") or "sub2api account test failed"))
     updates: dict[str, Any] = {
         "metadata.pool_status": pool_status,
         "metadata.pool_id": str(group_id),

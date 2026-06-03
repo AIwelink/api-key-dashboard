@@ -108,7 +108,7 @@ async def auto_refill_group(db: AsyncIOMotorDatabase, *, group_doc: dict[str, An
                 account_id=account_id,
                 site_id=site_id,
                 group_id=group_id,
-                run_verification=True,
+                run_verification=False,
                 model_id=AUTO_REFILL_MODEL_ID,
                 prompt="",
                 concurrency=AUTO_REFILL_REMOTE_CONCURRENCY,
