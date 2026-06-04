@@ -11,11 +11,14 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo import ReturnDocument
 
 from app.database import db_dependency
 from app.schemas import Sub2ApiAccountTestRequest, Sub2ApiManualDeleteRequest, Sub2ApiOAuthApplyRequest, Sub2ApiOAuthExchangeRequest, Sub2ApiRecentMailRequest, Sub2ApiResurrectionFailRequest
 from app.security import require_roles
 from app.services.audit import write_audit_log
+from app.services.account_records import write_account_operation
+from app.services.pool_lifecycle import actor_name, operation_actor_updates, pool_reference_unsets, write_pool_action
 from app.services.sub2api import Sub2ApiClient
 from app.services.sub2api_cache import (
     create_site_config,
@@ -29,9 +32,9 @@ from app.services.sub2api_cache import (
     upsert_cached_account_snapshot,
 )
 from app.services.sub2api_dashboard import get_stored_dashboard_snapshots, refresh_dashboard_snapshots
-from app.services.sub2api_push import _move_remote_to_problem_group, _resolve_push_problem_group
-from app.services.sub2api_return import manual_delete_sub2api_account
+from app.services.sub2api_return import manual_delete_sub2api_account, remote_usage_snapshot
 from app.services.sub2api_verify import test_remote_sub2api_account
+from app.utils import credentials_email, now_utc, serialize_doc
 
 
 router = APIRouter(prefix="/sub2api-sites", tags=["sub2api-sites"])
@@ -586,23 +589,172 @@ async def post_resurrection_fail(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="reason is required")
     client = await _client_for_site(db, site_id)
     remote_account = await client.get_account(account_id)
-    problem_group_id, problem_group_name = await _resolve_push_problem_group(db, site_id)
-    moved = await _move_remote_to_problem_group(
-        db,
-        client=client,
-        site_id=site_id,
-        remote_account={**remote_account, "error_message": payload.reason},
-        problem_group_id=problem_group_id,
-    )
+    local_account = await _find_local_account_for_remote(db, site_id=site_id, remote_account=remote_account)
+    delete_result = await client.delete_account(account_id)
+    await db.sub2api_accounts_cache.delete_many({"site_id": site_id, "sub2api_account_id": {"$in": [account_id, str(account_id)]}})
+    updated_local = None
+    if local_account:
+        updated_local = await _mark_resurrection_failed_local_account(
+            db,
+            account=local_account,
+            site_id=site_id,
+            remote_account=remote_account,
+            reason=payload.reason.strip(),
+            decision=payload.decision,
+            delete_result=delete_result,
+            actor=actor,
+        )
     await write_audit_log(
         db,
         actor=actor,
         action="sub2api.account.resurrection_failed",
         resource_type="sub2api_account",
         resource_id=str(account_id),
-        after={"site_id": site_id, "reason": payload.reason, "problem_group_id": problem_group_id},
+        after={
+            "site_id": site_id,
+            "reason": payload.reason,
+            "decision": payload.decision,
+            "remote_deleted": True,
+            "local_account_id": str(local_account.get("_id")) if local_account else None,
+        },
     )
-    return {"account": moved, "problem_group_id": problem_group_id, "problem_group_name": problem_group_name}
+    return {
+        "remote_account": remote_account,
+        "delete_remote": delete_result,
+        "local_account": serialize_doc(updated_local) if updated_local else None,
+        "local_decision": payload.decision,
+    }
+
+
+async def _find_local_account_for_remote(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    remote_account: dict[str, Any],
+) -> dict[str, Any] | None:
+    remote_id = remote_account.get("id")
+    remote_ids = [value for value in {remote_id, str(remote_id) if remote_id is not None else None} if value is not None]
+    email_value = credentials_email(remote_account) or str(remote_account.get("email") or "").strip()
+    matchers: list[dict[str, Any]] = []
+    if remote_ids:
+        matchers.append({"metadata.sub2api_site_id": site_id, "metadata.sub2api_account_id": {"$in": remote_ids}})
+    if email_value:
+        email_matcher = re.compile(f"^{re.escape(email_value)}$", re.IGNORECASE)
+        matchers.extend(
+            [
+                {"metadata.email": email_matcher},
+                {"account_json.credentials.email": email_matcher},
+                {"account_json.extra.email": email_matcher},
+            ]
+        )
+    if not matchers:
+        return None
+    return await db.accounts.find_one({"metadata.deleted_at": {"$exists": False}, "$or": matchers})
+
+
+async def _mark_resurrection_failed_local_account(
+    db: AsyncIOMotorDatabase,
+    *,
+    account: dict[str, Any],
+    site_id: str,
+    remote_account: dict[str, Any],
+    reason: str,
+    decision: str,
+    delete_result: dict[str, Any],
+    actor: dict[str, Any],
+) -> dict[str, Any] | None:
+    now = now_utc()
+    remote_id = remote_account.get("id")
+    account_id = str(account.get("_id"))
+    decision_is_archive = decision == "banned_archive"
+    operation_name = "复活失败封禁归档" if decision_is_archive else "复活失败进入错误账号池"
+    updates: dict[str, Any] = {
+        "metadata.pool_status": "discarded" if decision_is_archive else "problem",
+        "metadata.last_error": reason,
+        "metadata.sub2api_manual_deleted": True,
+        "metadata.sub2api_delete_status": "succeeded",
+        "metadata.sub2api_delete_error": None,
+        "metadata.sub2api_delete_finished_at": now,
+        "metadata.sub2api_delete_result": delete_result,
+        "metadata.sub2api_delete_remote_snapshot": remote_account,
+        "metadata.sub2api_delete_usage_snapshot": remote_usage_snapshot(remote_account),
+        "metadata.sub2api_delete_remote_last_used_at": remote_account.get("last_used_at"),
+        "metadata.sub2api_delete_remote_status": remote_account.get("status"),
+        "metadata.sub2api_delete_remote_error_message": remote_account.get("error_message"),
+        "metadata.problem_source": "resurrection",
+        "metadata.problem_error": reason,
+        "metadata.problem_remote_account_id": remote_id,
+        "metadata.problem_site_id": site_id,
+        "metadata.problem_detected_at": now,
+        "metadata.problem_last_test_status": "failed",
+        "metadata.problem_last_test_at": now,
+        "metadata.problem_last_test_error": reason,
+        **operation_actor_updates(actor, operation_name, at=now),
+    }
+    if decision_is_archive:
+        updates.update(
+            {
+                "metadata.problem_status": "closed",
+                "metadata.problem_task_status": "archived",
+                "metadata.problem_resolution": "banned_archive",
+                "metadata.problem_resolved_at": now,
+                "metadata.problem_resolved_by_user_id": actor.get("_id"),
+                "metadata.problem_resolved_by_name": actor_name(actor),
+                "metadata.problem_resolution_note": reason,
+                "metadata.discarded_at": now,
+            }
+        )
+    else:
+        updates.update(
+            {
+                "metadata.problem_status": "open",
+                "metadata.problem_task_status": "pending",
+                "metadata.problem_resolution": None,
+                "metadata.problem_class": "resurrection_failed",
+                "metadata.problem_name": "账号复活失败",
+                "metadata.problem_remark_zh": "复活失败后已从 sub2api 远端删除，等待后续人工处理。",
+            }
+        )
+    unsets = {
+        "metadata.problem_lock": "",
+        "metadata.sub2api_account_id": "",
+        "metadata.sub2api_group_id": "",
+        "metadata.sub2api_group_ids": "",
+        "metadata.sub2api_group_name": "",
+        "metadata.sub2api_last_sync_at": "",
+        "metadata.sub2api_pushed_at": "",
+        "metadata.push_lock": "",
+        "metadata.reserve_pinned_at": "",
+        "metadata.reserve_pinned_by_user_id": "",
+        "metadata.reserve_pinned_by_name": "",
+        "metadata.pool_id": "",
+        **pool_reference_unsets(),
+    }
+    updated = await db.accounts.find_one_and_update(
+        {"_id": account["_id"]},
+        {"$set": updates, "$unset": unsets},
+        return_document=ReturnDocument.AFTER,
+    )
+    await write_account_operation(
+        db,
+        operation_class="resurrection_failed_remote_deleted",
+        operation_name=operation_name,
+        remark_zh="复活失败后已删除 sub2api 远端账号，并按操作人选择更新本地状态。",
+        actor=actor,
+        account_id=account_id,
+        details={"site_id": site_id, "remote_account_id": remote_id, "decision": decision, "reason": reason, "delete_result": delete_result},
+    )
+    await write_pool_action(
+        db,
+        action_type="resurrection_failed_remote_deleted",
+        actor=actor,
+        account_id=account_id,
+        status_value="succeeded",
+        reason=reason,
+        remote_snapshot=remote_account,
+        after={"decision": decision, "pool_status": updates["metadata.pool_status"], "remote_deleted": True},
+    )
+    return updated
 
 
 @router.post("/{site_id}/accounts/{account_id}/test")

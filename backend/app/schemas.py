@@ -181,6 +181,7 @@ class Sub2ApiOAuthApplyRequest(BaseModel):
 
 class Sub2ApiResurrectionFailRequest(BaseModel):
     reason: str
+    decision: Literal["problem_pool", "banned_archive"] = "problem_pool"
 
 
 class Sub2ApiRecentMailRequest(BaseModel):

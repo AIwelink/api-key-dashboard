@@ -11,6 +11,7 @@ type Props = {
 
 type TaskStatus = "open" | "pending" | "processing" | "completed" | "failed" | "all";
 type TodoPanel = "problem" | "resurrection" | "upgrade";
+type ResurrectionFailDecision = "problem_pool" | "banned_archive";
 
 type FreeToPlusResponse = {
   items: AccountDocument[];
@@ -506,16 +507,30 @@ export function TodoPage({ token, showToast }: Props) {
   };
 
   const markResurrectionFailed = async (account: RemoteResurrectionAccount) => {
+    const decisionInput = window.prompt("复活失败后的本地处理：输入 1 进入错误账号池待处理，输入 2 账号被封禁并归档", "1");
+    if (!decisionInput) return;
+    const normalizedDecision = decisionInput.trim();
+    const decision: ResurrectionFailDecision | null =
+      normalizedDecision === "2" || normalizedDecision === "banned_archive"
+        ? "banned_archive"
+        : normalizedDecision === "1" || normalizedDecision === "problem_pool"
+          ? "problem_pool"
+          : null;
+    if (!decision) {
+      showToast("请选择有效处理方式：1 错误账号池，2 封禁归档", true);
+      return;
+    }
     const reason = window.prompt("请输入复活失败原因");
     if (!reason) return;
     setResurrectionBusy(`fail:${account.id}`);
     try {
       await api(`/sub2api-sites/${account.site_id}/accounts/${account.id}/resurrection-fail`, token, {
         method: "POST",
-        body: JSON.stringify({ reason }),
+        body: JSON.stringify({ reason, decision }),
       });
-      showToast("已记录复活失败，并转入推送问题账户池");
+      showToast(decision === "banned_archive" ? "已记录复活失败，远端已删除，本地已封禁归档" : "已记录复活失败，远端已删除，本地已进入错误账号池");
       if (resurrectionWorkspace?.account.id === account.id) setResurrectionWorkspace(null);
+      await loadProblemAccounts();
       await loadResurrectionAccounts();
     } catch (error) {
       showToast(errorMessage(error), true);
