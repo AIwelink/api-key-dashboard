@@ -1213,7 +1213,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
               label="动态可用额度"
               values={[
                 ["当前已用", formatUsd(summary?.dynamic_five_hour_used_estimated_usd ?? summary?.five_hour_used_estimated_usd)],
-                ["预估动态可用", formatUsd(summary?.dynamic_five_hour_remaining_estimated_usd ?? summary?.five_hour_remaining_estimated_usd)],
+                ["动态可用", formatUsd(summary?.dynamic_five_hour_remaining_estimated_usd ?? summary?.five_hour_remaining_estimated_usd)],
                 ["实际可用", formatUsd(summary?.five_hour_actual_remaining_usd)],
               ]}
             />
@@ -1236,7 +1236,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
               label="可用额度"
               values={[
                 ["当前已用", formatUsd(summary?.seven_day_used_estimated_usd)],
-                ["预估动态可用", formatUsd(summary?.seven_day_remaining_estimated_usd)],
+                ["动态可用", formatUsd(summary?.seven_day_remaining_estimated_usd)],
                 ["实际可用", formatUsd(summary?.seven_day_actual_remaining_usd)],
               ]}
             />
