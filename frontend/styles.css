@@ -2232,6 +2232,32 @@ button.ghost.success-button:hover {
   color: #111827;
 }
 
+.system-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  margin-bottom: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7f8fb;
+  padding: 3px;
+}
+
+.system-tabs button {
+  min-height: 32px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.system-tabs button.active {
+  border-color: var(--line);
+  background: #fff;
+  color: var(--text);
+  box-shadow: 0 1px 6px rgba(17, 24, 39, 0.06);
+}
+
 .token-list-item {
   display: flex;
   align-items: flex-start;
@@ -2241,6 +2267,29 @@ button.ghost.success-button:hover {
 
 .token-list-item > div {
   min-width: 0;
+}
+
+.notification-channel-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.notification-channel-title,
+.notification-channel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.notification-channel-title {
+  margin-bottom: 4px;
+}
+
+.notification-channel-actions {
+  justify-content: flex-end;
 }
 
 .selected-row {
@@ -2747,6 +2796,26 @@ code {
 
   .topbar-actions-stack input {
     min-width: 0;
+  }
+
+  .system-tabs {
+    width: 100%;
+  }
+
+  .system-tabs button {
+    flex: 1 1 0;
+  }
+
+  .notification-channel-item {
+    grid-template-columns: 1fr;
+  }
+
+  .notification-channel-actions {
+    justify-content: flex-start;
+  }
+
+  .notification-channel-actions button {
+    flex: 1 1 88px;
   }
 
   .sync-under-refresh,

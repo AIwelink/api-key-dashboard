@@ -37,7 +37,7 @@ const poolNavItems: Array<[ViewName, string]> = [
 
 const adminNavItems: Array<[ViewName, string]> = [
   ["agent-analysis", "Agent分析"],
-  ["api-tokens", "系统 Token"],
+  ["api-tokens", "系统管理"],
   ["users", "用户管理"],
   ["logs", "日志"],
 ];
@@ -52,7 +52,7 @@ const navShortLabels: Record<ViewName, string> = {
   "api-pools": "池",
   "pool-lifecycle": "逻",
   "agent-analysis": "析",
-  "api-tokens": "令",
+  "api-tokens": "管",
   users: "用",
   logs: "志",
 };
@@ -67,7 +67,7 @@ const viewPaths: Record<ViewName, string> = {
   "api-pools": "/api-pool-status",
   "pool-lifecycle": "/pool-lifecycle",
   "agent-analysis": "/agent-analysis",
-  "api-tokens": "/api-tokens",
+  "api-tokens": "/system-management",
   users: "/users",
   logs: "/logs",
 };
@@ -77,6 +77,7 @@ const pathAliases: Record<string, ViewName> = {
   "/todos": "todos",
   "/push-error-todos": "push-error-todos",
   "/api-pools": "api-pools",
+  "/api-tokens": "api-tokens",
 };
 
 function isMobileMenuLayout() {

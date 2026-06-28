@@ -47,6 +47,23 @@ class ApiTokenCreate(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+class NotificationChannelCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    channel_type: Literal["dingtalk"] = "dingtalk"
+    status: Literal["active", "disabled"] = "active"
+    webhook_url: str = Field(min_length=1, max_length=1000)
+    signing_secret: str = Field(min_length=1, max_length=500)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class NotificationChannelUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    status: Literal["active", "disabled"] | None = None
+    webhook_url: str | None = Field(default=None, min_length=1, max_length=1000)
+    signing_secret: str | None = Field(default=None, min_length=1, max_length=500)
+    note: str | None = Field(default=None, max_length=500)
+
+
 class AccountCreate(BaseModel):
     account_json: dict[str, Any] | list[Any]
     metadata: dict[str, Any] = Field(default_factory=dict)
