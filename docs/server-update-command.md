@@ -1,14 +1,21 @@
-# 服务器更新命令
+# Server Update Commands
 
-服务器项目目录：
+Server project directory:
 
 ```bash
 /www/wwwroot/serve/local/api-key-dashboard
 ```
 
-## 首次切换到新 Git 仓库
+Current Git repository:
 
-服务器旧目录已经存在时，先把 `origin` 切到新仓库：
+```text
+SSH: git@github.com:AIwelink/api-key-dashboard.git
+HTTPS: https://github.com/AIwelink/api-key-dashboard.git
+```
+
+## First Switch To The New Repository
+
+Run this when the existing server directory still points to the old repository:
 
 ```bash
 cd /www/wwwroot/serve/local/api-key-dashboard && \
@@ -23,9 +30,9 @@ npm run build && \
 sudo systemctl restart api-key-admin
 ```
 
-## 后续日常更新
+## Daily Update
 
-远程仓库已经切好后，用下面这条即可：
+Run this after `origin` already points to the new repository:
 
 ```bash
 cd /www/wwwroot/serve/local/api-key-dashboard && \
@@ -38,23 +45,21 @@ npm run build && \
 sudo systemctl restart api-key-admin
 ```
 
-## 后端启动命令
-
-如果需要手动启动后端：
+## Manual Backend Start
 
 ```bash
 cd /www/wwwroot/serve/local/api-key-dashboard/backend && \
 python3 -m uv run python3 -m app.run
 ```
 
-systemd 服务建议使用：
+Recommended systemd service lines:
 
 ```ini
 WorkingDirectory=/www/wwwroot/serve/local/api-key-dashboard/backend
 ExecStart=/usr/bin/python3 -m uv run python3 -m app.run
 ```
 
-## 查看服务状态和日志
+## Logs
 
 ```bash
 sudo systemctl status api-key-admin

@@ -1,5 +1,10 @@
 # API Key Backend Admin Panel
 
+Git repository:
+
+- SSH: `git@github.com:AIwelink/api-key-dashboard.git`
+- HTTPS: `https://github.com/AIwelink/api-key-dashboard.git`
+
 当前版本：`0.2.0`。
 
 当前仓库包含：

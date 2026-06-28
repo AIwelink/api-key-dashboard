@@ -1,5 +1,10 @@
 # 初版上线部署汇总
 
+Git repository:
+
+- SSH: `git@github.com:AIwelink/api-key-dashboard.git`
+- HTTPS: `https://github.com/AIwelink/api-key-dashboard.git`
+
 本文用于把当前初版打包到服务器运行。当前版本目标是团队内部试用，重点保证账号上传、账号列表、手动池流转、sub2api 状态查看、手动推送/测试/回退和日志审计可用。
 
 ## 当前版本范围
