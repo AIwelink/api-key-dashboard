@@ -1237,12 +1237,7 @@ legend {
 
 .capacity-meter-legend-value {
   font-size: 12px;
-  font-weight: 600;
-}
-
-.capacity-meter-legend strong {
-  font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .capacity-primary-meter {
@@ -2646,6 +2641,17 @@ code {
     border-left: 1px solid var(--line);
   }
 
+  .nav .nav-group:nth-child(3) {
+    order: -1;
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .nav .nav-group:nth-child(1) {
+    padding-left: 8px;
+    border-left: 1px solid var(--line);
+  }
+
   .nav-item,
   .sidebar-collapsed .nav-item {
     flex: 0 0 auto;
@@ -3291,6 +3297,35 @@ code {
     grid-template-columns: 1fr;
   }
 
+  .pool-status-page .group-strip-left {
+    align-items: center;
+    grid-template-columns: minmax(58px, auto) minmax(0, 1fr);
+  }
+
+  .pool-status-page .pool-mini-metrics {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .pool-status-page .pool-health-card {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .pool-status-page .pool-health-main {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    gap: 6px 8px;
+    align-items: baseline;
+  }
+
+  .pool-status-page .pool-health-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .pool-status-page .pool-health-card p {
+    display: none;
+  }
+
   .pool-status-page .pool-mini-metrics,
   .pool-status-page .pool-health-grid {
     row-gap: 8px;
@@ -3302,6 +3337,12 @@ code {
 
   .pool-status-page .mini-metric + .mini-metric {
     border-left: 0;
+  }
+
+  .pool-status-page .pool-mini-metrics .mini-metric + .mini-metric,
+  .pool-status-page .pool-health-grid .mini-metric + .mini-metric {
+    border-left: 1px solid color-mix(in srgb, var(--line) 76%, transparent);
+    padding-left: 10px;
   }
 
   .pool-status-page .mini-metric:nth-child(even) {
@@ -3323,6 +3364,53 @@ code {
 
   .pool-status-page .capacity-metric {
     padding: 10px 0;
+    overflow: hidden;
+  }
+
+  .pool-status-page .capacity-metric-label,
+  .pool-status-page .capacity-metric-label b,
+  .pool-status-page .capacity-metric-label em,
+  .pool-status-page .capacity-metric-value,
+  .pool-status-page .capacity-metric-value span,
+  .pool-status-page .capacity-metric-inline-sub,
+  .pool-status-page .capacity-metric-side-values,
+  .pool-status-page .capacity-metric-side-value,
+  .pool-status-page .capacity-money-line,
+  .pool-status-page .capacity-money-item,
+  .pool-status-page .capacity-meter-legend,
+  .pool-status-page .capacity-secondary-head {
+    min-width: 0;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .pool-status-page .capacity-metric-label {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 4px;
+  }
+
+  .pool-status-page .capacity-metric-value-row {
+    width: 100%;
+    max-width: 100%;
+    gap: 6px 10px;
+  }
+
+  .pool-status-page .capacity-metric-value {
+    flex-wrap: wrap;
+    line-height: 1.15;
+  }
+
+  .pool-status-page .capacity-metric-inline-sub,
+  .pool-status-page .capacity-metric-side-values {
+    flex-basis: 100%;
+  }
+
+  .pool-status-page .capacity-meter-legend,
+  .pool-status-page .capacity-secondary-head {
+    justify-content: flex-start;
   }
 
   .pool-status-page .capacity-metric:nth-child(odd) {
@@ -3335,14 +3423,46 @@ code {
 }
 
 @media (max-width: 560px), (max-width: 720px) and (orientation: portrait) and (max-aspect-ratio: 9 / 18) {
+  .pool-status-page .group-strip-left {
+    grid-template-columns: minmax(48px, auto) minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .pool-status-page .pool-mini-metrics,
+  .pool-status-page .pool-health-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .pool-status-page .pool-mini-metrics .mini-metric,
+  .pool-status-page .pool-health-grid .mini-metric {
+    min-width: 0;
+    padding: 0 5px;
+  }
+
+  .pool-status-page .pool-mini-metrics .mini-metric strong,
+  .pool-status-page .pool-health-grid .mini-metric strong {
+    font-size: 16px;
+  }
+
+  .pool-status-page .pool-mini-metrics .mini-metric span,
+  .pool-status-page .pool-health-grid .mini-metric span {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+  }
+
   .pool-status-page .mini-metric:nth-child(even) {
-    border-left: 0;
-    padding-left: 0;
+    border-left: 1px solid color-mix(in srgb, var(--line) 76%, transparent);
+    padding-left: 5px;
   }
 
   .pool-status-page .mini-metric + .mini-metric {
-    border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
-    padding-top: 7px;
+    border-top: 0;
+    border-left: 1px solid color-mix(in srgb, var(--line) 76%, transparent);
+    padding-top: 0;
   }
 
   .pool-status-page .capacity-runway-head strong {
