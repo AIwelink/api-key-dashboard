@@ -12,12 +12,15 @@ export type ViewName =
   | "users"
   | "logs";
 
+export type UserRole = "owner" | "admin" | "maintainer" | "viewer";
+export type UserStatus = "active" | "disabled" | "pending_password_reset";
+
 export type User = {
   id?: string;
   email: string;
   name?: string;
-  role: string;
-  status?: string;
+  role: UserRole;
+  status?: UserStatus;
 };
 
 export type AccountDocument = {

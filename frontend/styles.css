@@ -2288,6 +2288,36 @@ button.ghost.success-button:hover {
   margin-bottom: 4px;
 }
 
+.user-list-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.user-list-item.selected {
+  border-color: #f0a9c0;
+  background: #fff7fa;
+}
+
+.user-card-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.user-card-main .muted {
+  overflow-wrap: anywhere;
+}
+
+.user-card-head,
+.user-list-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
 .notification-channel-actions {
   justify-content: flex-end;
 }
