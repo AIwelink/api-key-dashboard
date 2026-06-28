@@ -118,6 +118,15 @@ class ApiPoolUpdate(BaseModel):
     status: Literal["active", "disabled"] | None = None
 
 
+class CapacityAccountLimit(BaseModel):
+    five_hour_usd: float = Field(ge=0)
+    seven_day_usd: float = Field(ge=0)
+
+
+class CapacityAccountLimitsUpdate(BaseModel):
+    limits: dict[Literal["free", "plus", "team", "pro"], CapacityAccountLimit]
+
+
 class EnterReserveRequest(BaseModel):
     pool_id: str
     priority: int = 0

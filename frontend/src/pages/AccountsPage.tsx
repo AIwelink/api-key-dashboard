@@ -27,7 +27,7 @@ type Filters = {
   limit: number;
 };
 
-type AccountScope = "normal" | "problem";
+type AccountScope = "normal" | "problem" | "archived";
 
 type EditFields = {
   email_session: string;
@@ -113,6 +113,7 @@ export function AccountsPage({ token, showToast }: Props) {
     setSelectedIds(new Set());
     setFilters((current) => {
       if (nextScope === "problem") return { ...current, pool_status: "", sort_by: "last_operation_at", sort_dir: "desc" };
+      if (nextScope === "archived") return { ...current, pool_status: "", sort_by: "last_operation_at", sort_dir: "desc" };
       if (current.pool_status === "problem" || current.pool_status === "discarded") return { ...current, pool_status: "" };
       return current;
     });
@@ -247,7 +248,7 @@ export function AccountsPage({ token, showToast }: Props) {
     <section className="view accounts-page">
       <div className="topbar">
         <div>
-          <h2>{accountScope === "problem" ? "问题账号" : "正常账号"}</h2>
+          <h2>{accountScope === "problem" ? "问题账号" : accountScope === "archived" ? "归档账号" : "正常账号"}</h2>
           <p>账号总库负责筛选、查看和编辑。账号进入可用池、问题账号、弃用等状态都由人工按钮触发。</p>
         </div>
         <div className="button-row">
@@ -268,6 +269,14 @@ export function AccountsPage({ token, showToast }: Props) {
               <strong>问题账号</strong>
               <span>只查看 problem</span>
             </button>
+            <button
+              className={`account-view-menu-item ${accountScope === "archived" ? "active" : ""}`}
+              onClick={() => selectAccountScope("archived")}
+              type="button"
+            >
+              <strong>归档账号</strong>
+              <span>只查看 discarded</span>
+            </button>
           </div>
           <button className="ghost" onClick={() => loadAccounts().catch((error) => showToast(errorMessage(error), true))} type="button">
             刷新
@@ -281,6 +290,7 @@ export function AccountsPage({ token, showToast }: Props) {
           ["总库", summary.library],
           ["可用池", summary.available],
           ["问题账号", summary.problem],
+          ["归档账号", summary.discarded],
         ]}
       />
 
@@ -330,8 +340,8 @@ export function AccountsPage({ token, showToast }: Props) {
               <strong>本地状态</strong>
             </span>
             <select
-              value={accountScope === "problem" ? "problem" : filters.pool_status}
-              disabled={accountScope === "problem"}
+              value={accountScope === "problem" ? "problem" : accountScope === "archived" ? "discarded" : filters.pool_status}
+              disabled={accountScope !== "normal"}
               onChange={(event) => setFilter("pool_status", event.target.value)}
             >
               <option value="">全部</option>
@@ -340,6 +350,7 @@ export function AccountsPage({ token, showToast }: Props) {
               <option value="reserve">使用备选池</option>
               <option value="active">实际使用池</option>
               {accountScope === "problem" && <option value="problem">问题账号</option>}
+              {accountScope === "archived" && <option value="discarded">归档账号</option>}
             </select>
           </label>
           <label>
@@ -855,9 +866,10 @@ function summarize(accounts: AccountDocument[]) {
       if (status === "library") summary.library += 1;
       if (status === "available") summary.available += 1;
       if (status === "problem") summary.problem += 1;
+      if (status === "discarded") summary.discarded += 1;
       return summary;
     },
-    { library: 0, available: 0, problem: 0 },
+    { library: 0, available: 0, problem: 0, discarded: 0 },
   );
 }
 

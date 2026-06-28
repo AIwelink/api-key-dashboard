@@ -8,6 +8,7 @@ from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReplaceOne, UpdateOne
 
+from app.services.capacity_limits import DEFAULT_CAPACITY_ACCOUNT_LIMITS, get_capacity_account_limits
 from app.services.sub2api import Sub2ApiClient
 from app.utils import now_utc, serialize_doc
 
@@ -22,12 +23,7 @@ ACCOUNT_USAGE_CONCURRENCY = 50
 ACCOUNT_USAGE_BATCH_SIZE = 50
 ACCOUNT_USAGE_REFRESH_INTERVAL = timedelta(minutes=30)
 FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60
-CAPACITY_ACCOUNT_LIMITS = {
-    "plus": {"five_hour_usd": 28, "seven_day_usd": 140},
-    "team": {"five_hour_usd": 15, "seven_day_usd": 75},
-    "pro": {"five_hour_usd": 400, "seven_day_usd": 2000},
-    "free": {"five_hour_usd": 2, "seven_day_usd": 10},
-}
+CAPACITY_ACCOUNT_LIMITS = DEFAULT_CAPACITY_ACCOUNT_LIMITS
 CAPACITY_HEALTH_THRESHOLDS = {
     "exhausted_available_accounts": 2,
     "exhausted_recent_day_peak_multiple": 0.2,
@@ -741,9 +737,10 @@ async def _capacity_summary_for_accounts(
     five_hour_capacity_accounts = [account for account in capacity_accounts if not _is_7d_exhausted(account)]
     used_5h = _average_percent(_usage_number(account, "codex_5h_used_percent") for account in capacity_accounts)
     used_7d = _average_percent(_usage_number(account, "codex_7d_used_percent") for account in capacity_accounts)
-    type_summary = _capacity_by_account_type(capacity_accounts, five_hour_capacity_accounts)
+    capacity_limits = (await get_capacity_account_limits(db))["limits"]
+    type_summary = _capacity_by_account_type(capacity_accounts, five_hour_capacity_accounts, capacity_limits)
     primary_type = _primary_capacity_type(type_summary)
-    reserve_type_summary = await _reserve_capacity_by_account_type(db, site_id, group_id) if group_id is not None else _empty_capacity_type_summary()
+    reserve_type_summary = await _reserve_capacity_by_account_type(db, site_id, group_id, capacity_limits) if group_id is not None else _empty_capacity_type_summary(capacity_limits)
     if primary_type == "total" and reserve_type_summary["total"]["available_accounts"] > 0:
         primary_type = _primary_capacity_type(reserve_type_summary)
     selected = type_summary.get(primary_type, type_summary["total"])
@@ -757,7 +754,7 @@ async def _capacity_summary_for_accounts(
     seven_day_cost = cost_summary["seven_day_cost"]
     active_five_hour_capacity_usd = selected["five_hour_capacity_usd"]
     active_seven_day_capacity_usd = selected["seven_day_capacity_usd"]
-    selected_limits = CAPACITY_ACCOUNT_LIMITS.get(primary_type, {})
+    selected_limits = capacity_limits.get(primary_type, {})
     selected_seven_day_limit_usd = float(selected_limits.get("seven_day_usd") or 0)
     estimated_recent_24h_consumed_accounts = _ratio_or_none(recent_24h_cost, selected_seven_day_limit_usd)
     estimated_seven_day_peak_24h_consumed_accounts = _ratio_or_none(seven_day_24h_peak_cost, selected_seven_day_limit_usd)
@@ -840,6 +837,7 @@ async def _capacity_summary_for_accounts(
         "account_type": primary_type,
         "type_summary": type_summary,
         "reserve_type_summary": reserve_type_summary,
+        "capacity_limits": capacity_limits,
         "used_5h_percent": effective_used_5h,
         "available_5h_percent": _clamp_percent(100 - effective_used_5h),
         "used_7d_percent": effective_used_7d,
@@ -915,16 +913,21 @@ async def _capacity_summary_for_accounts(
     }
 
 
-def _capacity_by_account_type(capacity_accounts: list[dict[str, Any]], five_hour_capacity_accounts: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    result = _empty_capacity_type_summary()
+def _capacity_by_account_type(
+    capacity_accounts: list[dict[str, Any]],
+    five_hour_capacity_accounts: list[dict[str, Any]],
+    capacity_limits: dict[str, dict[str, float]],
+) -> dict[str, dict[str, Any]]:
+    result = _empty_capacity_type_summary(capacity_limits)
     five_hour_ids = {str(account.get("id")) for account in five_hour_capacity_accounts}
     for account in capacity_accounts:
         account_type = _capacity_account_type(account)
-        _add_capacity_account(result, account_type, five_hour_available=str(account.get("id")) in five_hour_ids, account=account)
+        _add_capacity_account(result, account_type, five_hour_available=str(account.get("id")) in five_hour_ids, account=account, capacity_limits=capacity_limits)
     return result
 
 
-def _empty_capacity_type_summary() -> dict[str, dict[str, Any]]:
+def _empty_capacity_type_summary(capacity_limits: dict[str, dict[str, float]] | None = None) -> dict[str, dict[str, Any]]:
+    limits = capacity_limits or CAPACITY_ACCOUNT_LIMITS
     result = {
         **{
             account_type: {
@@ -936,7 +939,7 @@ def _empty_capacity_type_summary() -> dict[str, dict[str, Any]]:
                 "five_hour_dynamic_used_usd": 0.0,
                 "five_hour_dynamic_remaining_usd": 0.0,
             }
-            for account_type in CAPACITY_ACCOUNT_LIMITS
+            for account_type in limits
         },
         "total": {
             "available_accounts": 0,
@@ -951,8 +954,13 @@ def _empty_capacity_type_summary() -> dict[str, dict[str, Any]]:
     return result
 
 
-async def _reserve_capacity_by_account_type(db: AsyncIOMotorDatabase, site_id: str, group_id: int | None) -> dict[str, dict[str, Any]]:
-    result = _empty_capacity_type_summary()
+async def _reserve_capacity_by_account_type(
+    db: AsyncIOMotorDatabase,
+    site_id: str,
+    group_id: int | None,
+    capacity_limits: dict[str, dict[str, float]],
+) -> dict[str, dict[str, Any]]:
+    result = _empty_capacity_type_summary(capacity_limits)
     if group_id is None:
         return result
     query = {
@@ -965,7 +973,7 @@ async def _reserve_capacity_by_account_type(db: AsyncIOMotorDatabase, site_id: s
         ],
     }
     async for account in db.accounts.find(query, {"metadata.account_type": 1, "account_json.credentials.plan_type": 1, "account_json.extra.account_type": 1}):
-        _add_capacity_account(result, _local_capacity_account_type(account), five_hour_available=True, account=None)
+        _add_capacity_account(result, _local_capacity_account_type(account), five_hour_available=True, account=None, capacity_limits=capacity_limits)
     return result
 
 
@@ -975,10 +983,12 @@ def _add_capacity_account(
     *,
     five_hour_available: bool,
     account: dict[str, Any] | None = None,
+    capacity_limits: dict[str, dict[str, float]] | None = None,
 ) -> None:
-    if account_type not in CAPACITY_ACCOUNT_LIMITS:
+    limits_by_type = capacity_limits or CAPACITY_ACCOUNT_LIMITS
+    if account_type not in limits_by_type:
         return
-    limits = CAPACITY_ACCOUNT_LIMITS[account_type]
+    limits = limits_by_type[account_type]
     dynamic_five_hour = _dynamic_five_hour_usage(account, limits["five_hour_usd"], five_hour_available=five_hour_available)
     result[account_type]["available_accounts"] += 1
     result[account_type]["seven_day_capacity_usd"] += limits["seven_day_usd"]

@@ -614,6 +614,43 @@ legend {
   align-items: end;
 }
 
+.capacity-limit-config-panel {
+  box-shadow: none;
+}
+
+.capacity-limit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.capacity-limit-row {
+  display: grid;
+  grid-template-columns: minmax(78px, 0.8fr) minmax(82px, 1fr) minmax(82px, 1fr);
+  gap: 10px;
+  align-items: end;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--panel-soft);
+}
+
+.capacity-limit-row > strong {
+  font-size: 14px;
+  color: var(--text);
+  padding-bottom: 9px;
+}
+
+.capacity-limit-row label {
+  gap: 4px;
+}
+
+.capacity-limit-row label span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .pool-compact-toolbar {
   display: grid;
   grid-template-columns: minmax(180px, 0.8fr) minmax(190px, 260px) minmax(260px, 1fr) minmax(210px, auto);

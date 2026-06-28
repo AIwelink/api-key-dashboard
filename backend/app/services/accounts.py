@@ -435,6 +435,8 @@ async def list_accounts(
         query["metadata.problem_resolution"] = problem_resolution
     if account_scope == "problem":
         query["metadata.pool_status"] = "problem"
+    elif account_scope == "archived":
+        query["metadata.pool_status"] = "discarded"
     elif account_scope == "normal":
         query["metadata.pool_status"] = pool_status if pool_status and pool_status not in {"problem", "discarded"} else {"$nin": ["problem", "discarded"]}
     elif pool_status:

@@ -53,6 +53,16 @@ type ApiPoolResponse = {
   total: number;
 };
 
+type CapacityLimitKey = "free" | "plus" | "team" | "pro";
+
+type CapacityLimitForm = Record<CapacityLimitKey, { five_hour_usd: string; seven_day_usd: string }>;
+
+type CapacityLimitsResponse = {
+  limits: Record<CapacityLimitKey, { five_hour_usd: number; seven_day_usd: number }>;
+  updated_at?: string | null;
+  updated_by_name?: string | null;
+};
+
 type RefreshResponse = {
   groups?: number;
   accounts?: number;
@@ -88,6 +98,20 @@ const emptySiteForm: SiteForm = {
   auto_remove_abnormal_accounts: false,
 };
 
+const capacityLimitLabels: Record<CapacityLimitKey, string> = {
+  free: "free",
+  plus: "plus",
+  team: "team 子号",
+  pro: "pro 20x",
+};
+
+const defaultCapacityLimitForm: CapacityLimitForm = {
+  free: { five_hour_usd: "2", seven_day_usd: "10" },
+  plus: { five_hour_usd: "28", seven_day_usd: "140" },
+  team: { five_hour_usd: "20", seven_day_usd: "100" },
+  pro: { five_hour_usd: "360", seven_day_usd: "2100" },
+};
+
 export function AccountPoolsPage({ token, showToast }: Props) {
   const [sites, setSites] = useState<Site[]>([]);
   const [selectedSiteId, setSelectedSiteId] = useState("");
@@ -102,6 +126,9 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   const [editingSiteId, setEditingSiteId] = useState<string | null>(null);
   const [siteForm, setSiteForm] = useState<SiteForm>(emptySiteForm);
   const [savingSite, setSavingSite] = useState(false);
+  const [capacityLimits, setCapacityLimits] = useState<CapacityLimitForm>(defaultCapacityLimitForm);
+  const [capacityLimitsMeta, setCapacityLimitsMeta] = useState<{ updated_at?: string | null; updated_by_name?: string | null }>({});
+  const [savingCapacityLimits, setSavingCapacityLimits] = useState(false);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 
   const selectedSite = sites.find((site) => site.id === selectedSiteId) || null;
@@ -240,6 +267,34 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     setLocalPools(data.items);
   };
 
+  const loadCapacityLimits = async () => {
+    const data = await api<CapacityLimitsResponse>("/api-pools/capacity-limits", token);
+    setCapacityLimits(capacityLimitsToForm(data.limits));
+    setCapacityLimitsMeta({ updated_at: data.updated_at, updated_by_name: data.updated_by_name });
+  };
+
+  const saveCapacityLimits = async () => {
+    const payload = capacityLimitPayload(capacityLimits);
+    if (!payload) {
+      showToast("额度估计必须是大于等于 0 的数字", true);
+      return;
+    }
+    setSavingCapacityLimits(true);
+    try {
+      const data = await api<CapacityLimitsResponse>("/api-pools/capacity-limits", token, {
+        method: "PATCH",
+        body: JSON.stringify({ limits: payload }),
+      });
+      setCapacityLimits(capacityLimitsToForm(data.limits));
+      setCapacityLimitsMeta({ updated_at: data.updated_at, updated_by_name: data.updated_by_name });
+      showToast("账号额度估计已保存，后续容量计算会使用新配置");
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setSavingCapacityLimits(false);
+    }
+  };
+
   const refreshRemoteCache = async () => {
     if (!selectedSiteId) return;
     setRefreshing(true);
@@ -266,7 +321,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   };
 
   useEffect(() => {
-    Promise.all([loadSites(), loadLocalPools(), loadReserveSummary()]).catch((error) => showToast(errorMessage(error), true));
+    Promise.all([loadSites(), loadLocalPools(), loadReserveSummary(), loadCapacityLimits()]).catch((error) => showToast(errorMessage(error), true));
   }, []);
 
   useEffect(() => {
@@ -406,6 +461,62 @@ export function AccountPoolsPage({ token, showToast }: Props) {
               <em>{siteForm.auto_remove_abnormal_accounts ? "已开启" : "已关闭"}</em>
             </span>
           </label>
+        </div>
+      </section>
+
+      <section className="panel capacity-limit-config-panel">
+        <div className="panel-header">
+          <div>
+            <h3>账号额度估计</h3>
+            <p>配置每种账号参与容量预估时使用的 5h 和 7d 美金额度；API 账号池状态页后续计算会读取这里的配置。</p>
+          </div>
+          <div className="button-row">
+            <button className="compact-button" type="button" onClick={saveCapacityLimits} disabled={savingCapacityLimits}>
+              {savingCapacityLimits ? "保存中..." : "保存额度估计"}
+            </button>
+          </div>
+        </div>
+        <div className="capacity-limit-grid">
+          {(Object.keys(capacityLimitLabels) as CapacityLimitKey[]).map((accountType) => (
+            <div className="capacity-limit-row" key={accountType}>
+              <strong>{capacityLimitLabels[accountType]}</strong>
+              <label>
+                <span>5h</span>
+                <input
+                  min={0}
+                  step="0.01"
+                  type="number"
+                  value={capacityLimits[accountType].five_hour_usd}
+                  onChange={(event) =>
+                    setCapacityLimits((current) => ({
+                      ...current,
+                      [accountType]: { ...current[accountType], five_hour_usd: event.target.value },
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                <span>7d</span>
+                <input
+                  min={0}
+                  step="0.01"
+                  type="number"
+                  value={capacityLimits[accountType].seven_day_usd}
+                  onChange={(event) =>
+                    setCapacityLimits((current) => ({
+                      ...current,
+                      [accountType]: { ...current[accountType], seven_day_usd: event.target.value },
+                    }))
+                  }
+                />
+              </label>
+            </div>
+          ))}
+        </div>
+        <div className="cell-sub">
+          {capacityLimitsMeta.updated_at
+            ? `最后保存：${formatDateTime(capacityLimitsMeta.updated_at)}${capacityLimitsMeta.updated_by_name ? ` · ${capacityLimitsMeta.updated_by_name}` : ""}`
+            : "当前使用默认额度估计"}
         </div>
       </section>
 
@@ -611,6 +722,27 @@ function displayValue(value: unknown) {
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function capacityLimitsToForm(limits: CapacityLimitsResponse["limits"]): CapacityLimitForm {
+  return (Object.keys(defaultCapacityLimitForm) as CapacityLimitKey[]).reduce((form, accountType) => {
+    form[accountType] = {
+      five_hour_usd: String(limits?.[accountType]?.five_hour_usd ?? defaultCapacityLimitForm[accountType].five_hour_usd),
+      seven_day_usd: String(limits?.[accountType]?.seven_day_usd ?? defaultCapacityLimitForm[accountType].seven_day_usd),
+    };
+    return form;
+  }, { ...defaultCapacityLimitForm } as CapacityLimitForm);
+}
+
+function capacityLimitPayload(form: CapacityLimitForm): Record<CapacityLimitKey, { five_hour_usd: number; seven_day_usd: number }> | null {
+  const payload = {} as Record<CapacityLimitKey, { five_hour_usd: number; seven_day_usd: number }>;
+  for (const accountType of Object.keys(form) as CapacityLimitKey[]) {
+    const fiveHour = Number(form[accountType].five_hour_usd);
+    const sevenDay = Number(form[accountType].seven_day_usd);
+    if (!Number.isFinite(fiveHour) || !Number.isFinite(sevenDay) || fiveHour < 0 || sevenDay < 0) return null;
+    payload[accountType] = { five_hour_usd: fiveHour, seven_day_usd: sevenDay };
+  }
+  return payload;
 }
 
 function siteToForm(site: Site): SiteForm {
