@@ -33,18 +33,6 @@ async def post_api_pool(
     return created
 
 
-@router.patch("/{pool_id}")
-async def patch_api_pool(
-    pool_id: str,
-    payload: ApiPoolUpdate,
-    actor: dict = Depends(require_roles("owner", "admin")),
-    db: AsyncIOMotorDatabase = Depends(db_dependency),
-) -> dict:
-    updated = await update_api_pool(db, pool_id, payload.model_dump(exclude_unset=True), actor)
-    await write_audit_log(db, actor=actor, action="api_pool.update", resource_type="api_pool", resource_id=pool_id)
-    return updated
-
-
 @router.get("/auto-refill-logs")
 async def get_auto_refill_logs(
     site_id: str | None = None,
@@ -72,6 +60,18 @@ async def patch_capacity_limits(
 ) -> dict:
     updated = await update_capacity_account_limits(db, {key: value.model_dump() for key, value in payload.limits.items()}, actor)
     await write_audit_log(db, actor=actor, action="api_pool.capacity_limits.update", resource_type="setting", resource_id="capacity_account_limits")
+    return updated
+
+
+@router.patch("/{pool_id}")
+async def patch_api_pool(
+    pool_id: str,
+    payload: ApiPoolUpdate,
+    actor: dict = Depends(require_roles("owner", "admin")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    updated = await update_api_pool(db, pool_id, payload.model_dump(exclude_unset=True), actor)
+    await write_audit_log(db, actor=actor, action="api_pool.update", resource_type="api_pool", resource_id=pool_id)
     return updated
 
 
