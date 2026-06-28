@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -14,7 +14,7 @@ from pymongo import UpdateOne
 
 from app.services.notifications import send_notification_event
 from app.services.sub2api import Sub2ApiClient
-from app.services.sub2api_cache import get_site, list_sites
+from app.services.sub2api_cache import _get_or_update_group_capacity_summary, get_site, list_sites
 from app.utils import now_utc, serialize_doc
 
 
@@ -30,6 +30,9 @@ MAX_ACCOUNT_LIST_PAGES = 100
 STATUS_NORMAL = {"active", "ok", "healthy", "normal", "available"}
 STATUS_ABNORMAL = {"abnormal", "error", "failed", "disabled", "inactive", "invalid", "revoked"}
 ERROR_401_PATTERN = re.compile(r"401|token[_ -]?invalidated|token[_ -]?revoked|authentication failed|invalid_request_error", re.I)
+PRO_MARKER_PATTERN = re.compile(r"(^|[^a-z0-9])(?:pro|20x)(?:[^a-z0-9]|$)", re.I)
+NOTIFICATION_401_THROTTLE_SECONDS = 180
+SHANGHAI_TZ = timezone(timedelta(hours=8))
 
 
 def default_group_observability_setting(site_id: str, group_id: int, group_name: str | None = None) -> dict[str, Any]:
@@ -256,6 +259,7 @@ async def probe_scheduler_loop(db: AsyncIOMotorDatabase) -> None:
     while True:
         try:
             await probe_due_sites(db)
+            await flush_due_401_notification_batches(db)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -863,6 +867,8 @@ async def _write_event(
         "session_id": session.get("_id") if session else (identity or {}).get("current_session_id"),
         "normalized_email": account.get("normalized_email") or (identity or previous or {}).get("normalized_email"),
         "email": account.get("email") or (identity or previous or {}).get("email"),
+        "name": account.get("name") or (identity or previous or {}).get("name"),
+        "plan_type": account.get("plan_type") or (identity or previous or {}).get("plan_type"),
         "remote_account_id": account.get("remote_account_id") or (identity or previous or {}).get("current_remote_account_id"),
         "event_type": event_type,
         "severity": severity,
@@ -887,13 +893,14 @@ async def _write_event(
     if event_type == "401_detected":
         event_id = str(result.inserted_id)
         try:
-            notification_result = await _notify_401_detected(db, event_id=event_id, event_doc=doc)
+            notification_result = await _notify_401_detected(db, event_id=event_id, event_db_id=result.inserted_id, event_doc=doc)
             await db.remote_account_status_events.update_one(
                 {"_id": result.inserted_id},
                 {
                     "$set": {
                         "notification_status": notification_result.get("event", {}).get("status"),
                         "notification_event_id": notification_result.get("event", {}).get("id"),
+                        "notification_batch_id": notification_result.get("event", {}).get("batch_id"),
                         "notification_channel_count": notification_result.get("total", 0),
                         "notification_success_count": notification_result.get("success", 0),
                         "notification_failed_count": notification_result.get("failed", 0),
@@ -908,55 +915,296 @@ async def _write_event(
             )
 
 
-async def _notify_401_detected(db: AsyncIOMotorDatabase, *, event_id: str, event_doc: dict[str, Any]) -> dict[str, Any]:
+async def _notify_401_detected(db: AsyncIOMotorDatabase, *, event_id: str, event_db_id: Any, event_doc: dict[str, Any]) -> dict[str, Any]:
     site_id = str(event_doc.get("site_id") or "")
     email = str(event_doc.get("email") or event_doc.get("normalized_email") or "-")
     remote_account_id = event_doc.get("remote_account_id")
     group_ids = event_doc.get("current_group_ids") or []
     error_message = str(event_doc.get("current_error_message") or event_doc.get("raw_excerpt") or "-")
     detected_at = event_doc.get("detected_at") or event_doc.get("occurred_at")
-    site = await get_site(db, site_id) if site_id else None
     group_names = await _notification_group_names(db, site_id=site_id, group_ids=group_ids)
+    pro_group_ids = await _notification_pro_group_ids(db, site_id=site_id, group_ids=group_ids)
+    is_pro_pool = _is_pro_probe_event(event_doc, group_names=group_names, pro_group_ids=pro_group_ids)
+    account_name = str(event_doc.get("name") or event_doc.get("details", {}).get("name") or "-").strip() or "-"
+    detail_updates = {
+        "details.is_pro_pool": is_pro_pool,
+        "details.pro_group_ids": pro_group_ids,
+        "details.account_type": "pro" if is_pro_pool else _normalized_account_type(event_doc.get("plan_type")),
+        "details.name": account_name,
+    }
+    await db.remote_account_status_events.update_one({"_id": event_db_id}, {"$set": detail_updates})
+    if not is_pro_pool:
+        return _notification_skip_result("skipped_non_pro")
+
+    detected_dt = _coerce_datetime(detected_at) or now_utc()
+    stats = await _pro_401_stats(db, detected_at=detected_dt)
+    group_summary = await _notification_capacity_summary(db, site_id=site_id, group_ids=pro_group_ids or group_ids)
+    await db.remote_account_status_events.update_one(
+        {"_id": event_db_id},
+        {"$set": {"details.ban_count_1h": stats["one_hour"], "details.ban_count_today": stats["today"], "details.capacity_summary": group_summary}},
+    )
     usage = event_doc.get("usage_snapshot") if isinstance(event_doc.get("usage_snapshot"), dict) else {}
-    title = "AIwelink 401 封号告警"
-    lines = [
-        "### AIwelink 401 封号告警",
-        f"- 站点：{(site or {}).get('name') or site_id or '-'}",
-        f"- 分组：{', '.join(group_names) if group_names else '-'}",
-        f"- 邮箱：{email}",
-        f"- Remote ID：#{remote_account_id}" if remote_account_id is not None else "- Remote ID：-",
-        f"- 状态：{event_doc.get('current_status') or '-'}",
-        f"- 错误：{error_message[:300]}",
-        f"- 5h 用量：{_usage_value(usage, 'codex_5h_actual_cost')} / { _usage_value(usage, 'codex_5h_used_percent', suffix='%')}",
-        f"- 7d 用量：{_usage_value(usage, 'codex_7d_actual_cost')} / { _usage_value(usage, 'codex_7d_used_percent', suffix='%')}",
-        f"- 时间：{serialize_doc(detected_at)}",
-    ]
-    plain_text = "\n".join(line.replace("### ", "") for line in lines)
-    payload = {
+    batch_id = await _enqueue_401_notification_batch(
+        db,
+        status_event_id=event_id,
+        status_event_db_id=event_db_id,
+        site_id=site_id,
+        group_ids=group_ids,
+        pro_group_ids=pro_group_ids,
+        account_name=account_name,
+        detected_at=detected_dt,
+        event_payload={
         "status_event_id": event_id,
         "site_id": site_id,
-        "site_name": (site or {}).get("name"),
         "group_ids": group_ids,
         "group_names": group_names,
+        "pro_group_ids": pro_group_ids,
+        "account_name": account_name,
         "email": email,
         "remote_account_id": remote_account_id,
         "error_message": error_message,
         "detected_at": serialize_doc(detected_at),
         "usage_snapshot": usage,
-    }
-    return await send_notification_event(
+        "ban_count_1h": stats["one_hour"],
+        "ban_count_today": stats["today"],
+        "capacity_summary": group_summary,
+        },
+    )
+    return {"event": {"id": None, "batch_id": batch_id, "status": "batched"}, "total": 0, "success": 0, "failed": 0, "items": []}
+
+
+async def flush_due_401_notification_batches(db: AsyncIOMotorDatabase) -> dict[str, Any]:
+    now = now_utc()
+    sent = 0
+    failed = 0
+    cursor = db.notification_batches.find(
+        {"event_type": "sub2api.account.401_detected", "status": "pending", "window_end_at": {"$lte": now}},
+        {"_id": 1},
+    ).sort("window_start_at", 1).limit(20)
+    async for item in cursor:
+        batch_id = str(item.get("_id"))
+        result = await db.notification_batches.update_one(
+            {"_id": batch_id, "status": "pending"},
+            {"$set": {"status": "sending", "sending_at": now_utc(), "updated_at": now_utc()}},
+        )
+        if result.modified_count == 0:
+            continue
+        try:
+            await _send_401_notification_batch(db, batch_id=batch_id)
+            sent += 1
+        except Exception as exc:  # noqa: BLE001 - keep scheduler alive and retry next loop.
+            failed += 1
+            logger.warning("sub2api_account_probe_401_batch_send_failed batch_id=%s error=%s", batch_id, exc)
+            await db.notification_batches.update_one(
+                {"_id": batch_id},
+                {"$set": {"status": "pending", "last_error": str(exc) or exc.__class__.__name__, "last_failed_at": now_utc(), "updated_at": now_utc()}, "$inc": {"send_attempts": 1}},
+            )
+    return {"sent": sent, "failed": failed}
+
+
+async def _enqueue_401_notification_batch(
+    db: AsyncIOMotorDatabase,
+    *,
+    status_event_id: str,
+    status_event_db_id: Any,
+    site_id: str,
+    group_ids: list[int],
+    pro_group_ids: list[int],
+    account_name: str,
+    detected_at: datetime,
+    event_payload: dict[str, Any],
+) -> str:
+    now = now_utc()
+    batch = await db.notification_batches.find_one(
+        {"event_type": "sub2api.account.401_detected", "status": "pending", "window_end_at": {"$gt": now}},
+        {"_id": 1},
+        sort=[("window_start_at", 1)],
+    )
+    if batch:
+        batch_id = str(batch["_id"])
+        await db.notification_batches.update_one(
+            {"_id": batch_id},
+            {
+                "$addToSet": {
+                    "status_event_ids": status_event_id,
+                    "status_event_db_ids": status_event_db_id,
+                    "site_ids": site_id,
+                    "group_ids": {"$each": group_ids},
+                    "pro_group_ids": {"$each": pro_group_ids},
+                    "account_names": account_name,
+                },
+                "$push": {"events": event_payload},
+                "$inc": {"event_count": 1},
+                "$set": {"last_event_at": detected_at, "updated_at": now},
+            },
+        )
+        return batch_id
+
+    batch_id = secrets.token_hex(12)
+    window_start = now
+    window_end = window_start + timedelta(seconds=NOTIFICATION_401_THROTTLE_SECONDS)
+    await db.notification_batches.insert_one(
+        {
+            "_id": batch_id,
+            "event_type": "sub2api.account.401_detected",
+            "source": "sub2api_account_probe",
+            "status": "pending",
+            "window_start_at": window_start,
+            "window_end_at": window_end,
+            "first_event_at": detected_at,
+            "last_event_at": detected_at,
+            "event_count": 1,
+            "status_event_ids": [status_event_id],
+            "status_event_db_ids": [status_event_db_id],
+            "site_ids": [site_id],
+            "group_ids": group_ids,
+            "pro_group_ids": pro_group_ids,
+            "account_names": [account_name],
+            "events": [event_payload],
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+    return batch_id
+
+
+async def _send_401_notification_batch(db: AsyncIOMotorDatabase, *, batch_id: str) -> dict[str, Any]:
+    batch = await db.notification_batches.find_one({"_id": batch_id})
+    if not batch:
+        return _notification_skip_result("batch_not_found")
+    events = batch.get("events") if isinstance(batch.get("events"), list) else []
+    if not events:
+        await db.notification_batches.update_one({"_id": batch_id}, {"$set": {"status": "skipped", "updated_at": now_utc(), "skip_reason": "empty_batch"}})
+        return _notification_skip_result("empty_batch")
+
+    latest_event = events[-1] if isinstance(events[-1], dict) else {}
+    pro_group_ids = batch.get("pro_group_ids") if isinstance(batch.get("pro_group_ids"), list) else []
+    capacity_summary = await _notification_batch_capacity_summary(db, events=events)
+    detected_at = _coerce_datetime(latest_event.get("detected_at")) or _coerce_datetime(batch.get("last_event_at")) or now_utc()
+    stats = await _pro_401_stats(db, detected_at=detected_at)
+    names = [str(event.get("account_name") or "-") for event in events if isinstance(event, dict)]
+    name_text = "、".join(names[:8])
+    if len(names) > 8:
+        name_text += f" 等 {len(names)} 个"
+    red_lines = _capacity_red_status_lines(capacity_summary)
+    lines = [
+        "### AIwelink Pro 401 封号告警",
+        f"- 本次新增：{len(events)} 个",
+        f"- 账号：{name_text or '-'}",
+        f"- 1h 内封号：{stats['one_hour']} 个",
+        f"- 今日封号：{stats['today']} 个",
+        f"- 剩余账号数：{_format_count(capacity_summary.get('available_accounts'))}",
+        f"- 5h 动态可用：{_format_usd(capacity_summary.get('dynamic_five_hour_remaining_estimated_usd'))}",
+        f"- 5h 实际可用：{_format_usd(capacity_summary.get('five_hour_actual_remaining_usd'))}",
+        f"- 7d 动态可用：{_format_usd(capacity_summary.get('seven_day_remaining_estimated_usd'))}",
+        f"- 7d 实际可用：{_format_usd(capacity_summary.get('seven_day_actual_remaining_usd'))}",
+    ]
+    lines.extend(red_lines)
+    lines.append(f"- 时间：{_format_shanghai_time(detected_at)}")
+    plain_text = "\n".join(line.replace("### ", "") for line in lines)
+    channel_ids = await _active_dingtalk_channel_ids(db)
+    if not channel_ids:
+        await db.notification_batches.update_one(
+            {"_id": batch_id},
+            {"$set": {"status": "skipped", "notification_status": "skipped_no_dingtalk", "skip_reason": "no active dingtalk channel", "updated_at": now_utc()}},
+        )
+        await _update_401_batch_status_events(
+            db,
+            batch=batch,
+            batch_id=batch_id,
+            notification_status="skipped_no_dingtalk",
+            notification_event_id=None,
+            total=0,
+            success=0,
+            failed=0,
+        )
+        return _notification_skip_result("skipped_no_dingtalk")
+    notification_result = await send_notification_event(
         db,
         event_type="sub2api.account.401_detected",
         severity="critical",
         source="sub2api_account_probe",
-        resource_type="remote_account_status_event",
-        resource_id=event_id,
-        dedupe_key=f"sub2api.account.401_detected:{site_id}:{email}:{remote_account_id}:{serialize_doc(detected_at)}",
-        title=title,
+        resource_type="notification_batch",
+        resource_id=batch_id,
+        dedupe_key=f"sub2api.account.401_detected.batch:{batch_id}",
+        title="AIwelink Pro 401 封号告警",
         text=plain_text,
         markdown_text="\n".join(lines),
-        payload=payload,
+        payload={
+            "batch_id": batch_id,
+            "event_count": len(events),
+            "site_ids": batch.get("site_ids") or [],
+            "group_ids": batch.get("group_ids") or [],
+            "pro_group_ids": pro_group_ids,
+            "account_names": names,
+            "ban_count_1h": stats["one_hour"],
+            "ban_count_today": stats["today"],
+            "capacity_summary": capacity_summary,
+            "red_status_lines": red_lines,
+            "events": events,
+        },
+        channel_ids=channel_ids,
     )
+    status_value = notification_result.get("event", {}).get("status") or "unknown"
+    event_status_value = "sent_batch" if status_value in {"success", "partial", "skipped"} else "failed_batch"
+    await db.notification_batches.update_one(
+        {"_id": batch_id},
+        {
+            "$set": {
+                "status": "sent" if status_value in {"success", "partial", "skipped"} else "failed",
+                "notification_event_id": notification_result.get("event", {}).get("id"),
+                "notification_status": status_value,
+                "notification_channel_count": notification_result.get("total", 0),
+                "notification_success_count": notification_result.get("success", 0),
+                "notification_failed_count": notification_result.get("failed", 0),
+                "sent_at": now_utc(),
+                "updated_at": now_utc(),
+            }
+        },
+    )
+    await _update_401_batch_status_events(
+        db,
+        batch=batch,
+        batch_id=batch_id,
+        notification_status=event_status_value,
+        notification_event_id=notification_result.get("event", {}).get("id"),
+        total=notification_result.get("total", 0),
+        success=notification_result.get("success", 0),
+        failed=notification_result.get("failed", 0),
+    )
+    return notification_result
+
+
+async def _update_401_batch_status_events(
+    db: AsyncIOMotorDatabase,
+    *,
+    batch: dict[str, Any],
+    batch_id: str,
+    notification_status: str,
+    notification_event_id: str | None,
+    total: int,
+    success: int,
+    failed: int,
+) -> None:
+    status_event_db_ids = [item for item in batch.get("status_event_db_ids") or [] if item]
+    if status_event_db_ids:
+        await db.remote_account_status_events.update_many(
+            {"_id": {"$in": status_event_db_ids}},
+            {
+                "$set": {
+                    "notification_status": notification_status,
+                    "notification_event_id": notification_event_id,
+                    "notification_batch_id": batch_id,
+                    "notification_channel_count": total,
+                    "notification_success_count": success,
+                    "notification_failed_count": failed,
+                }
+            },
+        )
+
+
+async def _active_dingtalk_channel_ids(db: AsyncIOMotorDatabase) -> list[str]:
+    return [str(item["_id"]) async for item in db.notification_channels.find({"status": "active", "channel_type": "dingtalk"}, {"_id": 1})]
 
 
 async def _notification_group_names(db: AsyncIOMotorDatabase, *, site_id: str, group_ids: Any) -> list[str]:
@@ -981,6 +1229,218 @@ async def _notification_group_names(db: AsyncIOMotorDatabase, *, site_id: str, g
     for group_id in numeric_ids:
         result.append(names_by_id.get(group_id, f"#{group_id}"))
     return result
+
+
+async def _notification_pro_group_ids(db: AsyncIOMotorDatabase, *, site_id: str, group_ids: Any) -> list[int]:
+    result: list[int] = []
+    if not site_id or not isinstance(group_ids, list):
+        return result
+    numeric_ids: list[int] = []
+    for value in group_ids:
+        try:
+            numeric_ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    if not numeric_ids:
+        return result
+    cursor = db.sub2api_groups_cache.find(
+        {"site_id": site_id, "group_id": {"$in": numeric_ids}},
+        {"group_id": 1, "group.name": 1, "capacity_summary.account_type": 1, "group.capacity_summary.account_type": 1},
+    )
+    async for doc in cursor:
+        group_id = doc.get("group_id")
+        if not isinstance(group_id, int):
+            continue
+        group = doc.get("group") if isinstance(doc.get("group"), dict) else {}
+        summary = doc.get("capacity_summary") if isinstance(doc.get("capacity_summary"), dict) else group.get("capacity_summary")
+        account_type = summary.get("account_type") if isinstance(summary, dict) else None
+        group_name = str(group.get("name") or "")
+        if _normalized_account_type(account_type) == "pro" or _text_mentions_pro(group_name):
+            result.append(group_id)
+    return result
+
+
+def _is_pro_probe_event(event_doc: dict[str, Any], *, group_names: list[str], pro_group_ids: list[int]) -> bool:
+    if pro_group_ids:
+        return True
+    plan_type = _normalized_account_type(event_doc.get("plan_type") or (event_doc.get("details") or {}).get("account_type"))
+    if plan_type == "pro":
+        return True
+    return any(_text_mentions_pro(name) for name in group_names)
+
+
+def _normalized_account_type(value: Any) -> str:
+    text = str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if text in {"pro", "plus", "free", "team", "k12"}:
+        return text
+    if "20x" in text or "pro" in text:
+        return "pro"
+    return text or "unknown"
+
+
+def _text_mentions_pro(value: Any) -> bool:
+    return bool(PRO_MARKER_PATTERN.search(str(value or "")))
+
+
+def _notification_skip_result(status: str) -> dict[str, Any]:
+    return {"event": {"id": None, "status": status}, "total": 0, "success": 0, "failed": 0, "items": []}
+
+
+async def _pro_401_stats(db: AsyncIOMotorDatabase, *, detected_at: datetime) -> dict[str, int]:
+    detected_at = _coerce_datetime(detected_at) or now_utc()
+    one_hour_start = detected_at - timedelta(hours=1)
+    today_start = detected_at.astimezone(SHANGHAI_TZ).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
+    base_query = {"event_type": "401_detected", "details.is_pro_pool": True}
+    one_hour = await db.remote_account_status_events.count_documents({**base_query, "detected_at": {"$gte": one_hour_start, "$lte": detected_at}})
+    today = await db.remote_account_status_events.count_documents({**base_query, "detected_at": {"$gte": today_start, "$lte": detected_at}})
+    return {"one_hour": one_hour, "today": today}
+
+
+async def _notification_batch_capacity_summary(db: AsyncIOMotorDatabase, *, events: list[Any]) -> dict[str, Any]:
+    keys_by_site: dict[str, set[int]] = {}
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        site_id = str(event.get("site_id") or "")
+        if not site_id:
+            continue
+        group_ids = event.get("pro_group_ids") if isinstance(event.get("pro_group_ids"), list) else event.get("group_ids")
+        if not isinstance(group_ids, list):
+            continue
+        for value in group_ids:
+            try:
+                keys_by_site.setdefault(site_id, set()).add(int(value))
+            except (TypeError, ValueError):
+                continue
+    summaries: list[dict[str, Any]] = []
+    for site_id, group_ids in keys_by_site.items():
+        for group_id in sorted(group_ids):
+            summary = await _notification_capacity_summary(db, site_id=site_id, group_ids=[group_id])
+            if summary:
+                summaries.append(summary)
+    return _merge_notification_capacity_summaries(summaries)
+
+
+async def _notification_capacity_summary(db: AsyncIOMotorDatabase, *, site_id: str, group_ids: Any) -> dict[str, Any]:
+    numeric_ids: list[int] = []
+    if isinstance(group_ids, list):
+        for value in group_ids:
+            try:
+                group_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if group_id not in numeric_ids:
+                numeric_ids.append(group_id)
+    for group_id in numeric_ids:
+        try:
+            summary = await _get_or_update_group_capacity_summary(db, site_id, group_id)
+        except Exception as exc:  # noqa: BLE001 - notification should still send the 401 core signal.
+            logger.warning("sub2api_account_probe_capacity_summary_failed site_id=%s group_id=%s error=%s", site_id, group_id, exc)
+            continue
+        if _normalized_account_type(summary.get("account_type")) == "pro":
+            return summary
+    if numeric_ids:
+        try:
+            return await _get_or_update_group_capacity_summary(db, site_id, numeric_ids[0])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("sub2api_account_probe_capacity_summary_fallback_failed site_id=%s group_id=%s error=%s", site_id, numeric_ids[0], exc)
+    return {}
+
+
+def _merge_notification_capacity_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    if not summaries:
+        return {}
+    sum_fields = (
+        "available_accounts",
+        "active_available_accounts",
+        "reserve_available_accounts",
+        "dynamic_five_hour_remaining_estimated_usd",
+        "five_hour_actual_remaining_usd",
+        "seven_day_remaining_estimated_usd",
+        "seven_day_actual_remaining_usd",
+    )
+    min_fields = (
+        "recent_day_five_hour_peak_multiple",
+        "seven_day_five_hour_peak_multiple",
+        "five_hour_peak_multiple",
+        "current_speed_days",
+        "seven_day_peak_speed_days",
+    )
+    result: dict[str, Any] = {"account_type": "pro", "summary_count": len(summaries)}
+    for field in sum_fields:
+        result[field] = round(sum(_optional_float(summary.get(field)) or 0 for summary in summaries), 4)
+    for field in min_fields:
+        values = [_optional_float(summary.get(field)) for summary in summaries]
+        numeric = [value for value in values if value is not None]
+        result[field] = round(min(numeric), 4) if numeric else None
+    return result
+
+
+def _capacity_red_status_lines(summary: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    recent_day_peak = _optional_float(summary.get("recent_day_five_hour_peak_multiple"))
+    if recent_day_peak is not None and recent_day_peak < 1:
+        lines.append(f"- 红色峰值容量：最近一天 5h {_format_multiple(recent_day_peak)}")
+    seven_day_peak = _optional_float(summary.get("seven_day_five_hour_peak_multiple") or summary.get("five_hour_peak_multiple"))
+    if seven_day_peak is not None and seven_day_peak < 1:
+        lines.append(f"- 红色峰值容量：7天最高 5h {_format_multiple(seven_day_peak)}")
+    current_speed_days = _optional_float(summary.get("current_speed_days"))
+    if current_speed_days is not None and current_speed_days < 1:
+        lines.append(f"- 红色预估天数：最近 24h {_format_days(current_speed_days)}")
+    seven_day_peak_days = _optional_float(summary.get("seven_day_peak_speed_days"))
+    if seven_day_peak_days is not None and seven_day_peak_days < 1:
+        lines.append(f"- 红色预估天数：7天最高 24h {_format_days(seven_day_peak_days)}")
+    return lines
+
+
+def _coerce_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    return _parse_datetime(value)
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_count(value: Any) -> str:
+    parsed = _optional_float(value)
+    if parsed is None:
+        return "-"
+    return str(int(parsed)) if parsed.is_integer() else f"{parsed:.1f}".rstrip("0").rstrip(".")
+
+
+def _format_usd(value: Any) -> str:
+    parsed = _optional_float(value)
+    if parsed is None:
+        return "$-"
+    return f"${parsed:.2f}".rstrip("0").rstrip(".")
+
+
+def _format_multiple(value: Any) -> str:
+    parsed = _optional_float(value)
+    if parsed is None:
+        return "-"
+    return f"{parsed:.2f}x"
+
+
+def _format_days(value: Any) -> str:
+    parsed = _optional_float(value)
+    if parsed is None:
+        return "-"
+    if parsed < 1:
+        hours = max(0.0, parsed * 24)
+        return f"{hours:.1f}小时"
+    return f"{parsed:.1f}天"
+
+
+def _format_shanghai_time(value: datetime) -> str:
+    return value.astimezone(SHANGHAI_TZ).strftime("%m/%d %H:%M")
 
 
 def _usage_value(usage: dict[str, Any], key: str, *, suffix: str = "") -> str:

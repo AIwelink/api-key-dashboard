@@ -212,7 +212,7 @@ async def send_notification_event(
     await db.notification_events.insert_one(event_doc)
 
     query: dict[str, Any] = {"status": "active"}
-    if channel_ids:
+    if channel_ids is not None:
         query["_id"] = {"$in": channel_ids}
     channels = [item async for item in db.notification_channels.find(query).sort("created_at", 1)]
     items: list[dict[str, Any]] = []

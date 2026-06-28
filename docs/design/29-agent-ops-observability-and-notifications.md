@@ -126,20 +126,22 @@ send_notification_event(
     event_type="sub2api.account.401_detected",
     severity="critical",
     source="sub2api_account_probe",
-    resource_type="remote_account_status_event",
-    resource_id=event_id,
-    title="AIwelink 401 封号告警",
+    resource_type="notification_batch",
+    resource_id=batch_id,
+    title="AIwelink Pro 401 封号告警",
     text="...",
     markdown_text="...",
     payload={...},
+    channel_ids=dingtalk_channel_ids,
 )
 ```
 
-调用方只负责描述业务事件，不直接处理钉钉/TG 发送细节。底层会查找所有 `status=active` 的通知渠道，逐个投递，并记录结果。
+调用方只负责描述业务事件，不直接处理钉钉/TG 发送细节。默认底层会查找所有 `status=active` 的通知渠道，逐个投递，并记录结果；如果调用方传入 `channel_ids`，则只投递指定渠道。
 
 正式通知记录集合：
 
 - `notification_events`: 一条业务通知事件。
+- `notification_batches`: 需要聚合后再发出的业务通知批次。
 - `notification_deliveries`: 每个渠道的一次投递结果。
 
 `notification_events` 关键字段：
@@ -161,6 +163,32 @@ send_notification_event(
 - `failed_count`
 - `created_at`
 - `finished_at`
+
+`notification_batches` 关键字段：
+
+- `_id`
+- `event_type`
+- `source`
+- `status`: `pending` / `sending` / `sent` / `failed` / `skipped`
+- `window_start_at`
+- `window_end_at`
+- `first_event_at`
+- `last_event_at`
+- `event_count`
+- `status_event_ids`
+- `status_event_db_ids`: 回写 `remote_account_status_events` 用的数据库 `_id` 列表。
+- `site_ids`
+- `group_ids`
+- `pro_group_ids`
+- `account_names`
+- `events`: 批次内事件 payload 快照。
+- `notification_event_id`
+- `notification_status`
+- `notification_channel_count`
+- `notification_success_count`
+- `notification_failed_count`
+- `created_at`
+- `updated_at`
 
 `notification_deliveries` 关键字段：
 
@@ -308,12 +336,27 @@ UI 中“记录内容”的含义：
 
 401 正式通知：
 
-- `401_detected` 事件写入后会调用通用通知入口。
-- 新账号第一次被探测到时如果已经是 401，也会写入 `401_detected` 并通知。
-- 已存在账号只有从非 401 变为 401 时才通知，避免每轮探测重复提醒。
-- 如果账号恢复后再次 401，会重新写事件并通知。
+- `401_detected` 事件写入后先判断是否属于 Pro 账号池。
+- Pro 判断优先看账号 `plan_type=pro`、分组容量类型 `account_type=pro`，其次看分组名是否包含 `pro` 或 `20x`。
+- 非 Pro 账号池只记录事件，`notification_status=skipped_non_pro`，不发正式封号通知。
+- 新账号第一次被探测到时如果已经是 Pro 401，也会写入 `401_detected` 并进入通知批次。
+- 已存在账号只有从非 401 变为 401 时才进入通知批次，避免每轮探测重复提醒。
+- 如果账号恢复后再次 401，会重新写事件并进入新的通知批次。
+- 3 分钟内出现多个 Pro 401 时聚合为一条钉钉通知，防止消息刷屏；每个封号事件仍然单独写入 `remote_account_status_events`。
+- 封号通知只投递到 `channel_type=dingtalk` 且 `status=active` 的渠道，不进入“异常告警”的已读确认流。
 - 关闭该分组的 `record_status_events` 后不会写事件，也不会发 401 通知。
-- 通知失败只写入事件的 `notification_status=failed` 和 `notification_error`，不会中断探测。
+- 通知失败只写入事件或批次的 `notification_status=failed` 和 `notification_error`，不会中断探测。
+
+Pro 401 钉钉通知正文：
+
+- 本次新增封号数。
+- 账号：只显示 sub2api 账号 `name`，不在正文展示站点、分组、邮箱、Remote ID、错误详情。
+- 1h 内封号总数。
+- 今日封号总数，按 Asia/Shanghai 自然日计算。
+- 剩余账号数。
+- 5h 动态可用、5h 实际可用。
+- 7d 动态可用、7d 实际可用。
+- 峰值容量或预估天数只有进入红色危险状态时才显示；非红色状态不显示。
 
 正常状态判断：
 
