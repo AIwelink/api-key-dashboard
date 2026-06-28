@@ -144,6 +144,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   };
 
   const startCreateSite = () => {
+    setSelectedSiteId("");
     setEditingSiteId(null);
     setSiteForm(emptySiteForm);
   };
@@ -388,6 +389,19 @@ export function AccountPoolsPage({ token, showToast }: Props) {
           </div>
         </div>
         <div className="site-config-grid">
+          <label>
+            <span className="field-label">
+              <strong>已有站点</strong>
+            </span>
+            <select value={editingSiteId || ""} onChange={(event) => event.target.value && setSelectedSiteId(event.target.value)}>
+              <option value="">选择已有站点</option>
+              {sites.map((site) => (
+                <option key={site.id} value={site.id}>
+                  {site.name || site.id}
+                </option>
+              ))}
+            </select>
+          </label>
           <label>
             <span className="field-label">
               <strong>站点 ID</strong>
