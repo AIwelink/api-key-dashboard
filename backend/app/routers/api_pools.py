@@ -2,13 +2,14 @@ from fastapi import APIRouter, Depends, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.schemas import ApiPoolCreate, ApiPoolStatusPreferenceUpdate, ApiPoolUpdate, CapacityAccountLimitsUpdate
+from app.schemas import ApiPoolCreate, ApiPoolStatusPreferenceUpdate, ApiPoolUpdate, CapacityAccountLimitsUpdate, GroupObservabilitySettingUpdate
 from app.security import require_roles
 from app.services.api_pools import create_api_pool, list_api_pools, update_api_pool
 from app.services.api_pool_status_preferences import get_api_pool_status_preferences, update_api_pool_status_preferences
 from app.services.audit import write_audit_log
 from app.services.capacity_limits import get_capacity_account_limits, update_capacity_account_limits
 from app.services.pool_lifecycle import capacity_check
+from app.services.sub2api_account_probe import list_duplicate_email_alerts, list_group_observability_settings, probe_site_accounts, update_group_observability_setting
 from app.services.sub2api_auto_refill import list_auto_refill_logs
 
 
@@ -88,6 +89,64 @@ async def patch_status_preferences(
         after=updated,
     )
     return updated
+
+
+@router.get("/observability/groups")
+async def get_group_observability_settings(
+    site_id: str,
+    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    return await list_group_observability_settings(db, site_id)
+
+
+@router.patch("/observability/groups/{group_id}")
+async def patch_group_observability_setting(
+    group_id: int,
+    payload: GroupObservabilitySettingUpdate,
+    site_id: str,
+    actor: dict = Depends(require_roles("owner", "admin")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    updated = await update_group_observability_setting(db, site_id=site_id, group_id=group_id, payload=payload.model_dump(exclude_unset=True), actor=actor)
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="api_pool.group_observability.update",
+        resource_type="group_observability_setting",
+        resource_id=f"{site_id}:{group_id}",
+        after=updated,
+    )
+    return updated
+
+
+@router.post("/observability/probe")
+async def post_observability_probe(
+    site_id: str,
+    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    result = await probe_site_accounts(db, site_id=site_id)
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="api_pool.observability.probe",
+        resource_type="sub2api_site",
+        resource_id=site_id,
+        after=result,
+    )
+    return result
+
+
+@router.get("/observability/alerts")
+async def get_observability_alerts(
+    site_id: str,
+    group_id: int | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    return await list_duplicate_email_alerts(db, site_id=site_id, group_id=group_id, limit=limit)
 
 
 @router.patch("/{pool_id}")

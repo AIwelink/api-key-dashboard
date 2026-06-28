@@ -163,6 +163,16 @@ class ApiPoolStatusPreferenceUpdate(BaseModel):
     pinned_group_id: int | None = None
 
 
+class GroupObservabilitySettingUpdate(BaseModel):
+    enabled: bool | None = None
+    detailed_enabled: bool | None = None
+    probe_interval_seconds: int | None = Field(default=None, ge=60, le=3600)
+    sample_retention_days: int | None = Field(default=None, ge=1, le=90)
+    record_usage_samples: bool | None = None
+    record_status_events: bool | None = None
+    record_duplicate_email_warning: bool | None = None
+
+
 class EnterReserveRequest(BaseModel):
     pool_id: str
     priority: int = 0

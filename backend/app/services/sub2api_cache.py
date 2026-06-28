@@ -740,7 +740,8 @@ async def _capacity_summary_for_accounts(
     *,
     group_id: int | None = None,
 ) -> dict[str, Any]:
-    capacity_accounts = [account for account in accounts if _is_capacity_account(account)]
+    capacity_accounts_all = [account for account in accounts if _is_capacity_account(account)]
+    capacity_accounts, duplicate_capacity_accounts = _collapse_capacity_accounts_by_email(capacity_accounts_all)
     five_hour_capacity_accounts = [account for account in capacity_accounts if not _is_7d_exhausted(account)]
     used_5h = _average_percent(_usage_number(account, "codex_5h_used_percent") for account in capacity_accounts)
     used_7d = _average_percent(_usage_number(account, "codex_7d_used_percent") for account in capacity_accounts)
@@ -932,6 +933,7 @@ async def _capacity_summary_for_accounts(
         "auto_refill_required": health["auto_refill_required"],
         "cost_window": cost_summary,
         "total_accounts": len(accounts),
+        "capacity_duplicate_email_accounts": duplicate_capacity_accounts,
         "calculated_at": now_utc(),
     }
 
@@ -947,6 +949,75 @@ def _capacity_by_account_type(
         account_type = _capacity_account_type(account)
         _add_capacity_account(result, account_type, five_hour_available=str(account.get("id")) in five_hour_ids, account=account, capacity_limits=capacity_limits)
     return result
+
+
+def _collapse_capacity_accounts_by_email(accounts: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    by_email: dict[str, dict[str, Any]] = {}
+    passthrough: list[dict[str, Any]] = []
+    duplicates = 0
+    for account in accounts:
+        email_key = _capacity_email_key(account)
+        if not email_key:
+            passthrough.append(account)
+            continue
+        current = by_email.get(email_key)
+        if current is None:
+            by_email[email_key] = dict(account)
+            continue
+        duplicates += 1
+        by_email[email_key] = _merge_capacity_duplicate_account(current, account)
+    return [*by_email.values(), *passthrough], duplicates
+
+
+def _merge_capacity_duplicate_account(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(left)
+    merged_extra = dict(merged.get("extra") if isinstance(merged.get("extra"), dict) else {})
+    right_extra = right.get("extra") if isinstance(right.get("extra"), dict) else {}
+    usage_percent_fields = (
+        "codex_5h_used_percent",
+        "codex_7d_used_percent",
+    )
+    usage_sum_fields = (
+        "codex_5h_request_count",
+        "codex_7d_request_count",
+        "codex_total_request_count",
+        "codex_5h_token_count",
+        "codex_7d_token_count",
+        "codex_total_token_count",
+        "codex_5h_actual_cost",
+        "codex_7d_actual_cost",
+        "codex_total_actual_cost",
+        "codex_5h_total_cost",
+        "codex_7d_total_cost",
+        "codex_total_cost",
+    )
+    for field in usage_percent_fields:
+        merged[field] = _clamp_percent(_usage_float(left, field) + _usage_float(right, field))
+        merged_extra[field] = merged[field]
+    for field in usage_sum_fields:
+        merged[field] = _usage_float(left, field) + _usage_float(right, field)
+        merged_extra[field] = merged[field]
+    for field in ("codex_5h_reset_after_seconds", "codex_7d_reset_after_seconds"):
+        values = [_usage_number(left, field), _usage_number(right, field)]
+        numeric = [float(value) for value in values if isinstance(value, (int, float))]
+        if numeric:
+            merged[field] = min(numeric)
+            merged_extra[field] = merged[field]
+    merged["id"] = left.get("id")
+    merged["duplicate_capacity_account_ids"] = [*_capacity_duplicate_ids(left), right.get("id")]
+    merged["duplicate_capacity_account_count"] = len([item for item in merged["duplicate_capacity_account_ids"] if item is not None])
+    merged["extra"] = merged_extra
+    if _is_7d_exhausted(left) or _is_7d_exhausted(right):
+        merged["codex_7d_used_percent"] = 100
+        merged_extra["codex_7d_used_percent"] = 100
+    return merged
+
+
+def _capacity_duplicate_ids(account: dict[str, Any]) -> list[Any]:
+    values = account.get("duplicate_capacity_account_ids")
+    if isinstance(values, list) and values:
+        return values
+    return [account.get("id")]
 
 
 def _empty_capacity_type_summary(capacity_limits: dict[str, dict[str, float]] | None = None) -> dict[str, dict[str, Any]]:
@@ -1003,7 +1074,13 @@ async def _reserve_capacity_by_account_type(
             {"metadata.pool_id": str(group_id)},
         ],
     }
-    async for account in db.accounts.find(query, {"metadata.account_type": 1, "account_json.credentials.plan_type": 1, "account_json.extra.account_type": 1}):
+    seen_emails: set[str] = set()
+    async for account in db.accounts.find(query, {"metadata.email": 1, "metadata.account_type": 1, "account_json.credentials.email": 1, "account_json.credentials.plan_type": 1, "account_json.extra.email": 1, "account_json.extra.account_type": 1}):
+        email_key = _local_capacity_email_key(account)
+        if email_key:
+            if email_key in seen_emails:
+                continue
+            seen_emails.add(email_key)
         _add_capacity_account(result, _local_capacity_account_type(account), five_hour_available=True, account=None, capacity_limits=capacity_limits)
     return result
 
@@ -1364,6 +1441,11 @@ def _usage_number(account: dict[str, Any], key: str) -> int | float | None:
     return _number_or_none(account.get(key) if account.get(key) is not None else extra.get(key))
 
 
+def _usage_float(account: dict[str, Any], key: str) -> float:
+    value = _usage_number(account, key)
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
 def _average_percent(values: Any) -> int:
     numeric = [value for value in values if isinstance(value, (int, float))]
     if not numeric:
@@ -1514,6 +1596,20 @@ def _account_email_key(account: dict[str, Any]) -> str:
     credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
     extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
     return _normalize_email(account.get("email") or credentials.get("email") or extra.get("email") or account.get("name"))
+
+
+def _capacity_email_key(account: dict[str, Any]) -> str:
+    credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
+    extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+    return _normalize_email(account.get("email") or credentials.get("email") or extra.get("email"))
+
+
+def _local_capacity_email_key(account: dict[str, Any]) -> str:
+    metadata = account.get("metadata") if isinstance(account.get("metadata"), dict) else {}
+    account_json = account.get("account_json") if isinstance(account.get("account_json"), dict) else {}
+    credentials = account_json.get("credentials") if isinstance(account_json.get("credentials"), dict) else {}
+    extra = account_json.get("extra") if isinstance(account_json.get("extra"), dict) else {}
+    return _normalize_email(metadata.get("email") or credentials.get("email") or extra.get("email"))
 
 
 def _normalize_email(value: Any) -> str:

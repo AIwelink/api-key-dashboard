@@ -81,6 +81,21 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.sub2api_dashboard_snapshots.create_index([("site_id", 1), ("group_id", 1), ("range_type", 1)])
     await db.sub2api_dashboard_meta.create_index("updated_at")
     await db.sub2api_auto_refill_meta.create_index("last_finished_at")
+    await db.group_observability_settings.create_index([("site_id", 1), ("group_id", 1)], unique=True)
+    await db.group_observability_settings.create_index("status")
+    await db.remote_account_identities.create_index([("site_id", 1), ("normalized_email", 1)], unique=True)
+    await db.remote_account_identities.create_index([("site_id", 1), ("current_presence", 1)])
+    await db.remote_account_identities.create_index([("site_id", 1), ("duplicate_remote_count", -1), ("current_presence", 1)])
+    await db.remote_account_identities.create_index([("site_id", 1), ("current_is_401", 1), ("last_401_at", -1)])
+    await db.remote_account_identities.create_index("last_seen_at")
+    await db.remote_account_sessions.create_index([("site_id", 1), ("normalized_email", 1), ("session_index", 1)])
+    await db.remote_account_sessions.create_index([("site_id", 1), ("remote_account_id", 1), ("status", 1)])
+    await db.remote_account_status_events.create_index([("site_id", 1), ("event_type", 1), ("detected_at", -1)])
+    await db.remote_account_status_events.create_index([("site_id", 1), ("normalized_email", 1), ("detected_at", -1)])
+    await db.remote_account_probe_samples.create_index("expires_at", expireAfterSeconds=0)
+    await db.remote_account_probe_samples.create_index([("site_id", 1), ("sampled_at", -1)])
+    await db.remote_account_probe_runs.create_index([("site_id", 1), ("started_at", -1)])
+    await db.remote_account_probe_meta.create_index("last_probe_at")
 
 
 async def ensure_initial_owner(db: AsyncIOMotorDatabase) -> None:

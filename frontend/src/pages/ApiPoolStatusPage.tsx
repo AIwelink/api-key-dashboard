@@ -235,6 +235,29 @@ type RemoteAccountTestResponse = {
   };
 };
 
+type DuplicateEmailAlert = {
+  id?: string;
+  alert_label?: string;
+  message?: string;
+  normalized_email?: string;
+  email?: string;
+  current_remote_account_id?: number | string | null;
+  current_remote_account_ids?: Array<number | string>;
+  duplicate_remote_count?: number;
+  current_group_ids?: number[];
+  current_status?: string;
+  current_error_message?: string | null;
+  last_seen_at?: string | null;
+  updated_at?: string | null;
+};
+
+type DuplicateEmailAlertsResponse = {
+  items: DuplicateEmailAlert[];
+  total: number;
+  site_id?: string;
+  group_id?: number | null;
+};
+
 type InlineFeedback = {
   message: string;
   isError?: boolean;
@@ -310,6 +333,10 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [statusPreferences, setStatusPreferences] = useState<StatusPreferences>({});
   const [savingPreference, setSavingPreference] = useState<"site" | "group" | null>(null);
+  const [statusTab, setStatusTab] = useState<"overview" | "alerts">("overview");
+  const [duplicateAlerts, setDuplicateAlerts] = useState<DuplicateEmailAlert[]>([]);
+  const [duplicateAlertsTotal, setDuplicateAlertsTotal] = useState(0);
+  const [loadingAlerts, setLoadingAlerts] = useState(false);
 
   const selectedSite = sites.find((site) => site.id === selectedSiteId) || null;
   const refreshIntervalMinutes = selectedSite?.refresh_interval_minutes || 30;
@@ -359,6 +386,27 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     const data = await api<StatusPreferences>("/api-pools/status-preferences", token);
     setStatusPreferences(data);
     return data;
+  };
+
+  const loadDuplicateAlerts = async (siteId = selectedSiteId, groupId = selectedGroupId) => {
+    if (!siteId) {
+      setDuplicateAlerts([]);
+      setDuplicateAlertsTotal(0);
+      return;
+    }
+    setLoadingAlerts(true);
+    try {
+      const params = new URLSearchParams({
+        site_id: siteId,
+        limit: "200",
+      });
+      if (groupId !== null) params.set("group_id", String(groupId));
+      const data = await api<DuplicateEmailAlertsResponse>(`/api-pools/observability/alerts?${params.toString()}`, token);
+      setDuplicateAlerts(data.items || []);
+      setDuplicateAlertsTotal(numberValue(data.total));
+    } finally {
+      setLoadingAlerts(false);
+    }
   };
 
   const loadGroups = async (siteId = selectedSiteId) => {
@@ -435,7 +483,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   const selectGroup = (groupId: number) => {
     setSelectedGroupId(groupId);
     setAccountPage(1);
-    if (selectedSiteId) {
+    if (selectedSiteId && statusTab === "overview") {
       hydrateAccountsFromCache(selectedSiteId, groupId, 1, accountPageSize, statusFilter);
     }
   };
@@ -648,6 +696,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   }, [selectedSiteId, sites]);
 
   useEffect(() => {
+    if (statusTab !== "overview") return;
     if (!selectedSiteId || selectedGroupId === null) return;
     const nextAccountKey = accountCacheKey(selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter);
     const cached = getCachedAccounts(selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter);
@@ -660,7 +709,12 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     }
     setAccountsDataKey("");
     loadAccounts(selectedSiteId, selectedGroupId, accountPage).catch((error) => showToast(errorMessage(error), true));
-  }, [selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter, statusPreferences.pinned_group_id]);
+  }, [statusTab, selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter, statusPreferences.pinned_group_id]);
+
+  useEffect(() => {
+    if (statusTab !== "alerts" || !selectedSiteId) return;
+    loadDuplicateAlerts(selectedSiteId, selectedGroupId).catch((error) => showToast(errorMessage(error), true));
+  }, [statusTab, selectedSiteId, selectedGroupId]);
 
   useEffect(() => {
     apiPoolPageCache = {
@@ -697,6 +751,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
           const nextGroupId = chooseGroupId(nextGroups, selectedGroupId, statusPreferences.pinned_group_id);
           if (nextGroupId !== null) {
             setSelectedGroupId(nextGroupId);
+            if (statusTab === "alerts") return loadDuplicateAlerts(selectedSiteId, nextGroupId);
             return loadAccounts(selectedSiteId, nextGroupId, accountPage);
           }
           return undefined;
@@ -705,7 +760,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     };
     window.addEventListener("sub2api-cache-updated", handleCacheUpdated);
     return () => window.removeEventListener("sub2api-cache-updated", handleCacheUpdated);
-  }, [selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter]);
+  }, [selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter, statusTab]);
 
   useEffect(() => {
     if (!selectedSiteId) return;
@@ -715,6 +770,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
         .then((nextGroups) => {
           const nextGroupId = chooseGroupId(nextGroups, selectedGroupId, statusPreferences.pinned_group_id);
           if (nextGroupId !== null) {
+            if (statusTab === "alerts") return loadDuplicateAlerts(selectedSiteId, nextGroupId);
             return loadAccounts(selectedSiteId, nextGroupId, accountPage);
           }
           return undefined;
@@ -722,7 +778,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
         .catch((error) => showToast(errorMessage(error), true));
     }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter, refreshIntervalMinutes, statusPreferences.pinned_group_id]);
+  }, [selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter, refreshIntervalMinutes, statusPreferences.pinned_group_id, statusTab]);
 
   const refreshAll = async () => {
     if (!selectedSiteId) return;
@@ -734,11 +790,15 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
       const nextGroups = await loadGroups();
       const nextGroupId = chooseGroupId(nextGroups, selectedGroupId, statusPreferences.pinned_group_id);
       if (nextGroupId !== null) {
-        const nextAccountKey = accountCacheKey(selectedSiteId, nextGroupId, accountPage, accountPageSize, statusFilter);
         setSelectedGroupId(nextGroupId);
-        setAccountsDataKey("");
-        setLoadingAccountsKey(nextAccountKey);
-        await loadAccounts(selectedSiteId, nextGroupId, accountPage);
+        if (statusTab === "alerts") {
+          await loadDuplicateAlerts(selectedSiteId, nextGroupId);
+        } else {
+          const nextAccountKey = accountCacheKey(selectedSiteId, nextGroupId, accountPage, accountPageSize, statusFilter);
+          setAccountsDataKey("");
+          setLoadingAccountsKey(nextAccountKey);
+          await loadAccounts(selectedSiteId, nextGroupId, accountPage);
+        }
       }
       const message = refreshResultMessage(result);
       setRemoteRefreshFeedback({ message });
@@ -760,10 +820,16 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
       const nextGroupId = chooseGroupId(nextGroups, selectedGroupId, statusPreferences.pinned_group_id);
       if (nextGroupId !== null) {
         setSelectedGroupId(nextGroupId);
-        await loadAccounts(selectedSiteId, nextGroupId, accountPage);
+        if (statusTab === "alerts") {
+          await loadDuplicateAlerts(selectedSiteId, nextGroupId);
+        } else {
+          await loadAccounts(selectedSiteId, nextGroupId, accountPage);
+        }
       } else {
         setAccounts([]);
         setAccountsTotal(0);
+        setDuplicateAlerts([]);
+        setDuplicateAlertsTotal(0);
       }
       showToast("前端数据已刷新");
     } catch (error) {
@@ -868,6 +934,17 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
         </label>
       </section>
 
+      <section className="pool-status-tabs" aria-label="API 账号池状态子页面">
+        <button className={`pool-status-tab ${statusTab === "overview" ? "active" : ""}`} type="button" onClick={() => setStatusTab("overview")}>
+          状态概览
+        </button>
+        <button className={`pool-status-tab ${statusTab === "alerts" ? "active" : ""}`} type="button" onClick={() => setStatusTab("alerts")}>
+          异常告警
+          {duplicateAlertsTotal > 0 && <span>{duplicateAlertsTotal}</span>}
+        </button>
+      </section>
+
+      {statusTab === "overview" ? (
       <section className="panel account-pool-panel">
           <div className="panel-header">
             <div>
@@ -1009,6 +1086,15 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
             </button>
           </div>
       </section>
+      ) : (
+        <DuplicateEmailAlertsPanel
+          items={duplicateAlerts}
+          loading={loadingAlerts}
+          onRefresh={() => loadDuplicateAlerts().catch((error) => showToast(errorMessage(error), true))}
+          selectedGroupName={selectedGroup?.name || ""}
+          total={duplicateAlertsTotal}
+        />
+      )}
 
       {connectionResult !== null && <pre className="output compact">{JSON.stringify(connectionResult, null, 2)}</pre>}
       <ConfirmDialog
@@ -1140,6 +1226,97 @@ function RemoteAccountRow({
         </div>
       </td>
     </tr>
+  );
+}
+
+function DuplicateEmailAlertsPanel({
+  items,
+  loading,
+  onRefresh,
+  selectedGroupName,
+  total,
+}: {
+  items: DuplicateEmailAlert[];
+  loading: boolean;
+  onRefresh: () => void;
+  selectedGroupName: string;
+  total: number;
+}) {
+  return (
+    <section className="panel account-pool-panel duplicate-alerts-panel">
+      <div className="panel-header">
+        <div>
+          <div className="account-pool-title-row">
+            <h3>异常告警</h3>
+            <span className={`account-pool-id-chip ${total > 0 ? "warning" : ""}`}>同账号 {total}</span>
+          </div>
+          <p>{selectedGroupName ? `${selectedGroupName} · ` : ""}先显示同邮箱多个 sub2 remote id 的告警</p>
+        </div>
+        <button className="ghost compact-button" type="button" onClick={onRefresh} disabled={loading}>
+          {loading ? "刷新中..." : "刷新告警"}
+        </button>
+      </div>
+
+      <div className="duplicate-alert-explain">
+        <strong>同账号规则</strong>
+        <span>相同邮箱只按 1 个账号计算容量；如果 sub2 中存在多个 remote id，用量会按这些 id 加和，避免容量被重复放大。</span>
+      </div>
+
+      {loading && !items.length ? (
+        <div className="empty-state">正在加载异常告警...</div>
+      ) : items.length ? (
+        <div className="duplicate-alert-list">
+          {items.map((item) => (
+            <DuplicateEmailAlertItem item={item} key={item.id || `${item.normalized_email}-${item.updated_at}`} />
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state">当前分组暂无同账号告警</div>
+      )}
+    </section>
+  );
+}
+
+function DuplicateEmailAlertItem({ item }: { item: DuplicateEmailAlert }) {
+  const email = item.email || item.normalized_email || "未识别邮箱";
+  const remoteIds = normalizeIdList(item.current_remote_account_ids, item.current_remote_account_id);
+  const groupIds = normalizeIdList(item.current_group_ids);
+  return (
+    <article className="duplicate-alert-item">
+      <div className="duplicate-alert-main">
+        <div>
+          <strong title={email}>{email}</strong>
+          <span>{item.alert_label || "同邮箱多个 sub2 账号"}</span>
+        </div>
+        <StatusPill value={`${numberValue(item.duplicate_remote_count || remoteIds.length)} 个 remote id`} tone="warning" />
+      </div>
+      <dl className="duplicate-alert-meta">
+        <div>
+          <dt>Remote IDs</dt>
+          <dd>{remoteIds.length ? remoteIds.join(" / ") : "-"}</dd>
+        </div>
+        <div>
+          <dt>Group IDs</dt>
+          <dd>{groupIds.length ? groupIds.join(" / ") : "-"}</dd>
+        </div>
+        <div>
+          <dt>状态</dt>
+          <dd>
+            <StatusPill value={displayStatus(item.current_status)} tone={statusTone(item.current_status)} />
+          </dd>
+        </div>
+        <div>
+          <dt>最近探测</dt>
+          <dd>{formatOptionalDate(item.last_seen_at || item.updated_at)}</dd>
+        </div>
+      </dl>
+      {item.current_error_message && (
+        <div className="duplicate-alert-error" title={item.current_error_message}>
+          {item.current_error_message}
+        </div>
+      )}
+      <p>{item.message || "容量预估按一个账号处理，用量按重复 remote id 加和。"}</p>
+    </article>
   );
 }
 
@@ -1576,6 +1753,13 @@ function chooseGroupId(groups: Group[], currentGroupId?: number | null, pinnedGr
     return currentGroupId;
   }
   return groups[0]?.id ?? null;
+}
+
+function normalizeIdList(values?: Array<number | string> | null, fallback?: number | string | null): Array<number | string> {
+  const source = Array.isArray(values) ? values : [];
+  const combined = [...source];
+  if (fallback !== undefined && fallback !== null && fallback !== "") combined.push(fallback);
+  return [...new Map(combined.filter((value) => value !== null && value !== undefined && value !== "").map((value) => [String(value), value])).values()];
 }
 
 function summarizeRemoteAccounts(accounts: RemoteAccount[]) {
