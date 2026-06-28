@@ -30,7 +30,7 @@ export type PoolStatus = "library" | "available" | "reserve" | "active" | "probl
 
 export type UploadMode = "fill" | "parse";
 export type UploadTemplate = "sub2api" | "purchased_jinyao";
-export type AccountType = "plus" | "team" | "free" | "pro" | "other";
+export type AccountType = "plus" | "team" | "k12" | "free" | "pro" | "other";
 
 export type UploadFields = {
   email_session: string;

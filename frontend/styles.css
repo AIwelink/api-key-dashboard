@@ -1060,6 +1060,29 @@ legend {
   font-weight: 500;
 }
 
+.capacity-metric small strong,
+.capacity-money-strong,
+.capacity-money-line strong {
+  color: var(--text);
+  font-size: 1.03em;
+  font-weight: 850;
+}
+
+.capacity-money-line {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.capacity-money-item {
+  white-space: nowrap;
+}
+
+.capacity-money-separator {
+  color: var(--muted);
+}
+
 .capacity-metric-value-row {
   display: flex;
   align-items: baseline;
@@ -1072,6 +1095,10 @@ legend {
   display: flex;
   align-items: baseline;
   gap: 7px;
+}
+
+.capacity-metric-value.money {
+  font-weight: 850;
 }
 
 .capacity-metric-value span {
@@ -1446,6 +1473,12 @@ legend {
   background: #e8f8f8;
   border-color: #b8e2e1;
   color: #197078;
+}
+
+.account-tag.plan-k12 {
+  background: #fff6dc;
+  border-color: #efd17d;
+  color: #8a6200;
 }
 
 .account-tag.plan-other {
