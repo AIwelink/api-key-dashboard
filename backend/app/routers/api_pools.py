@@ -2,9 +2,10 @@ from fastapi import APIRouter, Depends, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.schemas import ApiPoolCreate, ApiPoolUpdate, CapacityAccountLimitsUpdate
+from app.schemas import ApiPoolCreate, ApiPoolStatusPreferenceUpdate, ApiPoolUpdate, CapacityAccountLimitsUpdate
 from app.security import require_roles
 from app.services.api_pools import create_api_pool, list_api_pools, update_api_pool
+from app.services.api_pool_status_preferences import get_api_pool_status_preferences, update_api_pool_status_preferences
 from app.services.audit import write_audit_log
 from app.services.capacity_limits import get_capacity_account_limits, update_capacity_account_limits
 from app.services.pool_lifecycle import capacity_check
@@ -60,6 +61,32 @@ async def patch_capacity_limits(
 ) -> dict:
     updated = await update_capacity_account_limits(db, {key: value.model_dump() for key, value in payload.limits.items()}, actor)
     await write_audit_log(db, actor=actor, action="api_pool.capacity_limits.update", resource_type="setting", resource_id="capacity_account_limits")
+    return updated
+
+
+@router.get("/status-preferences")
+async def get_status_preferences(
+    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    return await get_api_pool_status_preferences(db)
+
+
+@router.patch("/status-preferences")
+async def patch_status_preferences(
+    payload: ApiPoolStatusPreferenceUpdate,
+    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    updated = await update_api_pool_status_preferences(db, payload.model_dump(exclude_unset=True), actor)
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="api_pool.status_preferences.update",
+        resource_type="setting",
+        resource_id="api_pool_status_preferences",
+        after=updated,
+    )
     return updated
 
 

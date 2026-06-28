@@ -675,6 +675,29 @@ legend {
   min-width: 0;
 }
 
+.pin-button {
+  width: fit-content;
+  min-height: 28px;
+  border: 1px solid #cdd7e3;
+  border-radius: 6px;
+  background: #f7fafc;
+  color: var(--muted);
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.pin-button:hover:not(:disabled) {
+  border-color: #7aa7d9;
+  color: #2563a5;
+}
+
+.pin-button.active {
+  border-color: #7aa7d9;
+  background: #eaf4ff;
+  color: #1d5f99;
+}
+
 .site-meta {
   display: flex;
   flex-wrap: wrap;

@@ -183,6 +183,13 @@ type SitesResponse = {
   total: number;
 };
 
+type StatusPreferences = {
+  pinned_site_id?: string | null;
+  pinned_group_id?: number | null;
+  updated_at?: string | null;
+  updated_by_name?: string | null;
+};
+
 type GroupsResponse = {
   items: Group[];
   total: number;
@@ -293,10 +300,16 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   const [remoteRefreshFeedback, setRemoteRefreshFeedback] = useState<InlineFeedback | null>(null);
   const [connectionResult, setConnectionResult] = useState<unknown>(null);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
+  const [statusPreferences, setStatusPreferences] = useState<StatusPreferences>({});
+  const [savingPreference, setSavingPreference] = useState<"site" | "group" | null>(null);
 
   const selectedSite = sites.find((site) => site.id === selectedSiteId) || null;
   const refreshIntervalMinutes = selectedSite?.refresh_interval_minutes || 30;
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) || null;
+  const sortedSites = useMemo(() => sortSitesByPinned(sites, statusPreferences.pinned_site_id), [sites, statusPreferences.pinned_site_id]);
+  const sortedGroups = useMemo(() => sortGroupsByPinned(groups, statusPreferences.pinned_group_id), [groups, statusPreferences.pinned_group_id]);
+  const selectedSitePinned = Boolean(selectedSiteId && statusPreferences.pinned_site_id === selectedSiteId);
+  const selectedGroupPinned = Boolean(selectedGroupId !== null && statusPreferences.pinned_group_id === selectedGroupId);
   const currentAccountKey = useMemo(
     () => (selectedSiteId && selectedGroupId !== null ? accountCacheKey(selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter) : ""),
     [selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter],
@@ -328,9 +341,16 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   const loadSites = async () => {
     const data = await api<SitesResponse>("/sub2api-sites", token);
     setSites(data.items);
-    if (!selectedSiteId && data.items[0]) {
-      setSelectedSiteId(data.items[0].id);
+    const nextSiteId = chooseSiteId(data.items, selectedSiteId, statusPreferences.pinned_site_id);
+    if (nextSiteId && nextSiteId !== selectedSiteId) {
+      setSelectedSiteId(nextSiteId);
     }
+  };
+
+  const loadStatusPreferences = async () => {
+    const data = await api<StatusPreferences>("/api-pools/status-preferences", token);
+    setStatusPreferences(data);
+    return data;
   };
 
   const loadGroups = async (siteId = selectedSiteId) => {
@@ -340,11 +360,12 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
       const data = await api<GroupsResponse>(`/sub2api-sites/${siteId}/groups?page=1&page_size=100`, token);
       setGroups(data.items);
       setLastLoadedAt(data.cache_meta?.last_refreshed_at || null);
-      if (!selectedGroupId && data.items[0]) {
-        setSelectedGroupId(data.items[0].id);
+      const nextGroupId = chooseGroupId(data.items, selectedGroupId, statusPreferences.pinned_group_id);
+      if (nextGroupId !== null && nextGroupId !== selectedGroupId) {
+        setSelectedGroupId(nextGroupId);
       }
       if (selectedGroupId && !data.items.some((group) => group.id === selectedGroupId)) {
-        setSelectedGroupId(data.items[0]?.id ?? null);
+        setSelectedGroupId(nextGroupId);
         setAccountsDataKey("");
       }
       return data.items;
@@ -431,6 +452,28 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     setAccountPage(1);
     if (selectedSiteId && selectedGroupId !== null) {
       hydrateAccountsFromCache(selectedSiteId, selectedGroupId, 1, pageSize, statusFilter);
+    }
+  };
+
+  const saveStatusPreference = async (kind: "site" | "group", pinned: boolean) => {
+    if (kind === "site" && !selectedSiteId) return;
+    if (kind === "group" && selectedGroupId === null) return;
+    setSavingPreference(kind);
+    try {
+      const payload =
+        kind === "site"
+          ? { pinned_site_id: pinned ? selectedSiteId : null }
+          : { pinned_group_id: pinned ? selectedGroupId : null };
+      const data = await api<StatusPreferences>("/api-pools/status-preferences", token, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+      setStatusPreferences(data);
+      showToast(pinned ? "置顶已保存" : "置顶已取消");
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setSavingPreference(null);
     }
   };
 
@@ -563,8 +606,24 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   };
 
   useEffect(() => {
-    if (getApiPoolPageCache()) return;
-    loadSites().catch((error) => showToast(errorMessage(error), true));
+    if (getApiPoolPageCache()) {
+      loadStatusPreferences()
+        .then((preferences) => {
+          const nextSiteId = chooseSiteId(sites, selectedSiteId, preferences.pinned_site_id);
+          if (nextSiteId && nextSiteId !== selectedSiteId) setSelectedSiteId(nextSiteId);
+        })
+        .catch((error) => showToast(errorMessage(error), true));
+      return;
+    }
+    loadStatusPreferences()
+      .then((preferences) =>
+        api<SitesResponse>("/sub2api-sites", token).then((data) => {
+          setSites(data.items);
+          const nextSiteId = chooseSiteId(data.items, selectedSiteId, preferences.pinned_site_id);
+          if (nextSiteId) setSelectedSiteId(nextSiteId);
+        }),
+      )
+      .catch((error) => showToast(errorMessage(error), true));
   }, []);
 
   useEffect(() => {
@@ -593,7 +652,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     }
     setAccountsDataKey("");
     loadAccounts(selectedSiteId, selectedGroupId, accountPage).catch((error) => showToast(errorMessage(error), true));
-  }, [selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter]);
+  }, [selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter, statusPreferences.pinned_group_id]);
 
   useEffect(() => {
     apiPoolPageCache = {
@@ -627,10 +686,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
       }
       loadGroups(selectedSiteId)
         .then((nextGroups) => {
-          const nextGroupId =
-            selectedGroupId !== null && nextGroups.some((group) => group.id === selectedGroupId)
-              ? selectedGroupId
-              : nextGroups[0]?.id ?? null;
+          const nextGroupId = chooseGroupId(nextGroups, selectedGroupId, statusPreferences.pinned_group_id);
           if (nextGroupId !== null) {
             setSelectedGroupId(nextGroupId);
             return loadAccounts(selectedSiteId, nextGroupId, accountPage);
@@ -649,7 +705,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     const timer = window.setInterval(() => {
       loadGroups(selectedSiteId)
         .then((nextGroups) => {
-          const nextGroupId = selectedGroupId ?? nextGroups[0]?.id ?? null;
+          const nextGroupId = chooseGroupId(nextGroups, selectedGroupId, statusPreferences.pinned_group_id);
           if (nextGroupId !== null) {
             return loadAccounts(selectedSiteId, nextGroupId, accountPage);
           }
@@ -658,7 +714,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
         .catch((error) => showToast(errorMessage(error), true));
     }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter, refreshIntervalMinutes]);
+  }, [selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter, refreshIntervalMinutes, statusPreferences.pinned_group_id]);
 
   const refreshAll = async () => {
     if (!selectedSiteId) return;
@@ -668,7 +724,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
       const result = await api<RefreshResponse>(`/sub2api-sites/${selectedSiteId}/refresh`, token, { method: "POST" });
       clearAccountCacheForSite(selectedSiteId);
       const nextGroups = await loadGroups();
-      const nextGroupId = selectedGroupId ?? nextGroups[0]?.id ?? null;
+      const nextGroupId = chooseGroupId(nextGroups, selectedGroupId, statusPreferences.pinned_group_id);
       if (nextGroupId !== null) {
         const nextAccountKey = accountCacheKey(selectedSiteId, nextGroupId, accountPage, accountPageSize, statusFilter);
         setSelectedGroupId(nextGroupId);
@@ -693,10 +749,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     setRefreshingFrontend(true);
     try {
       const nextGroups = await loadGroups(selectedSiteId);
-      const nextGroupId =
-        selectedGroupId !== null && nextGroups.some((group) => group.id === selectedGroupId)
-          ? selectedGroupId
-          : nextGroups[0]?.id ?? null;
+      const nextGroupId = chooseGroupId(nextGroups, selectedGroupId, statusPreferences.pinned_group_id);
       if (nextGroupId !== null) {
         setSelectedGroupId(nextGroupId);
         await loadAccounts(selectedSiteId, nextGroupId, accountPage);
@@ -724,12 +777,20 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
             <strong>API 站点</strong>
           </span>
           <select value={selectedSiteId} onChange={(event) => setSelectedSiteId(event.target.value)}>
-            {sites.map((site) => (
+            {sortedSites.map((site) => (
               <option key={site.id} value={site.id}>
-                {site.name}
+                {site.name}{statusPreferences.pinned_site_id === site.id ? "（置顶）" : ""}
               </option>
             ))}
           </select>
+          <button
+            className={`pin-button ${selectedSitePinned ? "active" : ""}`}
+            type="button"
+            onClick={() => saveStatusPreference("site", !selectedSitePinned)}
+            disabled={!selectedSiteId || savingPreference === "site"}
+          >
+            {selectedSitePinned ? "取消置顶站点" : "置顶当前站点"}
+          </button>
         </label>
         <div className="site-meta">
           <strong>{selectedSite?.base_url || "未配置"}</strong>
@@ -782,12 +843,20 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
               selectGroup(Number(event.target.value));
             }}
           >
-            {groups.map((group) => (
+            {sortedGroups.map((group) => (
               <option key={group.id} value={group.id}>
                 {group.name} · active {numberValue(group.active_account_count)} / {numberValue(group.account_count)} · 限流 {numberValue(group.rate_limited_account_count)}
               </option>
             ))}
           </select>
+          <button
+            className={`pin-button ${selectedGroupPinned ? "active" : ""}`}
+            type="button"
+            onClick={() => saveStatusPreference("group", !selectedGroupPinned)}
+            disabled={selectedGroupId === null || savingPreference === "group"}
+          >
+            {selectedGroupPinned ? "取消置顶分组" : "置顶当前分组"}
+          </button>
         </label>
       </section>
 
@@ -1399,6 +1468,40 @@ function summarizeGroups(groups: Group[]) {
     },
     { totalAccounts: 0, activeAccounts: 0, rateLimitedAccounts: 0 },
   );
+}
+
+function sortSitesByPinned(sites: Site[], pinnedSiteId?: string | null): Site[] {
+  if (!pinnedSiteId) return sites;
+  return [...sites].sort((left, right) => {
+    if (left.id === pinnedSiteId) return -1;
+    if (right.id === pinnedSiteId) return 1;
+    return 0;
+  });
+}
+
+function sortGroupsByPinned(groups: Group[], pinnedGroupId?: number | null): Group[] {
+  if (pinnedGroupId === undefined || pinnedGroupId === null) return groups;
+  return [...groups].sort((left, right) => {
+    if (left.id === pinnedGroupId) return -1;
+    if (right.id === pinnedGroupId) return 1;
+    return 0;
+  });
+}
+
+function chooseSiteId(sites: Site[], currentSiteId?: string | null, pinnedSiteId?: string | null): string {
+  if (pinnedSiteId && sites.some((site) => site.id === pinnedSiteId)) return pinnedSiteId;
+  if (currentSiteId && sites.some((site) => site.id === currentSiteId)) return currentSiteId;
+  return sites[0]?.id || "";
+}
+
+function chooseGroupId(groups: Group[], currentGroupId?: number | null, pinnedGroupId?: number | null): number | null {
+  if (pinnedGroupId !== undefined && pinnedGroupId !== null && groups.some((group) => group.id === pinnedGroupId)) {
+    return pinnedGroupId;
+  }
+  if (currentGroupId !== undefined && currentGroupId !== null && groups.some((group) => group.id === currentGroupId)) {
+    return currentGroupId;
+  }
+  return groups[0]?.id ?? null;
 }
 
 function summarizeRemoteAccounts(accounts: RemoteAccount[]) {

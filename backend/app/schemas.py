@@ -127,6 +127,11 @@ class CapacityAccountLimitsUpdate(BaseModel):
     limits: dict[Literal["free", "plus", "team", "pro"], CapacityAccountLimit]
 
 
+class ApiPoolStatusPreferenceUpdate(BaseModel):
+    pinned_site_id: str | None = None
+    pinned_group_id: int | None = None
+
+
 class EnterReserveRequest(BaseModel):
     pool_id: str
     priority: int = 0
