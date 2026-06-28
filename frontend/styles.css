@@ -2538,7 +2538,7 @@ code {
   }
 }
 
-@media (max-width: 720px) {
+@media (max-width: 720px), (max-width: 900px) and (orientation: portrait), (max-aspect-ratio: 3 / 4) {
   html,
   body {
     max-width: 100%;
@@ -2559,6 +2559,9 @@ code {
     position: sticky;
     top: 0;
     z-index: 30;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
     height: auto;
     max-height: none;
     border-right: 0;
@@ -2588,10 +2591,30 @@ code {
   }
 
   .sidebar-toggle {
-    display: none;
+    display: inline-flex;
+    width: auto;
+    min-width: 58px;
+    min-height: 32px;
+    align-items: center;
+    justify-content: center;
+    justify-self: end;
+    border-radius: 999px;
+    font-size: 0;
+    padding: 0 12px;
+  }
+
+  .sidebar-toggle::before {
+    content: "收起";
+    font-size: 12px;
+    font-weight: 850;
+  }
+
+  .app-shell.sidebar-collapsed .sidebar-toggle::before {
+    content: "菜单";
   }
 
   .nav {
+    grid-column: 1 / -1;
     display: flex;
     gap: 8px;
     overflow-x: auto;
@@ -2602,6 +2625,10 @@ code {
   }
 
   .nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .app-shell.sidebar-collapsed .nav {
     display: none;
   }
 
@@ -2945,7 +2972,7 @@ code {
   }
 }
 
-@media (max-width: 560px) {
+@media (max-width: 560px), (max-width: 720px) and (orientation: portrait) and (max-aspect-ratio: 9 / 18) {
   button {
     min-height: 34px;
     padding-inline: 11px;

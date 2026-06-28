@@ -73,17 +73,25 @@ const viewPaths: Record<ViewName, string> = {
 };
 
 const pathAliases: Record<string, ViewName> = {
-  "/": "upload",
   "/upload": "upload",
   "/todos": "todos",
   "/push-error-todos": "push-error-todos",
   "/api-pools": "api-pools",
 };
 
+function isMobileMenuLayout() {
+  return window.matchMedia("(max-width: 720px), (max-width: 900px) and (orientation: portrait), (max-aspect-ratio: 3 / 4)").matches;
+}
+
+function defaultViewForLayout(): ViewName {
+  return isMobileMenuLayout() ? "api-pools" : "upload";
+}
+
 function viewFromPath(pathname: string): ViewName {
   const normalized = pathname.replace(/\/+$/, "") || "/";
+  if (normalized === "/") return defaultViewForLayout();
   const matched = Object.entries(viewPaths).find(([, path]) => path === normalized);
-  return matched ? (matched[0] as ViewName) : pathAliases[normalized] || "upload";
+  return matched ? (matched[0] as ViewName) : pathAliases[normalized] || defaultViewForLayout();
 }
 
 function App() {
@@ -113,6 +121,10 @@ function App() {
     const nextPath = viewPaths[nextView];
     if (window.location.pathname !== nextPath) {
       window.history.pushState({ view: nextView }, "", nextPath);
+    }
+    if (isMobileMenuLayout()) {
+      setSidebarCollapsed(true);
+      localStorage.setItem("sidebarCollapsed", "true");
     }
   };
 
@@ -199,7 +211,7 @@ function App() {
               setUser(nextUser);
               localStorage.setItem("token", nextToken);
               localStorage.setItem("user", JSON.stringify(nextUser));
-              if (window.location.pathname === "/") navigateToView("upload");
+              if (window.location.pathname === "/") navigateToView(defaultViewForLayout());
               showToast("登录成功");
             }}
             showToast={showToast}
