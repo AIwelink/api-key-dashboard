@@ -6,7 +6,7 @@ import json
 import secrets
 from typing import Any
 from urllib import error as urllib_error
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 from urllib import request as urllib_request
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -24,14 +24,37 @@ def _redact_webhook(value: str | None) -> str | None:
     return f"{value[:18]}...{value[-8:]}"
 
 
+def _redact_token(value: str | None) -> str | None:
+    if not value:
+        return None
+    if len(value) <= 12:
+        return f"{value[:4]}..."
+    return f"{value[:6]}...{value[-5:]}"
+
+
 def _public_channel(document: dict[str, Any]) -> dict[str, Any]:
     data = serialize_doc(document)
     config = data.get("config") if isinstance(data.get("config"), dict) else {}
     data["webhook_configured"] = bool(config.get("webhook_url"))
     data["signing_secret_configured"] = bool(config.get("signing_secret"))
     data["webhook_preview"] = _redact_webhook(config.get("webhook_url"))
+    data["telegram_bot_token_configured"] = bool(config.get("telegram_bot_token"))
+    data["telegram_bot_token_preview"] = _redact_token(config.get("telegram_bot_token"))
+    data["telegram_chat_id"] = config.get("telegram_chat_id") or None
     data.pop("config", None)
     return data
+
+
+def _channel_config_from_create(payload: NotificationChannelCreate) -> dict[str, str]:
+    if payload.channel_type == "telegram":
+        return {
+            "telegram_bot_token": str(payload.telegram_bot_token or "").strip(),
+            "telegram_chat_id": str(payload.telegram_chat_id or "").strip(),
+        }
+    return {
+        "webhook_url": str(payload.webhook_url or "").strip(),
+        "signing_secret": str(payload.signing_secret or "").strip(),
+    }
 
 
 async def list_notification_channels(db: AsyncIOMotorDatabase) -> dict[str, Any]:
@@ -52,10 +75,7 @@ async def create_notification_channel(
         "name": payload.name.strip(),
         "channel_type": payload.channel_type,
         "status": payload.status,
-        "config": {
-            "webhook_url": payload.webhook_url.strip(),
-            "signing_secret": payload.signing_secret.strip(),
-        },
+        "config": _channel_config_from_create(payload),
         "note": payload.note.strip() if payload.note else None,
         "last_test_at": None,
         "last_test_status": None,
@@ -94,6 +114,10 @@ async def update_notification_channel(
         updates["config.webhook_url"] = payload.webhook_url.strip()
     if payload.signing_secret is not None:
         updates["config.signing_secret"] = payload.signing_secret.strip()
+    if payload.telegram_bot_token is not None:
+        updates["config.telegram_bot_token"] = payload.telegram_bot_token.strip()
+    if payload.telegram_chat_id is not None:
+        updates["config.telegram_chat_id"] = payload.telegram_chat_id.strip()
     await db.notification_channels.update_one({"_id": channel_id}, {"$set": updates})
     document = await db.notification_channels.find_one({"_id": channel_id})
     return _public_channel(document) if document else None
@@ -115,6 +139,8 @@ async def test_notification_channel(db: AsyncIOMotorDatabase, *, channel_id: str
         channel_type = document.get("channel_type")
         if channel_type == "dingtalk":
             result = await _send_dingtalk_test(document, actor=actor)
+        elif channel_type == "telegram":
+            result = await _send_telegram_test(document, actor=actor)
         else:
             raise ValueError(f"暂不支持的通知类型：{channel_type}")
         await db.notification_channels.update_one(
@@ -195,9 +221,57 @@ async def _send_dingtalk_test(document: dict[str, Any], *, actor: dict[str, Any]
     return {"message": text or "钉钉测试通知已发送"}
 
 
+async def _send_telegram_test(document: dict[str, Any], *, actor: dict[str, Any]) -> dict[str, Any]:
+    config = document.get("config") if isinstance(document.get("config"), dict) else {}
+    bot_token = str(config.get("telegram_bot_token") or "").strip()
+    chat_id = str(config.get("telegram_chat_id") or "").strip()
+    if not bot_token:
+        raise ValueError("Telegram Bot Token 未配置")
+    if not chat_id:
+        raise ValueError("Telegram Chat ID 未配置")
+
+    settings = get_settings()
+    actor_name = actor.get("name") or actor.get("email") or actor.get("_id") or "未知用户"
+    text = "\n".join(
+        [
+            "AIwelink 通知测试",
+            f"通知名称：{document.get('name') or document.get('_id')}",
+            f"系统：{settings.app_name}",
+            f"操作人：{actor_name}",
+            f"时间：{now_utc().isoformat()}",
+        ]
+    )
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "disable_web_page_preview": True,
+    }
+    status_code, response_text = await asyncio.to_thread(_post_form_sync, url, payload)
+    if status_code >= 400:
+        raise RuntimeError(f"Telegram 请求失败：HTTP {status_code} {response_text}")
+    try:
+        data = json.loads(response_text) if response_text else None
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and data.get("ok") is not True:
+        raise RuntimeError(f"Telegram 返回失败：{data}")
+    return {"message": "Telegram 测试通知已发送"}
+
+
 def _post_json_sync(url: str, payload: dict[str, Any]) -> tuple[int, str]:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib_request.Request(url, data=data, headers={"Content-Type": "application/json; charset=utf-8"}, method="POST")
+    try:
+        with urllib_request.urlopen(request, timeout=15) as response:
+            return response.status, response.read().decode("utf-8", errors="replace")
+    except urllib_error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", errors="replace")
+
+
+def _post_form_sync(url: str, payload: dict[str, Any]) -> tuple[int, str]:
+    data = urlencode(payload).encode("utf-8")
+    request = urllib_request.Request(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"}, method="POST")
     try:
         with urllib_request.urlopen(request, timeout=15) as response:
             return response.status, response.read().decode("utf-8", errors="replace")

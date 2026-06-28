@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 
 Role = Literal["owner", "admin", "maintainer", "viewer"]
@@ -49,11 +49,23 @@ class ApiTokenCreate(BaseModel):
 
 class NotificationChannelCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    channel_type: Literal["dingtalk"] = "dingtalk"
+    channel_type: Literal["dingtalk", "telegram"] = "dingtalk"
     status: Literal["active", "disabled"] = "active"
-    webhook_url: str = Field(min_length=1, max_length=1000)
-    signing_secret: str = Field(min_length=1, max_length=500)
+    webhook_url: str | None = Field(default=None, min_length=1, max_length=1000)
+    signing_secret: str | None = Field(default=None, min_length=1, max_length=500)
+    telegram_bot_token: str | None = Field(default=None, min_length=1, max_length=500)
+    telegram_chat_id: str | None = Field(default=None, min_length=1, max_length=200)
     note: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_channel_config(self) -> "NotificationChannelCreate":
+        if self.channel_type == "dingtalk":
+            if not self.webhook_url or not self.signing_secret:
+                raise ValueError("钉钉通知需要 Webhook 地址和加签密钥")
+        if self.channel_type == "telegram":
+            if not self.telegram_bot_token or not self.telegram_chat_id:
+                raise ValueError("Telegram 通知需要 Bot Token 和 Chat ID")
+        return self
 
 
 class NotificationChannelUpdate(BaseModel):
@@ -61,6 +73,8 @@ class NotificationChannelUpdate(BaseModel):
     status: Literal["active", "disabled"] | None = None
     webhook_url: str | None = Field(default=None, min_length=1, max_length=1000)
     signing_secret: str | None = Field(default=None, min_length=1, max_length=500)
+    telegram_bot_token: str | None = Field(default=None, min_length=1, max_length=500)
+    telegram_chat_id: str | None = Field(default=None, min_length=1, max_length=200)
     note: str | None = Field(default=None, max_length=500)
 
 

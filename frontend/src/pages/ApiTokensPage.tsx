@@ -25,12 +25,15 @@ type ApiToken = {
 type NotificationChannel = {
   id: string;
   name: string;
-  channel_type: "dingtalk";
+  channel_type: "dingtalk" | "telegram";
   status: "active" | "disabled";
   note?: string | null;
   webhook_configured?: boolean;
   webhook_preview?: string | null;
   signing_secret_configured?: boolean;
+  telegram_bot_token_configured?: boolean;
+  telegram_bot_token_preview?: string | null;
+  telegram_chat_id?: string | null;
   last_test_at?: string | null;
   last_test_status?: string | null;
   last_test_message?: string | null;
@@ -40,10 +43,12 @@ type NotificationChannel = {
 
 type NotificationForm = {
   name: string;
-  channel_type: "dingtalk";
+  channel_type: "dingtalk" | "telegram";
   status: "active" | "disabled";
   webhook_url: string;
   signing_secret: string;
+  telegram_bot_token: string;
+  telegram_chat_id: string;
   note: string;
 };
 
@@ -53,6 +58,8 @@ const emptyNotificationForm: NotificationForm = {
   status: "active",
   webhook_url: "",
   signing_secret: "",
+  telegram_bot_token: "",
+  telegram_chat_id: "",
   note: "",
 };
 
@@ -141,6 +148,8 @@ export function ApiTokensPage({ token, showToast }: Props) {
       status: item.status,
       webhook_url: "",
       signing_secret: "",
+      telegram_bot_token: "",
+      telegram_chat_id: item.telegram_chat_id || "",
       note: item.note || "",
     });
   };
@@ -149,14 +158,22 @@ export function ApiTokensPage({ token, showToast }: Props) {
     event.preventDefault();
     const webhookUrl = notificationForm.webhook_url.trim();
     const signingSecret = notificationForm.signing_secret.trim();
+    const telegramBotToken = notificationForm.telegram_bot_token.trim();
+    const telegramChatId = notificationForm.telegram_chat_id.trim();
     const payload: Record<string, unknown> = {
       name: notificationForm.name.trim(),
       channel_type: notificationForm.channel_type,
       status: notificationForm.status,
       note: notificationForm.note.trim(),
     };
-    if (!editingChannelId || webhookUrl) payload.webhook_url = webhookUrl;
-    if (!editingChannelId || signingSecret) payload.signing_secret = signingSecret;
+    if (notificationForm.channel_type === "dingtalk") {
+      if (!editingChannelId || webhookUrl) payload.webhook_url = webhookUrl;
+      if (!editingChannelId || signingSecret) payload.signing_secret = signingSecret;
+    }
+    if (notificationForm.channel_type === "telegram") {
+      if (!editingChannelId || telegramBotToken) payload.telegram_bot_token = telegramBotToken;
+      if (!editingChannelId || telegramChatId) payload.telegram_chat_id = telegramChatId;
+    }
 
     setBusy(true);
     try {
@@ -206,6 +223,15 @@ export function ApiTokensPage({ token, showToast }: Props) {
   const refreshCurrentTab = () => {
     const loader = activeTab === "tokens" ? loadTokens : loadNotificationChannels;
     loader().catch((error) => showToast(errorMessage(error), true));
+  };
+
+  const channelLabel = (item: NotificationChannel) => (item.channel_type === "telegram" ? "TG机器人" : "钉钉");
+
+  const channelConfigSummary = (item: NotificationChannel) => {
+    if (item.channel_type === "telegram") {
+      return `Bot Token ${item.telegram_bot_token_configured ? item.telegram_bot_token_preview || "已配置" : "未配置"} · Chat ID ${item.telegram_chat_id || "未配置"}`;
+    }
+    return `Webhook ${item.webhook_configured ? item.webhook_preview || "已配置" : "未配置"} · 加签 ${item.signing_secret_configured ? "已配置" : "未配置"}`;
   };
 
   return (
@@ -315,9 +341,9 @@ export function ApiTokensPage({ token, showToast }: Props) {
                     <div className="notification-channel-title">
                       <strong>{item.name}</strong>
                       <span className={`status-pill ${item.status === "active" ? "success" : ""}`}>{item.status === "active" ? "启用" : "停用"}</span>
-                      <span className="status-pill accent">钉钉</span>
+                      <span className="status-pill accent">{channelLabel(item)}</span>
                     </div>
-                    <div className="muted">Webhook {item.webhook_configured ? item.webhook_preview || "已配置" : "未配置"} · 加签 {item.signing_secret_configured ? "已配置" : "未配置"}</div>
+                    <div className="muted">{channelConfigSummary(item)}</div>
                     <div className="muted">创建 {formatDateTime(item.created_at)} · 最近测试 {formatDateTime(item.last_test_at)}</div>
                     {item.last_test_status && (
                       <div className={item.last_test_status === "success" ? "success-text" : "warning-text"}>
@@ -347,7 +373,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
             <div className="panel-header">
               <div>
                 <h3>{editingChannelId ? "编辑通知" : "新增通知"}</h3>
-                <p>当前先支持钉钉自定义机器人。</p>
+                <p>当前支持钉钉自定义机器人和 Telegram 机器人。</p>
               </div>
               {editingChannelId && (
                 <button className="ghost" onClick={resetNotificationForm} type="button">
@@ -361,8 +387,13 @@ export function ApiTokensPage({ token, showToast }: Props) {
               </label>
               <label>
                 通知选型
-                <select value={notificationForm.channel_type} onChange={(event) => setNotificationForm((current) => ({ ...current, channel_type: event.target.value as "dingtalk" }))}>
+                <select
+                  disabled={!!editingChannelId}
+                  value={notificationForm.channel_type}
+                  onChange={(event) => setNotificationForm((current) => ({ ...current, channel_type: event.target.value as "dingtalk" | "telegram" }))}
+                >
                   <option value="dingtalk">钉钉自定义机器人</option>
+                  <option value="telegram">TG 机器人</option>
                 </select>
               </label>
               <label>
@@ -372,26 +403,53 @@ export function ApiTokensPage({ token, showToast }: Props) {
                   <option value="disabled">停用</option>
                 </select>
               </label>
-              <label>
-                钉钉自定义机器人 Webhook 地址 *
-                <textarea
-                  required={!editingChannelId}
-                  rows={3}
-                  value={notificationForm.webhook_url}
-                  onChange={(event) => setNotificationForm((current) => ({ ...current, webhook_url: event.target.value }))}
-                  placeholder={editingChannelId ? "留空不修改" : "https://oapi.dingtalk.com/robot/send?access_token=..."}
-                />
-              </label>
-              <label>
-                钉钉自定义机器人加签密钥 *
-                <input
-                  required={!editingChannelId}
-                  type="password"
-                  value={notificationForm.signing_secret}
-                  onChange={(event) => setNotificationForm((current) => ({ ...current, signing_secret: event.target.value }))}
-                  placeholder={editingChannelId ? "留空不修改" : "SEC..."}
-                />
-              </label>
+              {notificationForm.channel_type === "dingtalk" && (
+                <>
+                  <label>
+                    钉钉自定义机器人 Webhook 地址 *
+                    <textarea
+                      required={!editingChannelId}
+                      rows={3}
+                      value={notificationForm.webhook_url}
+                      onChange={(event) => setNotificationForm((current) => ({ ...current, webhook_url: event.target.value }))}
+                      placeholder={editingChannelId ? "留空不修改" : "https://oapi.dingtalk.com/robot/send?access_token=..."}
+                    />
+                  </label>
+                  <label>
+                    钉钉自定义机器人加签密钥 *
+                    <input
+                      required={!editingChannelId}
+                      type="password"
+                      value={notificationForm.signing_secret}
+                      onChange={(event) => setNotificationForm((current) => ({ ...current, signing_secret: event.target.value }))}
+                      placeholder={editingChannelId ? "留空不修改" : "SEC..."}
+                    />
+                  </label>
+                </>
+              )}
+              {notificationForm.channel_type === "telegram" && (
+                <>
+                  <label>
+                    Telegram Bot Token *
+                    <input
+                      required={!editingChannelId}
+                      type="password"
+                      value={notificationForm.telegram_bot_token}
+                      onChange={(event) => setNotificationForm((current) => ({ ...current, telegram_bot_token: event.target.value }))}
+                      placeholder={editingChannelId ? "留空不修改" : "1234567890:AA..."}
+                    />
+                  </label>
+                  <label>
+                    Telegram Chat ID *
+                    <input
+                      required={!editingChannelId}
+                      value={notificationForm.telegram_chat_id}
+                      onChange={(event) => setNotificationForm((current) => ({ ...current, telegram_chat_id: event.target.value }))}
+                      placeholder="-1001234567890 或用户 ID"
+                    />
+                  </label>
+                </>
+              )}
               <label>
                 备注 <textarea rows={4} value={notificationForm.note} onChange={(event) => setNotificationForm((current) => ({ ...current, note: event.target.value }))} placeholder="用途、触发场景、群名等" />
               </label>
