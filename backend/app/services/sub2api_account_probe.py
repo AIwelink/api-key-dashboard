@@ -107,9 +107,10 @@ async def update_group_observability_setting(
     updates["group_name"] = group_name
     updates["updated_at"] = now
     updates["updated_by"] = actor.get("_id")
+    insert_defaults = {key: value for key, value in base.items() if key not in updates}
     await db.group_observability_settings.update_one(
         {"_id": base["_id"]},
-        {"$setOnInsert": base, "$set": updates},
+        {"$setOnInsert": insert_defaults, "$set": updates},
         upsert=True,
     )
     doc = await db.group_observability_settings.find_one({"_id": base["_id"]})

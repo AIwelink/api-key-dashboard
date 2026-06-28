@@ -683,8 +683,11 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                         min={1}
                         max={90}
                         type="number"
-                        value={setting.sample_retention_days || 14}
-                        onChange={(event) => saveObservabilitySetting(setting, { sample_retention_days: Number(event.target.value) })}
+                        defaultValue={setting.sample_retention_days || 14}
+                        onBlur={(event) => saveObservabilitySetting(setting, { sample_retention_days: clampInt(event.target.value, 1, 90, setting.sample_retention_days || 14) })}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                        }}
                       />
                       <span className="cell-sub">天</span>
                     </td>
@@ -941,6 +944,12 @@ function displayValue(value: unknown) {
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function clampInt(value: unknown, min: number, max: number, fallback: number) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(number)));
 }
 
 function capacityLimitsToForm(limits: CapacityLimitsResponse["limits"]): CapacityLimitForm {
