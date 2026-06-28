@@ -70,8 +70,12 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.sub2api_cache_meta.create_index("fetched_at")
     await db.sub2api_dashboard_trends.create_index([("site_id", 1), ("granularity", 1), ("bucket_at", 1)])
     await db.sub2api_dashboard_trends.create_index([("site_id", 1), ("range_type", 1), ("bucket_at", 1)])
+    await db.sub2api_dashboard_trends.create_index([("site_id", 1), ("group_id", 1), ("granularity", 1), ("bucket_at", 1)])
+    await db.sub2api_dashboard_trends.create_index([("site_id", 1), ("group_id", 1), ("range_type", 1), ("bucket_at", 1)])
     await db.sub2api_dashboard_models.create_index([("site_id", 1), ("range_type", 1), ("model", 1)])
+    await db.sub2api_dashboard_models.create_index([("site_id", 1), ("group_id", 1), ("range_type", 1), ("model", 1)])
     await db.sub2api_dashboard_snapshots.create_index([("site_id", 1), ("range_type", 1)])
+    await db.sub2api_dashboard_snapshots.create_index([("site_id", 1), ("group_id", 1), ("range_type", 1)])
     await db.sub2api_dashboard_meta.create_index("updated_at")
     await db.sub2api_auto_refill_meta.create_index("last_finished_at")
 

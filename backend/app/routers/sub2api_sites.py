@@ -366,7 +366,12 @@ async def refresh_site_dashboard(
     if not await get_site(db, site_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
     client = await _client_for_site(db, site_id)
-    return await refresh_dashboard_snapshots(db, site_id=site_id, client=client, force=True)
+    group_ids = [
+        int(doc["group_id"])
+        async for doc in db.sub2api_groups_cache.find({"site_id": site_id}, {"group_id": 1})
+        if isinstance(doc.get("group_id"), int)
+    ]
+    return await refresh_dashboard_snapshots(db, site_id=site_id, client=client, force=True, group_ids=group_ids)
 
 
 @router.get("/{site_id}/dashboard")

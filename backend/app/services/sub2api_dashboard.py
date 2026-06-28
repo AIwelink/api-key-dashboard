@@ -26,11 +26,12 @@ async def refresh_dashboard_snapshots(
     site_id: str,
     client: Sub2ApiClient,
     force: bool = False,
+    group_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     if not force:
         meta = await db.sub2api_dashboard_meta.find_one({"_id": site_id})
         refreshed_at = meta.get("refreshed_at") if meta else None
-        if not dashboard_refresh_due(refreshed_at):
+        if not dashboard_refresh_due(refreshed_at) and not await dashboard_group_refresh_needed(db, site_id=site_id, group_ids=group_ids or []):
             return serialize_doc(
                 {
                     "ok": True,
@@ -48,16 +49,41 @@ async def refresh_dashboard_snapshots(
         result = await store_dashboard_snapshot(
             db,
             site_id=site_id,
+            group_id=None,
             range_type=range_config["range_type"],
             snapshot=snapshot,
         )
         results.append(result)
+    for group_id in group_ids or []:
+        for range_config in ranges:
+            params = dict(range_config["params"])
+            params.update(
+                {
+                    "group_id": group_id,
+                    "include_model_stats": False,
+                    "include_group_stats": True,
+                }
+            )
+            try:
+                snapshot = await client.get_dashboard_snapshot(**params)
+                result = await store_dashboard_snapshot(
+                    db,
+                    site_id=site_id,
+                    group_id=group_id,
+                    range_type=range_config["range_type"],
+                    snapshot=snapshot,
+                )
+                results.append(result)
+            except Exception as exc:  # noqa: BLE001 - missing one group should not block account cache refresh.
+                logger.warning("sub2api_group_dashboard_refresh_failed site_id=%s group_id=%s error=%s", site_id, group_id, exc)
+                results.append({"ok": False, "site_id": site_id, "group_id": group_id, "range_type": range_config["range_type"], "message": str(exc)})
     summary = {
         "ok": True,
         "site_id": site_id,
         "ranges": results,
         "trend_points": sum(item.get("trend_points", 0) for item in results),
         "models": sum(item.get("models", 0) for item in results),
+        "groups": len(group_ids or []),
         "refreshed_at": now_utc(),
     }
     await db.sub2api_dashboard_meta.update_one(
@@ -66,12 +92,31 @@ async def refresh_dashboard_snapshots(
         upsert=True,
     )
     logger.info(
-        "sub2api_dashboard_refresh_finished site_id=%s trend_points=%s models=%s",
+        "sub2api_dashboard_refresh_finished site_id=%s trend_points=%s models=%s groups=%s",
         site_id,
         summary["trend_points"],
         summary["models"],
+        summary["groups"],
     )
     return serialize_doc(summary)
+
+
+async def dashboard_group_refresh_needed(db: AsyncIOMotorDatabase, *, site_id: str, group_ids: list[int]) -> bool:
+    if not group_ids:
+        return False
+    expected_ids = {
+        f"{site_id}:{group_id}:{range_type}"
+        for group_id in group_ids
+        for range_type in ("recent_hours", "last_7d")
+    }
+    if not expected_ids:
+        return False
+    existing = {
+        doc["_id"]
+        async for doc in db.sub2api_dashboard_snapshots.find({"_id": {"$in": list(expected_ids)}}, {"_id": 1})
+        if doc.get("_id")
+    }
+    return len(existing) < len(expected_ids)
 
 
 async def refresh_due_dashboard_snapshots_for_all_sites(db: AsyncIOMotorDatabase, *, force: bool = False) -> dict[str, Any]:
@@ -84,7 +129,12 @@ async def refresh_due_dashboard_snapshots_for_all_sites(db: AsyncIOMotorDatabase
         site_id = str(site.get("_id"))
         client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
         try:
-            results.append(await refresh_dashboard_snapshots(db, site_id=site_id, client=client, force=force))
+            group_ids = [
+                int(doc["group_id"])
+                async for doc in db.sub2api_groups_cache.find({"site_id": site_id}, {"group_id": 1})
+                if isinstance(doc.get("group_id"), int)
+            ]
+            results.append(await refresh_dashboard_snapshots(db, site_id=site_id, client=client, force=force, group_ids=group_ids))
         except Exception as exc:  # noqa: BLE001 - one site should not block other sites.
             logger.warning("sub2api_dashboard_startup_refresh_failed site_id=%s error=%s", site_id, exc)
             results.append({"ok": False, "site_id": site_id, "message": str(exc)})
@@ -129,10 +179,11 @@ def next_refresh_at(refreshed_at: Any) -> datetime | None:
 
 
 async def get_stored_dashboard_snapshots(db: AsyncIOMotorDatabase, *, site_id: str) -> dict[str, Any]:
-    hourly_cursor = db.sub2api_dashboard_trends.find({"site_id": site_id, "granularity": "hour"}).sort("bucket_at", -1).limit(24 * 8)
-    daily_cursor = db.sub2api_dashboard_trends.find({"site_id": site_id, "granularity": "day"}).sort("bucket_at", -1).limit(30)
-    recent_models_cursor = db.sub2api_dashboard_models.find({"site_id": site_id, "range_type": "recent_hours"}).sort("cost", -1)
-    weekly_models_cursor = db.sub2api_dashboard_models.find({"site_id": site_id, "range_type": "last_7d"}).sort("cost", -1)
+    site_query = {"site_id": site_id, "group_id": None}
+    hourly_cursor = db.sub2api_dashboard_trends.find({**site_query, "granularity": "hour"}).sort("bucket_at", -1).limit(24 * 8)
+    daily_cursor = db.sub2api_dashboard_trends.find({**site_query, "granularity": "day"}).sort("bucket_at", -1).limit(30)
+    recent_models_cursor = db.sub2api_dashboard_models.find({**site_query, "range_type": "recent_hours"}).sort("cost", -1)
+    weekly_models_cursor = db.sub2api_dashboard_models.find({**site_query, "range_type": "last_7d"}).sort("cost", -1)
     meta = await db.sub2api_dashboard_meta.find_one({"_id": site_id})
     snapshots = [doc async for doc in db.sub2api_dashboard_snapshots.find({"site_id": site_id}).sort("fetched_at", -1)]
     hourly = [serialize_doc(doc) async for doc in hourly_cursor]
@@ -152,6 +203,7 @@ async def store_dashboard_snapshot(
     db: AsyncIOMotorDatabase,
     *,
     site_id: str,
+    group_id: int | None,
     range_type: str,
     snapshot: dict[str, Any],
 ) -> dict[str, Any]:
@@ -163,12 +215,14 @@ async def store_dashboard_snapshot(
     trend_items = snapshot.get("trend") if isinstance(snapshot.get("trend"), list) else []
     model_items = snapshot.get("models") if isinstance(snapshot.get("models"), list) else []
 
+    group_key = "all" if group_id is None else str(group_id)
     trend_ops = [
         ReplaceOne(
-            {"_id": f"{site_id}:{granularity}:{item.get('date')}"},
+            {"_id": f"{site_id}:{group_key}:{granularity}:{item.get('date')}"},
             {
-                "_id": f"{site_id}:{granularity}:{item.get('date')}",
+                "_id": f"{site_id}:{group_key}:{granularity}:{item.get('date')}",
                 "site_id": site_id,
+                "group_id": group_id,
                 "range_type": range_type,
                 "granularity": granularity,
                 "bucket": item.get("date"),
@@ -194,10 +248,11 @@ async def store_dashboard_snapshot(
     ]
     model_ops = [
         ReplaceOne(
-            {"_id": f"{site_id}:{range_type}:{item.get('model')}"},
+            {"_id": f"{site_id}:{group_key}:{range_type}:{item.get('model')}"},
             {
-                "_id": f"{site_id}:{range_type}:{item.get('model')}",
+                "_id": f"{site_id}:{group_key}:{range_type}:{item.get('model')}",
                 "site_id": site_id,
+                "group_id": group_id,
                 "range_type": range_type,
                 "granularity": granularity,
                 "model": item.get("model"),
@@ -227,8 +282,9 @@ async def store_dashboard_snapshot(
         await db.sub2api_dashboard_models.bulk_write(model_ops, ordered=False)
 
     meta = {
-        "_id": f"{site_id}:{range_type}",
+        "_id": f"{site_id}:{group_key}:{range_type}",
         "site_id": site_id,
+        "group_id": group_id,
         "range_type": range_type,
         "granularity": granularity,
         "start_date": start_date,

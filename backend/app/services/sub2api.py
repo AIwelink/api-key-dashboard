@@ -167,21 +167,25 @@ class Sub2ApiClient:
         include_model_stats: bool = True,
         include_group_stats: bool = False,
         include_users_trend: bool = False,
+        group_id: int | None = None,
     ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "granularity": granularity,
+            "include_stats": str(include_stats).lower(),
+            "include_trend": str(include_trend).lower(),
+            "include_model_stats": str(include_model_stats).lower(),
+            "include_group_stats": str(include_group_stats).lower(),
+            "include_users_trend": str(include_users_trend).lower(),
+            "timezone": timezone,
+        }
+        if group_id is not None:
+            params["group_id"] = group_id
         response = await self.request_admin(
             "GET",
             "/dashboard/snapshot-v2",
-            params={
-                "start_date": start_date,
-                "end_date": end_date,
-                "granularity": granularity,
-                "include_stats": str(include_stats).lower(),
-                "include_trend": str(include_trend).lower(),
-                "include_model_stats": str(include_model_stats).lower(),
-                "include_group_stats": str(include_group_stats).lower(),
-                "include_users_trend": str(include_users_trend).lower(),
-                "timezone": timezone,
-            },
+            params=params,
         )
         return response.get("data", response)
 

@@ -253,17 +253,19 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
             )
 
             client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
+            groups_data = await client.list_groups(page=1, page_size=500)
+            groups = groups_data.get("items", [])
+            group_ids = [_int_group_id(group.get("id")) for group in groups if isinstance(group, dict)]
+            group_ids = [group_id for group_id in group_ids if group_id is not None]
             dashboard_summary: dict[str, Any] | None = None
             try:
                 from app.services.sub2api_dashboard import refresh_dashboard_snapshots
 
-                dashboard_summary = await refresh_dashboard_snapshots(db, site_id=site_id, client=client)
+                dashboard_summary = await refresh_dashboard_snapshots(db, site_id=site_id, client=client, group_ids=group_ids)
             except Exception as exc:  # noqa: BLE001 - account cache refresh should not fail only because dashboard stats failed.
                 dashboard_summary = {"ok": False, "message": str(exc)}
                 logger.warning("sub2api_dashboard_refresh_failed site_id=%s error=%s", site_id, exc)
 
-            groups_data = await client.list_groups(page=1, page_size=500)
-            groups = groups_data.get("items", [])
             accounts = [_normalize_account_snapshot(account) for account in await _fetch_all_accounts(client)]
             fetched_at = now_utc()
             await _apply_account_usage_windows(db, site_id, client, accounts, fetched_at)
@@ -315,7 +317,6 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
             if account_ops:
                 await db.sub2api_accounts_cache.bulk_write(account_ops, ordered=False)
 
-            group_ids = [group.get("id") for group in groups if group.get("id") is not None]
             account_ids = [account.get("id") for account in accounts if account.get("id") is not None]
             await db.sub2api_groups_cache.delete_many({"site_id": site_id, "group_id": {"$nin": group_ids}})
             await db.sub2api_accounts_cache.delete_many({"site_id": site_id, "sub2api_account_id": {"$nin": account_ids}})
@@ -427,7 +428,13 @@ async def refresh_scheduler_loop(db: AsyncIOMotorDatabase) -> None:
                     full_site = await get_site(db, site_id, include_token=True)
                     if full_site:
                         client = Sub2ApiClient(base_url=full_site.get("base_url"), token=full_site.get("token"))
-                        await refresh_dashboard_snapshots(db, site_id=site_id, client=client)
+                        cached_group_docs = db.sub2api_groups_cache.find({"site_id": site_id}, {"group_id": 1})
+                        group_ids = [
+                            int(doc["group_id"])
+                            async for doc in cached_group_docs
+                            if isinstance(doc.get("group_id"), int)
+                        ]
+                        await refresh_dashboard_snapshots(db, site_id=site_id, client=client, group_ids=group_ids)
                 except Exception as exc:  # noqa: BLE001 - dashboard usage stats should not block account cache refresh.
                     logger.warning("sub2api_dashboard_scheduler_failed site_id=%s error=%s", site_id, exc)
                 interval = AUTO_REFRESH_INTERVAL_MINUTES
@@ -745,7 +752,7 @@ async def _capacity_summary_for_accounts(
         primary_type = _primary_capacity_type(reserve_type_summary)
     selected = type_summary.get(primary_type, type_summary["total"])
     selected_reserve = reserve_type_summary.get(primary_type, reserve_type_summary["total"])
-    cost_summary = await _dashboard_cost_summary(db, site_id)
+    cost_summary = await _dashboard_cost_summary(db, site_id, group_id=group_id)
     five_hour_peak_cost = cost_summary["five_hour_peak_cost"]
     recent_day_five_hour_peak_cost = cost_summary["recent_day_five_hour_peak_cost"]
     seven_day_24h_peak_cost = cost_summary["seven_day_24h_peak_cost"]
@@ -1112,14 +1119,17 @@ def _normalize_capacity_account_type(value: Any) -> str:
     return normalized
 
 
-async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str) -> dict[str, Any]:
+async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, group_id: int | None = None) -> dict[str, Any]:
+    query: dict[str, Any] = {"site_id": site_id, "group_id": group_id}
+    if group_id is None:
+        query = {"site_id": site_id, "$or": [{"group_id": None}, {"group_id": {"$exists": False}}]}
     hourly_docs = [
         doc
-        async for doc in db.sub2api_dashboard_trends.find({"site_id": site_id, "granularity": "hour"}).sort("bucket_at", -1).limit(24 * 8)
+        async for doc in db.sub2api_dashboard_trends.find({**query, "granularity": "hour"}).sort("bucket_at", -1).limit(24 * 8)
     ]
     daily_docs = [
         doc
-        async for doc in db.sub2api_dashboard_trends.find({"site_id": site_id, "granularity": "day"}).sort("bucket_at", -1).limit(14)
+        async for doc in db.sub2api_dashboard_trends.find({**query, "granularity": "day"}).sort("bucket_at", -1).limit(14)
     ]
     hourly = list(reversed(hourly_docs))
     five_hour_peak_cost = _five_hour_daily_peak_cost(hourly)
@@ -1139,6 +1149,7 @@ async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str) -> dic
         "seven_day_cost": seven_day_cost,
         "hourly_points": len(hourly_docs),
         "daily_points": len(daily_docs),
+        "group_id": group_id,
         "calculated_at": now_utc(),
     }
 
@@ -1312,6 +1323,17 @@ def _extract_group_ids(account: dict[str, Any]) -> list[int]:
     if isinstance(account_groups, list):
         ids.update(item.get("group_id") for item in account_groups if isinstance(item, dict) and isinstance(item.get("group_id"), int))
     return sorted(ids)
+
+
+def _int_group_id(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _account_snapshot_with_cache_sync(doc: dict[str, Any]) -> dict[str, Any]:
