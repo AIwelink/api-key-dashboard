@@ -184,7 +184,7 @@ async def _send_dingtalk_test(document: dict[str, Any], *, actor: dict[str, Any]
     if status_code >= 400:
         raise RuntimeError(f"钉钉 Webhook 请求失败：HTTP {status_code} {text}")
     try:
-        data = response.json()
+        data = json.loads(text) if text else None
     except ValueError:
         data = None
     if isinstance(data, dict):
