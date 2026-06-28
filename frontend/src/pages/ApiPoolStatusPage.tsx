@@ -1308,7 +1308,7 @@ function CapacityMoneyLine({ label, values }: { label: string; values: Array<[st
     <span className="capacity-money-line">
       <span>{label}：</span>
       {values.map(([itemLabel, itemValue], index) => (
-        <span className="capacity-money-item" key={itemLabel}>
+        <span className={`capacity-money-item ${itemLabel === "预估动态可用" ? "dynamic-available" : ""}`} key={itemLabel}>
           {index > 0 ? <span className="capacity-money-separator">，</span> : null}
           <span>{itemLabel} </span>
           <strong>{itemValue}</strong>

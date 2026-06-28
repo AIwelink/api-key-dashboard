@@ -3413,6 +3413,15 @@ code {
     justify-content: flex-start;
   }
 
+  .pool-status-page .capacity-money-item.dynamic-available {
+    display: block;
+    flex-basis: 100%;
+  }
+
+  .pool-status-page .capacity-money-item.dynamic-available .capacity-money-separator {
+    display: none;
+  }
+
   .pool-status-page .capacity-metric:nth-child(odd) {
     border-right: 0;
   }
