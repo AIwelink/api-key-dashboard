@@ -1083,6 +1083,10 @@ legend {
   color: var(--muted);
 }
 
+.capacity-money-break {
+  display: none;
+}
+
 .capacity-metric-value-row {
   display: flex;
   align-items: baseline;
@@ -3376,7 +3380,6 @@ code {
   .pool-status-page .capacity-metric-side-values,
   .pool-status-page .capacity-metric-side-value,
   .pool-status-page .capacity-money-line,
-  .pool-status-page .capacity-money-item,
   .pool-status-page .capacity-meter-legend,
   .pool-status-page .capacity-secondary-head {
     min-width: 0;
@@ -3384,6 +3387,29 @@ code {
     white-space: normal;
     overflow-wrap: anywhere;
     word-break: break-word;
+  }
+
+  .pool-status-page .capacity-money-line {
+    gap: 0 2px;
+  }
+
+  .pool-status-page .capacity-money-item {
+    min-width: 0;
+    max-width: 100%;
+    white-space: nowrap;
+    overflow-wrap: normal;
+    word-break: normal;
+  }
+
+  .pool-status-page .capacity-money-break {
+    display: block;
+    flex-basis: 100%;
+    width: 0;
+    height: 0;
+  }
+
+  .pool-status-page .capacity-money-item.dynamic-available .capacity-money-separator {
+    display: none;
   }
 
   .pool-status-page .capacity-metric-label {
@@ -3411,15 +3437,6 @@ code {
   .pool-status-page .capacity-meter-legend,
   .pool-status-page .capacity-secondary-head {
     justify-content: flex-start;
-  }
-
-  .pool-status-page .capacity-money-item.dynamic-available {
-    display: block;
-    flex-basis: 100%;
-  }
-
-  .pool-status-page .capacity-money-item.dynamic-available .capacity-money-separator {
-    display: none;
   }
 
   .pool-status-page .capacity-metric:nth-child(odd) {

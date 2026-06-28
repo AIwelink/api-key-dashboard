@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { errorMessage, formatDateTime, parseDisplayDate, text } from "../utils/format";
@@ -1307,13 +1307,19 @@ function CapacityMoneyLine({ label, values }: { label: string; values: Array<[st
   return (
     <span className="capacity-money-line">
       <span>{label}：</span>
-      {values.map(([itemLabel, itemValue], index) => (
-        <span className={`capacity-money-item ${itemLabel === "预估动态可用" ? "dynamic-available" : ""}`} key={itemLabel}>
-          {index > 0 ? <span className="capacity-money-separator">，</span> : null}
-          <span>{itemLabel} </span>
-          <strong>{itemValue}</strong>
-        </span>
-      ))}
+      {values.map(([itemLabel, itemValue], index) => {
+        const itemClass = index === 0 ? "current-used" : index === 1 ? "dynamic-available" : "actual-available";
+        return (
+          <Fragment key={itemLabel}>
+            {index === 1 ? <span aria-hidden="true" className="capacity-money-break" /> : null}
+            <span className={`capacity-money-item ${itemClass}`}>
+              {index > 0 ? <span className="capacity-money-separator">，</span> : null}
+              <span>{itemLabel} </span>
+              <strong>{itemValue}</strong>
+            </span>
+          </Fragment>
+        );
+      })}
     </span>
   );
 }
