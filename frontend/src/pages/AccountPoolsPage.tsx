@@ -53,7 +53,7 @@ type ApiPoolResponse = {
   total: number;
 };
 
-type CapacityLimitKey = "free" | "plus" | "team" | "pro";
+type CapacityLimitKey = "free" | "plus" | "team" | "k12" | "pro";
 
 type CapacityLimitForm = Record<CapacityLimitKey, { five_hour_usd: string; seven_day_usd: string }>;
 
@@ -102,13 +102,15 @@ const capacityLimitLabels: Record<CapacityLimitKey, string> = {
   free: "free",
   plus: "plus",
   team: "team 子号",
+  k12: "k12",
   pro: "pro 20x",
 };
 
 const defaultCapacityLimitForm: CapacityLimitForm = {
   free: { five_hour_usd: "2", seven_day_usd: "10" },
   plus: { five_hour_usd: "28", seven_day_usd: "140" },
-  team: { five_hour_usd: "20", seven_day_usd: "100" },
+  team: { five_hour_usd: "15", seven_day_usd: "75" },
+  k12: { five_hour_usd: "20", seven_day_usd: "100" },
   pro: { five_hour_usd: "360", seven_day_usd: "2100" },
 };
 
@@ -118,7 +120,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
   const [reserveTotal, setReserveTotal] = useState(0);
-  const [reserveSummary, setReserveSummary] = useState({ plus: 0, team: 0, free: 0, pro: 0, phoneBound: 0, problem: 0 });
+  const [reserveSummary, setReserveSummary] = useState({ plus: 0, team: 0, k12: 0, free: 0, pro: 0, phoneBound: 0, problem: 0 });
   const [localPools, setLocalPools] = useState<ApiPool[]>([]);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -241,10 +243,11 @@ export function AccountPoolsPage({ token, showToast }: Props) {
         if (key && value) params.set(key, value);
         return `/accounts?${params.toString()}`;
       };
-      const [allData, plusData, teamData, freeData, proData, phoneData] = await Promise.all([
+      const [allData, plusData, teamData, k12Data, freeData, proData, phoneData] = await Promise.all([
         api<AccountsResponse>(withFilter(), token),
         api<AccountsResponse>(withFilter("account_type", "plus"), token),
         api<AccountsResponse>(withFilter("account_type", "team"), token),
+        api<AccountsResponse>(withFilter("account_type", "k12"), token),
         api<AccountsResponse>(withFilter("account_type", "free"), token),
         api<AccountsResponse>(withFilter("account_type", "pro"), token),
         api<AccountsResponse>(withFilter("phone_bound", "true"), token),
@@ -253,6 +256,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       setReserveSummary({
         plus: plusData.total,
         team: teamData.total,
+        k12: k12Data.total,
         free: freeData.total,
         pro: proData.total,
         phoneBound: phoneData.total,
@@ -645,6 +649,10 @@ export function AccountPoolsPage({ token, showToast }: Props) {
             <div className="compact-stat">
               <span>Team子号</span>
               <strong>{reserveSummary.team}</strong>
+            </div>
+            <div className="compact-stat">
+              <span>K12</span>
+              <strong>{reserveSummary.k12}</strong>
             </div>
             <div className="compact-stat">
               <span>已绑手机</span>

@@ -371,6 +371,7 @@ export function UploadPage({ token, showToast }: Props) {
                   <option value="free">free</option>
                   <option value="plus">plus</option>
                   <option value="team">team子号</option>
+                  <option value="k12">k12</option>
                   <option value="pro">pro</option>
                   <option value="other">其他</option>
                 </select>
@@ -396,6 +397,7 @@ export function UploadPage({ token, showToast }: Props) {
               >
                 <option value="plus">plus</option>
                 <option value="team">team子号</option>
+                <option value="k12">k12</option>
                 <option value="free">free</option>
                 <option value="pro">pro</option>
                 <option value="other">其他</option>
@@ -583,7 +585,7 @@ function FieldHelp() {
               <code>account_type</code>
             </td>
             <td>必填</td>
-            <td>标记 plus/team子号/free/pro/其他。</td>
+            <td>标记 plus/team子号/k12/free/pro/其他。</td>
           </tr>
           <tr>
             <td>支付类型</td>
@@ -764,7 +766,7 @@ function parsedAccountLabel(account: Record<string, unknown> | undefined) {
 }
 
 function isAccountType(value: unknown): value is UploadFields["account_type"] {
-  return value === "plus" || value === "team" || value === "free" || value === "pro" || value === "other";
+  return value === "plus" || value === "team" || value === "k12" || value === "free" || value === "pro" || value === "other";
 }
 
 function normalizeAccountType(value: unknown, fallback: UploadFields["account_type"]): UploadFields["account_type"] {

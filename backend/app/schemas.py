@@ -92,7 +92,7 @@ class ImportBatchCreate(BaseModel):
 
 class ApiPoolCreate(BaseModel):
     name: str
-    account_type: Literal["plus", "team", "free", "pro", "other"] = "plus"
+    account_type: Literal["plus", "team", "k12", "free", "pro", "other"] = "plus"
     site_id: str = "default"
     active_group_id: int
     verification_group_id: int | None = None
@@ -106,7 +106,7 @@ class ApiPoolCreate(BaseModel):
 
 class ApiPoolUpdate(BaseModel):
     name: str | None = None
-    account_type: Literal["plus", "team", "free", "pro", "other"] | None = None
+    account_type: Literal["plus", "team", "k12", "free", "pro", "other"] | None = None
     site_id: str | None = None
     active_group_id: int | None = None
     verification_group_id: int | None = None
@@ -124,7 +124,7 @@ class CapacityAccountLimit(BaseModel):
 
 
 class CapacityAccountLimitsUpdate(BaseModel):
-    limits: dict[Literal["free", "plus", "team", "pro"], CapacityAccountLimit]
+    limits: dict[Literal["free", "plus", "team", "k12", "pro"], CapacityAccountLimit]
 
 
 class ApiPoolStatusPreferenceUpdate(BaseModel):

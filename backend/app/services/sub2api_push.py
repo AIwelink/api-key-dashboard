@@ -782,7 +782,7 @@ def _name_account_type(account_json: dict[str, Any], metadata: dict[str, Any]) -
     normalized = _normalize_account_type(value)
     if normalized == "team":
         return "team子号"
-    if normalized in {"plus", "free", "pro"}:
+    if normalized in {"plus", "k12", "free", "pro"}:
         return normalized
     return str(value).strip() or "unknown"
 

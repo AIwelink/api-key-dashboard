@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { errorMessage, formatDateTime, parseDisplayDate, text } from "../utils/format";
@@ -54,8 +54,16 @@ type CapacitySummary = {
   active_dynamic_five_hour_used_estimated_usd?: number;
   active_dynamic_five_hour_remaining_estimated_usd?: number;
   reserve_dynamic_five_hour_remaining_estimated_usd?: number;
+  five_hour_actual_used_usd?: number;
+  five_hour_actual_remaining_usd?: number;
+  active_five_hour_actual_remaining_usd?: number;
+  reserve_five_hour_actual_remaining_usd?: number;
   seven_day_used_estimated_usd?: number;
   seven_day_remaining_estimated_usd?: number;
+  seven_day_actual_used_usd?: number;
+  seven_day_actual_remaining_usd?: number;
+  active_seven_day_actual_remaining_usd?: number;
+  reserve_seven_day_actual_remaining_usd?: number;
   five_hour_peak_cost?: number;
   seven_day_five_hour_peak_cost?: number;
   recent_day_five_hour_peak_cost?: number;
@@ -1200,7 +1208,16 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
             capacitySideValue("实际池", summary?.active_five_hour_capacity_usd),
             capacitySideValue("备用池", summary?.reserve_five_hour_capacity_usd),
           ]}
-          sub={`动态可用额度：当前已用 ${formatUsd(summary?.dynamic_five_hour_used_estimated_usd ?? summary?.five_hour_used_estimated_usd)}，预估可用 ${formatUsd(summary?.dynamic_five_hour_remaining_estimated_usd ?? summary?.five_hour_remaining_estimated_usd)}`}
+          sub={
+            <CapacityMoneyLine
+              label="动态可用额度"
+              values={[
+                ["当前已用", formatUsd(summary?.dynamic_five_hour_used_estimated_usd ?? summary?.five_hour_used_estimated_usd)],
+                ["预估可用", formatUsd(summary?.dynamic_five_hour_remaining_estimated_usd ?? summary?.five_hour_remaining_estimated_usd)],
+                ["实际可用", formatUsd(summary?.five_hour_actual_remaining_usd)],
+              ]}
+            />
+          }
           percent={fiveHourRemainingPercent}
           tone={capacityAvailabilityTone(fiveHourUsedPercent, fiveHourRemainingPercent)}
           overlay={capacityOverlay("实际池", formatPercent(activeFiveHourRemainingPercent), activeFiveHourRemainingPercent, capacityAvailabilityTone(activeFiveHourUsedPercent, activeFiveHourRemainingPercent))}
@@ -1214,7 +1231,16 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
             capacitySideValue("实际池", summary?.active_seven_day_capacity_usd),
             capacitySideValue("备用池", summary?.reserve_seven_day_capacity_usd),
           ]}
-          sub={`可用额度：当前已用 ${formatUsd(summary?.seven_day_used_estimated_usd)}，预估可用 ${formatUsd(summary?.seven_day_remaining_estimated_usd)}`}
+          sub={
+            <CapacityMoneyLine
+              label="可用额度"
+              values={[
+                ["当前已用", formatUsd(summary?.seven_day_used_estimated_usd)],
+                ["预估可用", formatUsd(summary?.seven_day_remaining_estimated_usd)],
+                ["实际可用", formatUsd(summary?.seven_day_actual_remaining_usd)],
+              ]}
+            />
+          }
           percent={sevenDayRemainingPercent}
           tone={capacityAvailabilityTone(sevenDayUsedPercent, sevenDayRemainingPercent)}
           overlay={capacityOverlay("实际池", formatPercent(activeSevenDayRemainingPercent), activeSevenDayRemainingPercent, capacityAvailabilityTone(activeSevenDayUsedPercent, activeSevenDayRemainingPercent))}
@@ -1277,6 +1303,39 @@ type CapacityMeterOverlay = {
   tone?: CapacityMetricTone;
 };
 
+function CapacityMoneyLine({ label, values }: { label: string; values: Array<[string, string]> }) {
+  return (
+    <span className="capacity-money-line">
+      <span>{label}：</span>
+      {values.map(([itemLabel, itemValue], index) => (
+        <span className="capacity-money-item" key={itemLabel}>
+          {index > 0 ? <span className="capacity-money-separator">，</span> : null}
+          <span>{itemLabel} </span>
+          <strong>{itemValue}</strong>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function CapacitySubText({ value }: { value: ReactNode }) {
+  if (typeof value !== "string") return <>{value}</>;
+  const parts = value.split(/(\$[\d,]+(?:\.\d+)?)/g);
+  return (
+    <>
+      {parts.map((part, index) =>
+        part.startsWith("$") ? (
+          <strong className="capacity-money-strong" key={`${part}-${index}`}>
+            {part}
+          </strong>
+        ) : (
+          part
+        ),
+      )}
+    </>
+  );
+}
+
 function capacityOverlay(label: string, value: string, percent?: number | null, tone?: CapacityMetricTone): CapacityMeterOverlay | undefined {
   if (percent === undefined || percent === null) return undefined;
   return { label, value, percent, tone };
@@ -1316,7 +1375,7 @@ function CapacityMetric({
     label: string;
     value: string;
   } | undefined>;
-  sub: string;
+  sub: ReactNode;
   percent?: number | null;
   tone?: CapacityMetricTone;
   overlay?: CapacityMeterOverlay;
@@ -1334,6 +1393,7 @@ function CapacityMetric({
   const [labelMain, labelSuffix] = label.split("：");
   const visibleSideValues = (sideValues || []).filter((item): item is { label: string; value: string } => Boolean(item));
   const showInlineSub = Boolean(overlay && !reverse);
+  const valueIsMoney = value.startsWith("$");
   return (
     <div className="capacity-metric">
       <span className="capacity-metric-label">
@@ -1341,7 +1401,7 @@ function CapacityMetric({
         {labelSuffix ? <em>：{labelSuffix}</em> : null}
       </span>
       <div className="capacity-metric-value-row">
-        <strong className={`capacity-metric-value ${tone}`}>
+        <strong className={`capacity-metric-value ${tone} ${valueIsMoney ? "money" : ""}`}>
           {showInlineSub ? (
             <>
               <span>含备用</span>
@@ -1349,7 +1409,11 @@ function CapacityMetric({
             </>
           ) : value}
         </strong>
-        {showInlineSub && <small className="capacity-metric-inline-sub">{sub}</small>}
+        {showInlineSub && (
+          <small className="capacity-metric-inline-sub">
+            <CapacitySubText value={sub} />
+          </small>
+        )}
         {visibleSideValues.length > 0 && (
           <span className="capacity-metric-side-values">
             {visibleSideValues.map((item) => (
@@ -1361,7 +1425,11 @@ function CapacityMetric({
           </span>
         )}
       </div>
-      {!showInlineSub && <small>{sub}</small>}
+      {!showInlineSub && (
+        <small>
+          <CapacitySubText value={sub} />
+        </small>
+      )}
       {percent !== undefined && percent !== null && (
         <div className="capacity-primary-meter">
           {showMeterHead && (
@@ -1612,6 +1680,7 @@ function displayPlatform(value?: string): string {
 function displayPlan(value: string): string {
   const normalized = value.toLowerCase();
   if (["team", "team_sub", "team-sub", "team_child", "team子号", "team 子号"].includes(normalized)) return "Team子号";
+  if (normalized === "k12") return "K12";
   if (normalized === "plus") return "Plus";
   if (normalized === "pro") return "Pro";
   if (normalized === "free") return "Free";
@@ -1621,6 +1690,7 @@ function displayPlan(value: string): string {
 function planTagTone(value: string): string {
   const normalized = value.toLowerCase();
   if (["team", "team_sub", "team-sub", "team_child", "team子号", "team 子号"].includes(normalized)) return "plan-team";
+  if (normalized === "k12") return "plan-k12";
   if (normalized === "plus") return "plan-plus";
   if (normalized === "free") return "plan-free";
   if (normalized === "pro") return "plan-pro";

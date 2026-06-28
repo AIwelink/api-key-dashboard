@@ -106,6 +106,7 @@ export function AccountEditPanel({ account, token, showToast, onClose, onSaved }
             <select value={fields.account_type} onChange={(event) => setField("account_type", event.target.value as EditFields["account_type"])} required>
               <option value="plus">plus</option>
               <option value="team">team子号</option>
+              <option value="k12">k12</option>
               <option value="free">free</option>
               <option value="pro">pro</option>
               <option value="other">其他</option>
@@ -166,6 +167,7 @@ export function AccountEditPanel({ account, token, showToast, onClose, onSaved }
               <option value="free">free</option>
               <option value="plus">plus</option>
               <option value="team">team子号</option>
+              <option value="k12">k12</option>
               <option value="pro">pro</option>
               <option value="other">其他</option>
             </select>
@@ -318,14 +320,14 @@ function accountEmail(account: AccountDocument) {
 function normalizeAccountType(value: string): AccountType {
   const normalized = value.trim().toLowerCase();
   if (["team", "team_sub", "team-sub", "team_child", "team_child_account", "team子号", "team 子号"].includes(normalized)) return "team";
-  if (normalized === "plus" || normalized === "free" || normalized === "pro" || normalized === "other") return normalized;
+  if (normalized === "plus" || normalized === "k12" || normalized === "free" || normalized === "pro" || normalized === "other") return normalized;
   return "plus";
 }
 
 function normalizePurchaseAccountType(value: string, fallback: AccountType | ""): EditFields["purchase_account_type"] {
   const normalized = value.trim().toLowerCase();
   if (["team", "team_sub", "team-sub", "team_child", "team_child_account", "team子号", "team 子号"].includes(normalized)) return "team";
-  if (normalized === "plus" || normalized === "free" || normalized === "pro" || normalized === "other") return normalized;
+  if (normalized === "plus" || normalized === "k12" || normalized === "free" || normalized === "pro" || normalized === "other") return normalized;
   return fallback;
 }
 
