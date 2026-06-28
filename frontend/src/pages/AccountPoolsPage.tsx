@@ -617,7 +617,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
         <div className="panel-header">
           <div>
             <h3>账号探测配置</h3>
-            <p>每 3 分钟轻量探测 sub2 账号状态；详细记录用于后续 Agent 分析账号寿命、401、恢复和重复邮箱。</p>
+            <p>按分组配置轻量探测间隔；详细记录用于后续 Agent 分析账号寿命、401、恢复和重复邮箱。</p>
           </div>
           <div className="button-row">
             <button className="ghost compact-button" type="button" onClick={() => loadObservabilitySettings().catch((error) => showToast(errorMessage(error), true))} disabled={!selectedSiteId}>
@@ -635,6 +635,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                 <th>分组</th>
                 <th>账号</th>
                 <th>探测</th>
+                <th>间隔</th>
                 <th>详细记录</th>
                 <th>样本保留</th>
                 <th>记录内容</th>
@@ -664,6 +665,24 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                         />
                         <span>{setting.enabled !== false ? "开启" : "关闭"}</span>
                       </label>
+                    </td>
+                    <td>
+                      <input
+                        className="compact-number-input"
+                        disabled={busy || setting.enabled === false}
+                        min={1}
+                        max={60}
+                        type="number"
+                        defaultValue={secondsToMinutes(setting.probe_interval_seconds || 180)}
+                        onBlur={(event) => {
+                          const minutes = clampInt(event.target.value, 1, 60, secondsToMinutes(setting.probe_interval_seconds || 180));
+                          saveObservabilitySetting(setting, { probe_interval_seconds: minutes * 60 });
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                        }}
+                      />
+                      <span className="cell-sub">分钟</span>
                     </td>
                     <td>
                       <label className="inline-check">
@@ -728,7 +747,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
               })}
               {!observabilitySettings.length && (
                 <tr>
-                  <td className="muted" colSpan={7}>
+                  <td className="muted" colSpan={8}>
                     暂无分组探测配置，请先同步 sub2api 分组。
                   </td>
                 </tr>
@@ -950,6 +969,12 @@ function clampInt(value: unknown, min: number, max: number, fallback: number) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(number)));
+}
+
+function secondsToMinutes(value: unknown) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return 3;
+  return Math.max(1, Math.round(number / 60));
 }
 
 function capacityLimitsToForm(limits: CapacityLimitsResponse["limits"]): CapacityLimitForm {

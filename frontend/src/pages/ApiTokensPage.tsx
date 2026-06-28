@@ -37,6 +37,9 @@ type NotificationChannel = {
   last_test_at?: string | null;
   last_test_status?: string | null;
   last_test_message?: string | null;
+  last_delivery_at?: string | null;
+  last_delivery_status?: string | null;
+  last_delivery_message?: string | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -345,10 +348,18 @@ export function ApiTokensPage({ token, showToast }: Props) {
                     </div>
                     <div className="muted">{channelConfigSummary(item)}</div>
                     <div className="muted">创建 {formatDateTime(item.created_at)} · 最近测试 {formatDateTime(item.last_test_at)}</div>
+                    {item.last_delivery_at && (
+                      <div className="muted">
+                        最近投递 {formatDateTime(item.last_delivery_at)} · {deliveryStatusLabel(item.last_delivery_status)}
+                      </div>
+                    )}
                     {item.last_test_status && (
                       <div className={item.last_test_status === "success" ? "success-text" : "warning-text"}>
                         测试 {item.last_test_status === "success" ? "成功" : "失败"}：{item.last_test_message || "-"}
                       </div>
+                    )}
+                    {item.last_delivery_status && item.last_delivery_status !== "success" && (
+                      <div className="warning-text">投递失败：{item.last_delivery_message || "-"}</div>
                     )}
                     {item.note && <div>{item.note}</div>}
                   </div>
@@ -462,4 +473,12 @@ export function ApiTokensPage({ token, showToast }: Props) {
       )}
     </section>
   );
+}
+
+function deliveryStatusLabel(value?: string | null) {
+  if (value === "success") return "成功";
+  if (value === "failed") return "失败";
+  if (value === "partial") return "部分成功";
+  if (value === "skipped") return "跳过";
+  return value || "-";
 }

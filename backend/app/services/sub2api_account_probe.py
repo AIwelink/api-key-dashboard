@@ -12,6 +12,7 @@ from typing import Any
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import UpdateOne
 
+from app.services.notifications import send_notification_event
 from app.services.sub2api import Sub2ApiClient
 from app.services.sub2api_cache import get_site, list_sites
 from app.utils import now_utc, serialize_doc
@@ -270,15 +271,16 @@ async def probe_due_sites(db: AsyncIOMotorDatabase) -> dict[str, Any]:
             continue
         site_id = str(site.get("id"))
         try:
-            if await _site_probe_due(db, site_id):
-                results.append(await probe_site_accounts(db, site_id=site_id))
+            due_group_ids = await _due_group_ids(db, site_id)
+            if due_group_ids:
+                results.append(await probe_site_accounts(db, site_id=site_id, group_ids=due_group_ids))
         except Exception as exc:  # noqa: BLE001 - each site is independent.
             logger.warning("sub2api_account_probe_site_failed site_id=%s error=%s", site_id, exc)
             results.append({"ok": False, "site_id": site_id, "message": str(exc)})
     return {"ok": True, "results": results, "probed": sum(1 for item in results if item.get("ok") is True)}
 
 
-async def probe_site_accounts(db: AsyncIOMotorDatabase, *, site_id: str) -> dict[str, Any]:
+async def probe_site_accounts(db: AsyncIOMotorDatabase, *, site_id: str, group_ids: list[int] | None = None) -> dict[str, Any]:
     site = await get_site(db, site_id, include_token=True)
     if not site:
         return {"ok": False, "site_id": site_id, "message": "sub2api site not found"}
@@ -306,8 +308,36 @@ async def probe_site_accounts(db: AsyncIOMotorDatabase, *, site_id: str) -> dict
         client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
         settings = await _settings_for_site(db, site_id)
         enabled_group_ids = {group_id for group_id, setting in settings.items() if setting.get("enabled") is not False}
+        if group_ids is not None:
+            enabled_group_ids &= set(group_ids)
+        if settings and not enabled_group_ids:
+            finished_at = now_utc()
+            await db.remote_account_probe_runs.update_one(
+                {"_id": run_id},
+                {
+                    "$set": {
+                        "status": "succeeded",
+                        "finished_at": finished_at,
+                        "duration_ms": int((finished_at - started_at).total_seconds() * 1000),
+                        "group_ids_checked": [],
+                        "message": "no enabled groups due",
+                        **counters,
+                    }
+                },
+            )
+            await db.remote_account_probe_meta.update_one(
+                {"_id": site_id},
+                {"$set": {"site_id": site_id, "last_probe_at": finished_at, "last_run_id": run_id, "status": "succeeded", "updated_at": finished_at}},
+                upsert=True,
+            )
+            return {"ok": True, "site_id": site_id, "run_id": run_id, "group_ids_checked": [], "message": "no enabled groups due", **counters}
         accounts = [_normalize_probe_account(item) for item in await _fetch_all_accounts(client)]
         fetched_at = now_utc()
+        all_seen_identity_ids = {
+            _identity_id(site_id, str(account.get("normalized_email")))
+            for account in accounts
+            if account.get("normalized_email")
+        }
         filtered_accounts = [account for account in accounts if _account_in_enabled_groups(account, enabled_group_ids)]
         counters["accounts_seen"] = len(filtered_accounts)
 
@@ -378,11 +408,13 @@ async def probe_site_accounts(db: AsyncIOMotorDatabase, *, site_id: str) -> dict
         missing_counts = await _mark_missing_identities(
             db,
             site_id=site_id,
-            seen_identity_ids=seen_identity_ids,
+            seen_identity_ids=all_seen_identity_ids,
+            group_ids=enabled_group_ids,
             detected_at=fetched_at,
         )
         counters.update(missing_counts)
         finished_at = now_utc()
+        group_ids_checked = sorted(enabled_group_ids)
         await db.remote_account_probe_runs.update_one(
             {"_id": run_id},
             {
@@ -390,9 +422,14 @@ async def probe_site_accounts(db: AsyncIOMotorDatabase, *, site_id: str) -> dict
                     "status": "succeeded",
                     "finished_at": finished_at,
                     "duration_ms": int((finished_at - started_at).total_seconds() * 1000),
+                    "group_ids_checked": group_ids_checked,
                     **counters,
                 }
             },
+        )
+        await db.group_observability_settings.update_many(
+            {"site_id": site_id, "group_id": {"$in": group_ids_checked}},
+            {"$set": {"last_probe_at": finished_at, "last_run_id": run_id, "updated_at": finished_at}},
         )
         await db.remote_account_probe_meta.update_one(
             {"_id": site_id},
@@ -400,7 +437,7 @@ async def probe_site_accounts(db: AsyncIOMotorDatabase, *, site_id: str) -> dict
             upsert=True,
         )
         logger.info("sub2api_account_probe_finished site_id=%s accounts=%s changed=%s 401=%s", site_id, counters["accounts_seen"], counters["accounts_changed"], counters["accounts_401"])
-        return {"ok": True, "site_id": site_id, "run_id": run_id, **counters}
+        return {"ok": True, "site_id": site_id, "run_id": run_id, "group_ids_checked": group_ids_checked, **counters}
     except Exception as exc:
         finished_at = now_utc()
         message = str(exc) or exc.__class__.__name__
@@ -416,19 +453,18 @@ async def probe_site_accounts(db: AsyncIOMotorDatabase, *, site_id: str) -> dict
         raise
 
 
-async def _site_probe_due(db: AsyncIOMotorDatabase, site_id: str) -> bool:
-    meta = await db.remote_account_probe_meta.find_one({"_id": site_id})
-    last_probe_at = _parse_datetime(meta.get("last_probe_at")) if meta else None
-    interval = await _minimum_probe_interval(db, site_id)
-    if not last_probe_at:
-        return True
-    return now_utc() - last_probe_at >= timedelta(seconds=interval)
-
-
-async def _minimum_probe_interval(db: AsyncIOMotorDatabase, site_id: str) -> int:
-    cursor = db.group_observability_settings.find({"site_id": site_id, "enabled": {"$ne": False}}, {"probe_interval_seconds": 1})
-    intervals = [int(doc.get("probe_interval_seconds") or DEFAULT_PROBE_INTERVAL_SECONDS) async for doc in cursor]
-    return max(60, min(intervals) if intervals else DEFAULT_PROBE_INTERVAL_SECONDS)
+async def _due_group_ids(db: AsyncIOMotorDatabase, site_id: str) -> list[int]:
+    settings = await _settings_for_site(db, site_id)
+    now = now_utc()
+    due: list[int] = []
+    for group_id, setting in settings.items():
+        if setting.get("enabled") is False:
+            continue
+        last_probe_at = _parse_datetime(setting.get("last_probe_at"))
+        interval_seconds = max(60, int(setting.get("probe_interval_seconds") or DEFAULT_PROBE_INTERVAL_SECONDS))
+        if not last_probe_at or now - last_probe_at >= timedelta(seconds=interval_seconds):
+            due.append(group_id)
+    return due
 
 
 async def _settings_for_site(db: AsyncIOMotorDatabase, site_id: str) -> dict[int, dict[str, Any]]:
@@ -658,6 +694,8 @@ async def _update_identity_and_events(
         changed = True
         if event_enabled:
             await _write_event(db, site_id=site_id, event_type="remote_account_seen_first", severity="info", detected_at=detected_at, account=account, session=session)
+            if _is_401(account):
+                await _write_event(db, site_id=site_id, event_type="401_detected", severity="critical", detected_at=detected_at, account=account, session=session)
     else:
         if identity.get("current_presence") in {"removed", "missing_suspected"} or str(identity.get("current_remote_account_id")) != str(account.get("remote_account_id")):
             changed = True
@@ -759,11 +797,14 @@ async def _mark_missing_identities(
     *,
     site_id: str,
     seen_identity_ids: set[str],
+    group_ids: set[int] | None = None,
     detected_at: datetime,
 ) -> dict[str, int]:
     suspected = 0
     removed = 0
     query: dict[str, Any] = {"site_id": site_id, "current_presence": {"$in": ["present", "missing_suspected"]}}
+    if group_ids:
+        query["current_group_ids"] = {"$in": list(group_ids)}
     if seen_identity_ids:
         query["_id"] = {"$nin": list(seen_identity_ids)}
     cursor = db.remote_account_identities.find(query)
@@ -842,7 +883,115 @@ async def _write_event(
         "raw_excerpt": str(account.get("error_message") or (identity or previous or {}).get("current_error_message") or "")[:500],
         "created_at": detected_at,
     }
-    await db.remote_account_status_events.insert_one(doc)
+    result = await db.remote_account_status_events.insert_one(doc)
+    if event_type == "401_detected":
+        event_id = str(result.inserted_id)
+        try:
+            notification_result = await _notify_401_detected(db, event_id=event_id, event_doc=doc)
+            await db.remote_account_status_events.update_one(
+                {"_id": result.inserted_id},
+                {
+                    "$set": {
+                        "notification_status": notification_result.get("event", {}).get("status"),
+                        "notification_event_id": notification_result.get("event", {}).get("id"),
+                        "notification_channel_count": notification_result.get("total", 0),
+                        "notification_success_count": notification_result.get("success", 0),
+                        "notification_failed_count": notification_result.get("failed", 0),
+                    }
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - probe event must survive notification failure.
+            logger.warning("sub2api_account_probe_401_notification_failed site_id=%s event_id=%s error=%s", site_id, event_id, exc)
+            await db.remote_account_status_events.update_one(
+                {"_id": result.inserted_id},
+                {"$set": {"notification_status": "failed", "notification_error": str(exc) or exc.__class__.__name__}},
+            )
+
+
+async def _notify_401_detected(db: AsyncIOMotorDatabase, *, event_id: str, event_doc: dict[str, Any]) -> dict[str, Any]:
+    site_id = str(event_doc.get("site_id") or "")
+    email = str(event_doc.get("email") or event_doc.get("normalized_email") or "-")
+    remote_account_id = event_doc.get("remote_account_id")
+    group_ids = event_doc.get("current_group_ids") or []
+    error_message = str(event_doc.get("current_error_message") or event_doc.get("raw_excerpt") or "-")
+    detected_at = event_doc.get("detected_at") or event_doc.get("occurred_at")
+    site = await get_site(db, site_id) if site_id else None
+    group_names = await _notification_group_names(db, site_id=site_id, group_ids=group_ids)
+    usage = event_doc.get("usage_snapshot") if isinstance(event_doc.get("usage_snapshot"), dict) else {}
+    title = "AIwelink 401 封号告警"
+    lines = [
+        "### AIwelink 401 封号告警",
+        f"- 站点：{(site or {}).get('name') or site_id or '-'}",
+        f"- 分组：{', '.join(group_names) if group_names else '-'}",
+        f"- 邮箱：{email}",
+        f"- Remote ID：#{remote_account_id}" if remote_account_id is not None else "- Remote ID：-",
+        f"- 状态：{event_doc.get('current_status') or '-'}",
+        f"- 错误：{error_message[:300]}",
+        f"- 5h 用量：{_usage_value(usage, 'codex_5h_actual_cost')} / { _usage_value(usage, 'codex_5h_used_percent', suffix='%')}",
+        f"- 7d 用量：{_usage_value(usage, 'codex_7d_actual_cost')} / { _usage_value(usage, 'codex_7d_used_percent', suffix='%')}",
+        f"- 时间：{serialize_doc(detected_at)}",
+    ]
+    plain_text = "\n".join(line.replace("### ", "") for line in lines)
+    payload = {
+        "status_event_id": event_id,
+        "site_id": site_id,
+        "site_name": (site or {}).get("name"),
+        "group_ids": group_ids,
+        "group_names": group_names,
+        "email": email,
+        "remote_account_id": remote_account_id,
+        "error_message": error_message,
+        "detected_at": serialize_doc(detected_at),
+        "usage_snapshot": usage,
+    }
+    return await send_notification_event(
+        db,
+        event_type="sub2api.account.401_detected",
+        severity="critical",
+        source="sub2api_account_probe",
+        resource_type="remote_account_status_event",
+        resource_id=event_id,
+        dedupe_key=f"sub2api.account.401_detected:{site_id}:{email}:{remote_account_id}:{serialize_doc(detected_at)}",
+        title=title,
+        text=plain_text,
+        markdown_text="\n".join(lines),
+        payload=payload,
+    )
+
+
+async def _notification_group_names(db: AsyncIOMotorDatabase, *, site_id: str, group_ids: Any) -> list[str]:
+    result: list[str] = []
+    if not site_id or not isinstance(group_ids, list):
+        return result
+    numeric_ids = []
+    for value in group_ids:
+        try:
+            numeric_ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    if not numeric_ids:
+        return result
+    cursor = db.sub2api_groups_cache.find({"site_id": site_id, "group_id": {"$in": numeric_ids}}, {"group_id": 1, "group.name": 1})
+    names_by_id: dict[int, str] = {}
+    async for doc in cursor:
+        group = doc.get("group") if isinstance(doc.get("group"), dict) else {}
+        group_id = doc.get("group_id")
+        if isinstance(group_id, int):
+            names_by_id[group_id] = str(group.get("name") or f"#{group_id}")
+    for group_id in numeric_ids:
+        result.append(names_by_id.get(group_id, f"#{group_id}"))
+    return result
+
+
+def _usage_value(usage: dict[str, Any], key: str, *, suffix: str = "") -> str:
+    value = usage.get(key)
+    if value is None or value == "":
+        return "-"
+    if isinstance(value, (int, float)):
+        text = f"{value:.2f}".rstrip("0").rstrip(".")
+    else:
+        text = str(value)
+    return f"{text}{suffix}"
 
 
 def _sample_update(site_id: str, run_id: str, account: dict[str, Any], session: dict[str, Any], setting: dict[str, Any], sampled_at: datetime) -> UpdateOne:

@@ -173,6 +173,146 @@ async def test_notification_channel(db: AsyncIOMotorDatabase, *, channel_id: str
         return {"ok": False, "message": message, "channel": _public_channel(document or {})}
 
 
+async def send_notification_event(
+    db: AsyncIOMotorDatabase,
+    *,
+    event_type: str,
+    title: str,
+    text: str,
+    markdown_text: str | None = None,
+    severity: str = "info",
+    source: str = "system",
+    resource_type: str | None = None,
+    resource_id: str | None = None,
+    payload: dict[str, Any] | None = None,
+    dedupe_key: str | None = None,
+    channel_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    now = now_utc()
+    event_id = secrets.token_hex(12)
+    event_doc = {
+        "_id": event_id,
+        "event_type": event_type,
+        "severity": severity,
+        "source": source,
+        "resource_type": resource_type,
+        "resource_id": resource_id,
+        "dedupe_key": dedupe_key,
+        "title": title,
+        "text": text,
+        "markdown_text": markdown_text,
+        "payload": payload or {},
+        "status": "pending",
+        "channel_count": 0,
+        "success_count": 0,
+        "failed_count": 0,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.notification_events.insert_one(event_doc)
+
+    query: dict[str, Any] = {"status": "active"}
+    if channel_ids:
+        query["_id"] = {"$in": channel_ids}
+    channels = [item async for item in db.notification_channels.find(query).sort("created_at", 1)]
+    items: list[dict[str, Any]] = []
+    success = 0
+    failed = 0
+    for channel in channels:
+        channel_id = str(channel.get("_id"))
+        channel_type = str(channel.get("channel_type") or "")
+        try:
+            if channel_type == "dingtalk":
+                result = await _send_dingtalk_message(channel, title=title, markdown_text=markdown_text or text)
+            elif channel_type == "telegram":
+                result = await _send_telegram_message(channel, text=text)
+            else:
+                raise ValueError(f"暂不支持的通知类型：{channel_type}")
+            success += 1
+            status_value = "success"
+            message = result.get("message") or "通知已发送"
+        except Exception as exc:  # noqa: BLE001 - notification failures must not break probes.
+            failed += 1
+            status_value = "failed"
+            message = str(exc) or exc.__class__.__name__
+        item = {
+            "channel_id": channel_id,
+            "channel_name": channel.get("name"),
+            "channel_type": channel_type,
+            "status": status_value,
+            "message": message,
+            "attempted_at": now,
+        }
+        items.append(item)
+        await db.notification_deliveries.insert_one(
+            {
+                "_id": secrets.token_hex(12),
+                **item,
+                "notification_event_id": event_id,
+                "event_type": event_type,
+                "severity": severity,
+                "title": title,
+                "created_at": now,
+            }
+        )
+        await db.notification_channels.update_one(
+            {"_id": channel_id},
+            {
+                "$set": {
+                    "last_delivery_at": now,
+                    "last_delivery_status": status_value,
+                    "last_delivery_message": message,
+                    "updated_at": now,
+                }
+            },
+        )
+    final_status = "skipped" if not channels else "success" if failed == 0 else "failed" if success == 0 else "partial"
+    finished_at = now_utc()
+    await db.notification_events.update_one(
+        {"_id": event_id},
+        {
+            "$set": {
+                "status": final_status,
+                "channel_count": len(channels),
+                "success_count": success,
+                "failed_count": failed,
+                "finished_at": finished_at,
+                "updated_at": finished_at,
+            }
+        },
+    )
+    event_doc.update(
+        {
+            "status": final_status,
+            "channel_count": len(channels),
+            "success_count": success,
+            "failed_count": failed,
+            "finished_at": finished_at,
+            "updated_at": finished_at,
+        }
+    )
+    return {"event": serialize_doc(event_doc), "total": len(channels), "success": success, "failed": failed, "items": serialize_doc(items)}
+
+
+async def send_notification_to_active_channels(
+    db: AsyncIOMotorDatabase,
+    *,
+    title: str,
+    text: str,
+    markdown_text: str | None = None,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return await send_notification_event(
+        db,
+        event_type=event_type,
+        title=title,
+        text=text,
+        markdown_text=markdown_text,
+        payload=payload,
+    )
+
+
 async def _send_dingtalk_test(document: dict[str, Any], *, actor: dict[str, Any]) -> dict[str, Any]:
     config = document.get("config") if isinstance(document.get("config"), dict) else {}
     webhook_url = str(config.get("webhook_url") or "").strip()
@@ -182,12 +322,6 @@ async def _send_dingtalk_test(document: dict[str, Any], *, actor: dict[str, Any]
     if not signing_secret:
         raise ValueError("钉钉加签密钥未配置")
 
-    timestamp = str(int(now_utc().timestamp() * 1000))
-    string_to_sign = f"{timestamp}\n{signing_secret}"
-    signature = hmac.new(signing_secret.encode("utf-8"), string_to_sign.encode("utf-8"), hashlib.sha256).digest()
-    sign = quote_plus(base64.b64encode(signature).decode("utf-8"))
-    separator = "&" if "?" in webhook_url else "?"
-    signed_url = f"{webhook_url}{separator}timestamp={timestamp}&sign={sign}"
     settings = get_settings()
     actor_name = actor.get("name") or actor.get("email") or actor.get("_id") or "未知用户"
     content = "\n".join(
@@ -199,26 +333,7 @@ async def _send_dingtalk_test(document: dict[str, Any], *, actor: dict[str, Any]
             f"- 时间：{now_utc().isoformat()}",
         ]
     )
-    payload = {
-        "msgtype": "markdown",
-        "markdown": {
-            "title": "AIwelink 通知测试",
-            "text": content,
-        },
-    }
-    status_code, text = await asyncio.to_thread(_post_json_sync, signed_url, payload)
-    if status_code >= 400:
-        raise RuntimeError(f"钉钉 Webhook 请求失败：HTTP {status_code} {text}")
-    try:
-        data = json.loads(text) if text else None
-    except ValueError:
-        data = None
-    if isinstance(data, dict):
-        errcode = data.get("errcode")
-        if errcode not in (0, "0", None):
-            raise RuntimeError(f"钉钉 Webhook 返回失败：{data}")
-        return {"message": data.get("errmsg") or "钉钉测试通知已发送"}
-    return {"message": text or "钉钉测试通知已发送"}
+    return await _send_dingtalk_message(document, title="AIwelink 通知测试", markdown_text=content)
 
 
 async def _send_telegram_test(document: dict[str, Any], *, actor: dict[str, Any]) -> dict[str, Any]:
@@ -241,6 +356,55 @@ async def _send_telegram_test(document: dict[str, Any], *, actor: dict[str, Any]
             f"时间：{now_utc().isoformat()}",
         ]
     )
+    return await _send_telegram_message(document, text=text)
+
+
+async def _send_dingtalk_message(document: dict[str, Any], *, title: str, markdown_text: str) -> dict[str, Any]:
+    config = document.get("config") if isinstance(document.get("config"), dict) else {}
+    webhook_url = str(config.get("webhook_url") or "").strip()
+    signing_secret = str(config.get("signing_secret") or "").strip()
+    if not webhook_url:
+        raise ValueError("钉钉 Webhook 地址未配置")
+    if not signing_secret:
+        raise ValueError("钉钉加签密钥未配置")
+
+    timestamp = str(int(now_utc().timestamp() * 1000))
+    string_to_sign = f"{timestamp}\n{signing_secret}"
+    signature = hmac.new(signing_secret.encode("utf-8"), string_to_sign.encode("utf-8"), hashlib.sha256).digest()
+    sign = quote_plus(base64.b64encode(signature).decode("utf-8"))
+    separator = "&" if "?" in webhook_url else "?"
+    signed_url = f"{webhook_url}{separator}timestamp={timestamp}&sign={sign}"
+    payload = {
+        "msgtype": "markdown",
+        "markdown": {
+            "title": title,
+            "text": markdown_text,
+        },
+    }
+    status_code, text = await asyncio.to_thread(_post_json_sync, signed_url, payload)
+    if status_code >= 400:
+        raise RuntimeError(f"钉钉 Webhook 请求失败：HTTP {status_code} {text}")
+    try:
+        data = json.loads(text) if text else None
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        errcode = data.get("errcode")
+        if errcode not in (0, "0", None):
+            raise RuntimeError(f"钉钉 Webhook 返回失败：{data}")
+        return {"message": data.get("errmsg") or "钉钉通知已发送"}
+    return {"message": text or "钉钉通知已发送"}
+
+
+async def _send_telegram_message(document: dict[str, Any], *, text: str) -> dict[str, Any]:
+    config = document.get("config") if isinstance(document.get("config"), dict) else {}
+    bot_token = str(config.get("telegram_bot_token") or "").strip()
+    chat_id = str(config.get("telegram_chat_id") or "").strip()
+    if not bot_token:
+        raise ValueError("Telegram Bot Token 未配置")
+    if not chat_id:
+        raise ValueError("Telegram Chat ID 未配置")
+
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -256,7 +420,7 @@ async def _send_telegram_test(document: dict[str, Any], *, actor: dict[str, Any]
         data = None
     if isinstance(data, dict) and data.get("ok") is not True:
         raise RuntimeError(f"Telegram 返回失败：{data}")
-    return {"message": "Telegram 测试通知已发送"}
+    return {"message": "Telegram 通知已发送"}
 
 
 def _post_json_sync(url: str, payload: dict[str, Any]) -> tuple[int, str]:
