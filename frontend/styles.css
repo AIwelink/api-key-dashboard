@@ -3304,60 +3304,6 @@ code {
   grid-column: 1 / -1;
 }
 
-.pool-status-tabs {
-  display: inline-flex;
-  width: fit-content;
-  max-width: 100%;
-  border-bottom: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
-  gap: 4px;
-  padding-bottom: 8px;
-}
-
-.pool-status-tab {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 32px;
-  border-radius: 0;
-  background: transparent;
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 850;
-  padding: 0 10px;
-}
-
-.pool-status-tab:hover {
-  background: #f7f9fb;
-  color: var(--text);
-}
-
-.pool-status-tab.active {
-  color: var(--accent-strong);
-}
-
-.pool-status-tab.active::after {
-  position: absolute;
-  right: 8px;
-  bottom: -9px;
-  left: 8px;
-  height: 2px;
-  border-radius: 999px;
-  background: var(--accent);
-  content: "";
-}
-
-.pool-status-tab span {
-  min-width: 20px;
-  border-radius: 999px;
-  background: #fff0d9;
-  color: #9c600b;
-  font-size: 12px;
-  font-weight: 900;
-  line-height: 20px;
-  text-align: center;
-}
-
 .pool-status-page .account-pool-panel > .panel-header {
   border-bottom: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
   margin-bottom: 10px;
@@ -3372,6 +3318,96 @@ code {
 .pool-status-page .account-pool-id-chip.warning {
   background: #fff0d9;
   color: #9c600b;
+}
+
+.alert-center-page {
+  gap: 14px;
+}
+
+.alert-center-hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  padding-bottom: 14px;
+}
+
+.alert-center-hero h2 {
+  font-size: 24px;
+  letter-spacing: 0;
+}
+
+.alert-center-hero p {
+  max-width: 680px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+  margin-top: 5px;
+}
+
+.alert-center-summary {
+  display: grid;
+  min-width: 92px;
+  justify-items: end;
+}
+
+.alert-center-summary span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.alert-center-summary strong {
+  color: #9c600b;
+  font-size: 34px;
+  line-height: 1;
+}
+
+.alert-center-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.alert-center-rule {
+  padding-top: 0;
+}
+
+.alert-center-list {
+  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+
+.alert-center-item.is-read {
+  opacity: 0.66;
+}
+
+.alert-center-item:not(.is-read) {
+  border-left: 3px solid #d59022;
+  padding-left: 10px;
+}
+
+.alert-center-item-main {
+  align-items: flex-start;
+}
+
+.alert-center-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.alert-center-meta {
+  grid-template-columns: minmax(130px, 0.7fr) minmax(140px, 0.8fr) minmax(190px, 1.2fr) minmax(90px, 0.55fr) minmax(120px, 0.7fr);
+}
+
+.alert-read-mark {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .duplicate-alerts-panel .panel-header p {
@@ -3580,15 +3616,19 @@ code {
     grid-template-columns: 1fr;
   }
 
-  .pool-status-tabs {
-    display: flex;
-    width: 100%;
-    overflow-x: auto;
+  .alert-center-hero,
+  .alert-center-toolbar,
+  .alert-center-item-main {
+    align-items: stretch;
+    flex-direction: column;
   }
 
-  .pool-status-tab {
-    flex: 1 0 auto;
-    justify-content: center;
+  .alert-center-summary {
+    justify-items: start;
+  }
+
+  .alert-center-actions {
+    justify-content: flex-start;
   }
 
   .pool-status-page .group-strip-left {
@@ -3627,6 +3667,10 @@ code {
   }
 
   .duplicate-alert-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .alert-center-meta {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -3797,6 +3841,10 @@ code {
   }
 
   .duplicate-alert-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .alert-center-meta {
     grid-template-columns: 1fr;
   }
 

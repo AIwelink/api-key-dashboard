@@ -119,27 +119,135 @@ async def update_group_observability_setting(
 async def list_duplicate_email_alerts(
     db: AsyncIOMotorDatabase,
     *,
-    site_id: str,
+    site_id: str | None = None,
     group_id: int | None = None,
+    include_read: bool = False,
     limit: int = 100,
 ) -> dict[str, Any]:
     query: dict[str, Any] = {
-        "site_id": site_id,
         "duplicate_remote_count": {"$gt": 1},
         "current_presence": "present",
     }
+    if site_id:
+        query["site_id"] = site_id
     if group_id is not None:
         query["current_group_ids"] = group_id
-    total = await db.remote_account_identities.count_documents(query)
-    cursor = db.remote_account_identities.find(query).sort([("updated_at", -1), ("last_seen_at", -1)]).limit(limit)
-    items = []
+    sites = await _alert_site_map(db)
+    group_names = await _alert_group_name_map(db)
+    cursor = db.remote_account_identities.find(query).sort([("updated_at", -1), ("last_seen_at", -1)])
+    items: list[dict[str, Any]] = []
     async for doc in cursor:
-        item = serialize_doc(doc)
-        item["alert_type"] = "duplicate_email"
-        item["alert_label"] = "同邮箱多个 sub2 账号"
-        item["message"] = "同一个邮箱在 sub2 中存在多个 remote id，容量预估按一个账号计算，用量按多个 id 加和。"
+        item = _duplicate_email_alert_item(doc, sites=sites, group_names=group_names)
+        if not include_read and item.get("is_read"):
+            continue
         items.append(item)
-    return {"items": items, "total": total, "site_id": site_id, "group_id": group_id}
+    items.sort(key=_alert_sort_key)
+    total = len(items)
+    items = items[:limit]
+    return {"items": items, "total": total, "site_id": site_id, "group_id": group_id, "include_read": include_read}
+
+
+async def mark_duplicate_email_alert_read(
+    db: AsyncIOMotorDatabase,
+    *,
+    alert_id: str,
+    actor: dict[str, Any],
+    note: str | None = None,
+) -> dict[str, Any] | None:
+    doc = await db.remote_account_identities.find_one(
+        {
+            "_id": alert_id,
+            "duplicate_remote_count": {"$gt": 1},
+            "current_presence": "present",
+        }
+    )
+    if not doc:
+        return None
+    now = now_utc()
+    remote_ids = _alert_remote_ids(doc)
+    signature = _duplicate_email_alert_signature(remote_ids)
+    updates = {
+        "duplicate_email_alert_read_at": now,
+        "duplicate_email_alert_read_by": actor.get("_id"),
+        "duplicate_email_alert_read_by_name": actor.get("name") or actor.get("email") or actor.get("_id"),
+        "duplicate_email_alert_read_signature": signature,
+        "duplicate_email_alert_read_note": note,
+        "updated_at": now,
+    }
+    await db.remote_account_identities.update_one({"_id": alert_id}, {"$set": updates})
+    updated = await db.remote_account_identities.find_one({"_id": alert_id})
+    sites = await _alert_site_map(db)
+    group_names = await _alert_group_name_map(db)
+    return _duplicate_email_alert_item(updated or (doc | updates), sites=sites, group_names=group_names)
+
+
+async def _alert_site_map(db: AsyncIOMotorDatabase) -> dict[str, dict[str, Any]]:
+    sites: dict[str, dict[str, Any]] = {}
+    async for doc in db.sub2api_sites.find({"status": {"$ne": "deleted"}}):
+        site_id = str(doc.get("_id") or "")
+        if not site_id:
+            continue
+        site = serialize_doc(doc | {"id": site_id})
+        site.pop("token", None)
+        site["token_configured"] = bool(doc.get("token"))
+        sites[site_id] = site
+    return sites
+
+
+async def _alert_group_name_map(db: AsyncIOMotorDatabase) -> dict[tuple[str, int], str]:
+    group_names: dict[tuple[str, int], str] = {}
+    async for doc in db.sub2api_groups_cache.find({}, {"site_id": 1, "group_id": 1, "group.name": 1}):
+        site_id = doc.get("site_id")
+        group_id = doc.get("group_id")
+        group = doc.get("group") if isinstance(doc.get("group"), dict) else {}
+        if isinstance(site_id, str) and isinstance(group_id, int):
+            group_names[(site_id, group_id)] = str(group.get("name") or f"#{group_id}")
+    return group_names
+
+
+def _duplicate_email_alert_item(doc: dict[str, Any], *, sites: dict[str, dict[str, Any]], group_names: dict[tuple[str, int], str]) -> dict[str, Any]:
+    item = serialize_doc(doc)
+    site_id = str(doc.get("site_id") or "")
+    site = sites.get(site_id, {})
+    group_ids = [group_id for group_id in doc.get("current_group_ids") or [] if isinstance(group_id, int)]
+    remote_ids = _alert_remote_ids(doc)
+    signature = _duplicate_email_alert_signature(remote_ids)
+    read_signature = str(doc.get("duplicate_email_alert_read_signature") or "")
+    read_at = doc.get("duplicate_email_alert_read_at")
+    item["alert_type"] = "duplicate_email"
+    item["alert_label"] = "同邮箱多个 sub2 账号"
+    item["alert_category"] = "账号"
+    item["alert_severity"] = "warning"
+    item["alert_at"] = serialize_doc(doc.get("last_seen_at") or doc.get("updated_at"))
+    item["message"] = "同一个邮箱在 sub2 中存在多个 remote id，容量预估按一个账号计算，用量按多个 id 加和。"
+    item["site_name"] = site.get("name") or site_id or "-"
+    item["site_base_url"] = site.get("base_url")
+    item["group_names"] = [group_names.get((site_id, group_id), f"#{group_id}") for group_id in group_ids]
+    item["is_read"] = bool(read_at and read_signature == signature)
+    item["read_at"] = serialize_doc(read_at)
+    item["read_by_name"] = doc.get("duplicate_email_alert_read_by_name")
+    item["read_note"] = doc.get("duplicate_email_alert_read_note")
+    item["read_signature"] = read_signature or None
+    item["alert_signature"] = signature
+    return item
+
+
+def _alert_sort_key(item: dict[str, Any]) -> tuple[int, float]:
+    alert_at = _parse_datetime(item.get("alert_at") or item.get("last_seen_at") or item.get("updated_at"))
+    timestamp = alert_at.timestamp() if alert_at else 0.0
+    return (1 if item.get("is_read") else 0, -timestamp)
+
+
+def _alert_remote_ids(doc: dict[str, Any]) -> list[Any]:
+    values = doc.get("current_remote_account_ids")
+    if isinstance(values, list) and values:
+        return [item for item in values if item is not None and item != ""]
+    fallback = doc.get("current_remote_account_id")
+    return [fallback] if fallback is not None and fallback != "" else []
+
+
+def _duplicate_email_alert_signature(remote_ids: list[Any]) -> str:
+    return ",".join(sorted(str(item) for item in remote_ids))
 
 
 async def probe_scheduler_loop(db: AsyncIOMotorDatabase) -> None:

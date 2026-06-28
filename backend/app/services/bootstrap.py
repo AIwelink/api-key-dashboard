@@ -86,6 +86,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.remote_account_identities.create_index([("site_id", 1), ("normalized_email", 1)], unique=True)
     await db.remote_account_identities.create_index([("site_id", 1), ("current_presence", 1)])
     await db.remote_account_identities.create_index([("site_id", 1), ("duplicate_remote_count", -1), ("current_presence", 1)])
+    await db.remote_account_identities.create_index([("duplicate_email_alert_read_at", 1), ("duplicate_remote_count", -1)])
     await db.remote_account_identities.create_index([("site_id", 1), ("current_is_401", 1), ("last_401_at", -1)])
     await db.remote_account_identities.create_index("last_seen_at")
     await db.remote_account_sessions.create_index([("site_id", 1), ("normalized_email", 1), ("session_index", 1)])

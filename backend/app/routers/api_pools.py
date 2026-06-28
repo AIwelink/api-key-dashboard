@@ -1,15 +1,15 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.schemas import ApiPoolCreate, ApiPoolStatusPreferenceUpdate, ApiPoolUpdate, CapacityAccountLimitsUpdate, GroupObservabilitySettingUpdate
+from app.schemas import AlertReadRequest, ApiPoolCreate, ApiPoolStatusPreferenceUpdate, ApiPoolUpdate, CapacityAccountLimitsUpdate, GroupObservabilitySettingUpdate
 from app.security import require_roles
 from app.services.api_pools import create_api_pool, list_api_pools, update_api_pool
 from app.services.api_pool_status_preferences import get_api_pool_status_preferences, update_api_pool_status_preferences
 from app.services.audit import write_audit_log
 from app.services.capacity_limits import get_capacity_account_limits, update_capacity_account_limits
 from app.services.pool_lifecycle import capacity_check
-from app.services.sub2api_account_probe import list_duplicate_email_alerts, list_group_observability_settings, probe_site_accounts, update_group_observability_setting
+from app.services.sub2api_account_probe import list_duplicate_email_alerts, list_group_observability_settings, mark_duplicate_email_alert_read, probe_site_accounts, update_group_observability_setting
 from app.services.sub2api_auto_refill import list_auto_refill_logs
 
 
@@ -140,13 +140,35 @@ async def post_observability_probe(
 
 @router.get("/observability/alerts")
 async def get_observability_alerts(
-    site_id: str,
+    site_id: str | None = None,
     group_id: int | None = None,
+    include_read: bool = False,
     limit: int = Query(default=100, ge=1, le=500),
     _: dict = Depends(require_roles("owner", "admin", "maintainer")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
-    return await list_duplicate_email_alerts(db, site_id=site_id, group_id=group_id, limit=limit)
+    return await list_duplicate_email_alerts(db, site_id=site_id, group_id=group_id, include_read=include_read, limit=limit)
+
+
+@router.post("/observability/alerts/{alert_id}/read")
+async def post_observability_alert_read(
+    alert_id: str,
+    payload: AlertReadRequest,
+    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    updated = await mark_duplicate_email_alert_read(db, alert_id=alert_id, actor=actor, note=payload.note)
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="alert not found")
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="api_pool.observability_alert.read",
+        resource_type="remote_account_identity",
+        resource_id=alert_id,
+        after={"alert": updated, "note": payload.note},
+    )
+    return {"ok": True, "item": updated}
 
 
 @router.patch("/{pool_id}")

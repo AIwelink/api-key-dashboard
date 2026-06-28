@@ -173,6 +173,10 @@ class GroupObservabilitySettingUpdate(BaseModel):
     record_duplicate_email_warning: bool | None = None
 
 
+class AlertReadRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=500)
+
+
 class EnterReserveRequest(BaseModel):
     pool_id: str
     priority: int = 0

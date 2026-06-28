@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import logoUrl from "../AIwelink_logo_bule_A.png";
 import { AccountPoolsPage } from "./pages/AccountPoolsPage";
 import { AccountsPage } from "./pages/AccountsPage";
+import { AlertCenterPage } from "./pages/AlertCenterPage";
 import { ApiPoolStatusPage } from "./pages/ApiPoolStatusPage";
 import { ApiTokensPage } from "./pages/ApiTokensPage";
 import { AuditPage } from "./pages/AuditPage";
@@ -32,6 +33,7 @@ const poolNavItems: Array<[ViewName, string]> = [
   ["available-pool", "可用池"],
   ["reserve-pool", "使用备选池"],
   ["api-pools", "API 账号池状态"],
+  ["alert-center", "异常告警"],
   ["pool-lifecycle", "账号池管理"],
 ];
 
@@ -50,6 +52,7 @@ const navShortLabels: Record<ViewName, string> = {
   "available-pool": "可",
   "reserve-pool": "备",
   "api-pools": "池",
+  "alert-center": "警",
   "pool-lifecycle": "逻",
   "agent-analysis": "析",
   "api-tokens": "管",
@@ -65,6 +68,7 @@ const viewPaths: Record<ViewName, string> = {
   "available-pool": "/available-pool",
   "reserve-pool": "/reserve-pool",
   "api-pools": "/api-pool-status",
+  "alert-center": "/alert-center",
   "pool-lifecycle": "/pool-lifecycle",
   "agent-analysis": "/agent-analysis",
   "api-tokens": "/system-management",
@@ -226,6 +230,7 @@ function App() {
             {view === "available-pool" && <AvailablePoolPage token={token} showToast={showToast} />}
             {view === "reserve-pool" && <ReservePoolPage token={token} showToast={showToast} />}
             {view === "api-pools" && <ApiPoolStatusPage token={token} showToast={showToast} />}
+            {view === "alert-center" && <AlertCenterPage token={token} showToast={showToast} />}
             {view === "pool-lifecycle" && <AccountPoolsPage token={token} showToast={showToast} />}
             {view === "agent-analysis" && (
               <IntroPage
