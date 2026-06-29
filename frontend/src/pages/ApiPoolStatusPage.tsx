@@ -67,6 +67,18 @@ type CapacitySummary = {
   five_hour_peak_cost?: number;
   seven_day_five_hour_peak_cost?: number;
   recent_day_five_hour_peak_cost?: number;
+  burst_30m_cost?: number;
+  burst_30m_previous_cost?: number;
+  burst_30m_five_hour_estimated_cost?: number;
+  burst_30m_five_hour_multiple?: number | null;
+  active_burst_30m_five_hour_multiple?: number | null;
+  burst_30m_source?: string;
+  burst_30m_window_count?: number;
+  burst_30m_trend?: "rising" | "falling" | "flat" | "unknown";
+  burst_30m_trend_label?: string;
+  burst_30m_trend_strength?: "extreme" | "strong" | "medium" | "weak" | "unknown";
+  burst_30m_trend_strength_label?: string;
+  burst_30m_trend_change_percent?: number | null;
   seven_day_24h_peak_cost?: number;
   recent_5h_cost?: number;
   recent_24h_cost?: number;
@@ -1178,6 +1190,9 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
   const recentDayFiveHourPeakMultiple = summary?.recent_day_five_hour_peak_multiple;
   const activeSevenDayFiveHourPeakMultiple = summary?.active_five_hour_peak_multiple;
   const activeRecentDayFiveHourPeakMultiple = summary?.active_recent_day_five_hour_peak_multiple;
+  const burstThirtyMinuteMultiple = summary?.burst_30m_five_hour_multiple;
+  const activeBurstThirtyMinuteMultiple = summary?.active_burst_30m_five_hour_multiple;
+  const burstTrendTone = burstTrendMetricTone(summary?.burst_30m_trend, summary?.burst_30m_trend_strength);
   const recent24hSpeedDays = summary?.current_speed_days;
   const activeRecent24hSpeedDays = summary?.active_current_speed_days;
   const sevenDayPeak24hSpeedDays = summary?.seven_day_peak_speed_days;
@@ -1262,6 +1277,20 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           percent={multipleScalePercent(sevenDayFiveHourPeakMultiple)}
           tone={multipleScaleTone(sevenDayFiveHourPeakMultiple)}
           overlay={capacityOverlay("使用池", formatMultiple(activeSevenDayFiveHourPeakMultiple), multipleScalePercent(activeSevenDayFiveHourPeakMultiple), multipleScaleTone(activeSevenDayFiveHourPeakMultiple))}
+        />
+        <CapacityMetric
+          label="突发峰值：30min预估"
+          value={formatMultiple(burstThirtyMinuteMultiple)}
+          sub={`30min ${formatUsd(summary?.burst_30m_cost)}，折算5h ${formatUsd(summary?.burst_30m_five_hour_estimated_cost)}`}
+          percent={multipleScalePercent(burstThirtyMinuteMultiple)}
+          tone={multipleScaleTone(burstThirtyMinuteMultiple)}
+          overlay={capacityOverlay("使用池", formatMultiple(activeBurstThirtyMinuteMultiple), multipleScalePercent(activeBurstThirtyMinuteMultiple), multipleScaleTone(activeBurstThirtyMinuteMultiple))}
+        />
+        <CapacityMetric
+          label="突发趋势：最近30min"
+          value={burstTrendLabel(summary)}
+          sub={`较上一窗口 ${formatPercentChange(summary?.burst_30m_trend_change_percent)}，强度 ${summary?.burst_30m_trend_strength_label || "等待数据"}`}
+          tone={burstTrendTone}
         />
 
         <CapacityMetric
@@ -1751,6 +1780,19 @@ function formatMultiple(value: unknown): string {
   return `${number.toFixed(2)}x`;
 }
 
+function formatPercentChange(value: unknown): string {
+  const number = optionalNumberValue(value);
+  if (number === null) return "-";
+  const sign = number > 0 ? "+" : "";
+  return `${sign}${number.toFixed(0)}%`;
+}
+
+function burstTrendLabel(summary?: CapacitySummary): string {
+  if (!summary?.burst_30m_trend_label) return "等待数据";
+  const strength = summary.burst_30m_trend_strength_label && summary.burst_30m_trend_strength_label !== "等待数据" ? ` · ${summary.burst_30m_trend_strength_label}` : "";
+  return `${summary.burst_30m_trend_label}${strength}`;
+}
+
 function formatDays(value: unknown): string {
   const number = optionalNumberValue(value);
   if (number === null) return "-";
@@ -1812,6 +1854,14 @@ function multipleScaleTone(value: unknown): CapacityMetricTone {
   if (number < 1.5) return "warning";
   if (number < 3) return "success";
   return "info";
+}
+
+function burstTrendMetricTone(trend?: string, strength?: string): CapacityMetricTone {
+  if (!trend || trend === "unknown") return "muted";
+  if (trend === "falling") return "success";
+  if (trend === "flat") return "info";
+  if (strength === "extreme" || strength === "strong") return "danger";
+  return "warning";
 }
 
 function daysScalePercent(value: unknown): number | null {

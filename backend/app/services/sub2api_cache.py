@@ -757,6 +757,7 @@ async def _capacity_summary_for_accounts(
     five_hour_peak_cost = cost_summary["five_hour_peak_cost"]
     recent_day_five_hour_peak_cost = cost_summary["recent_day_five_hour_peak_cost"]
     seven_day_24h_peak_cost = cost_summary["seven_day_24h_peak_cost"]
+    burst_summary = cost_summary["burst_30m"]
     recent_5h_cost = cost_summary["recent_5h_cost"]
     recent_24h_cost = cost_summary["recent_24h_cost"]
     seven_day_cost = cost_summary["seven_day_cost"]
@@ -799,6 +800,8 @@ async def _capacity_summary_for_accounts(
     active_five_x_speed_days = _ratio_or_none(active_seven_day_remaining_estimated_usd, recent_24h_cost * 5 if recent_24h_cost > 0 else 0)
     five_hour_peak_multiple = _ratio_or_none(five_hour_capacity_usd, five_hour_peak_cost)
     recent_day_five_hour_peak_multiple = _ratio_or_none(five_hour_capacity_usd, recent_day_five_hour_peak_cost)
+    burst_30m_five_hour_multiple = _ratio_or_none(five_hour_capacity_usd, burst_summary["five_hour_estimated_cost"])
+    active_burst_30m_five_hour_multiple = _ratio_or_none(active_five_hour_capacity_usd, burst_summary["five_hour_estimated_cost"])
     recent_5h_multiple = _ratio_or_none(five_hour_capacity_usd, recent_5h_cost)
     twenty_four_hour_peak_multiple = _ratio_or_none(twenty_four_hour_capacity_usd, seven_day_24h_peak_cost)
     recent_24h_multiple = _ratio_or_none(twenty_four_hour_capacity_usd, recent_24h_cost)
@@ -891,6 +894,18 @@ async def _capacity_summary_for_accounts(
         "five_hour_peak_cost": round(five_hour_peak_cost, 4),
         "seven_day_five_hour_peak_cost": round(five_hour_peak_cost, 4),
         "recent_day_five_hour_peak_cost": round(recent_day_five_hour_peak_cost, 4),
+        "burst_30m_cost": round(burst_summary["cost"], 4),
+        "burst_30m_five_hour_estimated_cost": round(burst_summary["five_hour_estimated_cost"], 4),
+        "burst_30m_five_hour_multiple": _round_optional(burst_30m_five_hour_multiple),
+        "active_burst_30m_five_hour_multiple": _round_optional(active_burst_30m_five_hour_multiple),
+        "burst_30m_source": burst_summary["source"],
+        "burst_30m_window_count": burst_summary["window_count"],
+        "burst_30m_trend": burst_summary["trend"],
+        "burst_30m_trend_label": burst_summary["trend_label"],
+        "burst_30m_trend_strength": burst_summary["trend_strength"],
+        "burst_30m_trend_strength_label": burst_summary["trend_strength_label"],
+        "burst_30m_trend_change_percent": _round_optional(burst_summary["trend_change_percent"]),
+        "burst_30m_previous_cost": round(burst_summary["previous_cost"], 4),
         "seven_day_24h_peak_cost": round(seven_day_24h_peak_cost, 4),
         "recent_5h_cost": round(recent_5h_cost, 4),
         "recent_24h_cost": round(recent_24h_cost, 4),
@@ -1275,6 +1290,7 @@ async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, gro
     hourly = list(reversed(hourly_docs))
     five_hour_peak_cost = _five_hour_daily_peak_cost(hourly)
     recent_day_five_hour_peak_cost = _rolling_peak_cost(hourly[-24:], 5)
+    burst_30m = _burst_30m_summary(hourly)
     daily_costs = [_float_or_zero(doc.get("cost")) for doc in daily_docs[:7]]
     seven_day_24h_peak_cost = round(max(daily_costs) if daily_costs else _rolling_peak_cost(hourly, 24), 6)
     recent_24h_cost = round(sum(_float_or_zero(doc.get("cost")) for doc in hourly[-24:]), 6)
@@ -1284,6 +1300,7 @@ async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, gro
         "five_hour_peak_cost": five_hour_peak_cost,
         "seven_day_five_hour_peak_cost": five_hour_peak_cost,
         "recent_day_five_hour_peak_cost": recent_day_five_hour_peak_cost,
+        "burst_30m": burst_30m,
         "seven_day_24h_peak_cost": seven_day_24h_peak_cost,
         "recent_24h_cost": recent_24h_cost,
         "recent_5h_cost": recent_5h_cost,
@@ -1320,6 +1337,68 @@ def _rolling_peak_cost(items: list[dict[str, Any]], window_size: int) -> float:
     if len(costs) <= window_size:
         return round(sum(costs), 6)
     return round(max(sum(costs[index:index + window_size]) for index in range(0, len(costs) - window_size + 1)), 6)
+
+
+def _burst_30m_summary(hourly: list[dict[str, Any]]) -> dict[str, Any]:
+    costs = [_float_or_zero(doc.get("cost")) for doc in hourly[-4:]]
+    if not costs:
+        return {
+            "cost": 0.0,
+            "previous_cost": 0.0,
+            "five_hour_estimated_cost": 0.0,
+            "trend": "unknown",
+            "trend_label": "等待数据",
+            "trend_strength": "unknown",
+            "trend_strength_label": "等待数据",
+            "trend_change_percent": None,
+            "source": "hourly_fallback",
+            "window_count": 0,
+        }
+    # Current sub2api dashboard cache is hourly. Use half of the latest hourly bucket as a 30m fast-response estimate.
+    current = costs[-1] / 2
+    previous = costs[-2] / 2 if len(costs) >= 2 else 0.0
+    change_percent = None
+    if previous > 0:
+        change_percent = (current - previous) / previous * 100
+    elif current > 0:
+        change_percent = 100.0
+    trend, trend_label = _burst_trend_label(change_percent)
+    strength, strength_label = _burst_trend_strength(change_percent)
+    return {
+        "cost": round(current, 6),
+        "previous_cost": round(previous, 6),
+        "five_hour_estimated_cost": round(current * 10, 6),
+        "trend": trend,
+        "trend_label": trend_label,
+        "trend_strength": strength,
+        "trend_strength_label": strength_label,
+        "trend_change_percent": change_percent,
+        "source": "hourly_fallback",
+        "window_count": len(costs),
+    }
+
+
+def _burst_trend_label(change_percent: float | None) -> tuple[str, str]:
+    if change_percent is None:
+        return "unknown", "等待数据"
+    if change_percent >= 10:
+        return "rising", "上涨"
+    if change_percent <= -10:
+        return "falling", "下降"
+    return "flat", "平稳"
+
+
+def _burst_trend_strength(change_percent: float | None) -> tuple[str, str]:
+    if change_percent is None:
+        return "unknown", "等待数据"
+    absolute = abs(change_percent)
+    if absolute >= 80:
+        return "extreme", "极强"
+    if absolute >= 40:
+        return "strong", "强"
+    if absolute >= 15:
+        return "medium", "中"
+    return "weak", "弱"
 
 
 def _capacity_health(
