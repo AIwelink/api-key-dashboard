@@ -24,6 +24,8 @@ ACCOUNT_USAGE_BATCH_SIZE = 50
 ACCOUNT_USAGE_REFRESH_INTERVAL = timedelta(minutes=30)
 FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60
 FIVE_HOUR_DYNAMIC_MAX_WAIT_SECONDS = 2 * 60 * 60
+SEVEN_DAY_WINDOW_SECONDS = 7 * 24 * 60 * 60
+SEVEN_DAY_DYNAMIC_MAX_WAIT_SECONDS = 2 * 24 * 60 * 60
 CAPACITY_ACCOUNT_LIMITS = DEFAULT_CAPACITY_ACCOUNT_LIMITS
 CAPACITY_HEALTH_THRESHOLDS = {
     "exhausted_available_accounts": 2,
@@ -786,12 +788,15 @@ async def _capacity_summary_for_accounts(
     five_hour_actual_remaining_usd = active_five_hour_actual_remaining_usd + reserve_five_hour_actual_remaining_usd
     active_seven_day_actual_remaining_usd = selected["seven_day_actual_remaining_usd"]
     reserve_seven_day_actual_remaining_usd = selected_reserve["seven_day_actual_remaining_usd"]
+    active_seven_day_dynamic_used_usd = selected["seven_day_dynamic_used_usd"]
+    reserve_seven_day_dynamic_used_usd = selected_reserve["seven_day_dynamic_used_usd"]
+    active_seven_day_dynamic_remaining_usd = selected["seven_day_dynamic_remaining_usd"]
+    reserve_seven_day_dynamic_remaining_usd = selected_reserve["seven_day_dynamic_remaining_usd"]
     seven_day_actual_used_usd = selected["seven_day_actual_used_usd"] + selected_reserve["seven_day_actual_used_usd"]
     seven_day_actual_remaining_usd = active_seven_day_actual_remaining_usd + reserve_seven_day_actual_remaining_usd
-    seven_day_used_estimated_usd = active_seven_day_capacity_usd * used_7d / 100
-    seven_day_remaining_estimated_usd = seven_day_capacity_usd * max(0, 100 - used_7d) / 100
-    seven_day_remaining_estimated_usd = max(0, seven_day_capacity_usd - seven_day_used_estimated_usd)
-    active_seven_day_remaining_estimated_usd = max(0, active_seven_day_capacity_usd - seven_day_used_estimated_usd)
+    seven_day_used_estimated_usd = active_seven_day_dynamic_used_usd + reserve_seven_day_dynamic_used_usd
+    seven_day_remaining_estimated_usd = active_seven_day_dynamic_remaining_usd + reserve_seven_day_dynamic_remaining_usd
+    active_seven_day_remaining_estimated_usd = active_seven_day_dynamic_remaining_usd
     effective_used_5h = _ratio_percent(dynamic_five_hour_used_estimated_usd, five_hour_capacity_usd)
     active_effective_used_5h = _ratio_percent(active_dynamic_five_hour_used_usd, active_five_hour_capacity_usd)
     effective_used_7d = _ratio_percent(seven_day_used_estimated_usd, seven_day_capacity_usd)
@@ -888,6 +893,10 @@ async def _capacity_summary_for_accounts(
         "reserve_five_hour_actual_remaining_usd": round(reserve_five_hour_actual_remaining_usd, 4),
         "seven_day_used_estimated_usd": round(seven_day_used_estimated_usd, 4),
         "seven_day_remaining_estimated_usd": round(seven_day_remaining_estimated_usd, 4),
+        "active_seven_day_dynamic_used_estimated_usd": round(active_seven_day_dynamic_used_usd, 4),
+        "active_seven_day_dynamic_remaining_estimated_usd": round(active_seven_day_dynamic_remaining_usd, 4),
+        "reserve_seven_day_dynamic_used_estimated_usd": round(reserve_seven_day_dynamic_used_usd, 4),
+        "reserve_seven_day_dynamic_remaining_estimated_usd": round(reserve_seven_day_dynamic_remaining_usd, 4),
         "seven_day_actual_used_usd": round(seven_day_actual_used_usd, 4),
         "seven_day_actual_remaining_usd": round(seven_day_actual_remaining_usd, 4),
         "active_seven_day_actual_remaining_usd": round(active_seven_day_actual_remaining_usd, 4),
@@ -1057,6 +1066,8 @@ def _empty_capacity_type_summary(capacity_limits: dict[str, dict[str, float]] | 
                 "five_hour_dynamic_remaining_usd": 0.0,
                 "five_hour_actual_used_usd": 0.0,
                 "five_hour_actual_remaining_usd": 0.0,
+                "seven_day_dynamic_used_usd": 0.0,
+                "seven_day_dynamic_remaining_usd": 0.0,
                 "seven_day_actual_used_usd": 0.0,
                 "seven_day_actual_remaining_usd": 0.0,
             }
@@ -1072,6 +1083,8 @@ def _empty_capacity_type_summary(capacity_limits: dict[str, dict[str, float]] | 
             "five_hour_dynamic_remaining_usd": 0.0,
             "five_hour_actual_used_usd": 0.0,
             "five_hour_actual_remaining_usd": 0.0,
+            "seven_day_dynamic_used_usd": 0.0,
+            "seven_day_dynamic_remaining_usd": 0.0,
             "seven_day_actual_used_usd": 0.0,
             "seven_day_actual_remaining_usd": 0.0,
         },
@@ -1129,6 +1142,8 @@ def _add_capacity_account(
     result[account_type]["five_hour_dynamic_remaining_usd"] += dynamic_five_hour["remaining_usd"]
     result[account_type]["five_hour_actual_used_usd"] += dynamic_five_hour["actual_used_usd"]
     result[account_type]["five_hour_actual_remaining_usd"] += dynamic_five_hour["actual_remaining_usd"]
+    result[account_type]["seven_day_dynamic_used_usd"] += dynamic_five_hour["seven_day_dynamic_used_usd"]
+    result[account_type]["seven_day_dynamic_remaining_usd"] += dynamic_five_hour["seven_day_dynamic_remaining_usd"]
     result[account_type]["seven_day_actual_used_usd"] += dynamic_five_hour["seven_day_actual_used_usd"]
     result[account_type]["seven_day_actual_remaining_usd"] += dynamic_five_hour["seven_day_actual_remaining_usd"]
     result["total"]["available_accounts"] += 1
@@ -1139,6 +1154,8 @@ def _add_capacity_account(
     result["total"]["five_hour_dynamic_remaining_usd"] += dynamic_five_hour["remaining_usd"]
     result["total"]["five_hour_actual_used_usd"] += dynamic_five_hour["actual_used_usd"]
     result["total"]["five_hour_actual_remaining_usd"] += dynamic_five_hour["actual_remaining_usd"]
+    result["total"]["seven_day_dynamic_used_usd"] += dynamic_five_hour["seven_day_dynamic_used_usd"]
+    result["total"]["seven_day_dynamic_remaining_usd"] += dynamic_five_hour["seven_day_dynamic_remaining_usd"]
     result["total"]["seven_day_actual_used_usd"] += dynamic_five_hour["seven_day_actual_used_usd"]
     result["total"]["seven_day_actual_remaining_usd"] += dynamic_five_hour["seven_day_actual_remaining_usd"]
     if five_hour_available:
@@ -1154,6 +1171,8 @@ def _dynamic_five_hour_usage(account: dict[str, Any] | None, five_hour_limit_usd
             "remaining_usd": 0.0,
             "actual_used_usd": 0.0,
             "actual_remaining_usd": 0.0,
+            "seven_day_dynamic_used_usd": 0.0,
+            "seven_day_dynamic_remaining_usd": 0.0,
             "seven_day_actual_used_usd": 0.0,
             "seven_day_actual_remaining_usd": 0.0,
         }
@@ -1164,6 +1183,8 @@ def _dynamic_five_hour_usage(account: dict[str, Any] | None, five_hour_limit_usd
             "remaining_usd": five_hour_limit_usd,
             "actual_used_usd": 0.0,
             "actual_remaining_usd": five_hour_limit_usd,
+            "seven_day_dynamic_used_usd": 0.0,
+            "seven_day_dynamic_remaining_usd": seven_day_limit_usd,
             "seven_day_actual_used_usd": 0.0,
             "seven_day_actual_remaining_usd": seven_day_limit_usd,
         }
@@ -1181,6 +1202,18 @@ def _dynamic_five_hour_usage(account: dict[str, Any] | None, five_hour_limit_usd
     reset_factor = max(0.0, min(1.0, float(reset_after_seconds) / window_seconds))
     actual_used_usd = max(0.0, min(five_hour_limit_usd, five_hour_limit_usd * used_percent / 100))
     seven_day_actual_used_usd = max(0.0, min(seven_day_limit_usd, seven_day_limit_usd * seven_day_used_percent / 100))
+    seven_day_reset_after_seconds = _usage_number(account, "codex_7d_reset_after_seconds")
+    if not isinstance(seven_day_reset_after_seconds, (int, float)):
+        seven_day_reset_at = _parse_datetime(_first_present(account, account.get("extra") if isinstance(account.get("extra"), dict) else {}, "codex_7d_reset_at", "7d_reset_at"))
+        seven_day_reset_after_seconds = max(0, (seven_day_reset_at - now_utc()).total_seconds()) if seven_day_reset_at is not None else SEVEN_DAY_WINDOW_SECONDS
+    seven_day_window_minutes = _usage_number(account, "codex_7d_window_minutes")
+    seven_day_window_seconds = max(1.0, float(seven_day_window_minutes) * 60) if isinstance(seven_day_window_minutes, (int, float)) and seven_day_window_minutes > 0 else SEVEN_DAY_WINDOW_SECONDS
+    seven_day_reset_factor = max(0.0, min(1.0, float(seven_day_reset_after_seconds) / seven_day_window_seconds))
+    if float(seven_day_reset_after_seconds) > SEVEN_DAY_DYNAMIC_MAX_WAIT_SECONDS:
+        seven_day_dynamic_used_usd = seven_day_actual_used_usd
+    else:
+        seven_day_dynamic_used_usd = seven_day_limit_usd * seven_day_used_percent / 100 * seven_day_reset_factor
+        seven_day_dynamic_used_usd = max(0.0, min(seven_day_limit_usd, seven_day_dynamic_used_usd))
     if float(reset_after_seconds) > FIVE_HOUR_DYNAMIC_MAX_WAIT_SECONDS:
         return {
             "capacity_usd": five_hour_limit_usd,
@@ -1188,6 +1221,8 @@ def _dynamic_five_hour_usage(account: dict[str, Any] | None, five_hour_limit_usd
             "remaining_usd": max(0.0, five_hour_limit_usd - actual_used_usd),
             "actual_used_usd": actual_used_usd,
             "actual_remaining_usd": max(0.0, five_hour_limit_usd - actual_used_usd),
+            "seven_day_dynamic_used_usd": seven_day_dynamic_used_usd,
+            "seven_day_dynamic_remaining_usd": max(0.0, seven_day_limit_usd - seven_day_dynamic_used_usd),
             "seven_day_actual_used_usd": seven_day_actual_used_usd,
             "seven_day_actual_remaining_usd": max(0.0, seven_day_limit_usd - seven_day_actual_used_usd),
         }
@@ -1199,6 +1234,8 @@ def _dynamic_five_hour_usage(account: dict[str, Any] | None, five_hour_limit_usd
         "remaining_usd": max(0.0, five_hour_limit_usd - dynamic_used_usd),
         "actual_used_usd": actual_used_usd,
         "actual_remaining_usd": max(0.0, five_hour_limit_usd - actual_used_usd),
+        "seven_day_dynamic_used_usd": seven_day_dynamic_used_usd,
+        "seven_day_dynamic_remaining_usd": max(0.0, seven_day_limit_usd - seven_day_dynamic_used_usd),
         "seven_day_actual_used_usd": seven_day_actual_used_usd,
         "seven_day_actual_remaining_usd": max(0.0, seven_day_limit_usd - seven_day_actual_used_usd),
     }
