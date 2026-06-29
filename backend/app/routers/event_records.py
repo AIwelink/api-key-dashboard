@@ -3,7 +3,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
 from app.security import require_roles
-from app.services.event_records import event_records_summary, get_event_account_detail, list_event_accounts, list_event_records
+from app.modules.events.records import event_records_summary, get_event_account_detail, list_event_accounts, list_event_records
 
 
 router = APIRouter(prefix="/event-records", tags=["event-records"])

@@ -1,0 +1,1 @@
+"""Operational event record domain."""

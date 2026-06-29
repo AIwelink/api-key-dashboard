@@ -3,7 +3,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
 from app.security import require_roles
-from app.services.audit import write_audit_log
+from app.modules.system.audit import write_audit_log
 
 
 router = APIRouter(prefix="/settings", tags=["settings"])

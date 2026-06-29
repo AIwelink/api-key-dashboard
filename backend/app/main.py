@@ -11,11 +11,11 @@ from app.config import PROJECT_ROOT, get_settings
 from app.database import close_mongo_connection, connect_to_mongo, get_db
 from app.logging_config import RequestLoggingMiddleware, cleanup_old_logs, log_cleanup_loop, setup_logging
 from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, event_records, import_batches, imports, notifications, settings, sub2api_sites, sync, todo_items, users
-from app.services.bootstrap import ensure_bootstrap_data, ensure_indexes
-from app.services.sub2api_account_probe import probe_scheduler_loop
-from app.services.sub2api_auto_refill import auto_refill_scheduler_loop
-from app.services.sub2api_cache import refresh_account_caches_for_all_sites, refresh_scheduler_loop
-from app.services.sub2api_dashboard import refresh_due_dashboard_snapshots_for_all_sites
+from app.modules.system.bootstrap import ensure_bootstrap_data, ensure_indexes
+from app.modules.sub2api.account_probe import probe_scheduler_loop
+from app.modules.sub2api.auto_refill import auto_refill_scheduler_loop
+from app.modules.sub2api.cache import refresh_account_caches_for_all_sites, refresh_scheduler_loop
+from app.modules.sub2api.dashboard import refresh_due_dashboard_snapshots_for_all_sites
 
 
 settings_obj = get_settings()

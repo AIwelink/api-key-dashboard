@@ -4,8 +4,8 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.database import db_dependency
 from app.schemas import NotificationChannelCreate, NotificationChannelUpdate
 from app.security import require_roles
-from app.services.audit import write_audit_log
-from app.services.notifications import (
+from app.modules.system.audit import write_audit_log
+from app.modules.notifications.service import (
     create_notification_channel,
     delete_notification_channel,
     list_notification_channels,
