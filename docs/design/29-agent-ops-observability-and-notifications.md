@@ -922,15 +922,120 @@ Agent 分析时：
 - 是否需要通知。
 - 人工确认后停止重复通知。
 
-### 12.4 账号长期分析
+### 12.4 账号长期分析与事件记录
 
-建议直接读 Mongo 集合或后续补专用聚合 API：
+页面：`事件记录`
+
+前端路由：`/event-records`
+
+正式只读接口：
+
+- `GET /api/event-records/events`
+- `GET /api/event-records/accounts`
+- `GET /api/event-records/accounts/{identity_id}`
+- `GET /api/event-records/summary`
+
+这些接口基于以下集合聚合，后续 agent 优先使用接口，不需要直接扫页面 DOM：
 
 - `remote_account_identities`
 - `remote_account_sessions`
 - `remote_account_status_events`
-- `remote_account_probe_runs`
 - `remote_account_probe_samples`，仅短期回溯。
+
+`/api/event-records/events` 用于事件流，默认按 `detected_at desc` 返回最近 24h。支持筛选：
+
+- `range`: `1h` / `6h` / `24h` / `today` / `7d` / `all`
+- `site_id`
+- `group_id`
+- `event_type`
+- `severity`
+- `account_type`
+- `q`: 邮箱、name、remote id、错误内容模糊搜索
+- `only_401`
+- `only_abnormal`
+- `only_pro`
+- `only_cumulative`
+- `only_delete_archive`
+- `skip`
+- `limit`
+
+事件返回重点字段：
+
+- `event_type`
+- `severity`
+- `detected_at`
+- `site_id` / `site_name`
+- `identity_id`
+- `session_id`
+- `remote_account_id`
+- `remote_account_ids`
+- `name`
+- `normalized_email`
+- `plan_type`
+- `group_ids` / `group_names`
+- `current_status`
+- `current_schedulable`
+- `current_error_message`
+- `is_401`
+- `usage_snapshot`
+- `cumulative_usage_snapshot`
+- `usage_duration_seconds`
+- `normal_use_seconds`
+- `notification_status`
+- `uploader_name`
+- `last_operation_by_name`
+- `details`
+
+`/api/event-records/accounts` 用于账号视图，按 `site_id + normalized_email` 聚合长期身份，支持：
+
+- `site_id`
+- `group_id`
+- `account_type`
+- `presence`
+- `q`
+- `only_401`
+- `only_abnormal`
+- `only_pro`
+- `only_cumulative`
+- `skip`
+- `limit`
+
+账号返回重点字段：
+
+- `identity_id`
+- `normalized_email`
+- `site_name`
+- `group_names`
+- `current_presence`
+- `current_status`
+- `current_schedulable`
+- `current_error_message`
+- `current_remote_account_id`
+- `current_remote_account_ids`
+- `duplicate_remote_count`
+- `first_seen_at`
+- `last_seen_at`
+- `first_401_at`
+- `last_401_at`
+- `last_removed_at`
+- `total_sessions`
+- `total_401_count`
+- `total_recovery_count`
+- `total_removed_count`
+- `last_usage_snapshot`
+- `cumulative_usage_snapshot`
+- `cumulative_usage_totals`
+- `lifetime_seconds`
+- `uploader_name`
+- `last_operation_name`
+
+`/api/event-records/accounts/{identity_id}` 返回详情：
+
+- `identity`
+- `sessions`
+- `events`
+- `samples`
+- `raw`
 
 典型问题：
 
@@ -938,7 +1043,7 @@ Agent 分析时：
 - 某分组平均存活时间是否下降。
 - 哪个上传人、购买来源、账号类型近期异常率高。
 - 哪个时间段更容易封号。
-- 账号通常用了多少额度后开始异常。
+- 账号通常用了多少额度后开始异常，注意使用 `cumulative_usage_snapshot`，不要只读清零后的周用量。
 - 当前需要提前补多少号。
 
 ### 12.5 通知配置
@@ -994,7 +1099,7 @@ GET /api/ops/survival?site_id=api-5001&group_id=3&days=7
 ### 13.3 401 事件列表
 
 ```http
-GET /api/ops/events?site_id=api-5001&event_type=401_detected&window=24h
+GET /api/event-records/events?site_id=api-5001&event_type=401_detected&range=24h
 ```
 
 建议返回：

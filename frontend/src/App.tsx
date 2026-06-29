@@ -6,6 +6,7 @@ import { AlertCenterPage } from "./pages/AlertCenterPage";
 import { ApiPoolStatusPage } from "./pages/ApiPoolStatusPage";
 import { ApiTokensPage } from "./pages/ApiTokensPage";
 import { AuditPage } from "./pages/AuditPage";
+import { EventRecordsPage } from "./pages/EventRecordsPage";
 import { IntroPage } from "./pages/IntroPage";
 import { AvailablePoolPage, ReservePoolPage } from "./pages/ManualPoolPage";
 import { PushErrorTodoPage, TodoPage } from "./pages/TodoPage";
@@ -33,6 +34,7 @@ const poolNavItems: Array<[ViewName, string]> = [
   ["available-pool", "可用池"],
   ["reserve-pool", "使用备选池"],
   ["api-pools", "API 账号池状态"],
+  ["event-records", "事件记录"],
   ["alert-center", "异常告警"],
   ["pool-lifecycle", "账号池管理"],
 ];
@@ -52,6 +54,7 @@ const navShortLabels: Record<ViewName, string> = {
   "available-pool": "可",
   "reserve-pool": "备",
   "api-pools": "池",
+  "event-records": "事",
   "alert-center": "警",
   "pool-lifecycle": "逻",
   "agent-analysis": "析",
@@ -68,6 +71,7 @@ const viewPaths: Record<ViewName, string> = {
   "available-pool": "/available-pool",
   "reserve-pool": "/reserve-pool",
   "api-pools": "/api-pool-status",
+  "event-records": "/event-records",
   "alert-center": "/alert-center",
   "pool-lifecycle": "/pool-lifecycle",
   "agent-analysis": "/agent-analysis",
@@ -230,6 +234,7 @@ function App() {
             {view === "available-pool" && <AvailablePoolPage token={token} showToast={showToast} />}
             {view === "reserve-pool" && <ReservePoolPage token={token} showToast={showToast} />}
             {view === "api-pools" && <ApiPoolStatusPage token={token} showToast={showToast} />}
+            {view === "event-records" && <EventRecordsPage token={token} showToast={showToast} />}
             {view === "alert-center" && <AlertCenterPage token={token} showToast={showToast} />}
             {view === "pool-lifecycle" && <AccountPoolsPage token={token} showToast={showToast} />}
             {view === "agent-analysis" && (
