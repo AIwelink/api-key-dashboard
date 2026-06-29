@@ -23,6 +23,7 @@ ACCOUNT_USAGE_CONCURRENCY = 50
 ACCOUNT_USAGE_BATCH_SIZE = 50
 ACCOUNT_USAGE_REFRESH_INTERVAL = timedelta(minutes=30)
 FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60
+FIVE_HOUR_DYNAMIC_MAX_WAIT_SECONDS = 2 * 60 * 60
 CAPACITY_ACCOUNT_LIMITS = DEFAULT_CAPACITY_ACCOUNT_LIMITS
 CAPACITY_HEALTH_THRESHOLDS = {
     "exhausted_available_accounts": 2,
@@ -1180,6 +1181,16 @@ def _dynamic_five_hour_usage(account: dict[str, Any] | None, five_hour_limit_usd
     reset_factor = max(0.0, min(1.0, float(reset_after_seconds) / window_seconds))
     actual_used_usd = max(0.0, min(five_hour_limit_usd, five_hour_limit_usd * used_percent / 100))
     seven_day_actual_used_usd = max(0.0, min(seven_day_limit_usd, seven_day_limit_usd * seven_day_used_percent / 100))
+    if float(reset_after_seconds) > FIVE_HOUR_DYNAMIC_MAX_WAIT_SECONDS:
+        return {
+            "capacity_usd": 0.0,
+            "used_usd": 0.0,
+            "remaining_usd": 0.0,
+            "actual_used_usd": actual_used_usd,
+            "actual_remaining_usd": max(0.0, five_hour_limit_usd - actual_used_usd),
+            "seven_day_actual_used_usd": seven_day_actual_used_usd,
+            "seven_day_actual_remaining_usd": max(0.0, seven_day_limit_usd - seven_day_actual_used_usd),
+        }
     dynamic_used_usd = five_hour_limit_usd * used_percent / 100 * reset_factor
     dynamic_used_usd = max(0.0, min(five_hour_limit_usd, dynamic_used_usd))
     return {
