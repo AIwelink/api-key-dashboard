@@ -270,6 +270,12 @@ def _duplicate_email_alert_signature(remote_ids: list[Any]) -> str:
     return ",".join(sorted(str(item) for item in remote_ids))
 
 
+def _normalized_remote_id_signature(remote_ids: Any) -> list[str]:
+    if not isinstance(remote_ids, list):
+        remote_ids = [remote_ids]
+    return sorted({str(item) for item in remote_ids if item is not None and str(item) != ""})
+
+
 async def probe_scheduler_loop(db: AsyncIOMotorDatabase) -> None:
     while True:
         try:
@@ -368,16 +374,6 @@ async def probe_site_accounts(db: AsyncIOMotorDatabase, *, site_id: str, group_i
         for email, same_email_accounts in by_email.items():
             if len({str(item.get("remote_account_id")) for item in same_email_accounts}) > 1:
                 counters["duplicate_email_count"] += 1
-                if any(_setting_for_account(settings, item).get("record_duplicate_email_warning", True) for item in same_email_accounts):
-                    await _write_event(
-                        db,
-                        site_id=site_id,
-                        event_type="duplicate_email_detected",
-                        severity="warning",
-                        detected_at=fetched_at,
-                        account=same_email_accounts[0],
-                        details={"remote_account_ids": [item.get("remote_account_id") for item in same_email_accounts], "count": len(same_email_accounts)},
-                    )
 
         seen_identity_ids: set[str] = set()
         seen_remote_ids: set[Any] = set()
@@ -801,6 +797,53 @@ async def _update_identity_and_events(
                 details=identity_usage["rollover_details"],
             )
 
+    duplicate_changed = False
+    if setting.get("record_duplicate_email_warning", True):
+        current_remote_ids = _normalized_remote_id_signature(account.get("remote_account_ids") or [account.get("remote_account_id")])
+        previous_remote_ids = _normalized_remote_id_signature((identity or {}).get("current_remote_account_ids") or [(identity or {}).get("current_remote_account_id")])
+        current_duplicate_count = len(current_remote_ids)
+        previous_duplicate_count = int((identity or {}).get("duplicate_remote_count") or len(previous_remote_ids))
+        if current_duplicate_count > 1 and (previous_duplicate_count <= 1 or current_remote_ids != previous_remote_ids):
+            changed = True
+            duplicate_changed = True
+            await _write_event(
+                db,
+                site_id=site_id,
+                event_type="duplicate_email_detected",
+                severity="warning",
+                detected_at=detected_at,
+                account=account,
+                session=session,
+                previous=identity,
+                details={
+                    "remote_account_ids": current_remote_ids,
+                    "previous_remote_account_ids": previous_remote_ids,
+                    "count": current_duplicate_count,
+                    "previous_count": previous_duplicate_count,
+                    "duplicate_state": "active",
+                },
+            )
+        elif previous_duplicate_count > 1 and current_duplicate_count <= 1:
+            changed = True
+            duplicate_changed = True
+            await _write_event(
+                db,
+                site_id=site_id,
+                event_type="duplicate_email_resolved",
+                severity="info",
+                detected_at=detected_at,
+                account=account,
+                session=session,
+                previous=identity,
+                details={
+                    "remote_account_ids": current_remote_ids,
+                    "previous_remote_account_ids": previous_remote_ids,
+                    "count": current_duplicate_count,
+                    "previous_count": previous_duplicate_count,
+                    "duplicate_state": "resolved",
+                },
+            )
+
     updates = {
         "site_id": site_id,
         "normalized_email": account["normalized_email"],
@@ -827,6 +870,10 @@ async def _update_identity_and_events(
         "last_event_at": detected_at if changed else (identity or {}).get("last_event_at"),
         "updated_at": detected_at,
     }
+    if duplicate_changed:
+        updates["duplicate_email_alert_read_at"] = None
+        updates["duplicate_email_alert_read_signature"] = None
+        updates["duplicate_email_alert_read_note"] = None
     increments: dict[str, int] = {}
     if identity is None:
         updates["first_seen_at"] = detected_at

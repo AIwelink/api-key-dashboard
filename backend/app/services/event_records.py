@@ -251,7 +251,7 @@ async def list_event_records(
     )
     total = await db.remote_account_status_events.count_documents(query)
     cursor = db.remote_account_status_events.find(query).sort([("detected_at", -1), ("created_at", -1)]).skip(skip).limit(limit)
-    docs = [doc async for doc in cursor]
+    docs = _dedupe_redundant_duplicate_email_events([doc async for doc in cursor])
     context = await _event_context(db, docs)
     items = [_event_item(doc, context) for doc in docs]
     return {
@@ -335,7 +335,7 @@ async def get_event_account_detail(db: AsyncIOMotorDatabase, identity_id: str) -
     if not identity:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event account not found")
     sessions = [doc async for doc in db.remote_account_sessions.find({"identity_id": identity_id}).sort("session_index", -1).limit(30)]
-    events = [doc async for doc in db.remote_account_status_events.find({"identity_id": identity_id}).sort("detected_at", -1).limit(120)]
+    events = _dedupe_redundant_duplicate_email_events([doc async for doc in db.remote_account_status_events.find({"identity_id": identity_id}).sort("detected_at", -1).limit(120)])
     samples = [doc async for doc in db.remote_account_probe_samples.find({"identity_id": identity_id}).sort("sampled_at", -1).limit(40)]
     context = await _event_context(db, events, identities=[identity], sessions=sessions)
     account_context = await _identity_context(db, [identity])
@@ -401,7 +401,7 @@ async def event_records_summary(
         "detected_401": await db.remote_account_status_events.count_documents({**query, "event_type": "401_detected"}),
         "recovered_401": await db.remote_account_status_events.count_documents({**query, "event_type": "401_recovered"}),
         "usage_rollovers": await db.remote_account_status_events.count_documents({**query, "event_type": "usage_rollover"}),
-        "duplicate_email_events": await db.remote_account_status_events.count_documents({**query, "event_type": "duplicate_email_detected"}),
+        "duplicate_email_events": await db.remote_account_status_events.count_documents({**query, "event_type": {"$in": ["duplicate_email_detected", "duplicate_email_resolved"]}}),
         "removed_events": await db.remote_account_status_events.count_documents({**query, "event_type": "remote_removed_confirmed"}),
         "today_events": await db.remote_account_status_events.count_documents({**query, "detected_at": {"$gte": today_start}}) if today_start else 0,
         "today_401": await db.remote_account_status_events.count_documents({**query, "event_type": "401_detected", "detected_at": {"$gte": today_start}}) if today_start else 0,
@@ -598,6 +598,7 @@ async def _usage_cache_map(
 def _event_item(doc: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     identity = context.get("identities", {}).get(str(doc.get("identity_id"))) or {}
     session = context.get("sessions", {}).get(str(doc.get("session_id"))) or {}
+    details = doc.get("details") if isinstance(doc.get("details"), dict) else {}
     site_id = str(doc.get("site_id") or "")
     group_ids = _int_list(doc.get("current_group_ids") or identity.get("current_group_ids"))
     email = _normalize_email(doc.get("normalized_email") or doc.get("email") or identity.get("normalized_email") or identity.get("email"))
@@ -625,7 +626,7 @@ def _event_item(doc: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             "identity_id": doc.get("identity_id"),
             "session_id": doc.get("session_id"),
             "remote_account_id": doc.get("remote_account_id"),
-            "remote_account_ids": identity.get("current_remote_account_ids"),
+            "remote_account_ids": details.get("remote_account_ids") or identity.get("current_remote_account_ids"),
             "name": doc.get("name") or identity.get("name"),
             "email": doc.get("email") or identity.get("email"),
             "normalized_email": email,
@@ -658,7 +659,7 @@ def _event_item(doc: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             "last_operation_name": local.get("last_operation_name"),
             "last_operation_at": local.get("last_operation_at"),
             "local_account": local,
-            "details": doc.get("details") or {},
+            "details": details,
             "raw_excerpt": doc.get("raw_excerpt"),
         }
     )
@@ -719,6 +720,44 @@ def _identity_item(doc: dict[str, Any], context: dict[str, Any]) -> dict[str, An
             "local_account": local,
         }
     )
+
+
+def _dedupe_redundant_duplicate_email_events(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str]] = set()
+    result: list[dict[str, Any]] = []
+    for doc in docs:
+        identity_key = str(doc.get("identity_id") or doc.get("normalized_email") or doc.get("email") or "")
+        if doc.get("event_type") == "duplicate_email_resolved":
+            result.append(doc)
+            details = doc.get("details") if isinstance(doc.get("details"), dict) else {}
+            seen.discard((identity_key, _duplicate_event_signature_from_values(details.get("previous_remote_account_ids"))))
+            seen.discard((identity_key, _duplicate_event_signature(doc)))
+            continue
+        if doc.get("event_type") != "duplicate_email_detected":
+            result.append(doc)
+            continue
+        key = (identity_key, _duplicate_event_signature(doc))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(doc)
+    return result
+
+
+def _duplicate_event_signature(doc: dict[str, Any]) -> str:
+    details = doc.get("details") if isinstance(doc.get("details"), dict) else {}
+    values = details.get("remote_account_ids")
+    if not isinstance(values, list) or not values:
+        values = doc.get("remote_account_ids")
+    if not isinstance(values, list) or not values:
+        values = [doc.get("remote_account_id")]
+    return _duplicate_event_signature_from_values(values)
+
+
+def _duplicate_event_signature_from_values(values: Any) -> str:
+    if not isinstance(values, list):
+        values = [values]
+    return ",".join(sorted({str(item) for item in values if item is not None and str(item) != ""}))
 
 
 def _session_item(doc: dict[str, Any]) -> dict[str, Any]:

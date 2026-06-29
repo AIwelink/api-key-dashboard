@@ -162,6 +162,23 @@ type Filters = {
 
 type ViewMode = "events" | "accounts";
 
+type CachedEventRecordsState = {
+  filters?: Partial<Filters>;
+  viewMode?: ViewMode;
+};
+
+type EventRecordsDataCache = {
+  accounts: EventAccount[];
+  cachedAt: number;
+  events: EventRecord[];
+  groups: Group[];
+  key: string;
+  sites: Site[];
+  skip: number;
+  summary: EventSummary;
+  total: number;
+};
+
 const initialFilters: Filters = {
   range: "24h",
   site_id: "",
@@ -179,6 +196,11 @@ const initialFilters: Filters = {
   limit: 100,
 };
 
+const EVENT_RECORDS_STATE_STORAGE_KEY = "eventRecordsPageState";
+const allowedLimits = new Set([50, 100, 200, 500]);
+const EVENT_RECORDS_DATA_CACHE_LIMIT = 8;
+let eventRecordsDataCache = new Map<string, EventRecordsDataCache>();
+
 const eventTypeOptions = [
   ["", "全部事件"],
   ["remote_account_seen_first", "首次发现"],
@@ -193,20 +215,23 @@ const eventTypeOptions = [
   ["missing_suspected", "疑似远端删除"],
   ["remote_removed_confirmed", "确认远端删除"],
   ["duplicate_email_detected", "重复邮箱"],
+  ["duplicate_email_resolved", "重复邮箱已解除"],
 ] as const;
 
 export function EventRecordsPage({ token, showToast }: Props) {
-  const [viewMode, setViewMode] = useState<ViewMode>("events");
-  const [filters, setFilters] = useState<Filters>(initialFilters);
-  const [draftFilters, setDraftFilters] = useState<Filters>(initialFilters);
-  const [events, setEvents] = useState<EventRecord[]>([]);
-  const [accounts, setAccounts] = useState<EventAccount[]>([]);
-  const [summary, setSummary] = useState<EventSummary>({});
-  const [total, setTotal] = useState(0);
-  const [skip, setSkip] = useState(0);
+  const [initialState] = useState(() => loadCachedEventRecordsState());
+  const [initialDataCache] = useState(() => getEventRecordsDataCache(initialState.viewMode, initialState.filters));
+  const [viewMode, setViewMode] = useState<ViewMode>(initialState.viewMode);
+  const [filters, setFilters] = useState<Filters>(initialState.filters);
+  const [draftFilters, setDraftFilters] = useState<Filters>(initialState.filters);
+  const [events, setEvents] = useState<EventRecord[]>(() => initialDataCache?.events || []);
+  const [accounts, setAccounts] = useState<EventAccount[]>(() => initialDataCache?.accounts || []);
+  const [summary, setSummary] = useState<EventSummary>(() => initialDataCache?.summary || {});
+  const [total, setTotal] = useState(() => initialDataCache?.total || 0);
+  const [skip, setSkip] = useState(() => initialDataCache?.skip || 0);
   const [loading, setLoading] = useState(false);
-  const [sites, setSites] = useState<Site[]>([]);
-  const [groups, setGroups] = useState<Group[]>([]);
+  const [sites, setSites] = useState<Site[]>(() => initialDataCache?.sites || []);
+  const [groups, setGroups] = useState<Group[]>(() => initialDataCache?.groups || []);
   const [filterOpen, setFilterOpen] = useState(false);
   const [displayOpen, setDisplayOpen] = useState(false);
   const [detailIdentityId, setDetailIdentityId] = useState<string | null>(null);
@@ -220,7 +245,9 @@ export function EventRecordsPage({ token, showToast }: Props) {
   const loadSites = async () => {
     try {
       const data = await api<{ items: Site[] }>("/sub2api-sites", token);
-      setSites(data.items || []);
+      const nextSites = data.items || [];
+      setSites(nextSites);
+      updateEventRecordsDataCache({ sites: nextSites });
     } catch (error) {
       showToast(errorMessage(error), true);
     }
@@ -233,28 +260,72 @@ export function EventRecordsPage({ token, showToast }: Props) {
     }
     try {
       const data = await api<{ items: Group[] }>(`/sub2api-sites/${siteId}/groups?page=1&page_size=500`, token);
-      setGroups(data.items || []);
+      const nextGroups = data.items || [];
+      setGroups(nextGroups);
+      updateEventRecordsDataCache({ groups: nextGroups });
     } catch (error) {
       showToast(errorMessage(error), true);
     }
   };
 
-  const loadData = async () => {
+  const loadData = async ({ force = false } = {}) => {
+    if (!force) {
+      const cached = getEventRecordsDataCache(viewMode, filters);
+      if (cached && cached.skip === skip) {
+        restoreEventRecordsDataCache(cached, {
+          setAccounts,
+          setEvents,
+          setGroups,
+          setSites,
+          setSummary,
+          setTotal,
+        });
+        return;
+      }
+    }
     setLoading(true);
     try {
       const params = buildParams(filters, viewMode, skip);
       if (viewMode === "events") {
         const data = await api<EventsResponse>(`/event-records/events?${params.toString()}`, token);
-        setEvents(data.items || []);
+        const nextEvents = data.items || [];
+        const nextSummary = data.summary || {};
+        const nextTotal = numberValue(data.total);
+        setEvents(nextEvents);
         setAccounts([]);
-        setSummary(data.summary || {});
-        setTotal(numberValue(data.total));
+        setSummary(nextSummary);
+        setTotal(nextTotal);
+        writeEventRecordsDataCache({
+          accounts: [],
+          cachedAt: Date.now(),
+          events: nextEvents,
+          groups,
+          key: eventRecordsDataCacheKey(viewMode, filters),
+          sites,
+          skip,
+          summary: nextSummary,
+          total: nextTotal,
+        });
       } else {
         const data = await api<AccountsResponse>(`/event-records/accounts?${params.toString()}`, token);
-        setAccounts(data.items || []);
+        const nextAccounts = data.items || [];
+        const nextSummary = data.summary || {};
+        const nextTotal = numberValue(data.total);
+        setAccounts(nextAccounts);
         setEvents([]);
-        setSummary(data.summary || {});
-        setTotal(numberValue(data.total));
+        setSummary(nextSummary);
+        setTotal(nextTotal);
+        writeEventRecordsDataCache({
+          accounts: nextAccounts,
+          cachedAt: Date.now(),
+          events: [],
+          groups,
+          key: eventRecordsDataCacheKey(viewMode, filters),
+          sites,
+          skip,
+          summary: nextSummary,
+          total: nextTotal,
+        });
       }
     } catch (error) {
       showToast(errorMessage(error), true);
@@ -277,6 +348,12 @@ export function EventRecordsPage({ token, showToast }: Props) {
     }
   };
 
+  const switchViewMode = (nextViewMode: ViewMode) => {
+    const cached = getEventRecordsDataCache(nextViewMode, filters);
+    setViewMode(nextViewMode);
+    setSkip(cached?.skip ?? 0);
+  };
+
   const applyFilters = () => {
     setFilters(draftFilters);
     setSkip(0);
@@ -286,8 +363,11 @@ export function EventRecordsPage({ token, showToast }: Props) {
   const resetFilters = () => {
     setDraftFilters(initialFilters);
     setFilters(initialFilters);
+    setViewMode("events");
     setSkip(0);
     setFilterOpen(false);
+    clearCachedEventRecordsState();
+    clearEventRecordsDataCache();
   };
 
   const setDraft = <K extends keyof Filters>(key: K, value: Filters[K]) => {
@@ -314,6 +394,10 @@ export function EventRecordsPage({ token, showToast }: Props) {
     setDraftFilters(filters);
   }, [filters]);
 
+  useEffect(() => {
+    saveCachedEventRecordsState({ filters, viewMode });
+  }, [filters, viewMode]);
+
   return (
     <section className="view event-records-page">
       <header className="event-records-head">
@@ -323,11 +407,11 @@ export function EventRecordsPage({ token, showToast }: Props) {
         </div>
         <div className="event-records-head-actions">
           <div className="account-view-menu event-records-tabs">
-            <button className={`account-view-menu-item ${viewMode === "events" ? "active" : ""}`} type="button" onClick={() => { setViewMode("events"); setSkip(0); }}>
+            <button className={`account-view-menu-item ${viewMode === "events" ? "active" : ""}`} type="button" onClick={() => switchViewMode("events")}>
               事件流
               <span>按时间倒序</span>
             </button>
-            <button className={`account-view-menu-item ${viewMode === "accounts" ? "active" : ""}`} type="button" onClick={() => { setViewMode("accounts"); setSkip(0); }}>
+            <button className={`account-view-menu-item ${viewMode === "accounts" ? "active" : ""}`} type="button" onClick={() => switchViewMode("accounts")}>
               账号视图
               <span>按邮箱聚合</span>
             </button>
@@ -374,7 +458,7 @@ export function EventRecordsPage({ token, showToast }: Props) {
               </div>
             )}
           </div>
-          <button className="compact-button" type="button" disabled={loading} onClick={loadData}>
+          <button className="compact-button" type="button" disabled={loading} onClick={() => loadData({ force: true })}>
             {loading ? "刷新中..." : "刷新"}
           </button>
         </div>
@@ -428,6 +512,111 @@ export function EventRecordsPage({ token, showToast }: Props) {
       )}
     </section>
   );
+}
+
+function loadCachedEventRecordsState(): { filters: Filters; viewMode: ViewMode } {
+  if (typeof window === "undefined") {
+    return { filters: initialFilters, viewMode: "events" };
+  }
+  try {
+    const raw = window.localStorage.getItem(EVENT_RECORDS_STATE_STORAGE_KEY);
+    if (!raw) return { filters: initialFilters, viewMode: "events" };
+    const cached = JSON.parse(raw) as CachedEventRecordsState;
+    return {
+      filters: normalizeCachedFilters(cached.filters),
+      viewMode: cached.viewMode === "accounts" ? "accounts" : "events",
+    };
+  } catch {
+    return { filters: initialFilters, viewMode: "events" };
+  }
+}
+
+function saveCachedEventRecordsState(state: { filters: Filters; viewMode: ViewMode }) {
+  try {
+    window.localStorage.setItem(EVENT_RECORDS_STATE_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Local storage can be unavailable in private mode; the page still works without persistence.
+  }
+}
+
+function clearCachedEventRecordsState() {
+  try {
+    window.localStorage.removeItem(EVENT_RECORDS_STATE_STORAGE_KEY);
+  } catch {
+    // Ignore storage failures; resetting in memory is enough for the active session.
+  }
+}
+
+function eventRecordsDataCacheKey(viewMode: ViewMode, filters: Filters) {
+  return JSON.stringify({ viewMode, filters });
+}
+
+function getEventRecordsDataCache(viewMode: ViewMode, filters: Filters): EventRecordsDataCache | null {
+  return eventRecordsDataCache.get(eventRecordsDataCacheKey(viewMode, filters)) || null;
+}
+
+function writeEventRecordsDataCache(value: EventRecordsDataCache) {
+  eventRecordsDataCache.set(value.key, value);
+  if (eventRecordsDataCache.size <= EVENT_RECORDS_DATA_CACHE_LIMIT) return;
+  const oldest = [...eventRecordsDataCache.values()].sort((a, b) => a.cachedAt - b.cachedAt)[0];
+  if (oldest) eventRecordsDataCache.delete(oldest.key);
+}
+
+function updateEventRecordsDataCache(value: Partial<Pick<EventRecordsDataCache, "groups" | "sites">>) {
+  if (!eventRecordsDataCache.size) return;
+  eventRecordsDataCache = new Map(
+    [...eventRecordsDataCache.entries()].map(([key, cache]) => [
+      key,
+      {
+        ...cache,
+        ...value,
+        cachedAt: Date.now(),
+      },
+    ]),
+  );
+}
+
+function clearEventRecordsDataCache() {
+  eventRecordsDataCache.clear();
+}
+
+function restoreEventRecordsDataCache(
+  cached: EventRecordsDataCache,
+  setters: {
+    setAccounts: (items: EventAccount[]) => void;
+    setEvents: (items: EventRecord[]) => void;
+    setGroups: (items: Group[]) => void;
+    setSites: (items: Site[]) => void;
+    setSummary: (summary: EventSummary) => void;
+    setTotal: (total: number) => void;
+  },
+) {
+  setters.setEvents(cached.events);
+  setters.setAccounts(cached.accounts);
+  setters.setSummary(cached.summary);
+  setters.setTotal(cached.total);
+  if (cached.sites.length) setters.setSites(cached.sites);
+  if (cached.groups.length) setters.setGroups(cached.groups);
+}
+
+function normalizeCachedFilters(value?: Partial<Filters>): Filters {
+  if (!value || typeof value !== "object") return initialFilters;
+  return {
+    range: typeof value.range === "string" && value.range ? value.range : initialFilters.range,
+    site_id: typeof value.site_id === "string" ? value.site_id : initialFilters.site_id,
+    group_id: typeof value.group_id === "string" ? value.group_id : initialFilters.group_id,
+    event_type: typeof value.event_type === "string" ? value.event_type : initialFilters.event_type,
+    severity: typeof value.severity === "string" ? value.severity : initialFilters.severity,
+    account_type: typeof value.account_type === "string" ? value.account_type : initialFilters.account_type,
+    presence: typeof value.presence === "string" ? value.presence : initialFilters.presence,
+    q: typeof value.q === "string" ? value.q : initialFilters.q,
+    only_401: Boolean(value.only_401),
+    only_abnormal: Boolean(value.only_abnormal),
+    only_pro: Boolean(value.only_pro),
+    only_cumulative: Boolean(value.only_cumulative),
+    only_delete_archive: Boolean(value.only_delete_archive),
+    limit: typeof value.limit === "number" && allowedLimits.has(value.limit) ? value.limit : initialFilters.limit,
+  };
 }
 
 function FilterMenu({
@@ -841,6 +1030,7 @@ function eventTypeLabel(value?: string) {
     missing_suspected: "疑似远端删除",
     remote_removed_confirmed: "确认远端删除",
     duplicate_email_detected: "重复邮箱",
+    duplicate_email_resolved: "重复邮箱已解除",
   };
   return labels[value || ""] || value || "事件";
 }
