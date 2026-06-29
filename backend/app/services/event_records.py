@@ -724,6 +724,7 @@ def _identity_item(doc: dict[str, Any], context: dict[str, Any]) -> dict[str, An
 
 def _dedupe_redundant_duplicate_email_events(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[tuple[str, str]] = set()
+    seen_duplicate_reappeared: set[tuple[str, str]] = set()
     result: list[dict[str, Any]] = []
     for doc in docs:
         identity_key = str(doc.get("identity_id") or doc.get("normalized_email") or doc.get("email") or "")
@@ -732,6 +733,15 @@ def _dedupe_redundant_duplicate_email_events(docs: list[dict[str, Any]]) -> list
             details = doc.get("details") if isinstance(doc.get("details"), dict) else {}
             seen.discard((identity_key, _duplicate_event_signature_from_values(details.get("previous_remote_account_ids"))))
             seen.discard((identity_key, _duplicate_event_signature(doc)))
+            continue
+        if doc.get("event_type") == "remote_account_reappeared":
+            signature = _duplicate_event_signature(doc)
+            if "," in signature:
+                key = (identity_key, signature)
+                if key in seen_duplicate_reappeared:
+                    continue
+                seen_duplicate_reappeared.add(key)
+            result.append(doc)
             continue
         if doc.get("event_type") != "duplicate_email_detected":
             result.append(doc)

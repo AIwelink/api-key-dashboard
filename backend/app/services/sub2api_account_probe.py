@@ -271,9 +271,7 @@ def _duplicate_email_alert_signature(remote_ids: list[Any]) -> str:
 
 
 def _normalized_remote_id_signature(remote_ids: Any) -> list[str]:
-    if not isinstance(remote_ids, list):
-        remote_ids = [remote_ids]
-    return sorted({str(item) for item in remote_ids if item is not None and str(item) != ""})
+    return [str(item) for item in _stable_remote_ids(remote_ids)]
 
 
 async def probe_scheduler_loop(db: AsyncIOMotorDatabase) -> None:
@@ -555,7 +553,7 @@ def _collapse_probe_accounts_by_email(accounts: list[dict[str, Any]]) -> list[di
         current = by_email.get(email)
         if current is None:
             collapsed = dict(account)
-            collapsed["remote_account_ids"] = [account.get("remote_account_id")]
+            collapsed["remote_account_ids"] = _stable_remote_ids([account.get("remote_account_id")])
             collapsed["duplicate_remote_count"] = 1
             by_email[email] = collapsed
             continue
@@ -565,9 +563,8 @@ def _collapse_probe_accounts_by_email(accounts: list[dict[str, Any]]) -> list[di
 
 def _merge_probe_duplicate_account(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     merged = dict(left)
-    remote_ids = [*_remote_ids(left), right.get("remote_account_id")]
-    merged["remote_account_ids"] = [item for item in remote_ids if item is not None]
-    merged["duplicate_remote_count"] = len(set(str(item) for item in merged["remote_account_ids"]))
+    merged["remote_account_ids"] = _stable_remote_ids([*_remote_ids(left), right.get("remote_account_id")])
+    merged["duplicate_remote_count"] = len(merged["remote_account_ids"])
     merged["remote_account_id"] = merged["remote_account_ids"][0] if merged["remote_account_ids"] else left.get("remote_account_id")
     merged["group_ids"] = sorted(set([*(left.get("group_ids") or []), *(right.get("group_ids") or [])]))
     if _is_401(right):
@@ -587,6 +584,16 @@ def _remote_ids(account: dict[str, Any]) -> list[Any]:
     if isinstance(values, list) and values:
         return values
     return [account.get("remote_account_id")]
+
+
+def _stable_remote_ids(remote_ids: Any) -> list[Any]:
+    values = remote_ids if isinstance(remote_ids, list) else [remote_ids]
+    by_key = {str(item): item for item in values if item is not None and str(item) != ""}
+    return [by_key[key] for key in sorted(by_key, key=_remote_id_sort_key)]
+
+
+def _remote_id_sort_key(value: str) -> tuple[int, int | str]:
+    return (0, int(value)) if value.isdigit() else (1, value)
 
 
 def _merge_usage_snapshots(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
@@ -695,10 +702,11 @@ async def _ensure_session(
 ) -> dict[str, Any]:
     normalized_email = account["normalized_email"]
     remote_id = account["remote_account_id"]
+    remote_ids = set(_normalized_remote_id_signature(account.get("remote_account_ids") or [remote_id]))
     current_session_id = identity.get("current_session_id") if identity else None
     if current_session_id:
         session = await db.remote_account_sessions.find_one({"_id": current_session_id, "status": "open"})
-        if session and str(session.get("remote_account_id")) == str(remote_id):
+        if session and str(session.get("remote_account_id")) in remote_ids:
             return session
     session_index = int((identity or {}).get("total_sessions") or 0) + 1
     session_id = f"{site_id}:{normalized_email}:{session_index}"
@@ -764,7 +772,11 @@ async def _update_identity_and_events(
             if _is_401(account):
                 await _write_event(db, site_id=site_id, event_type="401_detected", severity="critical", detected_at=detected_at, account=account, session=session)
     else:
-        if identity.get("current_presence") in {"removed", "missing_suspected"} or str(identity.get("current_remote_account_id")) != str(account.get("remote_account_id")):
+        current_remote_ids = _normalized_remote_id_signature(account.get("remote_account_ids") or [account.get("remote_account_id")])
+        previous_remote_ids = _normalized_remote_id_signature(identity.get("current_remote_account_ids") or [identity.get("current_remote_account_id")])
+        remote_sets_overlap = bool(set(current_remote_ids) & set(previous_remote_ids))
+        remote_account_replaced = str(identity.get("current_remote_account_id")) != str(account.get("remote_account_id")) and not remote_sets_overlap
+        if identity.get("current_presence") in {"removed", "missing_suspected"} or remote_account_replaced:
             changed = True
             if event_enabled:
                 await _write_event(db, site_id=site_id, event_type="remote_account_reappeared", severity="info", detected_at=detected_at, account=account, session=session, previous=identity)
@@ -853,7 +865,7 @@ async def _update_identity_and_events(
         "current_presence": "present",
         "missing_count": 0,
         "current_remote_account_id": account.get("remote_account_id"),
-        "current_remote_account_ids": account.get("remote_account_ids") or [account.get("remote_account_id")],
+        "current_remote_account_ids": _stable_remote_ids(account.get("remote_account_ids") or [account.get("remote_account_id")]),
         "duplicate_remote_count": account.get("duplicate_remote_count") or 1,
         "current_session_id": session["_id"],
         "current_status": account.get("status"),
