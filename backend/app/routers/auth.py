@@ -4,7 +4,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.database import db_dependency
 from app.schemas import ChangePasswordRequest, LoginRequest, LoginResponse
 from app.security import create_access_token, get_current_user, hash_password, verify_password
-from app.services.audit import write_audit_log
+from app.modules.system.audit import write_audit_log
 from app.utils import now_utc, serialize_doc
 
 

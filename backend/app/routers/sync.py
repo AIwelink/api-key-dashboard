@@ -4,9 +4,9 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.database import db_dependency
 from app.schemas import SyncRunRequest
 from app.security import require_roles
-from app.services.accounts import get_account_or_404
-from app.services.audit import write_audit_log
-from app.services.sub2api import refresh_account_observation
+from app.modules.accounts.accounts import get_account_or_404
+from app.modules.system.audit import write_audit_log
+from app.modules.sub2api.client import refresh_account_observation
 from app.utils import now_utc, object_id, serialize_doc
 
 

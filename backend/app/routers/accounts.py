@@ -4,7 +4,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.database import db_dependency
 from app.schemas import AccountCreate, AccountCredentialsRefresh, AccountUpdate, EnterReserveRequest, ManualTransferRequest, ProblemInfoCorrectedRequest, PushToSub2ApiRequest, ReservePinRequest, VerifyViaSub2ApiRequest
 from app.security import get_current_user, require_roles
-from app.services.accounts import (
+from app.modules.accounts.accounts import (
     create_account,
     refresh_account_credentials_json,
     get_account_or_404,
@@ -13,12 +13,12 @@ from app.services.accounts import (
     soft_delete_account,
     update_account,
 )
-from app.services.audit import write_audit_log
-from app.services.json_parser import extract_account_objects
-from app.services.pool_lifecycle import enter_reserve, manual_transfer_account, set_reserve_pin
-from app.services.sub2api_binding import manually_unbind_sub2api_account
-from app.services.sub2api_push import push_account_to_sub2api
-from app.services.sub2api_verify import verify_account_via_sub2api_group
+from app.modules.system.audit import write_audit_log
+from app.modules.accounts.json_parser import extract_account_objects
+from app.modules.accounts.pool_lifecycle import enter_reserve, manual_transfer_account, set_reserve_pin
+from app.modules.sub2api.binding import manually_unbind_sub2api_account
+from app.modules.sub2api.push import push_account_to_sub2api
+from app.modules.sub2api.verify import verify_account_via_sub2api_group
 from app.utils import serialize_doc
 
 

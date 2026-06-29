@@ -4,13 +4,13 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.database import db_dependency
 from app.schemas import AlertReadRequest, ApiPoolCreate, ApiPoolStatusPreferenceUpdate, ApiPoolUpdate, CapacityAccountLimitsUpdate, GroupObservabilitySettingUpdate
 from app.security import require_roles
-from app.services.api_pools import create_api_pool, list_api_pools, update_api_pool
-from app.services.api_pool_status_preferences import get_api_pool_status_preferences, update_api_pool_status_preferences
-from app.services.audit import write_audit_log
-from app.services.capacity_limits import get_capacity_account_limits, update_capacity_account_limits
-from app.services.pool_lifecycle import capacity_check
-from app.services.sub2api_account_probe import list_duplicate_email_alerts, list_group_observability_settings, mark_duplicate_email_alert_read, probe_site_accounts, update_group_observability_setting
-from app.services.sub2api_auto_refill import list_auto_refill_logs
+from app.modules.api_pools.pools import create_api_pool, list_api_pools, update_api_pool
+from app.modules.api_pools.status_preferences import get_api_pool_status_preferences, update_api_pool_status_preferences
+from app.modules.system.audit import write_audit_log
+from app.modules.api_pools.capacity_limits import get_capacity_account_limits, update_capacity_account_limits
+from app.modules.accounts.pool_lifecycle import capacity_check
+from app.modules.sub2api.account_probe import list_duplicate_email_alerts, list_group_observability_settings, mark_duplicate_email_alert_read, probe_site_accounts, update_group_observability_setting
+from app.modules.sub2api.auto_refill import list_auto_refill_logs
 
 
 router = APIRouter(prefix="/api-pools", tags=["api-pools"])

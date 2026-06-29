@@ -16,11 +16,11 @@ from pymongo import ReturnDocument
 from app.database import db_dependency
 from app.schemas import Sub2ApiAccountTestRequest, Sub2ApiManualDeleteRequest, Sub2ApiOAuthApplyRequest, Sub2ApiOAuthExchangeRequest, Sub2ApiRecentMailRequest, Sub2ApiResurrectionFailRequest
 from app.security import require_roles
-from app.services.audit import write_audit_log
-from app.services.account_records import write_account_operation
-from app.services.pool_lifecycle import actor_name, operation_actor_updates, pool_reference_unsets, write_pool_action
-from app.services.sub2api import Sub2ApiClient
-from app.services.sub2api_cache import (
+from app.modules.system.audit import write_audit_log
+from app.modules.accounts.records import write_account_operation
+from app.modules.accounts.pool_lifecycle import actor_name, operation_actor_updates, pool_reference_unsets, write_pool_action
+from app.modules.sub2api.client import Sub2ApiClient
+from app.modules.sub2api.cache import (
     create_site_config,
     delete_site_config,
     get_site,
@@ -31,9 +31,9 @@ from app.services.sub2api_cache import (
     update_site_config,
     upsert_cached_account_snapshot,
 )
-from app.services.sub2api_dashboard import get_stored_dashboard_snapshots, refresh_dashboard_snapshots
-from app.services.sub2api_return import manual_delete_sub2api_account, remote_cumulative_usage_snapshot, remote_usage_snapshot
-from app.services.sub2api_verify import test_remote_sub2api_account
+from app.modules.sub2api.dashboard import get_stored_dashboard_snapshots, refresh_dashboard_snapshots
+from app.modules.sub2api.return_flow import manual_delete_sub2api_account, remote_cumulative_usage_snapshot, remote_usage_snapshot
+from app.modules.sub2api.verify import test_remote_sub2api_account
 from app.utils import credentials_email, now_utc, serialize_doc
 
 

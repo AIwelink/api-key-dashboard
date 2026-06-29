@@ -6,9 +6,9 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.database import db_dependency
 from app.schemas import ImportCommitRequest, ImportPreviewRequest
 from app.security import require_roles
-from app.services.accounts import create_account
-from app.services.audit import write_audit_log
-from app.services.json_parser import extract_account_objects
+from app.modules.accounts.accounts import create_account
+from app.modules.system.audit import write_audit_log
+from app.modules.accounts.json_parser import extract_account_objects
 from app.utils import credentials_email, now_utc
 
 

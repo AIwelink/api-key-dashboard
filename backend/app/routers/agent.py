@@ -5,9 +5,9 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
 from app.security import require_roles
-from app.services.agent_capacity import list_agent_pools
-from app.services.agent_chat import analyze_pool, chat
-from app.services.agent_tools import tool_manifest
+from app.modules.agent.capacity import list_agent_pools
+from app.modules.agent.chat import analyze_pool, chat
+from app.modules.agent.tools import tool_manifest
 
 
 router = APIRouter(prefix="/agent", tags=["agent"])

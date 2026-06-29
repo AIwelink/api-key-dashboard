@@ -4,8 +4,8 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.database import db_dependency
 from app.schemas import ApiTokenCreate
 from app.security import require_roles
-from app.services.api_tokens import create_api_token, list_api_tokens, revoke_api_token
-from app.services.audit import write_audit_log
+from app.modules.system.api_tokens import create_api_token, list_api_tokens, revoke_api_token
+from app.modules.system.audit import write_audit_log
 
 
 router = APIRouter(prefix="/api-tokens", tags=["api-tokens"])

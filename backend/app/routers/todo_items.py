@@ -5,8 +5,8 @@ from app.database import db_dependency
 from app.schemas import FreeToPlusCompleteRequest, FreeToPlusFailRequest, PushErrorDecisionRequest, PushErrorTestRequest
 from app.security import get_current_user
 from app.security import require_roles
-from app.services.audit import write_audit_log
-from app.services.todo_free_to_plus import (
+from app.modules.system.audit import write_audit_log
+from app.modules.todo.free_to_plus import (
     complete_free_to_plus,
     fail_free_to_plus,
     list_free_to_plus_accounts,
@@ -14,7 +14,7 @@ from app.services.todo_free_to_plus import (
     return_completed_free_to_plus,
     start_free_to_plus,
 )
-from app.services.todo_push_errors import (
+from app.modules.todo.push_errors import (
     decide_push_error_account,
     list_push_error_accounts,
     release_push_error_task,
