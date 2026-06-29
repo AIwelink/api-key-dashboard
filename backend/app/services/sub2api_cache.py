@@ -1347,8 +1347,10 @@ def _rolling_peak_cost(items: list[dict[str, Any]], window_size: int) -> float:
 
 
 def _burst_1h_summary(hourly: list[dict[str, Any]]) -> dict[str, Any]:
-    costs = [_float_or_zero(doc.get("cost")) for doc in hourly[-8:]]
-    elapsed_minutes = _current_hour_elapsed_minutes()
+    recent_docs = hourly[-8:]
+    costs = [_float_or_zero(doc.get("cost")) for doc in recent_docs]
+    latest_doc = recent_docs[-1] if recent_docs else None
+    elapsed_minutes = _latest_hour_elapsed_minutes(latest_doc)
     projection_multiplier = 60 / max(5, elapsed_minutes)
     if not costs:
         return {
@@ -1409,6 +1411,28 @@ def _burst_1h_summary(hourly: list[dict[str, Any]]) -> dict[str, Any]:
 def _current_hour_elapsed_minutes() -> float:
     local_now = now_utc().astimezone(timezone(timedelta(hours=8)))
     return max(1, min(60, local_now.minute + local_now.second / 60))
+
+
+def _latest_hour_elapsed_minutes(latest_doc: dict[str, Any] | None) -> float:
+    if not latest_doc:
+        return _current_hour_elapsed_minutes()
+    local_now = now_utc().astimezone(timezone(timedelta(hours=8)))
+    current_hour = local_now.replace(minute=0, second=0, microsecond=0)
+    bucket_at = latest_doc.get("bucket_at")
+    if isinstance(bucket_at, datetime):
+        latest_hour = bucket_at
+        if latest_hour.tzinfo is None:
+            latest_hour = latest_hour.replace(tzinfo=UTC)
+        latest_hour = latest_hour.astimezone(timezone(timedelta(hours=8))).replace(minute=0, second=0, microsecond=0)
+    else:
+        bucket = str(latest_doc.get("bucket") or "")
+        try:
+            latest_hour = datetime.strptime(bucket, "%Y-%m-%d %H:%M").replace(tzinfo=timezone(timedelta(hours=8)))
+        except ValueError:
+            return 60.0
+    if latest_hour == current_hour:
+        return _current_hour_elapsed_minutes()
+    return 60.0
 
 
 def _burst_trend_label(change_percent: float | None) -> tuple[str, str]:
