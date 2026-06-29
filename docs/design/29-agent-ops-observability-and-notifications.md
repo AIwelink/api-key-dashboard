@@ -318,6 +318,8 @@ UI 中“记录内容”的含义：
    - reset 时间取最小值。
    - 写入 `duplicate_email_detected` 事件。
 9. 更新或创建 `remote_account_identities`。
+   - 如果 `codex_7d_*` 或 total usage 字段相对上次探测回落，视为窗口清零，把清零前的窗口值结转到 `cumulative_usage_totals`。
+   - 容量预估继续使用远端当前窗口字段；运营分析、删除/归档快照优先使用累计字段。
 10. 远端 id 变化或重新出现时开启新的 `remote_account_sessions`。
 11. 状态、错误、调度开关、分组变化时写入 `remote_account_status_events`。
 12. 检测 401 和 401 恢复。
@@ -405,6 +407,9 @@ Pro 401 钉钉通知正文：
 - `current_group_ids`
 - `plan_type`
 - `last_usage_snapshot`
+- `cumulative_usage_totals`: 周期窗口清零前会把上一轮窗口值结转到这里，保留账号生命周期累计用量。
+- `cumulative_usage_snapshot`: 当前窗口值加累计基数后的快照，累计字段以 `*_cumulative` 结尾。
+- `last_usage_rollover_at`
 - `missing_confirm_count`
 - `last_event_at`
 - `total_sessions`
@@ -463,6 +468,9 @@ Agent 用途：
 - `error_message_first`
 - `error_message_last`
 - `last_usage_snapshot`
+- `cumulative_usage_totals`: 本次进入 sub2 session 内的累计用量。
+- `cumulative_usage_snapshot`
+- `last_usage_rollover_at`
 - `created_at`
 - `updated_at`
 
@@ -489,6 +497,7 @@ Agent 用途：
 - `missing_suspected`
 - `remote_removed_confirmed`
 - `duplicate_email_detected`
+- `usage_rollover`
 
 关键字段：
 
@@ -513,7 +522,7 @@ Agent 用途：
 - `is_401`
 - `error_category`
 - `usage_snapshot`
-- `details`
+- `details`: `usage_rollover` 事件会记录 `rollover_fields`、清零前后的 usage snapshot 和累计 totals。
 - `raw_excerpt`
 - `notification_status`
 - `notification_event_id`
@@ -568,6 +577,7 @@ Agent 用途：
 - `codex_usage_updated_at`
 - `codex_usage_synced_at`
 - `usage_snapshot`
+- `cumulative_usage_snapshot`
 - `raw_hash`
 - `created_at`
 - `expires_at`

@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.services.sub2api_return import manual_delete_sub2api_account, remote_abnormal_reason, remote_usage_snapshot
+from app.services.sub2api_return import manual_delete_sub2api_account, remote_abnormal_reason, remote_cumulative_usage_snapshot, remote_usage_snapshot
 from app.utils import credentials_email, now_utc, serialize_doc
 
 
@@ -80,7 +80,8 @@ async def _delete_abnormal_account(
 ) -> dict[str, Any]:
     remote_id = account.get("id")
     reason = remote_abnormal_reason(account) or "remote abnormal"
-    usage_snapshot = remote_usage_snapshot(account)
+    cumulative_usage = await remote_cumulative_usage_snapshot(db, site_id=site_id, remote_account=account)
+    usage_snapshot = remote_usage_snapshot(account, cumulative_usage=cumulative_usage)
     last_lock_error: HTTPException | None = None
     for attempt in range(AUTO_REMOVE_LOCK_RETRY_ATTEMPTS):
         try:

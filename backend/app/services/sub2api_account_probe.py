@@ -33,6 +33,18 @@ ERROR_401_PATTERN = re.compile(r"401|token[_ -]?invalidated|token[_ -]?revoked|a
 PRO_MARKER_PATTERN = re.compile(r"(^|[^a-z0-9])(?:pro|20x)(?:[^a-z0-9]|$)", re.I)
 NOTIFICATION_401_THROTTLE_SECONDS = 180
 SHANGHAI_TZ = timezone(timedelta(hours=8))
+USAGE_WEEKLY_ROLLOVER_FIELDS = (
+    "codex_7d_actual_cost",
+    "codex_7d_total_cost",
+    "codex_7d_request_count",
+    "codex_7d_token_count",
+)
+USAGE_TOTAL_ROLLOVER_FIELDS = (
+    "codex_total_actual_cost",
+    "codex_total_cost",
+    "codex_total_request_count",
+    "codex_total_token_count",
+)
 
 
 def default_group_observability_setting(site_id: str, group_id: int, group_name: str | None = None) -> dict[str, Any]:
@@ -598,6 +610,49 @@ def _merge_usage_snapshots(left: dict[str, Any], right: dict[str, Any]) -> dict[
     return merged
 
 
+def _usage_rollover_state(
+    *,
+    previous_snapshot: dict[str, Any] | None,
+    current_snapshot: dict[str, Any],
+    previous_totals: dict[str, Any] | None,
+) -> dict[str, Any]:
+    previous_snapshot = previous_snapshot if isinstance(previous_snapshot, dict) else {}
+    current_snapshot = current_snapshot if isinstance(current_snapshot, dict) else {}
+    previous_totals = previous_totals if isinstance(previous_totals, dict) else {}
+    totals = dict(previous_totals)
+    cumulative_snapshot = dict(current_snapshot)
+    rollover_fields: list[str] = []
+
+    for field in (*USAGE_WEEKLY_ROLLOVER_FIELDS, *USAGE_TOTAL_ROLLOVER_FIELDS):
+        current_value = _number_float(current_snapshot.get(field), none_if_missing=True)
+        previous_value = _number_float(previous_snapshot.get(field), none_if_missing=True)
+        base_key = f"{field}_rollover_base"
+        base_value = _number_float(previous_totals.get(base_key), none_if_missing=True) or 0.0
+        if current_value is None:
+            if previous_totals.get(field) is not None:
+                cumulative_snapshot[f"{field}_cumulative"] = previous_totals.get(field)
+            continue
+        if previous_value is not None and current_value < previous_value:
+            base_value += previous_value
+            rollover_fields.append(field)
+        cumulative_value = base_value + current_value
+        totals[base_key] = round(base_value, 6)
+        totals[field] = round(cumulative_value, 6)
+        cumulative_snapshot[f"{field}_cumulative"] = round(cumulative_value, 6)
+
+    return {
+        "totals": totals,
+        "snapshot": cumulative_snapshot,
+        "rollover_detected": bool(rollover_fields),
+        "rollover_details": {
+            "rollover_fields": rollover_fields,
+            "previous_usage_snapshot": previous_snapshot,
+            "current_usage_snapshot": current_snapshot,
+            "cumulative_usage_totals": totals,
+        },
+    }
+
+
 def _number_float(value: Any, *, none_if_missing: bool = False) -> float | None:
     if value is None or value == "":
         return None if none_if_missing else 0.0
@@ -648,6 +703,7 @@ async def _ensure_session(
             return session
     session_index = int((identity or {}).get("total_sessions") or 0) + 1
     session_id = f"{site_id}:{normalized_email}:{session_index}"
+    initial_usage = _usage_rollover_state(previous_snapshot=None, current_snapshot=account.get("usage_snapshot") or {}, previous_totals=None)
     doc = {
         "_id": session_id,
         "site_id": site_id,
@@ -671,6 +727,9 @@ async def _ensure_session(
         "error_message_first": account.get("error_message"),
         "error_message_last": account.get("error_message"),
         "last_usage_snapshot": account.get("usage_snapshot") or {},
+        "cumulative_usage_totals": initial_usage["totals"],
+        "cumulative_usage_snapshot": initial_usage["snapshot"],
+        "last_usage_rollover_at": None,
         "created_at": detected_at,
         "updated_at": detected_at,
     }
@@ -693,6 +752,11 @@ async def _update_identity_and_events(
 ) -> bool:
     identity_id = _identity_id(site_id, account["normalized_email"])
     event_enabled = setting.get("record_status_events") is not False
+    identity_usage = _usage_rollover_state(
+        previous_snapshot=(identity or {}).get("last_usage_snapshot") if identity else None,
+        current_snapshot=account.get("usage_snapshot") or {},
+        previous_totals=(identity or {}).get("cumulative_usage_totals") if identity else None,
+    )
     changed = False
     if identity is None:
         changed = True
@@ -721,6 +785,18 @@ async def _update_identity_and_events(
             await _write_event(db, site_id=site_id, event_type="401_detected", severity="critical", detected_at=detected_at, account=account, session=session, previous=identity)
         if was_401 and _is_normal(account) and event_enabled:
             await _write_event(db, site_id=site_id, event_type="401_recovered", severity="info", detected_at=detected_at, account=account, session=session, previous=identity)
+        if identity_usage["rollover_detected"] and event_enabled:
+            await _write_event(
+                db,
+                site_id=site_id,
+                event_type="usage_rollover",
+                severity="info",
+                detected_at=detected_at,
+                account=account,
+                session=session,
+                previous=identity,
+                details=identity_usage["rollover_details"],
+            )
 
     updates = {
         "site_id": site_id,
@@ -741,6 +817,9 @@ async def _update_identity_and_events(
         "current_group_ids": account.get("group_ids") or [],
         "plan_type": account.get("plan_type"),
         "last_usage_snapshot": account.get("usage_snapshot") or {},
+        "cumulative_usage_totals": identity_usage["totals"],
+        "cumulative_usage_snapshot": identity_usage["snapshot"],
+        "last_usage_rollover_at": detected_at if identity_usage["rollover_detected"] else (identity or {}).get("last_usage_rollover_at"),
         "missing_confirm_count": int(setting.get("missing_confirm_count") or DEFAULT_MISSING_CONFIRM_COUNT),
         "last_event_at": detected_at if changed else (identity or {}).get("last_event_at"),
         "updated_at": detected_at,
@@ -771,11 +850,20 @@ async def _update_identity_and_events(
 
 
 async def _update_session_status(db: AsyncIOMotorDatabase, *, session_id: str, account: dict[str, Any], detected_at: datetime) -> None:
+    session = await db.remote_account_sessions.find_one({"_id": session_id})
+    session_usage = _usage_rollover_state(
+        previous_snapshot=(session or {}).get("last_usage_snapshot") if session else None,
+        current_snapshot=account.get("usage_snapshot") or {},
+        previous_totals=(session or {}).get("cumulative_usage_totals") if session else None,
+    )
     updates: dict[str, Any] = {
         "group_ids_last": account.get("group_ids") or [],
         "plan_type_last": account.get("plan_type"),
         "error_message_last": account.get("error_message"),
         "last_usage_snapshot": account.get("usage_snapshot") or {},
+        "cumulative_usage_totals": session_usage["totals"],
+        "cumulative_usage_snapshot": session_usage["snapshot"],
+        "last_usage_rollover_at": detected_at if session_usage["rollover_detected"] else (session or {}).get("last_usage_rollover_at"),
         "updated_at": detected_at,
     }
     if _is_normal(account):
@@ -1457,6 +1545,9 @@ def _usage_value(usage: dict[str, Any], key: str, *, suffix: str = "") -> str:
 def _sample_update(site_id: str, run_id: str, account: dict[str, Any], session: dict[str, Any], setting: dict[str, Any], sampled_at: datetime) -> UpdateOne:
     retention_days = int(setting.get("sample_retention_days") or DEFAULT_SAMPLE_RETENTION_DAYS)
     sample_id = f"{run_id}:{account.get('remote_account_id')}"
+    current_snapshot = account.get("usage_snapshot") or {}
+    session_totals = session.get("cumulative_usage_totals") if isinstance(session, dict) else {}
+    cumulative_snapshot = _usage_rollover_state(previous_snapshot=current_snapshot, current_snapshot=current_snapshot, previous_totals=session_totals if isinstance(session_totals, dict) else {})["snapshot"]
     doc = {
         "_id": sample_id,
         "site_id": site_id,
@@ -1475,6 +1566,7 @@ def _sample_update(site_id: str, run_id: str, account: dict[str, Any], session: 
         "updated_at": account.get("updated_at"),
         **account.get("usage_snapshot", {}),
         "usage_snapshot": account.get("usage_snapshot") or {},
+        "cumulative_usage_snapshot": cumulative_snapshot,
         "raw_hash": account.get("raw_hash"),
         "created_at": sampled_at,
         "expires_at": sampled_at + timedelta(days=retention_days),
