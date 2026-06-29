@@ -13,6 +13,12 @@ SSH: git@github.com:AIwelink/api-key-dashboard.git
 HTTPS: https://github.com/AIwelink/api-key-dashboard.git
 ```
 
+Current deployment branch:
+
+```text
+dev
+```
+
 ## First Switch To The New Repository
 
 Run this when the existing server directory still points to the old repository:
@@ -21,7 +27,8 @@ Run this when the existing server directory still points to the old repository:
 cd /www/wwwroot/serve/local/api-key-dashboard && \
 git remote set-url origin git@github.com:AIwelink/api-key-dashboard.git && \
 git fetch origin && \
-git pull --ff-only origin main && \
+if git show-ref --verify --quiet refs/heads/dev; then git switch dev; else git switch -c dev origin/dev; fi && \
+git pull --ff-only origin dev && \
 cd backend && \
 python3 -m uv sync && \
 cd ../frontend && \
@@ -36,7 +43,8 @@ Run this after `origin` already points to the new repository:
 
 ```bash
 cd /www/wwwroot/serve/local/api-key-dashboard && \
-git pull --ff-only origin main && \
+git switch dev && \
+git pull --ff-only origin dev && \
 cd backend && \
 python3 -m uv sync && \
 cd ../frontend && \
