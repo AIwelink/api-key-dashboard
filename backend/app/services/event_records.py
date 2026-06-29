@@ -12,6 +12,26 @@ from app.utils import now_utc, serialize_doc
 
 SHANGHAI_TZ = timezone(timedelta(hours=8))
 MAX_LIMIT = 500
+USAGE_FIELDS = (
+    "codex_5h_used_percent",
+    "codex_7d_used_percent",
+    "codex_5h_reset_after_seconds",
+    "codex_7d_reset_after_seconds",
+    "codex_5h_request_count",
+    "codex_7d_request_count",
+    "codex_total_request_count",
+    "codex_5h_token_count",
+    "codex_7d_token_count",
+    "codex_total_token_count",
+    "codex_5h_actual_cost",
+    "codex_7d_actual_cost",
+    "codex_5h_total_cost",
+    "codex_7d_total_cost",
+    "codex_total_actual_cost",
+    "codex_total_cost",
+    "codex_usage_updated_at",
+    "codex_usage_synced_at",
+)
 
 
 def _normalized_limit(value: int) -> int:
@@ -80,7 +100,16 @@ def _event_query(
             }
         )
     if only_401:
-        and_clauses.append({"$or": [{"is_401": True}, {"event_type": "401_detected"}, {"error_category": {"$regex": "401", "$options": "i"}}]})
+        and_clauses.append(
+            {
+                "$or": [
+                    {"is_401": True},
+                    {"event_type": "401_detected"},
+                    {"error_category": {"$in": ["token_refresh_failed", "token_invalidated", "token_revoked", "authentication_failed", "unknown_401"]}},
+                    {"current_error_message": {"$regex": "token refresh failed|refresh token|OPENAI_OAUTH_TOKEN_REFRESH_FAILED", "$options": "i"}},
+                ]
+            }
+        )
     if only_abnormal:
         and_clauses.append(
             {
@@ -137,7 +166,14 @@ def _identity_query(
     if account_type:
         query["plan_type"] = account_type
     if only_401:
-        query["current_is_401"] = True
+        and_clauses.append(
+            {
+                "$or": [
+                    {"current_is_401": True},
+                    {"current_error_message": {"$regex": "token refresh failed|refresh token|OPENAI_OAUTH_TOKEN_REFRESH_FAILED", "$options": "i"}},
+                ]
+            }
+        )
     if only_abnormal:
         and_clauses.append(
             {
@@ -394,38 +430,66 @@ async def _event_context(
     session_ids = {str(doc.get("session_id")) for doc in docs if doc.get("session_id")}
     session_ids.update(str(doc.get("_id")) for doc in sessions if doc.get("_id"))
     group_ids_by_site: dict[str, set[int]] = {}
+    cache_keys: set[tuple[str, Any]] = set()
+    cache_emails_by_site: dict[str, set[str]] = {}
     for doc in docs:
         site_id = str(doc.get("site_id") or "")
+        remote_id = doc.get("remote_account_id")
+        if site_id and remote_id is not None:
+            cache_keys.add((site_id, remote_id))
+        email = _normalize_email(doc.get("normalized_email") or doc.get("email"))
+        if site_id and email:
+            cache_emails_by_site.setdefault(site_id, set()).add(email)
         for group_id in _int_list(doc.get("current_group_ids") or doc.get("previous_group_ids")):
             group_ids_by_site.setdefault(site_id, set()).add(group_id)
     identities_map = {str(doc["_id"]): doc for doc in identities if doc.get("_id")}
     if identity_ids:
         async for doc in db.remote_account_identities.find({"_id": {"$in": list(identity_ids)}}):
             identities_map[str(doc["_id"])] = doc
+            site_id = str(doc.get("site_id") or "")
+            email = _normalize_email(doc.get("normalized_email") or doc.get("email"))
+            if site_id and email:
+                cache_emails_by_site.setdefault(site_id, set()).add(email)
+            for remote_id in doc.get("current_remote_account_ids") or [doc.get("current_remote_account_id")]:
+                if site_id and remote_id is not None:
+                    cache_keys.add((site_id, remote_id))
     sessions_map = {str(doc["_id"]): doc for doc in sessions if doc.get("_id")}
     if session_ids:
         async for doc in db.remote_account_sessions.find({"_id": {"$in": list(session_ids)}}):
             sessions_map[str(doc["_id"])] = doc
+            site_id = str(doc.get("site_id") or "")
+            if site_id and doc.get("remote_account_id") is not None:
+                cache_keys.add((site_id, doc.get("remote_account_id")))
     return {
         "sites": await _site_map(db, site_ids),
         "groups": await _group_name_map(db, group_ids_by_site),
         "identities": identities_map,
         "sessions": sessions_map,
         "local_accounts": await _local_account_map(db, [doc.get("normalized_email") or doc.get("email") for doc in docs]),
+        "usage_cache": await _usage_cache_map(db, cache_keys=cache_keys, emails_by_site=cache_emails_by_site),
     }
 
 
 async def _identity_context(db: AsyncIOMotorDatabase, docs: list[dict[str, Any]]) -> dict[str, Any]:
     site_ids = {str(doc.get("site_id")) for doc in docs if doc.get("site_id")}
     group_ids_by_site: dict[str, set[int]] = {}
+    cache_keys: set[tuple[str, Any]] = set()
+    cache_emails_by_site: dict[str, set[str]] = {}
     for doc in docs:
         site_id = str(doc.get("site_id") or "")
+        email = _normalize_email(doc.get("normalized_email") or doc.get("email"))
+        if site_id and email:
+            cache_emails_by_site.setdefault(site_id, set()).add(email)
+        for remote_id in doc.get("current_remote_account_ids") or [doc.get("current_remote_account_id")]:
+            if site_id and remote_id is not None:
+                cache_keys.add((site_id, remote_id))
         for group_id in _int_list(doc.get("current_group_ids")):
             group_ids_by_site.setdefault(site_id, set()).add(group_id)
     return {
         "sites": await _site_map(db, site_ids),
         "groups": await _group_name_map(db, group_ids_by_site),
         "local_accounts": await _local_account_map(db, [doc.get("normalized_email") or doc.get("email") for doc in docs]),
+        "usage_cache": await _usage_cache_map(db, cache_keys=cache_keys, emails_by_site=cache_emails_by_site),
     }
 
 
@@ -491,16 +555,63 @@ async def _local_account_map(db: AsyncIOMotorDatabase, emails: list[Any]) -> dic
     return result
 
 
+async def _usage_cache_map(
+    db: AsyncIOMotorDatabase,
+    *,
+    cache_keys: set[tuple[str, Any]],
+    emails_by_site: dict[str, set[str]],
+) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    remote_conditions = [
+        {"site_id": site_id, "sub2api_account_id": {"$in": [remote_id, str(remote_id)]}}
+        for site_id, remote_id in cache_keys
+        if site_id and remote_id is not None
+    ]
+    email_conditions = [
+        {"site_id": site_id, "email": {"$in": sorted(emails)}}
+        for site_id, emails in emails_by_site.items()
+        if site_id and emails
+    ]
+    if not remote_conditions and not email_conditions:
+        return result
+    query = {"$or": [*remote_conditions, *email_conditions]}
+    async for doc in db.sub2api_accounts_cache.find(query).collation({"locale": "en", "strength": 2}):
+        site_id = str(doc.get("site_id") or "")
+        remote_id = doc.get("sub2api_account_id")
+        account = doc.get("account") if isinstance(doc.get("account"), dict) else {}
+        extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+        usage = _usage_snapshot_from_sources(doc, account, extra)
+        email = _normalize_email(doc.get("email") or account.get("email") or extra.get("email"))
+        payload = {"usage_snapshot": usage, "cumulative_usage_snapshot": usage}
+        if site_id and remote_id is not None:
+            result[_usage_cache_key(site_id, remote_id)] = payload
+            result[_usage_cache_key(site_id, str(remote_id))] = payload
+        if site_id and email:
+            current = result.get(_usage_cache_key(site_id, email), {})
+            result[_usage_cache_key(site_id, email)] = {
+                "usage_snapshot": _merge_usage_maps(current.get("usage_snapshot"), usage),
+                "cumulative_usage_snapshot": _merge_usage_maps(current.get("cumulative_usage_snapshot"), usage),
+            }
+    return result
+
+
 def _event_item(doc: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     identity = context.get("identities", {}).get(str(doc.get("identity_id"))) or {}
     session = context.get("sessions", {}).get(str(doc.get("session_id"))) or {}
-    usage = doc.get("usage_snapshot") if isinstance(doc.get("usage_snapshot"), dict) else {}
-    if not usage and isinstance(identity.get("last_usage_snapshot"), dict):
-        usage = identity.get("last_usage_snapshot")
-    cumulative = _cumulative_snapshot(identity, session)
     site_id = str(doc.get("site_id") or "")
     group_ids = _int_list(doc.get("current_group_ids") or identity.get("current_group_ids"))
     email = _normalize_email(doc.get("normalized_email") or doc.get("email") or identity.get("normalized_email") or identity.get("email"))
+    cache_usage = _lookup_usage_cache(context, site_id=site_id, remote_id=doc.get("remote_account_id") or identity.get("current_remote_account_id"), email=email)
+    usage = _merge_usage_maps(
+        cache_usage.get("usage_snapshot"),
+        session.get("last_usage_snapshot"),
+        identity.get("last_usage_snapshot"),
+        doc.get("usage_snapshot"),
+    )
+    cumulative = _merge_usage_maps(
+        cache_usage.get("cumulative_usage_snapshot"),
+        _cumulative_snapshot(identity, session),
+    )
     local = context.get("local_accounts", {}).get(email) or {}
     return serialize_doc(
         {
@@ -558,6 +669,9 @@ def _identity_item(doc: dict[str, Any], context: dict[str, Any]) -> dict[str, An
     group_ids = _int_list(doc.get("current_group_ids"))
     email = _normalize_email(doc.get("normalized_email") or doc.get("email"))
     local = context.get("local_accounts", {}).get(email) or {}
+    cache_usage = _lookup_usage_cache(context, site_id=site_id, remote_id=doc.get("current_remote_account_id"), email=email)
+    last_usage = _merge_usage_maps(cache_usage.get("usage_snapshot"), doc.get("last_usage_snapshot"))
+    cumulative_usage = _merge_usage_maps(cache_usage.get("cumulative_usage_snapshot"), doc.get("cumulative_usage_snapshot"))
     current_session_start = None
     current_session_end = None
     return serialize_doc(
@@ -592,8 +706,8 @@ def _identity_item(doc: dict[str, Any], context: dict[str, Any]) -> dict[str, An
             "total_401_count": doc.get("total_401_count"),
             "total_recovery_count": doc.get("total_recovery_count"),
             "total_removed_count": doc.get("total_removed_count"),
-            "last_usage_snapshot": doc.get("last_usage_snapshot") or {},
-            "cumulative_usage_snapshot": doc.get("cumulative_usage_snapshot") or {},
+            "last_usage_snapshot": last_usage,
+            "cumulative_usage_snapshot": cumulative_usage,
             "cumulative_usage_totals": doc.get("cumulative_usage_totals") or {},
             "last_usage_rollover_at": doc.get("last_usage_rollover_at"),
             "lifetime_seconds": _duration_seconds(doc.get("first_seen_at"), doc.get("last_seen_at")),
@@ -645,11 +759,65 @@ async def _cumulative_identity_totals(db: AsyncIOMotorDatabase, query: dict[str,
 def _cumulative_snapshot(identity: dict[str, Any], session: dict[str, Any]) -> dict[str, Any]:
     snapshot = identity.get("cumulative_usage_snapshot")
     if isinstance(snapshot, dict) and snapshot:
-        return snapshot
+        totals = identity.get("cumulative_usage_totals")
+        return _merge_usage_maps(snapshot, _cumulative_totals_as_snapshot(totals))
     snapshot = session.get("cumulative_usage_snapshot")
-    if isinstance(snapshot, dict):
-        return snapshot
+    if isinstance(snapshot, dict) and snapshot:
+        totals = session.get("cumulative_usage_totals")
+        return _merge_usage_maps(snapshot, _cumulative_totals_as_snapshot(totals))
     return {}
+
+
+def _cumulative_totals_as_snapshot(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for key, item in value.items():
+        if key.endswith("_rollover_base"):
+            continue
+        result[key] = item
+        result[f"{key}_cumulative"] = item
+    return result
+
+
+def _usage_snapshot_from_sources(*sources: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in USAGE_FIELDS:
+            value = source.get(key)
+            if value is not None and value != "":
+                result[key] = value
+    return result
+
+
+def _merge_usage_maps(*values: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        for key, item in value.items():
+            if item is not None and item != "":
+                result[key] = item
+    return result
+
+
+def _lookup_usage_cache(context: dict[str, Any], *, site_id: str, remote_id: Any, email: str) -> dict[str, Any]:
+    usage_cache = context.get("usage_cache") if isinstance(context.get("usage_cache"), dict) else {}
+    if site_id and remote_id is not None:
+        cached = usage_cache.get(_usage_cache_key(site_id, remote_id))
+        if isinstance(cached, dict):
+            return cached
+    if site_id and email:
+        cached = usage_cache.get(_usage_cache_key(site_id, email))
+        if isinstance(cached, dict):
+            return cached
+    return {}
+
+
+def _usage_cache_key(site_id: str, value: Any) -> str:
+    return f"{site_id}:{str(value).strip().lower()}"
 
 
 def _int_list(value: Any) -> list[int]:

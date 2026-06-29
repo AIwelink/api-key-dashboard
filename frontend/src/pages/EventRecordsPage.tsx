@@ -697,7 +697,7 @@ function AccountDetailDrawer({ detail, loading, onClose }: { detail: AccountDeta
               <DetailMetric label="状态" value={displayStatus(identity.current_status)} />
               <DetailMetric label="生命周期" value={formatDuration(identity.lifetime_seconds)} />
               <DetailMetric label="401次数" value={numberValue(identity.total_401_count)} />
-              <DetailMetric label="累计消耗" value={formatUsd(usageNumber(identity.cumulative_usage_snapshot, "codex_total_actual_cost_cumulative") || usageNumber(identity.cumulative_usage_totals, "codex_total_actual_cost"))} />
+              <DetailMetric label="累计消耗" value={formatUsd(firstUsageNumber(identity.cumulative_usage_snapshot, identity.cumulative_usage_totals, ["codex_total_actual_cost_cumulative", "codex_total_actual_cost"]))} />
             </section>
             <section>
               <h4>事件时间线</h4>
@@ -756,10 +756,10 @@ function DetailMetric({ label, value }: { label: string; value: unknown }) {
 }
 
 function UsageBlock({ usage, cumulative }: { usage?: Record<string, unknown>; cumulative?: Record<string, unknown> }) {
-  const fiveHour = usageNumber(usage, "codex_5h_actual_cost");
-  const sevenDay = usageNumber(usage, "codex_7d_actual_cost");
-  const total = usageNumber(cumulative, "codex_total_actual_cost_cumulative") || usageNumber(cumulative, "codex_total_actual_cost");
-  const requests = usageNumber(cumulative, "codex_total_request_count_cumulative") || usageNumber(cumulative, "codex_total_request_count");
+  const fiveHour = firstUsageNumber(usage, cumulative, ["codex_5h_actual_cost_cumulative", "codex_5h_actual_cost"]);
+  const sevenDay = firstUsageNumber(usage, cumulative, ["codex_7d_actual_cost_cumulative", "codex_7d_actual_cost"]);
+  const total = firstUsageNumber(cumulative, usage, ["codex_total_actual_cost_cumulative", "codex_total_actual_cost", "codex_7d_actual_cost_cumulative", "codex_7d_actual_cost"]);
+  const requests = firstUsageNumber(cumulative, usage, ["codex_total_request_count_cumulative", "codex_total_request_count", "codex_7d_request_count_cumulative", "codex_7d_request_count"]);
   return (
     <div className="usage-mini-block">
       <span>5h {formatUsd(fiveHour)}</span>
@@ -930,6 +930,20 @@ function usageNumber(source: Record<string, unknown> | undefined, key: string): 
   if (typeof value === "string" && value.trim()) {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function firstUsageNumber(
+  primary: Record<string, unknown> | undefined,
+  fallback: Record<string, unknown> | undefined,
+  keys: string[],
+): number | null {
+  for (const source of [primary, fallback]) {
+    for (const key of keys) {
+      const value = usageNumber(source, key);
+      if (value !== null) return value;
+    }
   }
   return null;
 }

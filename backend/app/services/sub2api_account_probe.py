@@ -29,7 +29,10 @@ MAX_ACCOUNT_LIST_PAGES = 100
 
 STATUS_NORMAL = {"active", "ok", "healthy", "normal", "available"}
 STATUS_ABNORMAL = {"abnormal", "error", "failed", "disabled", "inactive", "invalid", "revoked"}
-ERROR_401_PATTERN = re.compile(r"401|token[_ -]?invalidated|token[_ -]?revoked|authentication failed|invalid_request_error", re.I)
+ERROR_401_PATTERN = re.compile(
+    r"401|token[_ -]?invalidated|token[_ -]?revoked|token refresh failed|refresh token|OPENAI_OAUTH_TOKEN_REFRESH_FAILED|authentication failed|invalid_request_error",
+    re.I,
+)
 PRO_MARKER_PATTERN = re.compile(r"(^|[^a-z0-9])(?:pro|20x)(?:[^a-z0-9]|$)", re.I)
 NOTIFICATION_401_THROTTLE_SECONDS = 180
 SHANGHAI_TZ = timezone(timedelta(hours=8))
@@ -1614,6 +1617,8 @@ def _error_category(value: Any) -> str | None:
         return None
     if "token invalidated" in text or "token_invalidated" in text:
         return "token_invalidated"
+    if "token refresh failed" in text or "refresh token" in text or "openai_oauth_token_refresh_failed" in text:
+        return "token_refresh_failed"
     if "token revoked" in text or "revoked" in text:
         return "token_revoked"
     if "authentication failed" in text:
