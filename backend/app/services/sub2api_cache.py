@@ -894,6 +894,9 @@ async def _capacity_summary_for_accounts(
         "five_hour_peak_cost": round(five_hour_peak_cost, 4),
         "seven_day_five_hour_peak_cost": round(five_hour_peak_cost, 4),
         "recent_day_five_hour_peak_cost": round(recent_day_five_hour_peak_cost, 4),
+        "burst_1h_observed_cost": round(burst_summary["observed_cost"], 4),
+        "burst_1h_elapsed_minutes": burst_summary["elapsed_minutes"],
+        "burst_1h_projection_multiplier": round(burst_summary["projection_multiplier"], 4),
         "burst_1h_cost": round(burst_summary["cost"], 4),
         "burst_1h_five_hour_estimated_cost": round(burst_summary["five_hour_estimated_cost"], 4),
         "burst_1h_five_hour_multiple": _round_optional(burst_1h_five_hour_multiple),
@@ -906,6 +909,10 @@ async def _capacity_summary_for_accounts(
         "burst_1h_trend_strength_label": burst_summary["trend_strength_label"],
         "burst_1h_trend_change_percent": _round_optional(burst_summary["trend_change_percent"]),
         "burst_1h_previous_cost": round(burst_summary["previous_cost"], 4),
+        "burst_1h_trend_recent_avg_cost": round(burst_summary["trend_recent_avg_cost"], 4),
+        "burst_1h_trend_baseline_avg_cost": round(burst_summary["trend_baseline_avg_cost"], 4),
+        "burst_1h_trend_recent_hours": burst_summary["trend_recent_hours"],
+        "burst_1h_trend_baseline_hours": burst_summary["trend_baseline_hours"],
         "seven_day_24h_peak_cost": round(seven_day_24h_peak_cost, 4),
         "recent_5h_cost": round(recent_5h_cost, 4),
         "recent_24h_cost": round(recent_24h_cost, 4),
@@ -1340,12 +1347,21 @@ def _rolling_peak_cost(items: list[dict[str, Any]], window_size: int) -> float:
 
 
 def _burst_1h_summary(hourly: list[dict[str, Any]]) -> dict[str, Any]:
-    costs = [_float_or_zero(doc.get("cost")) for doc in hourly[-4:]]
+    costs = [_float_or_zero(doc.get("cost")) for doc in hourly[-8:]]
+    elapsed_minutes = _current_hour_elapsed_minutes()
+    projection_multiplier = 60 / max(5, elapsed_minutes)
     if not costs:
         return {
+            "observed_cost": 0.0,
             "cost": 0.0,
             "previous_cost": 0.0,
+            "trend_recent_avg_cost": 0.0,
+            "trend_baseline_avg_cost": 0.0,
+            "trend_recent_hours": 0,
+            "trend_baseline_hours": 0,
             "five_hour_estimated_cost": 0.0,
+            "elapsed_minutes": elapsed_minutes,
+            "projection_multiplier": projection_multiplier,
             "trend": "unknown",
             "trend_label": "等待数据",
             "trend_strength": "unknown",
@@ -1354,19 +1370,32 @@ def _burst_1h_summary(hourly: list[dict[str, Any]]) -> dict[str, Any]:
             "source": "hourly",
             "window_count": 0,
         }
-    current = costs[-1]
-    previous = costs[-2] if len(costs) >= 2 else 0.0
+    observed_current = costs[-1]
+    current = observed_current * projection_multiplier
+    completed = costs[:-1]
+    recent_values = ([current] + completed[-2:]) if completed else [current]
+    baseline_values = completed[-5:-2] if len(completed) >= 5 else completed[:-2]
+    recent_average = sum(recent_values) / len(recent_values) if recent_values else 0.0
+    baseline_average = sum(baseline_values) / len(baseline_values) if baseline_values else 0.0
+    previous = baseline_average
     change_percent = None
-    if previous > 0:
-        change_percent = (current - previous) / previous * 100
-    elif current > 0:
+    if baseline_average > 0:
+        change_percent = (recent_average - baseline_average) / baseline_average * 100
+    elif recent_average > 0:
         change_percent = 100.0
     trend, trend_label = _burst_trend_label(change_percent)
     strength, strength_label = _burst_trend_strength(change_percent)
     return {
+        "observed_cost": round(observed_current, 6),
         "cost": round(current, 6),
         "previous_cost": round(previous, 6),
+        "trend_recent_avg_cost": round(recent_average, 6),
+        "trend_baseline_avg_cost": round(baseline_average, 6),
+        "trend_recent_hours": len(recent_values),
+        "trend_baseline_hours": len(baseline_values),
         "five_hour_estimated_cost": round(current * 5, 6),
+        "elapsed_minutes": elapsed_minutes,
+        "projection_multiplier": projection_multiplier,
         "trend": trend,
         "trend_label": trend_label,
         "trend_strength": strength,
@@ -1375,6 +1404,11 @@ def _burst_1h_summary(hourly: list[dict[str, Any]]) -> dict[str, Any]:
         "source": "hourly",
         "window_count": len(costs),
     }
+
+
+def _current_hour_elapsed_minutes() -> float:
+    local_now = now_utc().astimezone(timezone(timedelta(hours=8)))
+    return max(1, min(60, local_now.minute + local_now.second / 60))
 
 
 def _burst_trend_label(change_percent: float | None) -> tuple[str, str]:

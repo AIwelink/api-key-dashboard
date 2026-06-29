@@ -67,6 +67,9 @@ type CapacitySummary = {
   five_hour_peak_cost?: number;
   seven_day_five_hour_peak_cost?: number;
   recent_day_five_hour_peak_cost?: number;
+  burst_1h_observed_cost?: number;
+  burst_1h_elapsed_minutes?: number;
+  burst_1h_projection_multiplier?: number;
   burst_1h_cost?: number;
   burst_1h_previous_cost?: number;
   burst_1h_five_hour_estimated_cost?: number;
@@ -79,6 +82,10 @@ type CapacitySummary = {
   burst_1h_trend_strength?: "extreme" | "strong" | "medium" | "weak" | "unknown";
   burst_1h_trend_strength_label?: string;
   burst_1h_trend_change_percent?: number | null;
+  burst_1h_trend_recent_avg_cost?: number;
+  burst_1h_trend_baseline_avg_cost?: number;
+  burst_1h_trend_recent_hours?: number;
+  burst_1h_trend_baseline_hours?: number;
   seven_day_24h_peak_cost?: number;
   recent_5h_cost?: number;
   recent_24h_cost?: number;
@@ -1281,7 +1288,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
         <CapacityMetric
           label="突发峰值：1h预估"
           value={formatMultiple(burstOneHourMultiple)}
-          sub={`最近1h ${formatUsd(summary?.burst_1h_cost)}，折算5h ${formatUsd(summary?.burst_1h_five_hour_estimated_cost)}`}
+          sub={`当前小时已用 ${formatUsd(summary?.burst_1h_observed_cost)}，按${formatMinutes(summary?.burst_1h_elapsed_minutes)}折算1h ${formatUsd(summary?.burst_1h_cost)}，折算5h ${formatUsd(summary?.burst_1h_five_hour_estimated_cost)}`}
           percent={multipleScalePercent(burstOneHourMultiple)}
           tone={multipleScaleTone(burstOneHourMultiple)}
           overlay={capacityOverlay("使用池", formatMultiple(activeBurstOneHourMultiple), multipleScalePercent(activeBurstOneHourMultiple), multipleScaleTone(activeBurstOneHourMultiple))}
@@ -1289,7 +1296,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
         <CapacityMetric
           label="突发趋势：最近1h"
           value={burstTrendLabel(summary)}
-          sub={`较上一小时 ${formatPercentChange(summary?.burst_1h_trend_change_percent)}，强度 ${summary?.burst_1h_trend_strength_label || "等待数据"}`}
+          sub={burstTrendSubText(summary)}
           tone={burstTrendTone}
         />
 
@@ -1787,10 +1794,30 @@ function formatPercentChange(value: unknown): string {
   return `${sign}${number.toFixed(0)}%`;
 }
 
+function formatMinutes(value: unknown): string {
+  const number = optionalNumberValue(value);
+  if (number === null) return "-";
+  return `${Math.max(1, Math.round(number))}分钟`;
+}
+
+function formatHourCount(value: unknown): string {
+  const number = optionalNumberValue(value);
+  if (number === null || number <= 0) return "-";
+  return `${Math.round(number)}小时`;
+}
+
 function burstTrendLabel(summary?: CapacitySummary): string {
   if (!summary?.burst_1h_trend_label) return "等待数据";
   const strength = summary.burst_1h_trend_strength_label && summary.burst_1h_trend_strength_label !== "等待数据" ? ` · ${summary.burst_1h_trend_strength_label}` : "";
   return `${summary.burst_1h_trend_label}${strength}`;
+}
+
+function burstTrendSubText(summary?: CapacitySummary): string {
+  if (!summary) return "等待 dashboard cost 数据";
+  const recent = `近${formatHourCount(summary.burst_1h_trend_recent_hours)}均值 ${formatUsd(summary.burst_1h_trend_recent_avg_cost)}`;
+  const baselineHours = optionalNumberValue(summary.burst_1h_trend_baseline_hours);
+  if (!baselineHours || baselineHours <= 0) return `${recent}，等待更多历史小时数据`;
+  return `${recent}，前${formatHourCount(baselineHours)}均值 ${formatUsd(summary.burst_1h_trend_baseline_avg_cost)}，变化 ${formatPercentChange(summary.burst_1h_trend_change_percent)}`;
 }
 
 function formatDays(value: unknown): string {
