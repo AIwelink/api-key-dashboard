@@ -1183,9 +1183,9 @@ def _dynamic_five_hour_usage(account: dict[str, Any] | None, five_hour_limit_usd
     seven_day_actual_used_usd = max(0.0, min(seven_day_limit_usd, seven_day_limit_usd * seven_day_used_percent / 100))
     if float(reset_after_seconds) > FIVE_HOUR_DYNAMIC_MAX_WAIT_SECONDS:
         return {
-            "capacity_usd": 0.0,
-            "used_usd": 0.0,
-            "remaining_usd": 0.0,
+            "capacity_usd": five_hour_limit_usd,
+            "used_usd": actual_used_usd,
+            "remaining_usd": max(0.0, five_hour_limit_usd - actual_used_usd),
             "actual_used_usd": actual_used_usd,
             "actual_remaining_usd": max(0.0, five_hour_limit_usd - actual_used_usd),
             "seven_day_actual_used_usd": seven_day_actual_used_usd,
