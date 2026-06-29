@@ -55,6 +55,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.api_pools.create_index("status")
     await db.api_pools.create_index("site_id")
     await db.api_pools.create_index("active_group_id")
+    await db.api_pools.create_index("source_group_key")
     await db.pool_actions.create_index("account_id")
     await db.pool_actions.create_index("pool_id")
     await db.pool_actions.create_index("action_type")

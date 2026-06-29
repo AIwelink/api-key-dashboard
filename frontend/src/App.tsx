@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import logoUrl from "../AIwelink_logo_bule_A.png";
 import { AccountPoolsPage } from "./pages/AccountPoolsPage";
 import { AccountsPage } from "./pages/AccountsPage";
+import { AgentAnalysisPage } from "./pages/AgentAnalysisPage";
 import { AlertCenterPage } from "./pages/AlertCenterPage";
 import { ApiPoolStatusPage } from "./pages/ApiPoolStatusPage";
 import { ApiTokensPage } from "./pages/ApiTokensPage";
@@ -237,17 +238,7 @@ function App() {
             {view === "event-records" && <EventRecordsPage token={token} showToast={showToast} />}
             {view === "alert-center" && <AlertCenterPage token={token} showToast={showToast} />}
             {view === "pool-lifecycle" && <AccountPoolsPage token={token} showToast={showToast} />}
-            {view === "agent-analysis" && (
-              <IntroPage
-                title="Agent分析"
-                description="这里后续用于辅助判断制作新账号、renew 旧账号、处理问题账号和调整池策略。当前先保留介绍页，不执行自动决策。"
-                points={[
-                  "Agent 只做辅助分析，不绕过本地手动流程和安全规则。",
-                  "后续会读取账号状态、问题账号、容量指标和历史错误，给出建议。",
-                  "真正执行动作仍需要人工确认，或走后端明确的状态机和审计记录。",
-                ]}
-              />
-            )}
+            {view === "agent-analysis" && <AgentAnalysisPage token={token} showToast={showToast} />}
             {view === "api-tokens" && <ApiTokensPage token={token} showToast={showToast} />}
             {view === "users" && <UsersPage token={token} showToast={showToast} />}
             {view === "logs" && <AuditPage token={token} showToast={showToast} />}

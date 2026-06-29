@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import PROJECT_ROOT, get_settings
 from app.database import close_mongo_connection, connect_to_mongo, get_db
 from app.logging_config import RequestLoggingMiddleware, cleanup_old_logs, log_cleanup_loop, setup_logging
-from app.routers import accounts, api_pools, api_tokens, audit, auth, event_records, import_batches, imports, notifications, settings, sub2api_sites, sync, todo_items, users
+from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, event_records, import_batches, imports, notifications, settings, sub2api_sites, sync, todo_items, users
 from app.services.bootstrap import ensure_bootstrap_data, ensure_indexes
 from app.services.sub2api_account_probe import probe_scheduler_loop
 from app.services.sub2api_auto_refill import auto_refill_scheduler_loop
@@ -66,6 +66,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router, prefix="/api")
+app.include_router(agent.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(accounts.router, prefix="/api")
 app.include_router(import_batches.router, prefix="/api")

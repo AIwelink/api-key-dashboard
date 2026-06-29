@@ -323,6 +323,12 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
             account_ids = [account.get("id") for account in accounts if account.get("id") is not None]
             await db.sub2api_groups_cache.delete_many({"site_id": site_id, "group_id": {"$nin": group_ids}})
             await db.sub2api_accounts_cache.delete_many({"site_id": site_id, "sub2api_account_id": {"$nin": account_ids}})
+            try:
+                from app.services.api_pools import sync_api_pools_from_sub2api_groups
+
+                await sync_api_pools_from_sub2api_groups(db, site_id=site_id)
+            except Exception as exc:  # noqa: BLE001 - local pool sync should not block remote cache refresh.
+                logger.warning("api_pool_sync_after_sub2api_refresh_failed site_id=%s error=%s", site_id, exc)
 
             auto_remove_summary: dict[str, Any] | None = None
             if site.get("auto_remove_abnormal_accounts") is True:
@@ -2082,4 +2088,3 @@ def _is_due(last_refreshed_at: Any, interval_minutes: int) -> bool:
     if isinstance(last_refreshed_at, datetime) and last_refreshed_at.tzinfo is None:
         last_refreshed_at = last_refreshed_at.replace(tzinfo=UTC)
     return now_utc() - last_refreshed_at >= timedelta(minutes=interval_minutes)
-
