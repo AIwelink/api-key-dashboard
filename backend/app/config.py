@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     log_request_body: bool = False
     log_slow_request_ms: int = 1000
 
+    agent_llm_base_url: str | None = None
+    agent_llm_api_key: str | None = None
+    agent_level1_model: str | None = None
+    agent_level1_temperature: float = 0.2
+    agent_level0_model: str | None = None
+    agent_level0_temperature: float = 0.2
+    agent_request_timeout_seconds: int = 60
+
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",

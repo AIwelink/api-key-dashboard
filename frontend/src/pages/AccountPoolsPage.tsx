@@ -63,6 +63,37 @@ type CapacityLimitsResponse = {
   updated_by_name?: string | null;
 };
 
+type GroupObservabilitySetting = {
+  id?: string;
+  site_id: string;
+  group_id: number;
+  group_name?: string;
+  enabled: boolean;
+  detailed_enabled: boolean;
+  probe_interval_seconds?: number;
+  sample_retention_days?: number;
+  record_usage_samples?: boolean;
+  record_status_events?: boolean;
+  record_duplicate_email_warning?: boolean;
+  group_account_count?: number;
+  group_active_account_count?: number;
+  updated_at?: string;
+};
+
+type GroupObservabilityResponse = {
+  items: GroupObservabilitySetting[];
+  total: number;
+};
+
+type ProbeResponse = {
+  accounts_seen?: number;
+  accounts_changed?: number;
+  accounts_401?: number;
+  duplicate_email_count?: number;
+  accounts_removed_confirmed?: number;
+  message?: string;
+};
+
 type RefreshResponse = {
   groups?: number;
   accounts?: number;
@@ -131,6 +162,9 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   const [capacityLimits, setCapacityLimits] = useState<CapacityLimitForm>(defaultCapacityLimitForm);
   const [capacityLimitsMeta, setCapacityLimitsMeta] = useState<{ updated_at?: string | null; updated_by_name?: string | null }>({});
   const [savingCapacityLimits, setSavingCapacityLimits] = useState(false);
+  const [observabilitySettings, setObservabilitySettings] = useState<GroupObservabilitySetting[]>([]);
+  const [savingObservabilityKey, setSavingObservabilityKey] = useState<string | null>(null);
+  const [probing, setProbing] = useState(false);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 
   const selectedSite = sites.find((site) => site.id === selectedSiteId) || null;
@@ -278,6 +312,46 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     setCapacityLimitsMeta({ updated_at: data.updated_at, updated_by_name: data.updated_by_name });
   };
 
+  const loadObservabilitySettings = async (siteId = selectedSiteId) => {
+    if (!siteId) return;
+    const data = await api<GroupObservabilityResponse>(`/api-pools/observability/groups?site_id=${encodeURIComponent(siteId)}`, token);
+    setObservabilitySettings(data.items);
+  };
+
+  const saveObservabilitySetting = async (setting: GroupObservabilitySetting, updates: Partial<GroupObservabilitySetting>) => {
+    if (!selectedSiteId) return;
+    const key = `${selectedSiteId}:${setting.group_id}`;
+    setSavingObservabilityKey(key);
+    try {
+      const updated = await api<GroupObservabilitySetting>(`/api-pools/observability/groups/${setting.group_id}?site_id=${encodeURIComponent(selectedSiteId)}`, token, {
+        method: "PATCH",
+        body: JSON.stringify(updates),
+      });
+      setObservabilitySettings((current) => current.map((item) => (item.group_id === updated.group_id ? updated : item)));
+      showToast("探测配置已保存");
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setSavingObservabilityKey(null);
+    }
+  };
+
+  const runAccountProbe = async () => {
+    if (!selectedSiteId) return;
+    setProbing(true);
+    try {
+      const result = await api<ProbeResponse>(`/api-pools/observability/probe?site_id=${encodeURIComponent(selectedSiteId)}`, token, { method: "POST" });
+      showToast(
+        `探测完成：${result.accounts_seen || 0} 个账号，变化 ${result.accounts_changed || 0}，401 ${result.accounts_401 || 0}，重复邮箱 ${result.duplicate_email_count || 0}`,
+      );
+      await loadObservabilitySettings(selectedSiteId);
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setProbing(false);
+    }
+  };
+
   const saveCapacityLimits = async () => {
     const payload = capacityLimitPayload(capacityLimits);
     if (!payload) {
@@ -351,6 +425,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     setGroups([]);
     setSelectedGroupId(null);
     loadGroups(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
+    loadObservabilitySettings(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
   }, [selectedSiteId, sites]);
 
   useEffect(() => {
@@ -535,6 +610,150 @@ export function AccountPoolsPage({ token, showToast }: Props) {
           {capacityLimitsMeta.updated_at
             ? `最后保存：${formatDateTime(capacityLimitsMeta.updated_at)}${capacityLimitsMeta.updated_by_name ? ` · ${capacityLimitsMeta.updated_by_name}` : ""}`
             : "当前使用默认额度估计"}
+        </div>
+      </section>
+
+      <section className="panel observability-config-panel">
+        <div className="panel-header">
+          <div>
+            <h3>账号探测配置</h3>
+            <p>按分组配置轻量探测间隔；详细记录用于后续 Agent 分析账号寿命、401、恢复和重复邮箱。</p>
+          </div>
+          <div className="button-row">
+            <button className="ghost compact-button" type="button" onClick={() => loadObservabilitySettings().catch((error) => showToast(errorMessage(error), true))} disabled={!selectedSiteId}>
+              刷新配置
+            </button>
+            <button className="compact-button" type="button" onClick={runAccountProbe} disabled={!selectedSiteId || probing}>
+              {probing ? "探测中..." : "立即探测"}
+            </button>
+          </div>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>分组</th>
+                <th>账号</th>
+                <th>探测</th>
+                <th>间隔</th>
+                <th>详细记录</th>
+                <th>样本保留</th>
+                <th>记录内容</th>
+                <th>最后更新</th>
+              </tr>
+            </thead>
+            <tbody>
+              {observabilitySettings.map((setting) => {
+                const rowKey = `${setting.site_id}:${setting.group_id}`;
+                const busy = savingObservabilityKey === rowKey;
+                return (
+                  <tr key={rowKey}>
+                    <td>
+                      <div className="cell-main">{setting.group_name || `#${setting.group_id}`}</div>
+                      <div className="cell-sub">#{setting.group_id}</div>
+                    </td>
+                    <td>
+                      {numberValue(setting.group_active_account_count)} / {numberValue(setting.group_account_count)}
+                    </td>
+                    <td>
+                      <label className="inline-check">
+                        <input
+                          checked={setting.enabled !== false}
+                          disabled={busy}
+                          type="checkbox"
+                          onChange={(event) => saveObservabilitySetting(setting, { enabled: event.target.checked })}
+                        />
+                        <span>{setting.enabled !== false ? "开启" : "关闭"}</span>
+                      </label>
+                    </td>
+                    <td>
+                      <input
+                        className="compact-number-input"
+                        disabled={busy || setting.enabled === false}
+                        min={1}
+                        max={60}
+                        type="number"
+                        defaultValue={secondsToMinutes(setting.probe_interval_seconds || 180)}
+                        onBlur={(event) => {
+                          const minutes = clampInt(event.target.value, 1, 60, secondsToMinutes(setting.probe_interval_seconds || 180));
+                          saveObservabilitySetting(setting, { probe_interval_seconds: minutes * 60 });
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                        }}
+                      />
+                      <span className="cell-sub">分钟</span>
+                    </td>
+                    <td>
+                      <label className="inline-check">
+                        <input
+                          checked={setting.detailed_enabled !== false}
+                          disabled={busy || setting.enabled === false}
+                          type="checkbox"
+                          onChange={(event) => saveObservabilitySetting(setting, { detailed_enabled: event.target.checked })}
+                        />
+                        <span>{setting.detailed_enabled !== false ? "开启" : "关闭"}</span>
+                      </label>
+                    </td>
+                    <td>
+                      <input
+                        className="compact-number-input"
+                        disabled={busy || setting.detailed_enabled === false}
+                        min={1}
+                        max={90}
+                        type="number"
+                        defaultValue={setting.sample_retention_days || 14}
+                        onBlur={(event) => saveObservabilitySetting(setting, { sample_retention_days: clampInt(event.target.value, 1, 90, setting.sample_retention_days || 14) })}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                        }}
+                      />
+                      <span className="cell-sub">天</span>
+                    </td>
+                    <td>
+                      <div className="inline-check-stack">
+                        <label className="inline-check">
+                          <input
+                            checked={setting.record_status_events !== false}
+                            disabled={busy || setting.enabled === false}
+                            type="checkbox"
+                            onChange={(event) => saveObservabilitySetting(setting, { record_status_events: event.target.checked })}
+                          />
+                          <span>事件</span>
+                        </label>
+                        <label className="inline-check">
+                          <input
+                            checked={setting.record_usage_samples !== false}
+                            disabled={busy || setting.detailed_enabled === false}
+                            type="checkbox"
+                            onChange={(event) => saveObservabilitySetting(setting, { record_usage_samples: event.target.checked })}
+                          />
+                          <span>样本</span>
+                        </label>
+                        <label className="inline-check">
+                          <input
+                            checked={setting.record_duplicate_email_warning !== false}
+                            disabled={busy || setting.enabled === false}
+                            type="checkbox"
+                            onChange={(event) => saveObservabilitySetting(setting, { record_duplicate_email_warning: event.target.checked })}
+                          />
+                          <span>重复邮箱</span>
+                        </label>
+                      </div>
+                    </td>
+                    <td>{formatDateTime(setting.updated_at)}</td>
+                  </tr>
+                );
+              })}
+              {!observabilitySettings.length && (
+                <tr>
+                  <td className="muted" colSpan={8}>
+                    暂无分组探测配置，请先同步 sub2api 分组。
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </section>
 
@@ -744,6 +963,18 @@ function displayValue(value: unknown) {
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function clampInt(value: unknown, min: number, max: number, fallback: number) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(number)));
+}
+
+function secondsToMinutes(value: unknown) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return 3;
+  return Math.max(1, Math.round(number / 60));
 }
 
 function capacityLimitsToForm(limits: CapacityLimitsResponse["limits"]): CapacityLimitForm {

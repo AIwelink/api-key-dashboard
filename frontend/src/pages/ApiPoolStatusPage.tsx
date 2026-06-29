@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { errorMessage, formatDateTime, parseDisplayDate, text } from "../utils/format";
@@ -67,6 +67,25 @@ type CapacitySummary = {
   five_hour_peak_cost?: number;
   seven_day_five_hour_peak_cost?: number;
   recent_day_five_hour_peak_cost?: number;
+  burst_1h_observed_cost?: number;
+  burst_1h_elapsed_minutes?: number;
+  burst_1h_projection_multiplier?: number;
+  burst_1h_cost?: number;
+  burst_1h_previous_cost?: number;
+  burst_1h_five_hour_estimated_cost?: number;
+  burst_1h_five_hour_multiple?: number | null;
+  active_burst_1h_five_hour_multiple?: number | null;
+  burst_1h_source?: string;
+  burst_1h_window_count?: number;
+  burst_1h_trend?: "rising" | "falling" | "flat" | "unknown";
+  burst_1h_trend_label?: string;
+  burst_1h_trend_strength?: "extreme" | "strong" | "medium" | "weak" | "unknown";
+  burst_1h_trend_strength_label?: string;
+  burst_1h_trend_change_percent?: number | null;
+  burst_1h_trend_recent_avg_cost?: number;
+  burst_1h_trend_baseline_avg_cost?: number;
+  burst_1h_trend_recent_hours?: number;
+  burst_1h_trend_baseline_hours?: number;
   seven_day_24h_peak_cost?: number;
   recent_5h_cost?: number;
   recent_24h_cost?: number;
@@ -1178,6 +1197,9 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
   const recentDayFiveHourPeakMultiple = summary?.recent_day_five_hour_peak_multiple;
   const activeSevenDayFiveHourPeakMultiple = summary?.active_five_hour_peak_multiple;
   const activeRecentDayFiveHourPeakMultiple = summary?.active_recent_day_five_hour_peak_multiple;
+  const burstOneHourMultiple = summary?.burst_1h_five_hour_multiple;
+  const activeBurstOneHourMultiple = summary?.active_burst_1h_five_hour_multiple;
+  const burstTrendTone = burstTrendMetricTone(summary?.burst_1h_trend, summary?.burst_1h_trend_strength);
   const recent24hSpeedDays = summary?.current_speed_days;
   const activeRecent24hSpeedDays = summary?.active_current_speed_days;
   const sevenDayPeak24hSpeedDays = summary?.seven_day_peak_speed_days;
@@ -1213,7 +1235,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
               label="动态可用额度"
               values={[
                 ["当前已用", formatUsd(summary?.dynamic_five_hour_used_estimated_usd ?? summary?.five_hour_used_estimated_usd)],
-                ["预估可用", formatUsd(summary?.dynamic_five_hour_remaining_estimated_usd ?? summary?.five_hour_remaining_estimated_usd)],
+                ["动态可用", formatUsd(summary?.dynamic_five_hour_remaining_estimated_usd ?? summary?.five_hour_remaining_estimated_usd)],
                 ["实际可用", formatUsd(summary?.five_hour_actual_remaining_usd)],
               ]}
             />
@@ -1236,7 +1258,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
               label="可用额度"
               values={[
                 ["当前已用", formatUsd(summary?.seven_day_used_estimated_usd)],
-                ["预估可用", formatUsd(summary?.seven_day_remaining_estimated_usd)],
+                ["动态可用", formatUsd(summary?.seven_day_remaining_estimated_usd)],
                 ["实际可用", formatUsd(summary?.seven_day_actual_remaining_usd)],
               ]}
             />
@@ -1262,6 +1284,20 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           percent={multipleScalePercent(sevenDayFiveHourPeakMultiple)}
           tone={multipleScaleTone(sevenDayFiveHourPeakMultiple)}
           overlay={capacityOverlay("使用池", formatMultiple(activeSevenDayFiveHourPeakMultiple), multipleScalePercent(activeSevenDayFiveHourPeakMultiple), multipleScaleTone(activeSevenDayFiveHourPeakMultiple))}
+        />
+        <CapacityMetric
+          label="突发峰值：1h预估"
+          value={formatMultiple(burstOneHourMultiple)}
+          sub={`当前小时已用 ${formatUsd(summary?.burst_1h_observed_cost)}，按${formatMinutes(summary?.burst_1h_elapsed_minutes)}折算1h ${formatUsd(summary?.burst_1h_cost)}，折算5h ${formatUsd(summary?.burst_1h_five_hour_estimated_cost)}`}
+          percent={multipleScalePercent(burstOneHourMultiple)}
+          tone={multipleScaleTone(burstOneHourMultiple)}
+          overlay={capacityOverlay("使用池", formatMultiple(activeBurstOneHourMultiple), multipleScalePercent(activeBurstOneHourMultiple), multipleScaleTone(activeBurstOneHourMultiple))}
+        />
+        <CapacityMetric
+          label="突发趋势：最近1h"
+          value={burstTrendLabel(summary)}
+          sub={burstTrendSubText(summary)}
+          tone={burstTrendTone}
         />
 
         <CapacityMetric
@@ -1307,13 +1343,19 @@ function CapacityMoneyLine({ label, values }: { label: string; values: Array<[st
   return (
     <span className="capacity-money-line">
       <span>{label}：</span>
-      {values.map(([itemLabel, itemValue], index) => (
-        <span className="capacity-money-item" key={itemLabel}>
-          {index > 0 ? <span className="capacity-money-separator">，</span> : null}
-          <span>{itemLabel} </span>
-          <strong>{itemValue}</strong>
-        </span>
-      ))}
+      {values.map(([itemLabel, itemValue], index) => {
+        const itemClass = index === 0 ? "current-used" : index === 1 ? "dynamic-available" : "actual-available";
+        return (
+          <Fragment key={itemLabel}>
+            {index === 1 ? <span aria-hidden="true" className="capacity-money-break" /> : null}
+            <span className={`capacity-money-item ${itemClass}`}>
+              {index > 0 ? <span className="capacity-money-separator">，</span> : null}
+              <span>{itemLabel} </span>
+              <strong>{itemValue}</strong>
+            </span>
+          </Fragment>
+        );
+      })}
     </span>
   );
 }
@@ -1472,7 +1514,7 @@ function CapacityMeterLegend({
   return (
     <div className="capacity-meter-legend">
       <span className={`capacity-meter-legend-value ${overlay.tone || "muted"}`}>{overlay.label} {overlay.value}</span>
-      <strong className={`capacity-meter-legend-value ${reserveTone}`}>含备用 {reserveValue}</strong>
+      <span className={`capacity-meter-legend-value ${reserveTone}`}>含备用 {reserveValue}</span>
     </div>
   );
 }
@@ -1745,6 +1787,39 @@ function formatMultiple(value: unknown): string {
   return `${number.toFixed(2)}x`;
 }
 
+function formatPercentChange(value: unknown): string {
+  const number = optionalNumberValue(value);
+  if (number === null) return "-";
+  const sign = number > 0 ? "+" : "";
+  return `${sign}${number.toFixed(0)}%`;
+}
+
+function formatMinutes(value: unknown): string {
+  const number = optionalNumberValue(value);
+  if (number === null) return "-";
+  return `${Math.max(1, Math.round(number))}分钟`;
+}
+
+function formatHourCount(value: unknown): string {
+  const number = optionalNumberValue(value);
+  if (number === null || number <= 0) return "-";
+  return `${Math.round(number)}小时`;
+}
+
+function burstTrendLabel(summary?: CapacitySummary): string {
+  if (!summary?.burst_1h_trend_label) return "等待数据";
+  const strength = summary.burst_1h_trend_strength_label && summary.burst_1h_trend_strength_label !== "等待数据" ? ` · ${summary.burst_1h_trend_strength_label}` : "";
+  return `${summary.burst_1h_trend_label}${strength}`;
+}
+
+function burstTrendSubText(summary?: CapacitySummary): string {
+  if (!summary) return "等待 dashboard cost 数据";
+  const recent = `近${formatHourCount(summary.burst_1h_trend_recent_hours)}均值 ${formatUsd(summary.burst_1h_trend_recent_avg_cost)}`;
+  const baselineHours = optionalNumberValue(summary.burst_1h_trend_baseline_hours);
+  if (!baselineHours || baselineHours <= 0) return `${recent}，等待更多历史小时数据`;
+  return `${recent}，前${formatHourCount(baselineHours)}均值 ${formatUsd(summary.burst_1h_trend_baseline_avg_cost)}，变化 ${formatPercentChange(summary.burst_1h_trend_change_percent)}`;
+}
+
 function formatDays(value: unknown): string {
   const number = optionalNumberValue(value);
   if (number === null) return "-";
@@ -1806,6 +1881,14 @@ function multipleScaleTone(value: unknown): CapacityMetricTone {
   if (number < 1.5) return "warning";
   if (number < 3) return "success";
   return "info";
+}
+
+function burstTrendMetricTone(trend?: string, strength?: string): CapacityMetricTone {
+  if (!trend || trend === "unknown") return "muted";
+  if (trend === "falling") return "success";
+  if (trend === "flat") return "info";
+  if (strength === "extreme" || strength === "strong") return "danger";
+  return "warning";
 }
 
 function daysScalePercent(value: unknown): number | null {

@@ -2,9 +2,12 @@ import { useEffect, useState } from "react";
 import logoUrl from "../AIwelink_logo_bule_A.png";
 import { AccountPoolsPage } from "./pages/AccountPoolsPage";
 import { AccountsPage } from "./pages/AccountsPage";
+import { AgentAnalysisPage } from "./pages/AgentAnalysisPage";
+import { AlertCenterPage } from "./pages/AlertCenterPage";
 import { ApiPoolStatusPage } from "./pages/ApiPoolStatusPage";
 import { ApiTokensPage } from "./pages/ApiTokensPage";
 import { AuditPage } from "./pages/AuditPage";
+import { EventRecordsPage } from "./pages/EventRecordsPage";
 import { IntroPage } from "./pages/IntroPage";
 import { AvailablePoolPage, ReservePoolPage } from "./pages/ManualPoolPage";
 import { PushErrorTodoPage, TodoPage } from "./pages/TodoPage";
@@ -32,12 +35,14 @@ const poolNavItems: Array<[ViewName, string]> = [
   ["available-pool", "可用池"],
   ["reserve-pool", "使用备选池"],
   ["api-pools", "API 账号池状态"],
+  ["event-records", "事件记录"],
+  ["alert-center", "异常告警"],
   ["pool-lifecycle", "账号池管理"],
 ];
 
 const adminNavItems: Array<[ViewName, string]> = [
   ["agent-analysis", "Agent分析"],
-  ["api-tokens", "系统 Token"],
+  ["api-tokens", "系统管理"],
   ["users", "用户管理"],
   ["logs", "日志"],
 ];
@@ -50,9 +55,11 @@ const navShortLabels: Record<ViewName, string> = {
   "available-pool": "可",
   "reserve-pool": "备",
   "api-pools": "池",
+  "event-records": "事",
+  "alert-center": "警",
   "pool-lifecycle": "逻",
   "agent-analysis": "析",
-  "api-tokens": "令",
+  "api-tokens": "管",
   users: "用",
   logs: "志",
 };
@@ -65,25 +72,36 @@ const viewPaths: Record<ViewName, string> = {
   "available-pool": "/available-pool",
   "reserve-pool": "/reserve-pool",
   "api-pools": "/api-pool-status",
+  "event-records": "/event-records",
+  "alert-center": "/alert-center",
   "pool-lifecycle": "/pool-lifecycle",
   "agent-analysis": "/agent-analysis",
-  "api-tokens": "/api-tokens",
+  "api-tokens": "/system-management",
   users: "/users",
   logs: "/logs",
 };
 
 const pathAliases: Record<string, ViewName> = {
-  "/": "upload",
   "/upload": "upload",
   "/todos": "todos",
   "/push-error-todos": "push-error-todos",
   "/api-pools": "api-pools",
+  "/api-tokens": "api-tokens",
 };
+
+function isMobileMenuLayout() {
+  return window.matchMedia("(max-width: 720px), (max-width: 900px) and (orientation: portrait), (max-aspect-ratio: 3 / 4)").matches;
+}
+
+function defaultViewForLayout(): ViewName {
+  return isMobileMenuLayout() ? "api-pools" : "upload";
+}
 
 function viewFromPath(pathname: string): ViewName {
   const normalized = pathname.replace(/\/+$/, "") || "/";
+  if (normalized === "/") return defaultViewForLayout();
   const matched = Object.entries(viewPaths).find(([, path]) => path === normalized);
-  return matched ? (matched[0] as ViewName) : pathAliases[normalized] || "upload";
+  return matched ? (matched[0] as ViewName) : pathAliases[normalized] || defaultViewForLayout();
 }
 
 function App() {
@@ -113,6 +131,10 @@ function App() {
     const nextPath = viewPaths[nextView];
     if (window.location.pathname !== nextPath) {
       window.history.pushState({ view: nextView }, "", nextPath);
+    }
+    if (isMobileMenuLayout()) {
+      setSidebarCollapsed(true);
+      localStorage.setItem("sidebarCollapsed", "true");
     }
   };
 
@@ -199,7 +221,7 @@ function App() {
               setUser(nextUser);
               localStorage.setItem("token", nextToken);
               localStorage.setItem("user", JSON.stringify(nextUser));
-              if (window.location.pathname === "/") navigateToView("upload");
+              if (window.location.pathname === "/") navigateToView(defaultViewForLayout());
               showToast("登录成功");
             }}
             showToast={showToast}
@@ -213,18 +235,10 @@ function App() {
             {view === "available-pool" && <AvailablePoolPage token={token} showToast={showToast} />}
             {view === "reserve-pool" && <ReservePoolPage token={token} showToast={showToast} />}
             {view === "api-pools" && <ApiPoolStatusPage token={token} showToast={showToast} />}
+            {view === "event-records" && <EventRecordsPage token={token} showToast={showToast} />}
+            {view === "alert-center" && <AlertCenterPage token={token} showToast={showToast} />}
             {view === "pool-lifecycle" && <AccountPoolsPage token={token} showToast={showToast} />}
-            {view === "agent-analysis" && (
-              <IntroPage
-                title="Agent分析"
-                description="这里后续用于辅助判断制作新账号、renew 旧账号、处理问题账号和调整池策略。当前先保留介绍页，不执行自动决策。"
-                points={[
-                  "Agent 只做辅助分析，不绕过本地手动流程和安全规则。",
-                  "后续会读取账号状态、问题账号、容量指标和历史错误，给出建议。",
-                  "真正执行动作仍需要人工确认，或走后端明确的状态机和审计记录。",
-                ]}
-              />
-            )}
+            {view === "agent-analysis" && <AgentAnalysisPage token={token} showToast={showToast} />}
             {view === "api-tokens" && <ApiTokensPage token={token} showToast={showToast} />}
             {view === "users" && <UsersPage token={token} showToast={showToast} />}
             {view === "logs" && <AuditPage token={token} showToast={showToast} />}

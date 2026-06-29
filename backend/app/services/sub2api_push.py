@@ -12,7 +12,7 @@ from app.services.account_records import write_account_operation, write_account_
 from app.services.pool_lifecycle import actor_name, operation_actor_updates, write_pool_action
 from app.services.sub2api import Sub2ApiClient, account_in_group
 from app.services.sub2api_cache import get_site, upsert_cached_account_snapshot
-from app.services.sub2api_return import remote_usage_snapshot
+from app.services.sub2api_return import remote_cumulative_usage_snapshot, remote_usage_snapshot
 from app.utils import credentials_email, now_utc, object_id, serialize_doc
 
 
@@ -562,6 +562,8 @@ async def _build_push_error_task_updates(
         status_value="failed",
         details=details,
     )
+    cumulative_usage = await remote_cumulative_usage_snapshot(db, site_id=site_id, remote_account=remote_account)
+    usage_snapshot = remote_usage_snapshot(remote_account, cumulative_usage=cumulative_usage)
 
     base_updates: dict[str, Any] = {
         "metadata.problem_task_type": PUSH_ERROR_TASK_TYPE,
@@ -581,7 +583,7 @@ async def _build_push_error_task_updates(
         "metadata.problem_last_test_error": error,
         "metadata.problem_last_test_result": verification,
         "metadata.sub2api_delete_remote_snapshot": remote_account,
-        "metadata.sub2api_delete_usage_snapshot": remote_usage_snapshot(remote_account),
+        "metadata.sub2api_delete_usage_snapshot": usage_snapshot,
         "metadata.sub2api_delete_remote_last_used_at": remote_account.get("last_used_at"),
         "metadata.sub2api_delete_remote_status": remote_account.get("status"),
         "metadata.sub2api_delete_remote_error_message": remote_account.get("error_message"),

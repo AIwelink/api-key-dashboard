@@ -10,8 +10,9 @@ from fastapi.staticfiles import StaticFiles
 from app.config import PROJECT_ROOT, get_settings
 from app.database import close_mongo_connection, connect_to_mongo, get_db
 from app.logging_config import RequestLoggingMiddleware, cleanup_old_logs, log_cleanup_loop, setup_logging
-from app.routers import accounts, api_pools, api_tokens, audit, auth, import_batches, imports, settings, sub2api_sites, sync, todo_items, users
+from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, event_records, import_batches, imports, notifications, settings, sub2api_sites, sync, todo_items, users
 from app.services.bootstrap import ensure_bootstrap_data, ensure_indexes
+from app.services.sub2api_account_probe import probe_scheduler_loop
 from app.services.sub2api_auto_refill import auto_refill_scheduler_loop
 from app.services.sub2api_cache import refresh_account_caches_for_all_sites, refresh_scheduler_loop
 from app.services.sub2api_dashboard import refresh_due_dashboard_snapshots_for_all_sites
@@ -35,6 +36,7 @@ async def lifespan(_: FastAPI):
     dashboard_startup_task = asyncio.create_task(refresh_due_dashboard_snapshots_for_all_sites(db, force=True))
     account_cache_startup_task = asyncio.create_task(refresh_account_caches_for_all_sites(db))
     refresh_task = asyncio.create_task(refresh_scheduler_loop(db))
+    account_probe_task = asyncio.create_task(probe_scheduler_loop(db))
     auto_refill_task = asyncio.create_task(auto_refill_scheduler_loop(db))
     cleanup_task = asyncio.create_task(log_cleanup_loop(settings_obj))
     try:
@@ -42,7 +44,7 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         logger.info("app_stopping")
-        for task in (dashboard_startup_task, account_cache_startup_task, refresh_task, auto_refill_task, cleanup_task):
+        for task in (dashboard_startup_task, account_cache_startup_task, refresh_task, account_probe_task, auto_refill_task, cleanup_task):
             task.cancel()
             try:
                 await task
@@ -64,12 +66,15 @@ app.add_middleware(
 )
 
 app.include_router(auth.router, prefix="/api")
+app.include_router(agent.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(accounts.router, prefix="/api")
 app.include_router(import_batches.router, prefix="/api")
 app.include_router(imports.router, prefix="/api")
 app.include_router(api_pools.router, prefix="/api")
 app.include_router(api_tokens.router, prefix="/api")
+app.include_router(notifications.router, prefix="/api")
+app.include_router(event_records.router, prefix="/api")
 app.include_router(sync.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
 app.include_router(sub2api_sites.router, prefix="/api")

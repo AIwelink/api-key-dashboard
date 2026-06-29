@@ -6,18 +6,23 @@ export type ViewName =
   | "available-pool"
   | "reserve-pool"
   | "api-pools"
+  | "event-records"
+  | "alert-center"
   | "pool-lifecycle"
   | "agent-analysis"
   | "api-tokens"
   | "users"
   | "logs";
 
+export type UserRole = "owner" | "admin" | "maintainer" | "viewer";
+export type UserStatus = "active" | "disabled" | "pending_password_reset";
+
 export type User = {
   id?: string;
   email: string;
   name?: string;
-  role: string;
-  status?: string;
+  role: UserRole;
+  status?: UserStatus;
 };
 
 export type AccountDocument = {

@@ -97,7 +97,8 @@ async def manual_delete_sub2api_account(
     group_name = _remote_group_names(remote_account)[0] if _remote_group_names(remote_account) else None
     is_abnormal = _is_remote_abnormal(remote_account)
     abnormal_reason = remote_abnormal_reason(remote_account)
-    usage_snapshot = remote_usage_snapshot(remote_account)
+    cumulative_usage = await remote_cumulative_usage_snapshot(db, site_id=site_id, remote_account=remote_account)
+    usage_snapshot = remote_usage_snapshot(remote_account, cumulative_usage=cumulative_usage)
     now = now_utc()
     account_json = _remote_to_account_json(remote_account)
     metadata_updates = {
@@ -547,7 +548,29 @@ def remote_abnormal_reason(remote_account: dict[str, Any]) -> str | None:
     return f"error={remote_account.get('error_message')}"
 
 
-def remote_usage_snapshot(remote_account: dict[str, Any]) -> dict[str, Any]:
+async def remote_cumulative_usage_snapshot(db: AsyncIOMotorDatabase, *, site_id: str, remote_account: dict[str, Any]) -> dict[str, Any]:
+    email = credentials_email(remote_account) or str(remote_account.get("email") or "").strip()
+    if not email:
+        return {}
+    identity = await db.remote_account_identities.find_one(
+        {"_id": f"{site_id}:{email.lower()}"},
+        {"cumulative_usage_snapshot": 1, "cumulative_usage_totals": 1, "last_usage_rollover_at": 1},
+    )
+    if not identity:
+        return {}
+    snapshot = identity.get("cumulative_usage_snapshot") if isinstance(identity.get("cumulative_usage_snapshot"), dict) else {}
+    totals = identity.get("cumulative_usage_totals") if isinstance(identity.get("cumulative_usage_totals"), dict) else {}
+    result = dict(snapshot)
+    for key, value in totals.items():
+        if key.endswith("_rollover_base"):
+            continue
+        result.setdefault(f"{key}_cumulative", value)
+    if identity.get("last_usage_rollover_at") is not None:
+        result["last_usage_rollover_at"] = identity.get("last_usage_rollover_at")
+    return result
+
+
+def remote_usage_snapshot(remote_account: dict[str, Any], *, cumulative_usage: dict[str, Any] | None = None) -> dict[str, Any]:
     extra = remote_account.get("extra") if isinstance(remote_account.get("extra"), dict) else {}
     keys = (
         "codex_5h_used_percent",
@@ -575,6 +598,11 @@ def remote_usage_snapshot(remote_account: dict[str, Any]) -> dict[str, Any]:
             value = extra.get(key)
         if value is not None:
             snapshot[key] = value
+    if isinstance(cumulative_usage, dict) and cumulative_usage:
+        snapshot["cumulative_usage_snapshot"] = cumulative_usage
+        for key, value in cumulative_usage.items():
+            if key.endswith("_cumulative") or key == "last_usage_rollover_at":
+                snapshot[key] = value
     return snapshot
 
 

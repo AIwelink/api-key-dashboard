@@ -32,7 +32,7 @@ from app.services.sub2api_cache import (
     upsert_cached_account_snapshot,
 )
 from app.services.sub2api_dashboard import get_stored_dashboard_snapshots, refresh_dashboard_snapshots
-from app.services.sub2api_return import manual_delete_sub2api_account, remote_usage_snapshot
+from app.services.sub2api_return import manual_delete_sub2api_account, remote_cumulative_usage_snapshot, remote_usage_snapshot
 from app.services.sub2api_verify import test_remote_sub2api_account
 from app.utils import credentials_email, now_utc, serialize_doc
 
@@ -673,6 +673,8 @@ async def _mark_resurrection_failed_local_account(
     account_id = str(account.get("_id"))
     decision_is_archive = decision == "banned_archive"
     operation_name = "复活失败封禁归档" if decision_is_archive else "复活失败进入错误账号池"
+    cumulative_usage = await remote_cumulative_usage_snapshot(db, site_id=site_id, remote_account=remote_account)
+    usage_snapshot = remote_usage_snapshot(remote_account, cumulative_usage=cumulative_usage)
     updates: dict[str, Any] = {
         "metadata.pool_status": "discarded" if decision_is_archive else "problem",
         "metadata.last_error": reason,
@@ -682,7 +684,7 @@ async def _mark_resurrection_failed_local_account(
         "metadata.sub2api_delete_finished_at": now,
         "metadata.sub2api_delete_result": delete_result,
         "metadata.sub2api_delete_remote_snapshot": remote_account,
-        "metadata.sub2api_delete_usage_snapshot": remote_usage_snapshot(remote_account),
+        "metadata.sub2api_delete_usage_snapshot": usage_snapshot,
         "metadata.sub2api_delete_remote_last_used_at": remote_account.get("last_used_at"),
         "metadata.sub2api_delete_remote_status": remote_account.get("status"),
         "metadata.sub2api_delete_remote_error_message": remote_account.get("error_message"),

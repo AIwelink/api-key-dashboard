@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -23,6 +23,9 @@ ACCOUNT_USAGE_CONCURRENCY = 50
 ACCOUNT_USAGE_BATCH_SIZE = 50
 ACCOUNT_USAGE_REFRESH_INTERVAL = timedelta(minutes=30)
 FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60
+FIVE_HOUR_DYNAMIC_MAX_WAIT_SECONDS = 2 * 60 * 60
+SEVEN_DAY_WINDOW_SECONDS = 7 * 24 * 60 * 60
+SEVEN_DAY_DYNAMIC_MAX_WAIT_SECONDS = 2 * 24 * 60 * 60
 CAPACITY_ACCOUNT_LIMITS = DEFAULT_CAPACITY_ACCOUNT_LIMITS
 CAPACITY_HEALTH_THRESHOLDS = {
     "exhausted_available_accounts": 2,
@@ -320,6 +323,12 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
             account_ids = [account.get("id") for account in accounts if account.get("id") is not None]
             await db.sub2api_groups_cache.delete_many({"site_id": site_id, "group_id": {"$nin": group_ids}})
             await db.sub2api_accounts_cache.delete_many({"site_id": site_id, "sub2api_account_id": {"$nin": account_ids}})
+            try:
+                from app.services.api_pools import sync_api_pools_from_sub2api_groups
+
+                await sync_api_pools_from_sub2api_groups(db, site_id=site_id)
+            except Exception as exc:  # noqa: BLE001 - local pool sync should not block remote cache refresh.
+                logger.warning("api_pool_sync_after_sub2api_refresh_failed site_id=%s error=%s", site_id, exc)
 
             auto_remove_summary: dict[str, Any] | None = None
             if site.get("auto_remove_abnormal_accounts") is True:
@@ -740,7 +749,8 @@ async def _capacity_summary_for_accounts(
     *,
     group_id: int | None = None,
 ) -> dict[str, Any]:
-    capacity_accounts = [account for account in accounts if _is_capacity_account(account)]
+    capacity_accounts_all = [account for account in accounts if _is_capacity_account(account)]
+    capacity_accounts, duplicate_capacity_accounts = _collapse_capacity_accounts_by_email(capacity_accounts_all)
     five_hour_capacity_accounts = [account for account in capacity_accounts if not _is_7d_exhausted(account)]
     used_5h = _average_percent(_usage_number(account, "codex_5h_used_percent") for account in capacity_accounts)
     used_7d = _average_percent(_usage_number(account, "codex_7d_used_percent") for account in capacity_accounts)
@@ -756,6 +766,7 @@ async def _capacity_summary_for_accounts(
     five_hour_peak_cost = cost_summary["five_hour_peak_cost"]
     recent_day_five_hour_peak_cost = cost_summary["recent_day_five_hour_peak_cost"]
     seven_day_24h_peak_cost = cost_summary["seven_day_24h_peak_cost"]
+    burst_summary = cost_summary["burst_1h"]
     recent_5h_cost = cost_summary["recent_5h_cost"]
     recent_24h_cost = cost_summary["recent_24h_cost"]
     seven_day_cost = cost_summary["seven_day_cost"]
@@ -783,12 +794,15 @@ async def _capacity_summary_for_accounts(
     five_hour_actual_remaining_usd = active_five_hour_actual_remaining_usd + reserve_five_hour_actual_remaining_usd
     active_seven_day_actual_remaining_usd = selected["seven_day_actual_remaining_usd"]
     reserve_seven_day_actual_remaining_usd = selected_reserve["seven_day_actual_remaining_usd"]
+    active_seven_day_dynamic_used_usd = selected["seven_day_dynamic_used_usd"]
+    reserve_seven_day_dynamic_used_usd = selected_reserve["seven_day_dynamic_used_usd"]
+    active_seven_day_dynamic_remaining_usd = selected["seven_day_dynamic_remaining_usd"]
+    reserve_seven_day_dynamic_remaining_usd = selected_reserve["seven_day_dynamic_remaining_usd"]
     seven_day_actual_used_usd = selected["seven_day_actual_used_usd"] + selected_reserve["seven_day_actual_used_usd"]
     seven_day_actual_remaining_usd = active_seven_day_actual_remaining_usd + reserve_seven_day_actual_remaining_usd
-    seven_day_used_estimated_usd = active_seven_day_capacity_usd * used_7d / 100
-    seven_day_remaining_estimated_usd = seven_day_capacity_usd * max(0, 100 - used_7d) / 100
-    seven_day_remaining_estimated_usd = max(0, seven_day_capacity_usd - seven_day_used_estimated_usd)
-    active_seven_day_remaining_estimated_usd = max(0, active_seven_day_capacity_usd - seven_day_used_estimated_usd)
+    seven_day_used_estimated_usd = active_seven_day_dynamic_used_usd + reserve_seven_day_dynamic_used_usd
+    seven_day_remaining_estimated_usd = active_seven_day_dynamic_remaining_usd + reserve_seven_day_dynamic_remaining_usd
+    active_seven_day_remaining_estimated_usd = active_seven_day_dynamic_remaining_usd
     effective_used_5h = _ratio_percent(dynamic_five_hour_used_estimated_usd, five_hour_capacity_usd)
     active_effective_used_5h = _ratio_percent(active_dynamic_five_hour_used_usd, active_five_hour_capacity_usd)
     effective_used_7d = _ratio_percent(seven_day_used_estimated_usd, seven_day_capacity_usd)
@@ -798,6 +812,8 @@ async def _capacity_summary_for_accounts(
     active_five_x_speed_days = _ratio_or_none(active_seven_day_remaining_estimated_usd, recent_24h_cost * 5 if recent_24h_cost > 0 else 0)
     five_hour_peak_multiple = _ratio_or_none(five_hour_capacity_usd, five_hour_peak_cost)
     recent_day_five_hour_peak_multiple = _ratio_or_none(five_hour_capacity_usd, recent_day_five_hour_peak_cost)
+    burst_1h_five_hour_multiple = _ratio_or_none(five_hour_capacity_usd, burst_summary["five_hour_estimated_cost"])
+    active_burst_1h_five_hour_multiple = _ratio_or_none(active_five_hour_capacity_usd, burst_summary["five_hour_estimated_cost"])
     recent_5h_multiple = _ratio_or_none(five_hour_capacity_usd, recent_5h_cost)
     twenty_four_hour_peak_multiple = _ratio_or_none(twenty_four_hour_capacity_usd, seven_day_24h_peak_cost)
     recent_24h_multiple = _ratio_or_none(twenty_four_hour_capacity_usd, recent_24h_cost)
@@ -883,6 +899,10 @@ async def _capacity_summary_for_accounts(
         "reserve_five_hour_actual_remaining_usd": round(reserve_five_hour_actual_remaining_usd, 4),
         "seven_day_used_estimated_usd": round(seven_day_used_estimated_usd, 4),
         "seven_day_remaining_estimated_usd": round(seven_day_remaining_estimated_usd, 4),
+        "active_seven_day_dynamic_used_estimated_usd": round(active_seven_day_dynamic_used_usd, 4),
+        "active_seven_day_dynamic_remaining_estimated_usd": round(active_seven_day_dynamic_remaining_usd, 4),
+        "reserve_seven_day_dynamic_used_estimated_usd": round(reserve_seven_day_dynamic_used_usd, 4),
+        "reserve_seven_day_dynamic_remaining_estimated_usd": round(reserve_seven_day_dynamic_remaining_usd, 4),
         "seven_day_actual_used_usd": round(seven_day_actual_used_usd, 4),
         "seven_day_actual_remaining_usd": round(seven_day_actual_remaining_usd, 4),
         "active_seven_day_actual_remaining_usd": round(active_seven_day_actual_remaining_usd, 4),
@@ -890,6 +910,25 @@ async def _capacity_summary_for_accounts(
         "five_hour_peak_cost": round(five_hour_peak_cost, 4),
         "seven_day_five_hour_peak_cost": round(five_hour_peak_cost, 4),
         "recent_day_five_hour_peak_cost": round(recent_day_five_hour_peak_cost, 4),
+        "burst_1h_observed_cost": round(burst_summary["observed_cost"], 4),
+        "burst_1h_elapsed_minutes": burst_summary["elapsed_minutes"],
+        "burst_1h_projection_multiplier": round(burst_summary["projection_multiplier"], 4),
+        "burst_1h_cost": round(burst_summary["cost"], 4),
+        "burst_1h_five_hour_estimated_cost": round(burst_summary["five_hour_estimated_cost"], 4),
+        "burst_1h_five_hour_multiple": _round_optional(burst_1h_five_hour_multiple),
+        "active_burst_1h_five_hour_multiple": _round_optional(active_burst_1h_five_hour_multiple),
+        "burst_1h_source": burst_summary["source"],
+        "burst_1h_window_count": burst_summary["window_count"],
+        "burst_1h_trend": burst_summary["trend"],
+        "burst_1h_trend_label": burst_summary["trend_label"],
+        "burst_1h_trend_strength": burst_summary["trend_strength"],
+        "burst_1h_trend_strength_label": burst_summary["trend_strength_label"],
+        "burst_1h_trend_change_percent": _round_optional(burst_summary["trend_change_percent"]),
+        "burst_1h_previous_cost": round(burst_summary["previous_cost"], 4),
+        "burst_1h_trend_recent_avg_cost": round(burst_summary["trend_recent_avg_cost"], 4),
+        "burst_1h_trend_baseline_avg_cost": round(burst_summary["trend_baseline_avg_cost"], 4),
+        "burst_1h_trend_recent_hours": burst_summary["trend_recent_hours"],
+        "burst_1h_trend_baseline_hours": burst_summary["trend_baseline_hours"],
         "seven_day_24h_peak_cost": round(seven_day_24h_peak_cost, 4),
         "recent_5h_cost": round(recent_5h_cost, 4),
         "recent_24h_cost": round(recent_24h_cost, 4),
@@ -932,6 +971,7 @@ async def _capacity_summary_for_accounts(
         "auto_refill_required": health["auto_refill_required"],
         "cost_window": cost_summary,
         "total_accounts": len(accounts),
+        "capacity_duplicate_email_accounts": duplicate_capacity_accounts,
         "calculated_at": now_utc(),
     }
 
@@ -949,6 +989,75 @@ def _capacity_by_account_type(
     return result
 
 
+def _collapse_capacity_accounts_by_email(accounts: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    by_email: dict[str, dict[str, Any]] = {}
+    passthrough: list[dict[str, Any]] = []
+    duplicates = 0
+    for account in accounts:
+        email_key = _capacity_email_key(account)
+        if not email_key:
+            passthrough.append(account)
+            continue
+        current = by_email.get(email_key)
+        if current is None:
+            by_email[email_key] = dict(account)
+            continue
+        duplicates += 1
+        by_email[email_key] = _merge_capacity_duplicate_account(current, account)
+    return [*by_email.values(), *passthrough], duplicates
+
+
+def _merge_capacity_duplicate_account(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(left)
+    merged_extra = dict(merged.get("extra") if isinstance(merged.get("extra"), dict) else {})
+    right_extra = right.get("extra") if isinstance(right.get("extra"), dict) else {}
+    usage_percent_fields = (
+        "codex_5h_used_percent",
+        "codex_7d_used_percent",
+    )
+    usage_sum_fields = (
+        "codex_5h_request_count",
+        "codex_7d_request_count",
+        "codex_total_request_count",
+        "codex_5h_token_count",
+        "codex_7d_token_count",
+        "codex_total_token_count",
+        "codex_5h_actual_cost",
+        "codex_7d_actual_cost",
+        "codex_total_actual_cost",
+        "codex_5h_total_cost",
+        "codex_7d_total_cost",
+        "codex_total_cost",
+    )
+    for field in usage_percent_fields:
+        merged[field] = _clamp_percent(_usage_float(left, field) + _usage_float(right, field))
+        merged_extra[field] = merged[field]
+    for field in usage_sum_fields:
+        merged[field] = _usage_float(left, field) + _usage_float(right, field)
+        merged_extra[field] = merged[field]
+    for field in ("codex_5h_reset_after_seconds", "codex_7d_reset_after_seconds"):
+        values = [_usage_number(left, field), _usage_number(right, field)]
+        numeric = [float(value) for value in values if isinstance(value, (int, float))]
+        if numeric:
+            merged[field] = min(numeric)
+            merged_extra[field] = merged[field]
+    merged["id"] = left.get("id")
+    merged["duplicate_capacity_account_ids"] = [*_capacity_duplicate_ids(left), right.get("id")]
+    merged["duplicate_capacity_account_count"] = len([item for item in merged["duplicate_capacity_account_ids"] if item is not None])
+    merged["extra"] = merged_extra
+    if _is_7d_exhausted(left) or _is_7d_exhausted(right):
+        merged["codex_7d_used_percent"] = 100
+        merged_extra["codex_7d_used_percent"] = 100
+    return merged
+
+
+def _capacity_duplicate_ids(account: dict[str, Any]) -> list[Any]:
+    values = account.get("duplicate_capacity_account_ids")
+    if isinstance(values, list) and values:
+        return values
+    return [account.get("id")]
+
+
 def _empty_capacity_type_summary(capacity_limits: dict[str, dict[str, float]] | None = None) -> dict[str, dict[str, Any]]:
     limits = capacity_limits or CAPACITY_ACCOUNT_LIMITS
     result = {
@@ -963,6 +1072,8 @@ def _empty_capacity_type_summary(capacity_limits: dict[str, dict[str, float]] | 
                 "five_hour_dynamic_remaining_usd": 0.0,
                 "five_hour_actual_used_usd": 0.0,
                 "five_hour_actual_remaining_usd": 0.0,
+                "seven_day_dynamic_used_usd": 0.0,
+                "seven_day_dynamic_remaining_usd": 0.0,
                 "seven_day_actual_used_usd": 0.0,
                 "seven_day_actual_remaining_usd": 0.0,
             }
@@ -978,6 +1089,8 @@ def _empty_capacity_type_summary(capacity_limits: dict[str, dict[str, float]] | 
             "five_hour_dynamic_remaining_usd": 0.0,
             "five_hour_actual_used_usd": 0.0,
             "five_hour_actual_remaining_usd": 0.0,
+            "seven_day_dynamic_used_usd": 0.0,
+            "seven_day_dynamic_remaining_usd": 0.0,
             "seven_day_actual_used_usd": 0.0,
             "seven_day_actual_remaining_usd": 0.0,
         },
@@ -1003,7 +1116,13 @@ async def _reserve_capacity_by_account_type(
             {"metadata.pool_id": str(group_id)},
         ],
     }
-    async for account in db.accounts.find(query, {"metadata.account_type": 1, "account_json.credentials.plan_type": 1, "account_json.extra.account_type": 1}):
+    seen_emails: set[str] = set()
+    async for account in db.accounts.find(query, {"metadata.email": 1, "metadata.account_type": 1, "account_json.credentials.email": 1, "account_json.credentials.plan_type": 1, "account_json.extra.email": 1, "account_json.extra.account_type": 1}):
+        email_key = _local_capacity_email_key(account)
+        if email_key:
+            if email_key in seen_emails:
+                continue
+            seen_emails.add(email_key)
         _add_capacity_account(result, _local_capacity_account_type(account), five_hour_available=True, account=None, capacity_limits=capacity_limits)
     return result
 
@@ -1029,6 +1148,8 @@ def _add_capacity_account(
     result[account_type]["five_hour_dynamic_remaining_usd"] += dynamic_five_hour["remaining_usd"]
     result[account_type]["five_hour_actual_used_usd"] += dynamic_five_hour["actual_used_usd"]
     result[account_type]["five_hour_actual_remaining_usd"] += dynamic_five_hour["actual_remaining_usd"]
+    result[account_type]["seven_day_dynamic_used_usd"] += dynamic_five_hour["seven_day_dynamic_used_usd"]
+    result[account_type]["seven_day_dynamic_remaining_usd"] += dynamic_five_hour["seven_day_dynamic_remaining_usd"]
     result[account_type]["seven_day_actual_used_usd"] += dynamic_five_hour["seven_day_actual_used_usd"]
     result[account_type]["seven_day_actual_remaining_usd"] += dynamic_five_hour["seven_day_actual_remaining_usd"]
     result["total"]["available_accounts"] += 1
@@ -1039,6 +1160,8 @@ def _add_capacity_account(
     result["total"]["five_hour_dynamic_remaining_usd"] += dynamic_five_hour["remaining_usd"]
     result["total"]["five_hour_actual_used_usd"] += dynamic_five_hour["actual_used_usd"]
     result["total"]["five_hour_actual_remaining_usd"] += dynamic_five_hour["actual_remaining_usd"]
+    result["total"]["seven_day_dynamic_used_usd"] += dynamic_five_hour["seven_day_dynamic_used_usd"]
+    result["total"]["seven_day_dynamic_remaining_usd"] += dynamic_five_hour["seven_day_dynamic_remaining_usd"]
     result["total"]["seven_day_actual_used_usd"] += dynamic_five_hour["seven_day_actual_used_usd"]
     result["total"]["seven_day_actual_remaining_usd"] += dynamic_five_hour["seven_day_actual_remaining_usd"]
     if five_hour_available:
@@ -1054,6 +1177,8 @@ def _dynamic_five_hour_usage(account: dict[str, Any] | None, five_hour_limit_usd
             "remaining_usd": 0.0,
             "actual_used_usd": 0.0,
             "actual_remaining_usd": 0.0,
+            "seven_day_dynamic_used_usd": 0.0,
+            "seven_day_dynamic_remaining_usd": 0.0,
             "seven_day_actual_used_usd": 0.0,
             "seven_day_actual_remaining_usd": 0.0,
         }
@@ -1064,6 +1189,8 @@ def _dynamic_five_hour_usage(account: dict[str, Any] | None, five_hour_limit_usd
             "remaining_usd": five_hour_limit_usd,
             "actual_used_usd": 0.0,
             "actual_remaining_usd": five_hour_limit_usd,
+            "seven_day_dynamic_used_usd": 0.0,
+            "seven_day_dynamic_remaining_usd": seven_day_limit_usd,
             "seven_day_actual_used_usd": 0.0,
             "seven_day_actual_remaining_usd": seven_day_limit_usd,
         }
@@ -1081,6 +1208,30 @@ def _dynamic_five_hour_usage(account: dict[str, Any] | None, five_hour_limit_usd
     reset_factor = max(0.0, min(1.0, float(reset_after_seconds) / window_seconds))
     actual_used_usd = max(0.0, min(five_hour_limit_usd, five_hour_limit_usd * used_percent / 100))
     seven_day_actual_used_usd = max(0.0, min(seven_day_limit_usd, seven_day_limit_usd * seven_day_used_percent / 100))
+    seven_day_reset_after_seconds = _usage_number(account, "codex_7d_reset_after_seconds")
+    if not isinstance(seven_day_reset_after_seconds, (int, float)):
+        seven_day_reset_at = _parse_datetime(_first_present(account, account.get("extra") if isinstance(account.get("extra"), dict) else {}, "codex_7d_reset_at", "7d_reset_at"))
+        seven_day_reset_after_seconds = max(0, (seven_day_reset_at - now_utc()).total_seconds()) if seven_day_reset_at is not None else SEVEN_DAY_WINDOW_SECONDS
+    seven_day_window_minutes = _usage_number(account, "codex_7d_window_minutes")
+    seven_day_window_seconds = max(1.0, float(seven_day_window_minutes) * 60) if isinstance(seven_day_window_minutes, (int, float)) and seven_day_window_minutes > 0 else SEVEN_DAY_WINDOW_SECONDS
+    seven_day_reset_factor = max(0.0, min(1.0, float(seven_day_reset_after_seconds) / seven_day_window_seconds))
+    if float(seven_day_reset_after_seconds) > SEVEN_DAY_DYNAMIC_MAX_WAIT_SECONDS:
+        seven_day_dynamic_used_usd = seven_day_actual_used_usd
+    else:
+        seven_day_dynamic_used_usd = seven_day_limit_usd * seven_day_used_percent / 100 * seven_day_reset_factor
+        seven_day_dynamic_used_usd = max(0.0, min(seven_day_limit_usd, seven_day_dynamic_used_usd))
+    if float(reset_after_seconds) > FIVE_HOUR_DYNAMIC_MAX_WAIT_SECONDS:
+        return {
+            "capacity_usd": five_hour_limit_usd,
+            "used_usd": actual_used_usd,
+            "remaining_usd": max(0.0, five_hour_limit_usd - actual_used_usd),
+            "actual_used_usd": actual_used_usd,
+            "actual_remaining_usd": max(0.0, five_hour_limit_usd - actual_used_usd),
+            "seven_day_dynamic_used_usd": seven_day_dynamic_used_usd,
+            "seven_day_dynamic_remaining_usd": max(0.0, seven_day_limit_usd - seven_day_dynamic_used_usd),
+            "seven_day_actual_used_usd": seven_day_actual_used_usd,
+            "seven_day_actual_remaining_usd": max(0.0, seven_day_limit_usd - seven_day_actual_used_usd),
+        }
     dynamic_used_usd = five_hour_limit_usd * used_percent / 100 * reset_factor
     dynamic_used_usd = max(0.0, min(five_hour_limit_usd, dynamic_used_usd))
     return {
@@ -1089,6 +1240,8 @@ def _dynamic_five_hour_usage(account: dict[str, Any] | None, five_hour_limit_usd
         "remaining_usd": max(0.0, five_hour_limit_usd - dynamic_used_usd),
         "actual_used_usd": actual_used_usd,
         "actual_remaining_usd": max(0.0, five_hour_limit_usd - actual_used_usd),
+        "seven_day_dynamic_used_usd": seven_day_dynamic_used_usd,
+        "seven_day_dynamic_remaining_usd": max(0.0, seven_day_limit_usd - seven_day_dynamic_used_usd),
         "seven_day_actual_used_usd": seven_day_actual_used_usd,
         "seven_day_actual_remaining_usd": max(0.0, seven_day_limit_usd - seven_day_actual_used_usd),
     }
@@ -1198,6 +1351,7 @@ async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, gro
     hourly = list(reversed(hourly_docs))
     five_hour_peak_cost = _five_hour_daily_peak_cost(hourly)
     recent_day_five_hour_peak_cost = _rolling_peak_cost(hourly[-24:], 5)
+    burst_1h = _burst_1h_summary(hourly)
     daily_costs = [_float_or_zero(doc.get("cost")) for doc in daily_docs[:7]]
     seven_day_24h_peak_cost = round(max(daily_costs) if daily_costs else _rolling_peak_cost(hourly, 24), 6)
     recent_24h_cost = round(sum(_float_or_zero(doc.get("cost")) for doc in hourly[-24:]), 6)
@@ -1207,6 +1361,7 @@ async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, gro
         "five_hour_peak_cost": five_hour_peak_cost,
         "seven_day_five_hour_peak_cost": five_hour_peak_cost,
         "recent_day_five_hour_peak_cost": recent_day_five_hour_peak_cost,
+        "burst_1h": burst_1h,
         "seven_day_24h_peak_cost": seven_day_24h_peak_cost,
         "recent_24h_cost": recent_24h_cost,
         "recent_5h_cost": recent_5h_cost,
@@ -1243,6 +1398,118 @@ def _rolling_peak_cost(items: list[dict[str, Any]], window_size: int) -> float:
     if len(costs) <= window_size:
         return round(sum(costs), 6)
     return round(max(sum(costs[index:index + window_size]) for index in range(0, len(costs) - window_size + 1)), 6)
+
+
+def _burst_1h_summary(hourly: list[dict[str, Any]]) -> dict[str, Any]:
+    recent_docs = hourly[-8:]
+    costs = [_float_or_zero(doc.get("cost")) for doc in recent_docs]
+    latest_doc = recent_docs[-1] if recent_docs else None
+    elapsed_minutes = _latest_hour_elapsed_minutes(latest_doc)
+    projection_multiplier = 60 / max(5, elapsed_minutes)
+    if not costs:
+        return {
+            "observed_cost": 0.0,
+            "cost": 0.0,
+            "previous_cost": 0.0,
+            "trend_recent_avg_cost": 0.0,
+            "trend_baseline_avg_cost": 0.0,
+            "trend_recent_hours": 0,
+            "trend_baseline_hours": 0,
+            "five_hour_estimated_cost": 0.0,
+            "elapsed_minutes": elapsed_minutes,
+            "projection_multiplier": projection_multiplier,
+            "trend": "unknown",
+            "trend_label": "等待数据",
+            "trend_strength": "unknown",
+            "trend_strength_label": "等待数据",
+            "trend_change_percent": None,
+            "source": "hourly",
+            "window_count": 0,
+        }
+    observed_current = costs[-1]
+    current = observed_current * projection_multiplier
+    completed = costs[:-1]
+    recent_values = ([current] + completed[-2:]) if completed else [current]
+    baseline_values = completed[-5:-2] if len(completed) >= 5 else completed[:-2]
+    recent_average = sum(recent_values) / len(recent_values) if recent_values else 0.0
+    baseline_average = sum(baseline_values) / len(baseline_values) if baseline_values else 0.0
+    previous = baseline_average
+    change_percent = None
+    if baseline_average > 0:
+        change_percent = (recent_average - baseline_average) / baseline_average * 100
+    elif recent_average > 0:
+        change_percent = 100.0
+    trend, trend_label = _burst_trend_label(change_percent)
+    strength, strength_label = _burst_trend_strength(change_percent)
+    return {
+        "observed_cost": round(observed_current, 6),
+        "cost": round(current, 6),
+        "previous_cost": round(previous, 6),
+        "trend_recent_avg_cost": round(recent_average, 6),
+        "trend_baseline_avg_cost": round(baseline_average, 6),
+        "trend_recent_hours": len(recent_values),
+        "trend_baseline_hours": len(baseline_values),
+        "five_hour_estimated_cost": round(current * 5, 6),
+        "elapsed_minutes": elapsed_minutes,
+        "projection_multiplier": projection_multiplier,
+        "trend": trend,
+        "trend_label": trend_label,
+        "trend_strength": strength,
+        "trend_strength_label": strength_label,
+        "trend_change_percent": change_percent,
+        "source": "hourly",
+        "window_count": len(costs),
+    }
+
+
+def _current_hour_elapsed_minutes() -> float:
+    local_now = now_utc().astimezone(timezone(timedelta(hours=8)))
+    return max(1, min(60, local_now.minute + local_now.second / 60))
+
+
+def _latest_hour_elapsed_minutes(latest_doc: dict[str, Any] | None) -> float:
+    if not latest_doc:
+        return _current_hour_elapsed_minutes()
+    local_now = now_utc().astimezone(timezone(timedelta(hours=8)))
+    current_hour = local_now.replace(minute=0, second=0, microsecond=0)
+    bucket_at = latest_doc.get("bucket_at")
+    if isinstance(bucket_at, datetime):
+        latest_hour = bucket_at
+        if latest_hour.tzinfo is None:
+            latest_hour = latest_hour.replace(tzinfo=UTC)
+        latest_hour = latest_hour.astimezone(timezone(timedelta(hours=8))).replace(minute=0, second=0, microsecond=0)
+    else:
+        bucket = str(latest_doc.get("bucket") or "")
+        try:
+            latest_hour = datetime.strptime(bucket, "%Y-%m-%d %H:%M").replace(tzinfo=timezone(timedelta(hours=8)))
+        except ValueError:
+            return 60.0
+    if latest_hour == current_hour:
+        return _current_hour_elapsed_minutes()
+    return 60.0
+
+
+def _burst_trend_label(change_percent: float | None) -> tuple[str, str]:
+    if change_percent is None:
+        return "unknown", "等待数据"
+    if change_percent >= 10:
+        return "rising", "上涨"
+    if change_percent <= -10:
+        return "falling", "下降"
+    return "flat", "平稳"
+
+
+def _burst_trend_strength(change_percent: float | None) -> tuple[str, str]:
+    if change_percent is None:
+        return "unknown", "等待数据"
+    absolute = abs(change_percent)
+    if absolute >= 80:
+        return "extreme", "极强"
+    if absolute >= 40:
+        return "strong", "强"
+    if absolute >= 15:
+        return "medium", "中"
+    return "weak", "弱"
 
 
 def _capacity_health(
@@ -1362,6 +1629,11 @@ def _is_temporary_rate_limit(account: dict[str, Any]) -> bool:
 def _usage_number(account: dict[str, Any], key: str) -> int | float | None:
     extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
     return _number_or_none(account.get(key) if account.get(key) is not None else extra.get(key))
+
+
+def _usage_float(account: dict[str, Any], key: str) -> float:
+    value = _usage_number(account, key)
+    return float(value) if isinstance(value, (int, float)) else 0.0
 
 
 def _average_percent(values: Any) -> int:
@@ -1514,6 +1786,20 @@ def _account_email_key(account: dict[str, Any]) -> str:
     credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
     extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
     return _normalize_email(account.get("email") or credentials.get("email") or extra.get("email") or account.get("name"))
+
+
+def _capacity_email_key(account: dict[str, Any]) -> str:
+    credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
+    extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+    return _normalize_email(account.get("email") or credentials.get("email") or extra.get("email"))
+
+
+def _local_capacity_email_key(account: dict[str, Any]) -> str:
+    metadata = account.get("metadata") if isinstance(account.get("metadata"), dict) else {}
+    account_json = account.get("account_json") if isinstance(account.get("account_json"), dict) else {}
+    credentials = account_json.get("credentials") if isinstance(account_json.get("credentials"), dict) else {}
+    extra = account_json.get("extra") if isinstance(account_json.get("extra"), dict) else {}
+    return _normalize_email(metadata.get("email") or credentials.get("email") or extra.get("email"))
 
 
 def _normalize_email(value: Any) -> str:
@@ -1802,4 +2088,3 @@ def _is_due(last_refreshed_at: Any, interval_minutes: int) -> bool:
     if isinstance(last_refreshed_at, datetime) and last_refreshed_at.tzinfo is None:
         last_refreshed_at = last_refreshed_at.replace(tzinfo=UTC)
     return now_utc() - last_refreshed_at >= timedelta(minutes=interval_minutes)
-
