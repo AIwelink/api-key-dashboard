@@ -67,18 +67,18 @@ type CapacitySummary = {
   five_hour_peak_cost?: number;
   seven_day_five_hour_peak_cost?: number;
   recent_day_five_hour_peak_cost?: number;
-  burst_30m_cost?: number;
-  burst_30m_previous_cost?: number;
-  burst_30m_five_hour_estimated_cost?: number;
-  burst_30m_five_hour_multiple?: number | null;
-  active_burst_30m_five_hour_multiple?: number | null;
-  burst_30m_source?: string;
-  burst_30m_window_count?: number;
-  burst_30m_trend?: "rising" | "falling" | "flat" | "unknown";
-  burst_30m_trend_label?: string;
-  burst_30m_trend_strength?: "extreme" | "strong" | "medium" | "weak" | "unknown";
-  burst_30m_trend_strength_label?: string;
-  burst_30m_trend_change_percent?: number | null;
+  burst_1h_cost?: number;
+  burst_1h_previous_cost?: number;
+  burst_1h_five_hour_estimated_cost?: number;
+  burst_1h_five_hour_multiple?: number | null;
+  active_burst_1h_five_hour_multiple?: number | null;
+  burst_1h_source?: string;
+  burst_1h_window_count?: number;
+  burst_1h_trend?: "rising" | "falling" | "flat" | "unknown";
+  burst_1h_trend_label?: string;
+  burst_1h_trend_strength?: "extreme" | "strong" | "medium" | "weak" | "unknown";
+  burst_1h_trend_strength_label?: string;
+  burst_1h_trend_change_percent?: number | null;
   seven_day_24h_peak_cost?: number;
   recent_5h_cost?: number;
   recent_24h_cost?: number;
@@ -1190,9 +1190,9 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
   const recentDayFiveHourPeakMultiple = summary?.recent_day_five_hour_peak_multiple;
   const activeSevenDayFiveHourPeakMultiple = summary?.active_five_hour_peak_multiple;
   const activeRecentDayFiveHourPeakMultiple = summary?.active_recent_day_five_hour_peak_multiple;
-  const burstThirtyMinuteMultiple = summary?.burst_30m_five_hour_multiple;
-  const activeBurstThirtyMinuteMultiple = summary?.active_burst_30m_five_hour_multiple;
-  const burstTrendTone = burstTrendMetricTone(summary?.burst_30m_trend, summary?.burst_30m_trend_strength);
+  const burstOneHourMultiple = summary?.burst_1h_five_hour_multiple;
+  const activeBurstOneHourMultiple = summary?.active_burst_1h_five_hour_multiple;
+  const burstTrendTone = burstTrendMetricTone(summary?.burst_1h_trend, summary?.burst_1h_trend_strength);
   const recent24hSpeedDays = summary?.current_speed_days;
   const activeRecent24hSpeedDays = summary?.active_current_speed_days;
   const sevenDayPeak24hSpeedDays = summary?.seven_day_peak_speed_days;
@@ -1279,17 +1279,17 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           overlay={capacityOverlay("使用池", formatMultiple(activeSevenDayFiveHourPeakMultiple), multipleScalePercent(activeSevenDayFiveHourPeakMultiple), multipleScaleTone(activeSevenDayFiveHourPeakMultiple))}
         />
         <CapacityMetric
-          label="突发峰值：30min预估"
-          value={formatMultiple(burstThirtyMinuteMultiple)}
-          sub={`30min ${formatUsd(summary?.burst_30m_cost)}，折算5h ${formatUsd(summary?.burst_30m_five_hour_estimated_cost)}`}
-          percent={multipleScalePercent(burstThirtyMinuteMultiple)}
-          tone={multipleScaleTone(burstThirtyMinuteMultiple)}
-          overlay={capacityOverlay("使用池", formatMultiple(activeBurstThirtyMinuteMultiple), multipleScalePercent(activeBurstThirtyMinuteMultiple), multipleScaleTone(activeBurstThirtyMinuteMultiple))}
+          label="突发峰值：1h预估"
+          value={formatMultiple(burstOneHourMultiple)}
+          sub={`最近1h ${formatUsd(summary?.burst_1h_cost)}，折算5h ${formatUsd(summary?.burst_1h_five_hour_estimated_cost)}`}
+          percent={multipleScalePercent(burstOneHourMultiple)}
+          tone={multipleScaleTone(burstOneHourMultiple)}
+          overlay={capacityOverlay("使用池", formatMultiple(activeBurstOneHourMultiple), multipleScalePercent(activeBurstOneHourMultiple), multipleScaleTone(activeBurstOneHourMultiple))}
         />
         <CapacityMetric
-          label="突发趋势：最近30min"
+          label="突发趋势：最近1h"
           value={burstTrendLabel(summary)}
-          sub={`较上一窗口 ${formatPercentChange(summary?.burst_30m_trend_change_percent)}，强度 ${summary?.burst_30m_trend_strength_label || "等待数据"}`}
+          sub={`较上一小时 ${formatPercentChange(summary?.burst_1h_trend_change_percent)}，强度 ${summary?.burst_1h_trend_strength_label || "等待数据"}`}
           tone={burstTrendTone}
         />
 
@@ -1788,9 +1788,9 @@ function formatPercentChange(value: unknown): string {
 }
 
 function burstTrendLabel(summary?: CapacitySummary): string {
-  if (!summary?.burst_30m_trend_label) return "等待数据";
-  const strength = summary.burst_30m_trend_strength_label && summary.burst_30m_trend_strength_label !== "等待数据" ? ` · ${summary.burst_30m_trend_strength_label}` : "";
-  return `${summary.burst_30m_trend_label}${strength}`;
+  if (!summary?.burst_1h_trend_label) return "等待数据";
+  const strength = summary.burst_1h_trend_strength_label && summary.burst_1h_trend_strength_label !== "等待数据" ? ` · ${summary.burst_1h_trend_strength_label}` : "";
+  return `${summary.burst_1h_trend_label}${strength}`;
 }
 
 function formatDays(value: unknown): string {
