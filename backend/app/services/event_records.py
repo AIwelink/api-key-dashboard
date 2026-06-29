@@ -395,17 +395,17 @@ async def event_records_summary(
         ],
     }
     summary = {
-        "total_events": await db.remote_account_status_events.count_documents(query),
-        "critical_events": await db.remote_account_status_events.count_documents({**query, "severity": "critical"}),
-        "warning_events": await db.remote_account_status_events.count_documents({**query, "severity": "warning"}),
-        "detected_401": await db.remote_account_status_events.count_documents({**query, "event_type": "401_detected"}),
-        "recovered_401": await db.remote_account_status_events.count_documents({**query, "event_type": "401_recovered"}),
-        "usage_rollovers": await db.remote_account_status_events.count_documents({**query, "event_type": "usage_rollover"}),
-        "duplicate_email_events": await db.remote_account_status_events.count_documents({**query, "event_type": {"$in": ["duplicate_email_detected", "duplicate_email_resolved"]}}),
-        "removed_events": await db.remote_account_status_events.count_documents({**query, "event_type": "remote_removed_confirmed"}),
-        "today_events": await db.remote_account_status_events.count_documents({**query, "detected_at": {"$gte": today_start}}) if today_start else 0,
-        "today_401": await db.remote_account_status_events.count_documents({**query, "event_type": "401_detected", "detected_at": {"$gte": today_start}}) if today_start else 0,
-        "one_hour_401": await db.remote_account_status_events.count_documents({**query, "event_type": "401_detected", "detected_at": {"$gte": one_hour_start}}),
+        "total_events": await _distinct_event_account_count(db, query),
+        "critical_events": await _distinct_event_account_count(db, {**query, "severity": "critical"}),
+        "warning_events": await _distinct_event_account_count(db, {**query, "severity": "warning"}),
+        "detected_401": await _distinct_event_account_count(db, {**query, "event_type": "401_detected"}),
+        "recovered_401": await _distinct_event_account_count(db, {**query, "event_type": "401_recovered"}),
+        "usage_rollovers": await _distinct_event_account_count(db, {**query, "event_type": "usage_rollover"}),
+        "duplicate_email_events": await _distinct_event_account_count(db, {**query, "event_type": {"$in": ["duplicate_email_detected", "duplicate_email_resolved"]}}),
+        "removed_events": await _distinct_event_account_count(db, {**query, "event_type": "remote_removed_confirmed"}),
+        "today_events": await _distinct_event_account_count(db, {**query, "detected_at": {"$gte": today_start}}) if today_start else 0,
+        "today_401": await _distinct_event_account_count(db, {**query, "event_type": "401_detected", "detected_at": {"$gte": today_start}}) if today_start else 0,
+        "one_hour_401": await _distinct_event_account_count(db, {**query, "event_type": "401_detected", "detected_at": {"$gte": one_hour_start}}),
         "current_abnormal_accounts": await db.remote_account_identities.count_documents(abnormal_identity_query),
     }
     summary.update(await _cumulative_identity_totals(db, identity_query))
@@ -857,6 +857,43 @@ def _lookup_usage_cache(context: dict[str, Any], *, site_id: str, remote_id: Any
 
 def _usage_cache_key(site_id: str, value: Any) -> str:
     return f"{site_id}:{str(value).strip().lower()}"
+
+
+async def _distinct_event_account_count(db: AsyncIOMotorDatabase, query: dict[str, Any]) -> int:
+    pipeline = [
+        {"$match": query},
+        {
+            "$addFields": {
+                "_event_account_email": {
+                    "$ifNull": [
+                        "$normalized_email",
+                        {"$ifNull": ["$email", ""]},
+                    ]
+                },
+            }
+        },
+        {
+            "$project": {
+                "account_key": {
+                    "$cond": [
+                        {"$ne": [{"$ifNull": ["$identity_id", ""]}, ""]},
+                        "$identity_id",
+                        {
+                            "$cond": [
+                                {"$ne": ["$_event_account_email", ""]},
+                                {"$concat": [{"$ifNull": ["$site_id", ""]}, ":email:", "$_event_account_email"]},
+                                {"$concat": [{"$ifNull": ["$site_id", ""]}, ":remote:", {"$toString": {"$ifNull": ["$remote_account_id", "$_id"]}}]},
+                            ]
+                        },
+                    ]
+                }
+            }
+        },
+        {"$group": {"_id": "$account_key"}},
+        {"$count": "total"},
+    ]
+    result = [doc async for doc in db.remote_account_status_events.aggregate(pipeline)]
+    return int(result[0].get("total") or 0) if result else 0
 
 
 def _int_list(value: Any) -> list[int]:
