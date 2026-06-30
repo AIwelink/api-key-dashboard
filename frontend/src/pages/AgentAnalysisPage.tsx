@@ -17,23 +17,36 @@ type AgentDecision = {
   severity: string;
   headline: string;
   suggested_add_count: number;
-  suggested_push_from_reserve_count: number;
-  suggested_make_new_count: number;
+  suggested_push_from_reserve_count?: number;
+  suggested_make_new_count?: number;
+  should_add_accounts?: boolean;
+  confidence?: string;
+  main_reasons?: string[];
+  risk_factors?: string[];
+  data_gaps?: string[];
+  should_alert?: boolean;
+  alert_channels?: string[];
+  requires_human_confirm?: boolean;
   manual_review_required: boolean;
+  recommended_actions?: AgentRecommendedAction[];
   suggested_actions: string[];
+  next_observation_focus?: string[];
+  follow_up_questions?: string[];
   inputs?: Record<string, unknown>;
 };
 
-type AgentCapabilityStep = {
-  index?: number;
-  capability: string;
+type AgentRecommendedAction = {
+  action_type?: string;
+  title?: string;
   reason?: string;
-  status?: string;
-  arguments?: Record<string, unknown>;
-  summary?: Record<string, unknown>;
+  risk_level?: string;
+  requires_human_confirm?: boolean;
 };
 
 type AgentAnalysisResponse = {
+  run_id?: string;
+  conversation_id?: string;
+  decision_id?: string;
   read_only: boolean;
   pool: ApiPool;
   severity: string;
@@ -62,10 +75,70 @@ type AgentAnalysisResponse = {
     intent?: string;
     thought?: string;
     fallback_reason?: string;
-    capability_plan?: AgentCapabilityStep[];
-    capability_trace?: AgentCapabilityStep[];
+    decision_mode?: string;
+    validator?: Record<string, unknown>;
+    context_pack?: Record<string, unknown>;
   };
   created_at: string;
+};
+
+type AgentRun = {
+  run_id?: string;
+  conversation_id?: string;
+  pool_id?: string | null;
+  status?: string;
+  trigger?: string;
+  severity?: string | null;
+  summary?: string | null;
+  started_at?: string;
+  finished_at?: string | null;
+  created_at?: string;
+};
+
+type AgentMessage = {
+  message_id?: string;
+  id?: string;
+  conversation_id: string;
+  run_id?: string | null;
+  role: "user" | "assistant" | "system";
+  content: string;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+};
+
+type AgentPersistedDecision = {
+  decision_id?: string;
+  run_id?: string;
+  conversation_id?: string;
+  pool_id?: string | null;
+  site_id?: string | null;
+  severity?: string;
+  headline?: string;
+  summary?: string;
+  decision?: Partial<AgentDecision> & Record<string, unknown>;
+  reasons?: string[];
+  suggested_actions?: string[];
+  capacity_snapshot?: Record<string, unknown>;
+  probe_snapshot?: Record<string, unknown>;
+  llm_output?: AgentAnalysisResponse["llm"];
+  agent?: AgentAnalysisResponse["agent"];
+  chat?: Record<string, unknown>;
+  read_only?: boolean;
+  trigger?: string;
+  created_at?: string;
+};
+
+type AgentStateResponse = {
+  latest_run?: AgentRun | null;
+  latest_decision?: AgentPersistedDecision | null;
+  messages?: AgentMessage[];
+  running?: boolean;
+  running_count?: number;
+};
+
+type AgentMessagesResponse = {
+  items: AgentMessage[];
+  total: number;
 };
 
 const severityLabels: Record<string, string> = {
@@ -84,6 +157,10 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
   const [chatMessage, setChatMessage] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
   const [report, setReport] = useState<AgentAnalysisResponse | null>(null);
+  const [conversationId, setConversationId] = useState("");
+  const [messages, setMessages] = useState<AgentMessage[]>([]);
+  const [showFullHistory, setShowFullHistory] = useState(false);
+  const [loadingState, setLoadingState] = useState(false);
 
   const selectedPool = useMemo(() => pools.find((pool) => pool.id === selectedPoolId) || null, [pools, selectedPoolId]);
 
@@ -101,6 +178,35 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
     }
   };
 
+  const loadAgentState = async () => {
+    setLoadingState(true);
+    try {
+      const state = await api<AgentStateResponse>("/agent/state", token);
+      const restoredReport = restoreReportFromState(state);
+      setReport(restoredReport);
+      setMessages(state.messages || []);
+      const restoredConversationId = state.latest_run?.conversation_id || state.latest_decision?.conversation_id || "";
+      setConversationId(restoredConversationId);
+      const restoredPoolId = restoredReport?.pool?.id || state.latest_run?.pool_id || state.latest_decision?.pool_id || "";
+      if (restoredPoolId) {
+        setSelectedPoolId(String(restoredPoolId));
+      }
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setLoadingState(false);
+    }
+  };
+
+  const loadConversationMessages = async (nextConversationId: string) => {
+    if (!nextConversationId) {
+      setMessages([]);
+      return;
+    }
+    const data = await api<AgentMessagesResponse>(`/agent/conversations/${encodeURIComponent(nextConversationId)}/messages`, token);
+    setMessages(data.items || []);
+  };
+
   const analyzePool = async () => {
     if (!selectedPoolId) {
       showToast("请先选择账号池", true);
@@ -110,6 +216,9 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
     try {
       const data = await api<AgentAnalysisResponse>(`/agent/pools/${selectedPoolId}/analyze`, token, { method: "POST" });
       setReport(data);
+      const nextConversationId = data.conversation_id || "";
+      setConversationId(nextConversationId);
+      await loadConversationMessages(nextConversationId);
       showToast("Agent 只读分析完成");
     } catch (error) {
       showToast(errorMessage(error), true);
@@ -128,9 +237,13 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
     try {
       const data = await api<AgentAnalysisResponse>("/agent/chat", token, {
         method: "POST",
-        body: JSON.stringify({ message, pool_id: selectedPoolId || undefined }),
+        body: JSON.stringify({ message, pool_id: selectedPoolId || undefined, conversation_id: conversationId || undefined }),
       });
       setReport(data);
+      const nextConversationId = data.conversation_id || conversationId;
+      setConversationId(nextConversationId);
+      await loadConversationMessages(nextConversationId);
+      setChatMessage("");
       if (data.pool?.id) {
         setSelectedPoolId(String(data.pool.id));
       }
@@ -144,6 +257,7 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
 
   useEffect(() => {
     loadPools();
+    loadAgentState();
   }, []);
 
   return (
@@ -151,7 +265,7 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
       <div className="topbar">
         <div>
           <h2>Agent分析</h2>
-          <p>最小 MVP：只读分析 API 账号池状态和账号探测数据，不写数据库、不操作 sub2api、不发送机器人通知。</p>
+          <p>基于 Context Pack 和 Level 1 模型生成账号池运营决策，当前阶段只读，不直接执行账号操作。</p>
         </div>
         <div className="button-row">
           <button className="ghost" type="button" onClick={loadPools} disabled={loadingPools}>
@@ -167,9 +281,9 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
         <div className="panel-header">
           <div>
             <h3>分析目标</h3>
-            <p>第一版建议先选择 Pro 池验证容量与 401 风险判断。</p>
+            <p>选择账号池后，Agent 会结合容量、探测、历史决策和最近对话进行判断。</p>
           </div>
-          <span className="status-pill accent">LangChain-ready</span>
+          <span className="status-pill accent">LLM decision</span>
         </div>
         <div className="agent-control-grid">
           <label>
@@ -186,8 +300,7 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
             </select>
           </label>
           <Metric label="类型" value={selectedPool?.account_type || "-"} />
-          <Metric label="目标 active" value={selectedPool?.target_active ?? "-"} />
-          <Metric label="最小备用" value={selectedPool?.min_reserve ?? "-"} />
+          <Metric label="分组" value={selectedPool?.active_group_id ? `group #${selectedPool.active_group_id}` : "-"} />
         </div>
         <div className="agent-chat-box">
           <label>
@@ -207,10 +320,54 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
             </button>
           </div>
         </div>
+        <AgentMessageList messages={messages} loading={loadingState} expanded={showFullHistory} onToggle={() => setShowFullHistory((value) => !value)} />
       </section>
 
-      {report ? <AgentReport report={report} /> : <div className="empty-state">选择账号池后点击“分析”，这里会显示只读决策结果。</div>}
+      {report ? <AgentReport report={report} /> : <div className="empty-state">选择账号池后点击“分析”，这里会显示 Agent 决策结果。</div>}
     </section>
+  );
+}
+
+function AgentMessageList({
+  messages,
+  loading,
+  expanded,
+  onToggle,
+}: {
+  messages: AgentMessage[];
+  loading: boolean;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  if (loading && !messages.length) {
+    return <div className="agent-message-empty">正在恢复最近一次 Agent 对话...</div>;
+  }
+  if (!messages.length) {
+    return <div className="agent-message-empty">暂无持久化对话消息。</div>;
+  }
+  const visibleMessages = expanded ? messages : messages.slice(-4);
+  const hiddenCount = Math.max(0, messages.length - visibleMessages.length);
+  return (
+    <div className="agent-history-panel">
+      <div className="agent-history-head">
+        <strong>最近对话</strong>
+        <button className="ghost compact-button" type="button" onClick={onToggle}>
+          {expanded ? "收起" : hiddenCount > 0 ? `展开 ${messages.length} 条` : "展开"}
+        </button>
+      </div>
+      {!expanded && hiddenCount > 0 && <div className="agent-message-empty">已折叠较早的 {hiddenCount} 条消息。</div>}
+      <div className="agent-message-list">
+        {visibleMessages.map((message, index) => (
+          <div className={`agent-message-item ${message.role}`} key={message.message_id || message.id || `${message.role}-${index}`}>
+            <div className="agent-message-meta">
+              <strong>{message.role === "user" ? "你" : message.role === "assistant" ? "Agent" : "System"}</strong>
+              <span>{formatDateTime(message.created_at)}</span>
+            </div>
+            <p>{message.content}</p>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -238,8 +395,8 @@ function AgentReport({ report }: { report: AgentAnalysisResponse }) {
         <section className="panel">
           <div className="panel-header">
             <div>
-              <h3>Level 1 LLM</h3>
-              <p>{report.llm.model ? `model: ${report.llm.model} / ${report.llm.framework || "http_fallback"}` : "OpenAI-compatible explanation"}</p>
+              <h3>LLM 主决策</h3>
+              <p>{report.llm.model ? `${report.llm.model} / ${report.llm.framework || "http_fallback"}` : "OpenAI-compatible decision"}</p>
             </div>
             <span className={`status-pill ${llmError ? "warning" : "accent"}`}>
               {llmError ? "failed" : "enabled"}
@@ -253,64 +410,81 @@ function AgentReport({ report }: { report: AgentAnalysisResponse }) {
         </section>
       )}
 
-      {report.agent && (
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <h3>Agent 编排过程</h3>
-              <p>
-                {displayText(report.agent.intent) || "analyze_pool"} / {displayText(report.agent.mode) || "read_only"}
-              </p>
-            </div>
-            <span className={`status-pill ${report.agent.planned_by === "level1" ? "accent" : "warning"}`}>
-              {report.agent.planned_by === "level1" ? "Level 1 planned" : "fallback"}
-            </span>
-          </div>
-          {report.agent.thought && <div className="agent-thought">{displayText(report.agent.thought)}</div>}
-          {report.agent.fallback_reason && <div className="empty-state">{displayText(report.agent.fallback_reason)}</div>}
-          <CapabilityTimeline title="计划调用能力" steps={report.agent.capability_plan || []} />
-          <CapabilityTimeline title="实际调用记录" steps={report.agent.capability_trace || []} showSummary />
-        </section>
-      )}
-
       <section className="grid two">
         <section className="panel">
           <div className="panel-header">
             <div>
-              <h3>建议动作</h3>
-              <p>当前版本只给建议，不执行动作。</p>
+              <h3>决策摘要</h3>
+              <p>由 Level 1 模型基于完整上下文输出，后端只做结构与安全校验。</p>
             </div>
           </div>
           <div className="compact-stats agent-action-stats">
-            <Metric label="备用池推送" value={decision.suggested_push_from_reserve_count} />
-            <Metric label="制作新号" value={decision.suggested_make_new_count} />
+            <Metric label="置信度" value={confidenceLabel(decision.confidence)} />
+            <Metric label="需要补号" value={(decision.should_add_accounts ?? decision.suggested_add_count > 0) ? "是" : "否"} />
+            <Metric label="需要告警" value={decision.should_alert ? "是" : "否"} />
             <Metric label="人工复核" value={decision.manual_review_required ? "需要" : "不需要"} />
           </div>
           <div className="list">
-            {report.suggested_actions.map((action) => (
-              <div className="list-item" key={action}>
-                {action}
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <h3>原因</h3>
-              <p>由容量缓存和账号探测数据共同生成。</p>
-            </div>
-          </div>
-          <div className="list">
-            {report.reasons.map((reason) => (
+            {decisionReasons(report).map((reason) => (
               <div className="list-item" key={reason}>
                 {reason}
               </div>
             ))}
           </div>
         </section>
+
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <h3>建议动作</h3>
+              <p>当前阶段只给建议，不直接执行动作。</p>
+            </div>
+          </div>
+          <div className="list">
+            {decisionActions(report).map((action) => (
+              <div className="list-item" key={action}>
+                {action}
+              </div>
+            ))}
+          </div>
+        </section>
       </section>
+
+      {(decision.data_gaps?.length || decision.next_observation_focus?.length || decision.follow_up_questions?.length) && (
+        <section className="grid two">
+          <section className="panel">
+            <div className="panel-header">
+              <div>
+                <h3>数据不足</h3>
+                <p>模型认为会影响判断质量的数据缺口。</p>
+              </div>
+            </div>
+            <div className="list">
+              {(decision.data_gaps?.length ? decision.data_gaps : ["暂无明显数据缺口。"]).map((item) => (
+                <div className="list-item" key={item}>
+                  {item}
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <div>
+                <h3>下一步观察</h3>
+                <p>供人工继续追踪的问题和指标。</p>
+              </div>
+            </div>
+            <div className="list">
+              {[...(decision.next_observation_focus || []), ...(decision.follow_up_questions || [])].map((item) => (
+                <div className="list-item" key={item}>
+                  {item}
+                </div>
+              ))}
+            </div>
+          </section>
+        </section>
+      )}
 
       <section className="grid two">
         <section className="panel">
@@ -369,28 +543,6 @@ function Metric({ label, value }: { label: string; value: unknown }) {
   );
 }
 
-function CapabilityTimeline({ title, steps, showSummary = false }: { title: string; steps: AgentCapabilityStep[]; showSummary?: boolean }) {
-  if (!steps.length) return null;
-  return (
-    <div className="agent-capability-block">
-      <h4>{title}</h4>
-      <div className="agent-capability-list">
-        {steps.map((step, index) => (
-          <div className="agent-capability-item" key={`${step.capability}-${step.index ?? index}`}>
-            <div className="agent-capability-head">
-              <span>{step.index ?? index + 1}</span>
-              <strong>{step.capability}</strong>
-              {step.status && <em>{step.status}</em>}
-            </div>
-            {step.reason && <p>{step.reason}</p>}
-            {showSummary && step.summary && <code>{compactJson(step.summary)}</code>}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function severityTone(value: string): "success" | "warning" | "danger" | "muted" | "accent" {
   if (value === "healthy") return "success";
   if (value === "warning" || value === "watch") return "warning";
@@ -439,17 +591,43 @@ function hoursText(value: unknown) {
   return Number.isFinite(number) ? `${number.toFixed(1)}h` : "-";
 }
 
+function confidenceLabel(value: unknown) {
+  const text = displayText(value).toLowerCase();
+  if (text === "high") return "高";
+  if (text === "medium") return "中";
+  if (text === "low") return "低";
+  return "-";
+}
+
+function decisionReasons(report: AgentAnalysisResponse): string[] {
+  const decision = report.decision;
+  const items = [
+    ...(decision.main_reasons || []),
+    ...(decision.risk_factors || []),
+    ...report.reasons,
+  ]
+    .map(displayText)
+    .filter(Boolean);
+  return dedupe(items).length ? dedupe(items) : ["模型未返回明确原因。"];
+}
+
+function decisionActions(report: AgentAnalysisResponse): string[] {
+  const decision = report.decision;
+  const structured = (decision.recommended_actions || [])
+    .map((action) => {
+      const title = displayText(action.title || action.action_type);
+      const reason = displayText(action.reason);
+      const confirm = action.requires_human_confirm ? "需要人工确认" : "";
+      return [title, reason, confirm].filter(Boolean).join("：");
+    })
+    .filter(Boolean);
+  const fallback = [...(decision.suggested_actions || []), ...report.suggested_actions].map(displayText).filter(Boolean);
+  return dedupe(structured.length ? structured : fallback).length ? dedupe(structured.length ? structured : fallback) : ["模型未返回建议动作。"];
+}
+
 function displayText(value: unknown): string {
   if (typeof value === "string") return value;
   if (value === null || value === undefined) return "";
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-function compactJson(value: unknown): string {
   try {
     return JSON.stringify(value);
   } catch {
@@ -464,4 +642,108 @@ function composeFallbackLlmMessage(operatorMessage: unknown, summary: unknown, r
     if (questionText) parts.push(`需要人工确认：${questionText}。`);
   }
   return Array.from(new Set(parts)).join("\n\n");
+}
+
+function dedupe(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function restoreReportFromState(state: AgentStateResponse): AgentAnalysisResponse | null {
+  const decisionDoc = state.latest_decision;
+  if (!decisionDoc) return null;
+  const capacity = asRecord(decisionDoc.capacity_snapshot);
+  const probe = asRecord(decisionDoc.probe_snapshot);
+  const pool = restorePool(decisionDoc, capacity);
+  const decision = normalizeDecision(decisionDoc);
+  return {
+    run_id: decisionDoc.run_id || state.latest_run?.run_id,
+    conversation_id: decisionDoc.conversation_id || state.latest_run?.conversation_id,
+    decision_id: decisionDoc.decision_id,
+    read_only: decisionDoc.read_only ?? true,
+    pool,
+    severity: decisionDoc.severity || decision.severity || "healthy",
+    headline: decisionDoc.headline || decision.headline || decisionDoc.summary || "Agent 最近一次分析",
+    decision,
+    reasons: Array.isArray(decisionDoc.reasons) ? decisionDoc.reasons : [],
+    suggested_actions: Array.isArray(decisionDoc.suggested_actions) ? decisionDoc.suggested_actions : decision.suggested_actions || [],
+    capacity,
+    probe,
+    llm: decisionDoc.llm_output,
+    agent: decisionDoc.agent,
+    created_at: decisionDoc.created_at || state.latest_run?.finished_at || state.latest_run?.created_at || "",
+  };
+}
+
+function normalizeDecision(decisionDoc: AgentPersistedDecision): AgentDecision {
+  const raw = asRecord(decisionDoc.decision);
+  return {
+    severity: textOr(raw.severity, decisionDoc.severity || "healthy"),
+    headline: textOr(raw.headline, decisionDoc.headline || decisionDoc.summary || "Agent 最近一次分析"),
+    suggested_add_count: numberOr(raw.suggested_add_count, 0),
+    suggested_push_from_reserve_count: numberOr(raw.suggested_push_from_reserve_count, 0),
+    suggested_make_new_count: numberOr(raw.suggested_make_new_count, 0),
+    should_add_accounts: booleanOr(raw.should_add_accounts, numberOr(raw.suggested_add_count, 0) > 0),
+    confidence: textOr(raw.confidence, ""),
+    main_reasons: stringList(raw.main_reasons),
+    risk_factors: stringList(raw.risk_factors),
+    data_gaps: stringList(raw.data_gaps),
+    should_alert: booleanOr(raw.should_alert, false),
+    alert_channels: stringList(raw.alert_channels),
+    requires_human_confirm: booleanOr(raw.requires_human_confirm, Boolean(raw.manual_review_required)),
+    manual_review_required: Boolean(raw.manual_review_required),
+    recommended_actions: Array.isArray(raw.recommended_actions)
+      ? raw.recommended_actions.map((item) => asRecord(item) as AgentRecommendedAction)
+      : [],
+    suggested_actions: Array.isArray(raw.suggested_actions)
+      ? raw.suggested_actions.map(displayText).filter(Boolean)
+      : Array.isArray(decisionDoc.suggested_actions)
+        ? decisionDoc.suggested_actions
+        : [],
+    next_observation_focus: stringList(raw.next_observation_focus),
+    follow_up_questions: stringList(raw.follow_up_questions),
+    inputs: asRecord(raw.inputs),
+  };
+}
+
+function restorePool(decisionDoc: AgentPersistedDecision, capacity: Record<string, unknown>): ApiPool {
+  const rawPool = asRecord(capacity.pool);
+  const poolId = textOr(rawPool.id, decisionDoc.pool_id || "unknown");
+  return {
+    id: poolId,
+    name: textOr(rawPool.name, poolId),
+    account_type: (textOr(rawPool.account_type, "other") as ApiPool["account_type"]) || "other",
+    site_id: textOr(rawPool.site_id, decisionDoc.site_id || "default"),
+    active_group_id: numberOr(rawPool.active_group_id, numberOr(capacity.group_id, 0)),
+    verification_group_id: rawPool.verification_group_id === null || rawPool.verification_group_id === undefined ? null : numberOr(rawPool.verification_group_id, 0),
+    min_active: numberOr(rawPool.min_active, 20),
+    target_active: numberOr(rawPool.target_active, 30),
+    max_avg_5h_used: numberOr(rawPool.max_avg_5h_used, 70),
+    max_avg_7d_used: numberOr(rawPool.max_avg_7d_used, 80),
+    min_reserve: numberOr(rawPool.min_reserve, 10),
+    status: rawPool.status === "disabled" ? "disabled" : "active",
+    created_at: displayText(rawPool.created_at),
+    updated_at: displayText(rawPool.updated_at),
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function textOr(value: unknown, fallback: string): string {
+  const text = displayText(value).trim();
+  return text || fallback;
+}
+
+function numberOr(value: unknown, fallback: number): number {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function booleanOr(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(displayText).filter(Boolean) : [];
 }

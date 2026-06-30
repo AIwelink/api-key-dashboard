@@ -101,3 +101,6 @@ async def serve_frontend(full_path: str) -> FileResponse:
     if not frontend_index.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Frontend build not found")
     return FileResponse(frontend_index)
+
+
+#python -m uv --directory backend run uvicorn app.main:app --reload  

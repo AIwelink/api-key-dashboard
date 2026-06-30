@@ -111,6 +111,15 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.remote_account_probe_samples.create_index([("site_id", 1), ("sampled_at", -1)])
     await db.remote_account_probe_runs.create_index([("site_id", 1), ("started_at", -1)])
     await db.remote_account_probe_meta.create_index("last_probe_at")
+    await db.agent_runs.create_index([("created_at", -1)])
+    await db.agent_runs.create_index([("status", 1), ("created_at", -1)])
+    await db.agent_runs.create_index([("pool_id", 1), ("created_at", -1)])
+    await db.agent_runs.create_index([("conversation_id", 1), ("created_at", -1)])
+    await db.agent_messages.create_index([("conversation_id", 1), ("created_at", 1)])
+    await db.agent_messages.create_index([("run_id", 1), ("created_at", 1)])
+    await db.agent_decisions.create_index([("run_id", 1)])
+    await db.agent_decisions.create_index([("pool_id", 1), ("created_at", -1)])
+    await db.agent_decisions.create_index([("conversation_id", 1), ("created_at", -1)])
 
 
 async def ensure_initial_owner(db: AsyncIOMotorDatabase) -> None:

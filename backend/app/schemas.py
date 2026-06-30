@@ -78,6 +78,19 @@ class NotificationChannelUpdate(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+class AgentLlmSettingsUpdate(BaseModel):
+    enabled: bool = False
+    base_url: str | None = Field(default=None, max_length=1000)
+    api_key: str | None = Field(default=None, max_length=2000)
+    level1_model: str | None = Field(default=None, max_length=200)
+    level1_temperature: float = Field(default=0.2, ge=0, le=2)
+    level2_model: str | None = Field(default=None, max_length=200)
+    level2_temperature: float = Field(default=0.2, ge=0, le=2)
+    timeout_seconds: int = Field(default=60, ge=5, le=300)
+    loop_enabled: bool = False
+    loop_interval_seconds: int = Field(default=900, ge=60, le=86400)
+
+
 class AccountCreate(BaseModel):
     account_json: dict[str, Any] | list[Any]
     metadata: dict[str, Any] = Field(default_factory=dict)

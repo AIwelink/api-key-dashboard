@@ -14,6 +14,7 @@ async def analyze_pool(
     pool_id: str,
     user_message: str | None = None,
     trigger: str = "manual_analyze",
+    actor: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return await run_agent_analysis(
         db,
@@ -21,6 +22,7 @@ async def analyze_pool(
         user_message=user_message or "分析这个账号池当前是否需要补号、是否存在容量或探测风险。",
         trigger=trigger,
         allow_planning=True,
+        actor=actor,
     )
 
 
@@ -29,6 +31,8 @@ async def chat(
     *,
     message: str,
     pool_id: str | None = None,
+    actor: dict[str, Any] | None = None,
+    conversation_id: str | None = None,
 ) -> dict[str, Any]:
     normalized = message.strip()
     if not normalized:
@@ -39,4 +43,6 @@ async def chat(
         user_message=normalized,
         trigger="manual_chat",
         allow_planning=True,
+        actor=actor,
+        conversation_id=conversation_id,
     )

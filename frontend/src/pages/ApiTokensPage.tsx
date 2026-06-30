@@ -55,6 +55,39 @@ type NotificationForm = {
   note: string;
 };
 
+type SystemTab = "tokens" | "notifications" | "agent-llm";
+
+type AgentLlmSettings = {
+  id?: string;
+  enabled: boolean;
+  base_url?: string | null;
+  api_key_configured?: boolean;
+  api_key_preview?: string | null;
+  level1_model?: string | null;
+  level1_temperature: number;
+  level2_model?: string | null;
+  level2_temperature: number;
+  timeout_seconds: number;
+  loop_enabled: boolean;
+  loop_interval_seconds: number;
+  last_test_at?: string | null;
+  last_test_status?: string | null;
+  last_test_message?: string | null;
+};
+
+type AgentLlmForm = {
+  enabled: boolean;
+  base_url: string;
+  api_key: string;
+  level1_model: string;
+  level1_temperature: string;
+  level2_model: string;
+  level2_temperature: string;
+  timeout_seconds: string;
+  loop_enabled: boolean;
+  loop_interval_seconds: string;
+};
+
 const emptyNotificationForm: NotificationForm = {
   name: "",
   channel_type: "dingtalk",
@@ -66,13 +99,28 @@ const emptyNotificationForm: NotificationForm = {
   note: "",
 };
 
+const emptyAgentLlmForm: AgentLlmForm = {
+  enabled: false,
+  base_url: "",
+  api_key: "",
+  level1_model: "",
+  level1_temperature: "0.2",
+  level2_model: "",
+  level2_temperature: "0.2",
+  timeout_seconds: "60",
+  loop_enabled: false,
+  loop_interval_seconds: "900",
+};
+
 export function ApiTokensPage({ token, showToast }: Props) {
-  const [activeTab, setActiveTab] = useState<"tokens" | "notifications">("tokens");
+  const [activeTab, setActiveTab] = useState<SystemTab>("tokens");
   const [tokens, setTokens] = useState<ApiToken[]>([]);
   const [createdToken, setCreatedToken] = useState<ApiToken | null>(null);
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
   const [notificationForm, setNotificationForm] = useState<NotificationForm>(emptyNotificationForm);
   const [editingChannelId, setEditingChannelId] = useState<string | null>(null);
+  const [agentLlmSettings, setAgentLlmSettings] = useState<AgentLlmSettings | null>(null);
+  const [agentLlmForm, setAgentLlmForm] = useState<AgentLlmForm>(emptyAgentLlmForm);
   const [busy, setBusy] = useState(false);
 
   const loadTokens = async () => {
@@ -85,8 +133,25 @@ export function ApiTokensPage({ token, showToast }: Props) {
     setChannels(data.items);
   };
 
+  const loadAgentLlmSettings = async () => {
+    const data = await api<AgentLlmSettings>("/settings/agent-llm", token);
+    setAgentLlmSettings(data);
+    setAgentLlmForm({
+      enabled: !!data.enabled,
+      base_url: data.base_url || "",
+      api_key: "",
+      level1_model: data.level1_model || "",
+      level1_temperature: String(data.level1_temperature ?? 0.2),
+      level2_model: data.level2_model || "",
+      level2_temperature: String(data.level2_temperature ?? 0.2),
+      timeout_seconds: String(data.timeout_seconds ?? 60),
+      loop_enabled: !!data.loop_enabled,
+      loop_interval_seconds: String(data.loop_interval_seconds ?? 900),
+    });
+  };
+
   useEffect(() => {
-    Promise.all([loadTokens(), loadNotificationChannels()]).catch((error) => showToast(errorMessage(error), true));
+    Promise.all([loadTokens(), loadNotificationChannels(), loadAgentLlmSettings()]).catch((error) => showToast(errorMessage(error), true));
   }, []);
 
   const submitToken = async (event: FormEvent<HTMLFormElement>) => {
@@ -223,8 +288,58 @@ export function ApiTokensPage({ token, showToast }: Props) {
     }
   };
 
+  const submitAgentLlmSettings = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const apiKey = agentLlmForm.api_key.trim();
+    const payload: Record<string, unknown> = {
+      enabled: agentLlmForm.enabled,
+      base_url: agentLlmForm.base_url.trim() || null,
+      level1_model: agentLlmForm.level1_model.trim() || null,
+      level1_temperature: Number(agentLlmForm.level1_temperature || 0.2),
+      level2_model: agentLlmForm.level2_model.trim() || null,
+      level2_temperature: Number(agentLlmForm.level2_temperature || 0.2),
+      timeout_seconds: Number(agentLlmForm.timeout_seconds || 60),
+      loop_enabled: agentLlmForm.loop_enabled,
+      loop_interval_seconds: Number(agentLlmForm.loop_interval_seconds || 900),
+    };
+    if (apiKey) payload.api_key = apiKey;
+
+    setBusy(true);
+    try {
+      const updated = await api<AgentLlmSettings>("/settings/agent-llm", token, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+      setAgentLlmSettings(updated);
+      setAgentLlmForm((current) => ({ ...current, api_key: "" }));
+      showToast("Agent LLM settings saved");
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const testAgentLlmSettings = async () => {
+    setBusy(true);
+    try {
+      const result = await api<{ message?: string; settings?: AgentLlmSettings }>("/settings/agent-llm/test", token, { method: "POST" });
+      if (result.settings) {
+        setAgentLlmSettings(result.settings);
+      } else {
+        await loadAgentLlmSettings();
+      }
+      showToast(result.message || "Agent LLM connection test passed");
+    } catch (error) {
+      await loadAgentLlmSettings().catch(() => undefined);
+      showToast(errorMessage(error), true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const refreshCurrentTab = () => {
-    const loader = activeTab === "tokens" ? loadTokens : loadNotificationChannels;
+    const loader = activeTab === "tokens" ? loadTokens : activeTab === "notifications" ? loadNotificationChannels : loadAgentLlmSettings;
     loader().catch((error) => showToast(errorMessage(error), true));
   };
 
@@ -255,6 +370,9 @@ export function ApiTokensPage({ token, showToast }: Props) {
         </button>
         <button className={activeTab === "notifications" ? "active" : ""} onClick={() => setActiveTab("notifications")} type="button">
           通知
+        </button>
+        <button className={activeTab === "agent-llm" ? "active" : ""} onClick={() => setActiveTab("agent-llm")} type="button">
+          Agent LLM
         </button>
       </div>
 
@@ -468,6 +586,145 @@ export function ApiTokensPage({ token, showToast }: Props) {
                 保存通知配置
               </button>
             </form>
+          </section>
+        </div>
+      )}
+
+      {activeTab === "agent-llm" && (
+        <div className="grid two">
+          <section className="panel">
+            <div className="panel-header">
+              <div>
+                <h3>Agent LLM</h3>
+                <p>OpenAI-compatible endpoint for the account-pool Agent.</p>
+              </div>
+              <span className={`status-pill ${agentLlmSettings?.enabled ? "success" : ""}`}>{agentLlmSettings?.enabled ? "Enabled" : "Disabled"}</span>
+            </div>
+            <form className="form-grid single" onSubmit={submitAgentLlmSettings}>
+              <label>
+                Enable Agent LLM calls
+                <select value={agentLlmForm.enabled ? "yes" : "no"} onChange={(event) => setAgentLlmForm((current) => ({ ...current, enabled: event.target.value === "yes" }))}>
+                  <option value="yes">是</option>
+                  <option value="no">否</option>
+                </select>
+              </label>
+              <label>
+                Base URL
+                <input
+                  value={agentLlmForm.base_url}
+                  onChange={(event) => setAgentLlmForm((current) => ({ ...current, base_url: event.target.value }))}
+                  placeholder="https://example.com/v1"
+                />
+              </label>
+              <label>
+                API Key
+                <input
+                  type="password"
+                  value={agentLlmForm.api_key}
+                  onChange={(event) => setAgentLlmForm((current) => ({ ...current, api_key: event.target.value }))}
+                  placeholder={agentLlmSettings?.api_key_configured ? "Leave blank to keep current key" : "sk-..."}
+                />
+              </label>
+              <div className="muted">Current key: {agentLlmSettings?.api_key_configured ? agentLlmSettings.api_key_preview || "configured" : "not configured"}</div>
+              <label>
+                Level 1 Model
+                <input
+                  value={agentLlmForm.level1_model}
+                  onChange={(event) => setAgentLlmForm((current) => ({ ...current, level1_model: event.target.value }))}
+                  placeholder="gpt-4.1-mini"
+                />
+              </label>
+              <label>
+                Level 1 Temperature
+                <input
+                  min="0"
+                  max="2"
+                  step="0.1"
+                  type="number"
+                  value={agentLlmForm.level1_temperature}
+                  onChange={(event) => setAgentLlmForm((current) => ({ ...current, level1_temperature: event.target.value }))}
+                />
+              </label>
+              <label>
+                Level 2 Model
+                <input
+                  value={agentLlmForm.level2_model}
+                  onChange={(event) => setAgentLlmForm((current) => ({ ...current, level2_model: event.target.value }))}
+                  placeholder="optional"
+                />
+              </label>
+              <label>
+                Level 2 Temperature
+                <input
+                  min="0"
+                  max="2"
+                  step="0.1"
+                  type="number"
+                  value={agentLlmForm.level2_temperature}
+                  onChange={(event) => setAgentLlmForm((current) => ({ ...current, level2_temperature: event.target.value }))}
+                />
+              </label>
+              <label>
+                Timeout Seconds
+                <input
+                  min="5"
+                  max="300"
+                  type="number"
+                  value={agentLlmForm.timeout_seconds}
+                  onChange={(event) => setAgentLlmForm((current) => ({ ...current, timeout_seconds: event.target.value }))}
+                />
+              </label>
+              <label>
+                Enable future Agent loop
+                <select value={agentLlmForm.loop_enabled ? "yes" : "no"} onChange={(event) => setAgentLlmForm((current) => ({ ...current, loop_enabled: event.target.value === "yes" }))}>
+                  <option value="yes">是</option>
+                  <option value="no">否</option>
+                </select>
+              </label>
+              <label>
+                Loop Interval Seconds
+                <input
+                  min="60"
+                  max="86400"
+                  type="number"
+                  value={agentLlmForm.loop_interval_seconds}
+                  onChange={(event) => setAgentLlmForm((current) => ({ ...current, loop_interval_seconds: event.target.value }))}
+                />
+              </label>
+              <div className="button-row">
+                <button className="success-button" disabled={busy} type="submit">
+                  Save Agent LLM
+                </button>
+                <button className="ghost" disabled={busy} onClick={testAgentLlmSettings} type="button">
+                  Test saved config
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <section className="panel">
+            <h3>Connection Status</h3>
+            <div className="list">
+              <div className="list-item">
+                <div>
+                  <strong>Saved configuration</strong>
+                  <div className="muted">Base URL {agentLlmSettings?.base_url ? "configured" : "not configured"}</div>
+                  <div className="muted">Level 1 model {agentLlmSettings?.level1_model || "-"}</div>
+                  <div className="muted">Level 2 model {agentLlmSettings?.level2_model || "-"}</div>
+                  <div className="muted">Timeout {agentLlmSettings?.timeout_seconds ?? "-"}s</div>
+                </div>
+              </div>
+              <div className="list-item">
+                <div>
+                  <strong>Last test</strong>
+                  <div className="muted">Time {formatDateTime(agentLlmSettings?.last_test_at)}</div>
+                  <div className={agentLlmSettings?.last_test_status === "success" ? "success-text" : "warning-text"}>
+                    Status {agentLlmSettings?.last_test_status || "-"}
+                  </div>
+                  {agentLlmSettings?.last_test_message && <div className="agent-test-message">{agentLlmSettings.last_test_message}</div>}
+                </div>
+              </div>
+            </div>
           </section>
         </div>
       )}
