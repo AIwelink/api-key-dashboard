@@ -25,6 +25,34 @@ DEFAULT_AGENT_LLM_SETTINGS: dict[str, Any] = {
     "timeout_seconds": 60,
     "loop_enabled": False,
     "loop_interval_seconds": 900,
+    "agent_loop_enabled": False,
+    "scheduler_interval_seconds": 300,
+    "max_tasks_per_tick": 5,
+    "max_pool_patrols_per_tick": 3,
+    "patrol_enabled": False,
+    "pool_patrol_interval_minutes": 30,
+    "pool_patrol_cooldown_minutes": 30,
+    "required_patrol_pool_ids": [],
+    "excluded_agent_pool_ids": [],
+    "max_event_triggers_per_tick": 3,
+    "max_concurrent_runs": 1,
+    "task_cooldown_minutes": 10,
+    "event_trigger_cooldown_minutes": 15,
+    "daily_memory_enabled": True,
+    "weekly_memory_enabled": True,
+    "max_memory_summaries_per_tick": 3,
+    "memory_summary_catchup_enabled": True,
+    "notification_dispatch_enabled": False,
+    "decision_notification_enabled": False,
+    "decision_notification_min_severity": "warning",
+    "decision_notification_triggers": [
+        "event_spike",
+        "scheduler_task_due",
+        "scheduler_review_due",
+        "scheduler_patrol",
+    ],
+    "decision_notification_cooldown_minutes": 30,
+    "pool_strategies": [],
     "last_test_at": None,
     "last_test_status": None,
     "last_test_message": None,
@@ -44,7 +72,7 @@ def redact_api_key(value: str | None) -> str | None:
 
 
 def public_agent_llm_settings(document: dict[str, Any] | None) -> dict[str, Any]:
-    merged = {**DEFAULT_AGENT_LLM_SETTINGS, **(document or {})}
+    merged = _merge_agent_settings(document)
     data = serialize_doc(merged)
     api_key = str(data.get("api_key") or "")
     data["api_key_configured"] = bool(api_key)
@@ -60,7 +88,36 @@ async def get_agent_llm_settings(db: AsyncIOMotorDatabase) -> dict[str, Any]:
 
 async def get_agent_llm_settings_private(db: AsyncIOMotorDatabase) -> dict[str, Any]:
     document = await _find_agent_llm_settings_document(db)
-    return {**DEFAULT_AGENT_LLM_SETTINGS, **(document or {})}
+    return _merge_agent_settings(document)
+
+
+async def get_agent_scheduler_runtime_settings(db: AsyncIOMotorDatabase) -> Any:
+    config = await get_agent_llm_settings_private(db)
+    return SimpleNamespace(
+        agent_loop_enabled=bool(config.get("agent_loop_enabled")),
+        scheduler_interval_seconds=_choose_int(config.get("scheduler_interval_seconds"), 300),
+        max_tasks_per_tick=_choose_int(config.get("max_tasks_per_tick"), 5),
+        max_pool_patrols_per_tick=_choose_int(config.get("max_pool_patrols_per_tick"), 3),
+        patrol_enabled=bool(config.get("patrol_enabled", False)),
+        pool_patrol_interval_minutes=_choose_int(config.get("pool_patrol_interval_minutes"), 30),
+        pool_patrol_cooldown_minutes=_choose_int(config.get("pool_patrol_cooldown_minutes"), 30),
+        required_patrol_pool_ids=_clean_string_list(config.get("required_patrol_pool_ids")),
+        excluded_agent_pool_ids=_clean_string_list(config.get("excluded_agent_pool_ids")),
+        max_event_triggers_per_tick=_choose_int(config.get("max_event_triggers_per_tick"), 3),
+        max_concurrent_runs=_choose_int(config.get("max_concurrent_runs"), 1),
+        task_cooldown_minutes=_choose_int(config.get("task_cooldown_minutes"), 10),
+        event_trigger_cooldown_minutes=_choose_int(config.get("event_trigger_cooldown_minutes"), 15),
+        daily_memory_enabled=bool(config.get("daily_memory_enabled", True)),
+        weekly_memory_enabled=bool(config.get("weekly_memory_enabled", True)),
+        max_memory_summaries_per_tick=_choose_int(config.get("max_memory_summaries_per_tick"), 3),
+        memory_summary_catchup_enabled=bool(config.get("memory_summary_catchup_enabled", True)),
+        notification_dispatch_enabled=bool(config.get("notification_dispatch_enabled", False)),
+        decision_notification_enabled=bool(config.get("decision_notification_enabled", False)),
+        decision_notification_min_severity=_clean_optional(config.get("decision_notification_min_severity")) or "warning",
+        decision_notification_triggers=_clean_string_list(config.get("decision_notification_triggers")),
+        decision_notification_cooldown_minutes=_choose_int(config.get("decision_notification_cooldown_minutes"), 30),
+        pool_strategies=config.get("pool_strategies") if isinstance(config.get("pool_strategies"), list) else [],
+    )
 
 
 async def get_agent_llm_runtime_settings(db: AsyncIOMotorDatabase | None = None) -> Any:
@@ -98,6 +155,7 @@ async def update_agent_llm_settings(
 ) -> dict[str, Any]:
     existing = await get_agent_llm_settings_private(db)
     now = now_utc()
+    agent_loop_enabled = payload.agent_loop_enabled if payload.agent_loop_enabled is not None else payload.loop_enabled
     updates: dict[str, Any] = {
         "enabled": payload.enabled,
         "base_url": _clean_optional(payload.base_url),
@@ -106,8 +164,31 @@ async def update_agent_llm_settings(
         "level2_model": _clean_optional(payload.level2_model),
         "level2_temperature": payload.level2_temperature,
         "timeout_seconds": payload.timeout_seconds,
-        "loop_enabled": payload.loop_enabled,
+        "loop_enabled": agent_loop_enabled,
         "loop_interval_seconds": payload.loop_interval_seconds,
+        "agent_loop_enabled": agent_loop_enabled,
+        "scheduler_interval_seconds": payload.scheduler_interval_seconds,
+        "max_tasks_per_tick": payload.max_tasks_per_tick,
+        "max_pool_patrols_per_tick": payload.max_pool_patrols_per_tick,
+        "patrol_enabled": payload.patrol_enabled,
+        "pool_patrol_interval_minutes": payload.pool_patrol_interval_minutes,
+        "pool_patrol_cooldown_minutes": payload.pool_patrol_cooldown_minutes,
+        "required_patrol_pool_ids": _clean_string_list(payload.required_patrol_pool_ids),
+        "excluded_agent_pool_ids": _clean_string_list(payload.excluded_agent_pool_ids),
+        "max_event_triggers_per_tick": payload.max_event_triggers_per_tick,
+        "max_concurrent_runs": payload.max_concurrent_runs,
+        "task_cooldown_minutes": payload.task_cooldown_minutes,
+        "event_trigger_cooldown_minutes": payload.event_trigger_cooldown_minutes,
+        "daily_memory_enabled": payload.daily_memory_enabled,
+        "weekly_memory_enabled": payload.weekly_memory_enabled,
+        "max_memory_summaries_per_tick": payload.max_memory_summaries_per_tick,
+        "memory_summary_catchup_enabled": payload.memory_summary_catchup_enabled,
+        "notification_dispatch_enabled": payload.notification_dispatch_enabled,
+        "decision_notification_enabled": payload.decision_notification_enabled,
+        "decision_notification_min_severity": _clean_optional(payload.decision_notification_min_severity) or "warning",
+        "decision_notification_triggers": _clean_string_list(payload.decision_notification_triggers),
+        "decision_notification_cooldown_minutes": payload.decision_notification_cooldown_minutes,
+        "pool_strategies": payload.pool_strategies,
         "updated_by": actor.get("_id"),
         "updated_at": now,
     }
@@ -170,11 +251,42 @@ async def _find_agent_llm_settings_document(db: AsyncIOMotorDatabase) -> dict[st
     return await db.app_settings.find_one({"_id": AGENT_LLM_SETTINGS_ID})
 
 
+def _merge_agent_settings(document: dict[str, Any] | None) -> dict[str, Any]:
+    merged = {**DEFAULT_AGENT_LLM_SETTINGS, **(document or {})}
+    if "agent_loop_enabled" not in merged or merged.get("agent_loop_enabled") is None:
+        merged["agent_loop_enabled"] = bool(merged.get("loop_enabled"))
+    if "scheduler_interval_seconds" not in merged or merged.get("scheduler_interval_seconds") is None:
+        merged["scheduler_interval_seconds"] = _choose_int(merged.get("loop_interval_seconds"), 300)
+    merged["loop_enabled"] = bool(merged.get("agent_loop_enabled"))
+    if not isinstance(merged.get("pool_strategies"), list):
+        merged["pool_strategies"] = []
+    merged["required_patrol_pool_ids"] = _clean_string_list(merged.get("required_patrol_pool_ids"))
+    merged["excluded_agent_pool_ids"] = _clean_string_list(merged.get("excluded_agent_pool_ids"))
+    merged["decision_notification_triggers"] = _clean_string_list(merged.get("decision_notification_triggers"))
+    if not merged["decision_notification_triggers"]:
+        merged["decision_notification_triggers"] = list(DEFAULT_AGENT_LLM_SETTINGS["decision_notification_triggers"])
+    return merged
+
+
 def _clean_optional(value: str | None) -> str | None:
     if value is None:
         return None
-    text = value.strip()
+    text = str(value).strip()
     return text or None
+
+
+def _clean_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        items.append(text)
+    return items[:100]
 
 
 def _choose_config_value(database_value: Any, env_value: Any, *, enabled: bool) -> str | None:

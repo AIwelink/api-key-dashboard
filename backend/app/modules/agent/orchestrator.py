@@ -10,6 +10,7 @@ from app.modules.agent.capabilities import invoke_agent_capability
 from app.modules.agent.context_pack import build_agent_context_pack
 from app.modules.agent.decision_core import decide_with_context_pack
 from app.modules.agent.llm import explain_level1_analysis, plan_level1_capabilities
+from app.modules.agent.long_term_memory import build_memory_candidates_from_report, record_operator_feedback_if_present
 from app.modules.agent.memory import (
     append_agent_message,
     create_agent_run,
@@ -75,6 +76,17 @@ async def run_agent_analysis(
         )
         target_pool = context_pack.get("target_pool") if isinstance(context_pack.get("target_pool"), dict) else {}
         resolved_pool_id = str(target_pool.get("pool_id") or pool_id or "").strip() or None
+        operator_feedback_memory = None
+        if trigger == "manual_chat" and normalized_message:
+            operator_feedback_memory = await record_operator_feedback_if_present(
+                db,
+                site_id=str(target_pool.get("site_id")) if target_pool.get("site_id") is not None else None,
+                pool_id=resolved_pool_id,
+                message=normalized_message,
+                run_id=run_id,
+                conversation_id=conversation_id,
+                actor=actor,
+            )
         pools_response = await list_agent_pools(db)
         pools = [pool for pool in pools_response.get("items", []) if isinstance(pool, dict)]
         if not pools:
@@ -116,6 +128,13 @@ async def run_agent_analysis(
         report["context_pack_version"] = context_pack.get("schema_version")
         agent_meta = report.get("agent") if isinstance(report.get("agent"), dict) else {}
         agent_meta["context_pack"] = _context_pack_trace_summary(context_pack)
+        agent_meta["memory_candidates"] = await build_memory_candidates_from_report(db, report=report)
+        if operator_feedback_memory:
+            agent_meta["operator_feedback_memory"] = {
+                "memory_id": operator_feedback_memory.get("memory_id"),
+                "memory_type": operator_feedback_memory.get("memory_type"),
+                "summary": operator_feedback_memory.get("summary"),
+            }
         report["agent"] = agent_meta
         decision_doc = await save_agent_decision(db, run_id=run_id, conversation_id=conversation_id, report=report, actor=actor)
         decision_id = str(decision_doc["decision_id"])

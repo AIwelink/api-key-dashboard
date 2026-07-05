@@ -27,8 +27,8 @@ def decide_pool_action(*, pool: dict[str, Any], capacity: dict[str, Any], probe:
     burst_trend_strength_label = str(capacity.get("burst_1h_trend_strength_label") or "").strip()
     reserve_count = _int_value(capacity.get("reserve_account_count"))
     available_accounts = _int_value(capacity.get("available_accounts"))
-    target_active = _int_value(pool.get("target_active"), default=30)
-    min_reserve = _int_value(pool.get("min_reserve"), default=10)
+    target_active = _int_value(pool.get("target_active"), default=available_accounts)
+    min_reserve = _int_value(pool.get("min_reserve"), default=0)
     detected_401_1h = _int_value(probe.get("detected_401_1h", probe.get("pro_401_1h")))
     detected_401_24h = _int_value(probe.get("detected_401_24h", probe.get("pro_401_24h")))
 

@@ -151,8 +151,6 @@ async def plan_level1_capabilities(
                 "account_type",
                 "site_id",
                 "active_group_id",
-                "target_active",
-                "min_reserve",
             )
             for pool in pools[:50]
         ],
@@ -317,8 +315,6 @@ def _analysis_payload(
             "account_type",
             "site_id",
             "active_group_id",
-            "target_active",
-            "min_reserve",
         ),
         "decision": _pick(
             decision,

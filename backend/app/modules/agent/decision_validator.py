@@ -101,6 +101,9 @@ def validate_agent_decision(raw: dict[str, Any], *, context_pack: dict[str, Any]
     alert_channels = _string_list(raw.get("alert_channels"))
     if should_alert and not alert_channels:
         alert_channels = ["manual"]
+    evidence_summary = _normalize_evidence_summary(raw.get("evidence_summary"))
+    event_assessment = _normalize_event_assessment(raw.get("event_assessment"))
+    memory_used = _normalize_memory_used(raw.get("memory_used"))
 
     decision = {
         "decision_type": DECISION_TYPE,
@@ -127,6 +130,9 @@ def validate_agent_decision(raw: dict[str, Any], *, context_pack: dict[str, Any]
         "next_observation_focus": next_observation_focus,
         "follow_up_questions": follow_up_questions,
         "continue_decision_loop": _bool(raw.get("continue_decision_loop"), default=False),
+        "evidence_summary": evidence_summary,
+        "event_assessment": event_assessment,
+        "memory_used": memory_used,
         "validator": {
             "status": "adjusted" if warnings or adjustments else "passed",
             "warnings": warnings,
@@ -136,6 +142,45 @@ def validate_agent_decision(raw: dict[str, Any], *, context_pack: dict[str, Any]
         },
     }
     return decision
+
+
+def _normalize_evidence_summary(value: Any) -> dict[str, list[str]]:
+    result = {"capacity": [], "events": [], "probe": [], "memory": []}
+    if not isinstance(value, dict):
+        return result
+    for key in result:
+        result[key] = _string_list(value.get(key))[:8]
+    return result
+
+
+def _normalize_event_assessment(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {
+            "has_recent_ban_burst": False,
+            "ban_burst_window": None,
+            "is_continuous_degradation": False,
+            "interpretation": "",
+        }
+    return {
+        "has_recent_ban_burst": _bool(value.get("has_recent_ban_burst"), default=False),
+        "ban_burst_window": _optional_string(value.get("ban_burst_window")),
+        "is_continuous_degradation": _bool(value.get("is_continuous_degradation"), default=False),
+        "interpretation": _optional_string(value.get("interpretation")) or "",
+    }
+
+
+def _normalize_memory_used(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, str]] = []
+    for item in value[:10]:
+        if not isinstance(item, dict):
+            continue
+        memory_id = _optional_string(item.get("memory_id"))
+        reason = _optional_string(item.get("reason"))
+        if memory_id or reason:
+            items.append({"memory_id": memory_id or "", "reason": reason or ""})
+    return items
 
 
 def _normalize_actions(
@@ -319,3 +364,10 @@ def _string_or_default(value: Any, default: str) -> str:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return default
+
+
+def _optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

@@ -5,16 +5,22 @@ from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.modules.agent.triggers import build_trigger_metadata, normalize_agent_trigger
 from app.utils import now_utc, serialize_doc
 
 
 AGENT_RUNS_COLLECTION = "agent_runs"
 AGENT_MESSAGES_COLLECTION = "agent_messages"
 AGENT_DECISIONS_COLLECTION = "agent_decisions"
+AGENT_RUN_STEPS_COLLECTION = "agent_run_steps"
+AGENT_RUN_STEP_SCHEMA_VERSION = "agent_run_step.v1"
 
 RUN_STATUS_RUNNING = "running"
 RUN_STATUS_SUCCESS = "success"
 RUN_STATUS_FAILED = "failed"
+STEP_STATUS_RUNNING = "running"
+STEP_STATUS_SUCCESS = "success"
+STEP_STATUS_FAILED = "failed"
 
 MESSAGE_ROLES = {"user", "assistant", "system"}
 DEFAULT_MESSAGE_LIMIT = 50
@@ -37,10 +43,17 @@ async def create_agent_run(
     now = now_utc()
     run_id = _new_id()
     normalized_conversation_id = _clean_optional_string(conversation_id) or run_id
+    normalized_trigger = normalize_agent_trigger(trigger)
+    trigger_metadata = build_trigger_metadata(
+        trigger=normalized_trigger,
+        metadata=metadata,
+        pool_id=pool_id,
+        site_id=site_id,
+    )
     document = {
         "_id": run_id,
         "run_id": run_id,
-        "trigger": _clean_optional_string(trigger) or "manual",
+        "trigger": normalized_trigger,
         "status": RUN_STATUS_RUNNING,
         "conversation_id": normalized_conversation_id,
         "pool_id": _clean_optional_string(pool_id),
@@ -58,7 +71,8 @@ async def create_agent_run(
         "severity": None,
         "decision_id": None,
         "error": None,
-        "metadata": metadata or {},
+        "metadata": trigger_metadata,
+        "trigger_metadata": trigger_metadata,
         "created_by": _actor_id(actor),
         "created_at": now,
         "updated_at": now,
@@ -214,18 +228,20 @@ async def get_agent_latest_state(db: AsyncIOMotorDatabase, *, pool_id: str | Non
     normalized_pool_id = _clean_optional_string(pool_id)
     query = {"pool_id": normalized_pool_id} if normalized_pool_id else {}
     latest_run = await _runs(db).find_one(query, sort=[("created_at", -1)])
-    latest_decision = None
+    latest_decision = await _decisions(db).find_one(query, sort=[("created_at", -1)])
     messages: list[dict[str, Any]] = []
-    if latest_run:
-        if latest_run.get("decision_id"):
-            latest_decision = await _decisions(db).find_one({"_id": latest_run.get("decision_id")})
-        conversation_id = latest_run.get("conversation_id")
-        if conversation_id:
-            messages = [
-                item
-                async for item in _messages(db).find({"conversation_id": conversation_id}).sort("created_at", -1).limit(50)
-            ]
-            messages.reverse()
+    conversation_id = None
+    if latest_decision and latest_decision.get("conversation_id"):
+        conversation_id = latest_decision.get("conversation_id")
+    if not conversation_id:
+        latest_message = await _messages(db).find_one(query, sort=[("created_at", -1)])
+        conversation_id = latest_message.get("conversation_id") if latest_message else None
+    if conversation_id:
+        messages = [
+            item
+            async for item in _messages(db).find({"conversation_id": conversation_id}).sort("created_at", -1).limit(50)
+        ]
+        messages.reverse()
     running_count = await _runs(db).count_documents({"status": RUN_STATUS_RUNNING, **query})
     return {
         "latest_run": serialize_doc(latest_run) if latest_run else None,
@@ -248,12 +264,127 @@ async def list_agent_messages(db: AsyncIOMotorDatabase, *, conversation_id: str,
     return {"items": serialize_doc(items), "total": total}
 
 
-async def list_agent_runs(db: AsyncIOMotorDatabase, *, pool_id: str | None = None, limit: int = 20) -> dict[str, Any]:
+async def list_agent_runs(
+    db: AsyncIOMotorDatabase,
+    *,
+    pool_id: str | None = None,
+    trigger: str | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
     normalized_pool_id = _clean_optional_string(pool_id)
-    query = {"pool_id": normalized_pool_id} if normalized_pool_id else {}
+    normalized_trigger = _clean_optional_string(trigger)
+    query: dict[str, Any] = {}
+    if normalized_pool_id:
+        query["pool_id"] = normalized_pool_id
+    if normalized_trigger:
+        query["trigger"] = normalized_trigger
     normalized_limit = _normalize_limit(limit, default=DEFAULT_RUN_LIMIT, maximum=MAX_RUN_LIMIT)
     items = [item async for item in _runs(db).find(query).sort("created_at", -1).limit(normalized_limit)]
     total = await _runs(db).count_documents(query)
+    return {"items": serialize_doc(items), "total": total}
+
+
+async def create_agent_step(
+    db: AsyncIOMotorDatabase,
+    *,
+    run_id: str,
+    step_index: int,
+    step_type: str,
+    conversation_id: str | None = None,
+    task_id: str | None = None,
+    intent: str | None = None,
+    input_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_run_id = _clean_optional_string(run_id)
+    if not normalized_run_id:
+        raise ValueError("run_id is required")
+    now = now_utc()
+    step_id = _new_id()
+    document = {
+        "_id": step_id,
+        "schema_version": AGENT_RUN_STEP_SCHEMA_VERSION,
+        "step_id": step_id,
+        "run_id": normalized_run_id,
+        "conversation_id": _clean_optional_string(conversation_id),
+        "task_id": _clean_optional_string(task_id),
+        "step_index": int(step_index),
+        "step_type": _clean_optional_string(step_type) or "unknown",
+        "status": STEP_STATUS_RUNNING,
+        "intent": _clean_optional_string(intent),
+        "input_summary": input_summary or {},
+        "output_summary": {},
+        "llm": {},
+        "capability_calls": [],
+        "started_at": now,
+        "finished_at": None,
+        "duration_ms": None,
+        "error": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await _steps(db).insert_one(document)
+    return serialize_doc(document)
+
+
+async def finish_agent_step(
+    db: AsyncIOMotorDatabase,
+    *,
+    step_id: str,
+    output_summary: dict[str, Any] | None = None,
+    llm: dict[str, Any] | None = None,
+    capability_calls: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    existing = await _steps(db).find_one({"_id": step_id})
+    if not existing:
+        return None
+    finished_at = now_utc()
+    updates = {
+        "status": STEP_STATUS_SUCCESS,
+        "output_summary": output_summary or {},
+        "llm": llm or {},
+        "capability_calls": capability_calls or [],
+        "finished_at": finished_at,
+        "duration_ms": _duration_ms(existing.get("started_at"), finished_at),
+        "error": None,
+        "updated_at": finished_at,
+    }
+    await _steps(db).update_one({"_id": step_id}, {"$set": updates})
+    document = await _steps(db).find_one({"_id": step_id})
+    return serialize_doc(document) if document else None
+
+
+async def fail_agent_step(
+    db: AsyncIOMotorDatabase,
+    *,
+    step_id: str,
+    error: str,
+    output_summary: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    existing = await _steps(db).find_one({"_id": step_id})
+    if not existing:
+        return None
+    finished_at = now_utc()
+    updates = {
+        "status": STEP_STATUS_FAILED,
+        "output_summary": output_summary or {},
+        "finished_at": finished_at,
+        "duration_ms": _duration_ms(existing.get("started_at"), finished_at),
+        "error": _clean_optional_string(error) or "Agent step failed",
+        "updated_at": finished_at,
+    }
+    await _steps(db).update_one({"_id": step_id}, {"$set": updates})
+    document = await _steps(db).find_one({"_id": step_id})
+    return serialize_doc(document) if document else None
+
+
+async def list_agent_steps(db: AsyncIOMotorDatabase, *, run_id: str, limit: int = 50) -> dict[str, Any]:
+    normalized_run_id = _clean_optional_string(run_id)
+    if not normalized_run_id:
+        return {"items": [], "total": 0}
+    normalized_limit = _normalize_limit(limit, default=50, maximum=200)
+    query = {"run_id": normalized_run_id}
+    items = [item async for item in _steps(db).find(query).sort("step_index", 1).limit(normalized_limit)]
+    total = await _steps(db).count_documents(query)
     return {"items": serialize_doc(items), "total": total}
 
 
@@ -267,6 +398,10 @@ def _messages(db: AsyncIOMotorDatabase) -> Any:
 
 def _decisions(db: AsyncIOMotorDatabase) -> Any:
     return db[AGENT_DECISIONS_COLLECTION]
+
+
+def _steps(db: AsyncIOMotorDatabase) -> Any:
+    return db[AGENT_RUN_STEPS_COLLECTION]
 
 
 def _actor_id(actor: dict[str, Any] | None) -> Any:

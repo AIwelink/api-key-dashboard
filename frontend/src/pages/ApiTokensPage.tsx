@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../api/client";
+import type { ApiPool } from "../types";
 import { errorMessage, formatDateTime } from "../utils/format";
 
 type Props = {
@@ -70,6 +71,29 @@ type AgentLlmSettings = {
   timeout_seconds: number;
   loop_enabled: boolean;
   loop_interval_seconds: number;
+  agent_loop_enabled?: boolean;
+  scheduler_interval_seconds: number;
+  max_tasks_per_tick: number;
+  max_pool_patrols_per_tick: number;
+  patrol_enabled: boolean;
+  pool_patrol_interval_minutes: number;
+  pool_patrol_cooldown_minutes: number;
+  required_patrol_pool_ids?: string[];
+  excluded_agent_pool_ids?: string[];
+  max_event_triggers_per_tick: number;
+  max_concurrent_runs: number;
+  task_cooldown_minutes: number;
+  event_trigger_cooldown_minutes: number;
+  daily_memory_enabled: boolean;
+  weekly_memory_enabled: boolean;
+  max_memory_summaries_per_tick: number;
+  memory_summary_catchup_enabled: boolean;
+  notification_dispatch_enabled: boolean;
+  decision_notification_enabled: boolean;
+  decision_notification_min_severity?: string | null;
+  decision_notification_triggers?: string[];
+  decision_notification_cooldown_minutes: number;
+  pool_strategies?: Record<string, unknown>[];
   last_test_at?: string | null;
   last_test_status?: string | null;
   last_test_message?: string | null;
@@ -86,7 +110,30 @@ type AgentLlmForm = {
   timeout_seconds: string;
   loop_enabled: boolean;
   loop_interval_seconds: string;
+  scheduler_interval_seconds: string;
+  max_tasks_per_tick: string;
+  max_pool_patrols_per_tick: string;
+  patrol_enabled: boolean;
+  pool_patrol_interval_minutes: string;
+  pool_patrol_cooldown_minutes: string;
+  required_patrol_pool_ids: string[];
+  excluded_agent_pool_ids: string[];
+  max_event_triggers_per_tick: string;
+  max_concurrent_runs: string;
+  task_cooldown_minutes: string;
+  event_trigger_cooldown_minutes: string;
+  daily_memory_enabled: boolean;
+  weekly_memory_enabled: boolean;
+  max_memory_summaries_per_tick: string;
+  memory_summary_catchup_enabled: boolean;
+  notification_dispatch_enabled: boolean;
+  decision_notification_enabled: boolean;
+  decision_notification_min_severity: string;
+  decision_notification_triggers: string[];
+  decision_notification_cooldown_minutes: string;
 };
+
+const decisionNotificationTriggerOptions = ["event_spike", "scheduler_task_due", "scheduler_review_due", "scheduler_patrol"];
 
 const emptyNotificationForm: NotificationForm = {
   name: "",
@@ -110,6 +157,27 @@ const emptyAgentLlmForm: AgentLlmForm = {
   timeout_seconds: "60",
   loop_enabled: false,
   loop_interval_seconds: "900",
+  scheduler_interval_seconds: "300",
+  max_tasks_per_tick: "5",
+  max_pool_patrols_per_tick: "3",
+  patrol_enabled: false,
+  pool_patrol_interval_minutes: "30",
+  pool_patrol_cooldown_minutes: "30",
+  required_patrol_pool_ids: [],
+  excluded_agent_pool_ids: [],
+  max_event_triggers_per_tick: "3",
+  max_concurrent_runs: "1",
+  task_cooldown_minutes: "10",
+  event_trigger_cooldown_minutes: "15",
+  daily_memory_enabled: true,
+  weekly_memory_enabled: true,
+  max_memory_summaries_per_tick: "3",
+  memory_summary_catchup_enabled: true,
+  notification_dispatch_enabled: false,
+  decision_notification_enabled: false,
+  decision_notification_min_severity: "warning",
+  decision_notification_triggers: [...decisionNotificationTriggerOptions],
+  decision_notification_cooldown_minutes: "30",
 };
 
 export function ApiTokensPage({ token, showToast }: Props) {
@@ -121,6 +189,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
   const [editingChannelId, setEditingChannelId] = useState<string | null>(null);
   const [agentLlmSettings, setAgentLlmSettings] = useState<AgentLlmSettings | null>(null);
   const [agentLlmForm, setAgentLlmForm] = useState<AgentLlmForm>(emptyAgentLlmForm);
+  const [agentPools, setAgentPools] = useState<ApiPool[]>([]);
   const [busy, setBusy] = useState(false);
 
   const loadTokens = async () => {
@@ -131,6 +200,11 @@ export function ApiTokensPage({ token, showToast }: Props) {
   const loadNotificationChannels = async () => {
     const data = await api<{ items: NotificationChannel[] }>("/notification-channels", token);
     setChannels(data.items);
+  };
+
+  const loadAgentPools = async () => {
+    const data = await api<{ items: ApiPool[] }>("/agent/pools", token);
+    setAgentPools((data.items || []).filter((pool) => pool.status !== "disabled"));
   };
 
   const loadAgentLlmSettings = async () => {
@@ -145,13 +219,34 @@ export function ApiTokensPage({ token, showToast }: Props) {
       level2_model: data.level2_model || "",
       level2_temperature: String(data.level2_temperature ?? 0.2),
       timeout_seconds: String(data.timeout_seconds ?? 60),
-      loop_enabled: !!data.loop_enabled,
+      loop_enabled: !!(data.agent_loop_enabled ?? data.loop_enabled),
       loop_interval_seconds: String(data.loop_interval_seconds ?? 900),
+      scheduler_interval_seconds: String(data.scheduler_interval_seconds ?? 300),
+      max_tasks_per_tick: String(data.max_tasks_per_tick ?? 5),
+      max_pool_patrols_per_tick: String(data.max_pool_patrols_per_tick ?? 3),
+      patrol_enabled: !!data.patrol_enabled,
+      pool_patrol_interval_minutes: String(data.pool_patrol_interval_minutes ?? 30),
+      pool_patrol_cooldown_minutes: String(data.pool_patrol_cooldown_minutes ?? 30),
+      required_patrol_pool_ids: data.required_patrol_pool_ids || [],
+      excluded_agent_pool_ids: data.excluded_agent_pool_ids || [],
+      max_event_triggers_per_tick: String(data.max_event_triggers_per_tick ?? 3),
+      max_concurrent_runs: String(data.max_concurrent_runs ?? 1),
+      task_cooldown_minutes: String(data.task_cooldown_minutes ?? 10),
+      event_trigger_cooldown_minutes: String(data.event_trigger_cooldown_minutes ?? 15),
+      daily_memory_enabled: data.daily_memory_enabled ?? true,
+      weekly_memory_enabled: data.weekly_memory_enabled ?? true,
+      max_memory_summaries_per_tick: String(data.max_memory_summaries_per_tick ?? 3),
+      memory_summary_catchup_enabled: data.memory_summary_catchup_enabled ?? true,
+      notification_dispatch_enabled: !!data.notification_dispatch_enabled,
+      decision_notification_enabled: !!data.decision_notification_enabled,
+      decision_notification_min_severity: data.decision_notification_min_severity || "warning",
+      decision_notification_triggers: data.decision_notification_triggers?.length ? data.decision_notification_triggers : [...decisionNotificationTriggerOptions],
+      decision_notification_cooldown_minutes: String(data.decision_notification_cooldown_minutes ?? 30),
     });
   };
 
   useEffect(() => {
-    Promise.all([loadTokens(), loadNotificationChannels(), loadAgentLlmSettings()]).catch((error) => showToast(errorMessage(error), true));
+    Promise.all([loadTokens(), loadNotificationChannels(), loadAgentLlmSettings(), loadAgentPools()]).catch((error) => showToast(errorMessage(error), true));
   }, []);
 
   const submitToken = async (event: FormEvent<HTMLFormElement>) => {
@@ -300,7 +395,30 @@ export function ApiTokensPage({ token, showToast }: Props) {
       level2_temperature: Number(agentLlmForm.level2_temperature || 0.2),
       timeout_seconds: Number(agentLlmForm.timeout_seconds || 60),
       loop_enabled: agentLlmForm.loop_enabled,
-      loop_interval_seconds: Number(agentLlmForm.loop_interval_seconds || 900),
+      agent_loop_enabled: agentLlmForm.loop_enabled,
+      loop_interval_seconds: Number(agentLlmForm.scheduler_interval_seconds || 300),
+      scheduler_interval_seconds: Number(agentLlmForm.scheduler_interval_seconds || 300),
+      max_tasks_per_tick: Number(agentLlmForm.max_tasks_per_tick || 5),
+      max_pool_patrols_per_tick: Number(agentLlmForm.max_pool_patrols_per_tick || 3),
+      patrol_enabled: agentLlmForm.patrol_enabled,
+      pool_patrol_interval_minutes: Number(agentLlmForm.pool_patrol_interval_minutes || 30),
+      pool_patrol_cooldown_minutes: Number(agentLlmForm.pool_patrol_cooldown_minutes || 30),
+      required_patrol_pool_ids: agentLlmForm.required_patrol_pool_ids,
+      excluded_agent_pool_ids: agentLlmForm.excluded_agent_pool_ids,
+      max_event_triggers_per_tick: Number(agentLlmForm.max_event_triggers_per_tick || 3),
+      max_concurrent_runs: Number(agentLlmForm.max_concurrent_runs || 1),
+      task_cooldown_minutes: Number(agentLlmForm.task_cooldown_minutes || 10),
+      event_trigger_cooldown_minutes: Number(agentLlmForm.event_trigger_cooldown_minutes || 15),
+      daily_memory_enabled: agentLlmForm.daily_memory_enabled,
+      weekly_memory_enabled: agentLlmForm.weekly_memory_enabled,
+      max_memory_summaries_per_tick: Number(agentLlmForm.max_memory_summaries_per_tick || 3),
+      memory_summary_catchup_enabled: agentLlmForm.memory_summary_catchup_enabled,
+      notification_dispatch_enabled: agentLlmForm.notification_dispatch_enabled,
+      decision_notification_enabled: agentLlmForm.decision_notification_enabled,
+      decision_notification_min_severity: agentLlmForm.decision_notification_min_severity,
+      decision_notification_triggers: agentLlmForm.decision_notification_triggers,
+      decision_notification_cooldown_minutes: Number(agentLlmForm.decision_notification_cooldown_minutes || 30),
+      pool_strategies: agentLlmSettings?.pool_strategies || [],
     };
     if (apiKey) payload.api_key = apiKey;
 
@@ -318,6 +436,44 @@ export function ApiTokensPage({ token, showToast }: Props) {
     } finally {
       setBusy(false);
     }
+  };
+
+  const toggleRequiredPatrolPool = (poolId: string) => {
+    setAgentLlmForm((current) => {
+      const exists = current.required_patrol_pool_ids.includes(poolId);
+      return {
+        ...current,
+        required_patrol_pool_ids: exists
+          ? current.required_patrol_pool_ids.filter((item) => item !== poolId)
+          : [...current.required_patrol_pool_ids, poolId],
+        excluded_agent_pool_ids: current.excluded_agent_pool_ids.filter((item) => item !== poolId),
+      };
+    });
+  };
+
+  const toggleExcludedAgentPool = (poolId: string) => {
+    setAgentLlmForm((current) => {
+      const exists = current.excluded_agent_pool_ids.includes(poolId);
+      return {
+        ...current,
+        excluded_agent_pool_ids: exists
+          ? current.excluded_agent_pool_ids.filter((item) => item !== poolId)
+          : [...current.excluded_agent_pool_ids, poolId],
+        required_patrol_pool_ids: current.required_patrol_pool_ids.filter((item) => item !== poolId),
+      };
+    });
+  };
+
+  const toggleDecisionNotificationTrigger = (trigger: string) => {
+    setAgentLlmForm((current) => {
+      const exists = current.decision_notification_triggers.includes(trigger);
+      return {
+        ...current,
+        decision_notification_triggers: exists
+          ? current.decision_notification_triggers.filter((item) => item !== trigger)
+          : [...current.decision_notification_triggers, trigger],
+      };
+    });
   };
 
   const testAgentLlmSettings = async () => {
@@ -675,22 +831,237 @@ export function ApiTokensPage({ token, showToast }: Props) {
                 />
               </label>
               <label>
-                Enable future Agent loop
+                Enable Agent scheduler loop
                 <select value={agentLlmForm.loop_enabled ? "yes" : "no"} onChange={(event) => setAgentLlmForm((current) => ({ ...current, loop_enabled: event.target.value === "yes" }))}>
                   <option value="yes">是</option>
                   <option value="no">否</option>
                 </select>
               </label>
               <label>
-                Loop Interval Seconds
+                Scheduler Interval Seconds
                 <input
                   min="60"
                   max="86400"
                   type="number"
-                  value={agentLlmForm.loop_interval_seconds}
-                  onChange={(event) => setAgentLlmForm((current) => ({ ...current, loop_interval_seconds: event.target.value }))}
+                  value={agentLlmForm.scheduler_interval_seconds}
+                  onChange={(event) => setAgentLlmForm((current) => ({ ...current, scheduler_interval_seconds: event.target.value }))}
                 />
               </label>
+              <label>
+                Enable pool patrol
+                <select value={agentLlmForm.patrol_enabled ? "yes" : "no"} onChange={(event) => setAgentLlmForm((current) => ({ ...current, patrol_enabled: event.target.value === "yes" }))}>
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
+              </label>
+              <div className="agent-scheduler-grid">
+                <label>
+                  Max tasks / tick
+                  <input
+                    min="1"
+                    max="100"
+                    type="number"
+                    value={agentLlmForm.max_tasks_per_tick}
+                    onChange={(event) => setAgentLlmForm((current) => ({ ...current, max_tasks_per_tick: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  Max patrols / tick
+                  <input
+                    min="0"
+                    max="100"
+                    type="number"
+                    value={agentLlmForm.max_pool_patrols_per_tick}
+                    onChange={(event) => setAgentLlmForm((current) => ({ ...current, max_pool_patrols_per_tick: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  Patrol interval minutes
+                  <input
+                    min="5"
+                    max="1440"
+                    type="number"
+                    value={agentLlmForm.pool_patrol_interval_minutes}
+                    onChange={(event) => setAgentLlmForm((current) => ({ ...current, pool_patrol_interval_minutes: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  Patrol cooldown minutes
+                  <input
+                    min="0"
+                    max="1440"
+                    type="number"
+                    value={agentLlmForm.pool_patrol_cooldown_minutes}
+                    onChange={(event) => setAgentLlmForm((current) => ({ ...current, pool_patrol_cooldown_minutes: event.target.value }))}
+                  />
+                </label>
+                <div className="agent-required-patrol-field">
+                  <strong>Required patrol pools</strong>
+                  <div className="muted">Required pools are selected first; the remaining patrol slots use normal priority.</div>
+                  <div className="agent-required-patrol-list">
+                    {agentPools.length ? (
+                      agentPools.map((pool) => (
+                        <label className="checkbox-row" key={pool.id}>
+                          <input
+                            type="checkbox"
+                            checked={agentLlmForm.required_patrol_pool_ids.includes(pool.id)}
+                            onChange={() => toggleRequiredPatrolPool(pool.id)}
+                          />
+                          <span>{pool.name} / {pool.account_type} / group #{pool.active_group_id}</span>
+                        </label>
+                      ))
+                    ) : (
+                      <div className="muted">No active pools available.</div>
+                    )}
+                  </div>
+                </div>
+                <div className="agent-required-patrol-field">
+                  <strong>Excluded Agent pools</strong>
+                  <div className="muted">Excluded pools are ignored by patrol and event-spike auto runs.</div>
+                  <div className="agent-required-patrol-list">
+                    {agentPools.length ? (
+                      agentPools.map((pool) => (
+                        <label className="checkbox-row" key={pool.id}>
+                          <input
+                            type="checkbox"
+                            checked={agentLlmForm.excluded_agent_pool_ids.includes(pool.id)}
+                            onChange={() => toggleExcludedAgentPool(pool.id)}
+                          />
+                          <span>{pool.name} / {pool.account_type} / group #{pool.active_group_id}</span>
+                        </label>
+                      ))
+                    ) : (
+                      <div className="muted">No active pools available.</div>
+                    )}
+                  </div>
+                </div>
+                <label>
+                  Max event triggers / tick
+                  <input
+                    min="0"
+                    max="100"
+                    type="number"
+                    value={agentLlmForm.max_event_triggers_per_tick}
+                    onChange={(event) => setAgentLlmForm((current) => ({ ...current, max_event_triggers_per_tick: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  Max concurrent runs
+                  <input
+                    min="1"
+                    max="20"
+                    type="number"
+                    value={agentLlmForm.max_concurrent_runs}
+                    onChange={(event) => setAgentLlmForm((current) => ({ ...current, max_concurrent_runs: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  Task cooldown minutes
+                  <input
+                    min="0"
+                    max="1440"
+                    type="number"
+                    value={agentLlmForm.task_cooldown_minutes}
+                    onChange={(event) => setAgentLlmForm((current) => ({ ...current, task_cooldown_minutes: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  Event cooldown minutes
+                  <input
+                    min="0"
+                    max="1440"
+                    type="number"
+                    value={agentLlmForm.event_trigger_cooldown_minutes}
+                    onChange={(event) => setAgentLlmForm((current) => ({ ...current, event_trigger_cooldown_minutes: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  Max memory summaries / tick
+                  <input
+                    min="0"
+                    max="100"
+                    type="number"
+                    value={agentLlmForm.max_memory_summaries_per_tick}
+                    onChange={(event) => setAgentLlmForm((current) => ({ ...current, max_memory_summaries_per_tick: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  Decision notify cooldown minutes
+                  <input
+                    min="0"
+                    max="1440"
+                    type="number"
+                    value={agentLlmForm.decision_notification_cooldown_minutes}
+                    onChange={(event) => setAgentLlmForm((current) => ({ ...current, decision_notification_cooldown_minutes: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  Decision notify min severity
+                  <select
+                    value={agentLlmForm.decision_notification_min_severity}
+                    onChange={(event) => setAgentLlmForm((current) => ({ ...current, decision_notification_min_severity: event.target.value }))}
+                  >
+                    <option value="watch">watch</option>
+                    <option value="warning">warning</option>
+                    <option value="danger">danger</option>
+                    <option value="critical">critical</option>
+                  </select>
+                </label>
+              </div>
+              <div className="agent-scheduler-switches">
+                <label>
+                  Daily memory summary
+                  <select value={agentLlmForm.daily_memory_enabled ? "yes" : "no"} onChange={(event) => setAgentLlmForm((current) => ({ ...current, daily_memory_enabled: event.target.value === "yes" }))}>
+                    <option value="yes">是</option>
+                    <option value="no">否</option>
+                  </select>
+                </label>
+                <label>
+                  Weekly memory summary
+                  <select value={agentLlmForm.weekly_memory_enabled ? "yes" : "no"} onChange={(event) => setAgentLlmForm((current) => ({ ...current, weekly_memory_enabled: event.target.value === "yes" }))}>
+                    <option value="yes">是</option>
+                    <option value="no">否</option>
+                  </select>
+                </label>
+                <label>
+                  Memory catch-up
+                  <select value={agentLlmForm.memory_summary_catchup_enabled ? "yes" : "no"} onChange={(event) => setAgentLlmForm((current) => ({ ...current, memory_summary_catchup_enabled: event.target.value === "yes" }))}>
+                    <option value="yes">是</option>
+                    <option value="no">否</option>
+                  </select>
+                </label>
+                <label>
+                  Notification dispatch
+                  <select value={agentLlmForm.notification_dispatch_enabled ? "yes" : "no"} onChange={(event) => setAgentLlmForm((current) => ({ ...current, notification_dispatch_enabled: event.target.value === "yes" }))}>
+                    <option value="yes">是</option>
+                    <option value="no">否</option>
+                  </select>
+                </label>
+                <label>
+                  Decision notifications
+                  <select value={agentLlmForm.decision_notification_enabled ? "yes" : "no"} onChange={(event) => setAgentLlmForm((current) => ({ ...current, decision_notification_enabled: event.target.value === "yes" }))}>
+                    <option value="yes">是</option>
+                    <option value="no">否</option>
+                  </select>
+                </label>
+              </div>
+              <div className="agent-required-patrol-field">
+                <strong>Decision notification triggers</strong>
+                <div className="muted">Send DingTalk summaries for selected automatic Agent runs. DingTalk webhook is reused from Notifications.</div>
+                <div className="agent-required-patrol-list">
+                  {decisionNotificationTriggerOptions.map((trigger) => (
+                    <label className="checkbox-row" key={trigger}>
+                      <input
+                        type="checkbox"
+                        checked={agentLlmForm.decision_notification_triggers.includes(trigger)}
+                        onChange={() => toggleDecisionNotificationTrigger(trigger)}
+                      />
+                      <span>{trigger}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="muted">Pool-level Agent strategies are reserved for a later task; this stage only saves global scheduler configuration.</div>
               <div className="button-row">
                 <button className="success-button" disabled={busy} type="submit">
                   Save Agent LLM
@@ -712,6 +1083,16 @@ export function ApiTokensPage({ token, showToast }: Props) {
                   <div className="muted">Level 1 model {agentLlmSettings?.level1_model || "-"}</div>
                   <div className="muted">Level 2 model {agentLlmSettings?.level2_model || "-"}</div>
                   <div className="muted">Timeout {agentLlmSettings?.timeout_seconds ?? "-"}s</div>
+                  <div className="muted">Scheduler loop {(agentLlmSettings?.agent_loop_enabled ?? agentLlmSettings?.loop_enabled) ? "enabled" : "disabled"}</div>
+                  <div className="muted">Pool patrol {agentLlmSettings?.patrol_enabled ? "enabled" : "disabled"}</div>
+                  <div className="muted">Scheduler interval {agentLlmSettings?.scheduler_interval_seconds ?? "-"}s</div>
+                  <div className="muted">Max tasks / patrols / events {agentLlmSettings?.max_tasks_per_tick ?? "-"} / {agentLlmSettings?.max_pool_patrols_per_tick ?? "-"} / {agentLlmSettings?.max_event_triggers_per_tick ?? "-"}</div>
+                  <div className="muted">Required patrol pools {agentLlmSettings?.required_patrol_pool_ids?.length ?? 0}</div>
+                  <div className="muted">Excluded Agent pools {agentLlmSettings?.excluded_agent_pool_ids?.length ?? 0}</div>
+                  <div className="muted">Memory daily / weekly {agentLlmSettings?.daily_memory_enabled ? "on" : "off"} / {agentLlmSettings?.weekly_memory_enabled ? "on" : "off"} · max {agentLlmSettings?.max_memory_summaries_per_tick ?? "-"}</div>
+                  <div className="muted">Notification dispatch {agentLlmSettings?.notification_dispatch_enabled ? "enabled" : "disabled"}</div>
+                  <div className="muted">Decision notifications {agentLlmSettings?.decision_notification_enabled ? "enabled" : "disabled"} · min {agentLlmSettings?.decision_notification_min_severity || "warning"} · cooldown {agentLlmSettings?.decision_notification_cooldown_minutes ?? "-"}m</div>
+                  <div className="muted">Decision notify triggers {(agentLlmSettings?.decision_notification_triggers || []).join(", ") || "-"}</div>
                 </div>
               </div>
               <div className="list-item">

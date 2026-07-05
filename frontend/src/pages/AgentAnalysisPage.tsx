@@ -32,7 +32,29 @@ type AgentDecision = {
   suggested_actions: string[];
   next_observation_focus?: string[];
   follow_up_questions?: string[];
+  evidence_summary?: AgentEvidenceSummary;
+  event_assessment?: AgentEventAssessment;
+  memory_used?: AgentMemoryReference[];
   inputs?: Record<string, unknown>;
+};
+
+type AgentEvidenceSummary = {
+  capacity?: string[];
+  events?: string[];
+  probe?: string[];
+  memory?: string[];
+};
+
+type AgentEventAssessment = {
+  has_recent_ban_burst?: boolean;
+  ban_burst_window?: string | null;
+  is_continuous_degradation?: boolean;
+  interpretation?: string;
+};
+
+type AgentMemoryReference = {
+  memory_id?: string;
+  reason?: string;
 };
 
 type AgentRecommendedAction = {
@@ -41,6 +63,32 @@ type AgentRecommendedAction = {
   reason?: string;
   risk_level?: string;
   requires_human_confirm?: boolean;
+};
+
+type AgentTaskSummary = {
+  task_id?: string;
+  task_type?: string;
+  status?: string;
+  severity?: string;
+  title?: string;
+  requires_human_confirm?: boolean;
+  alert_status?: string | null;
+  next_check_at?: string | null;
+  review_after?: string | null;
+  current_decision_id?: string | null;
+  latest_state_reason?: string | null;
+  latest_state_changed_at?: string | null;
+  updated_at?: string | null;
+  state_history?: AgentTaskStateHistory[];
+  last_review?: Record<string, unknown>;
+  last_human_feedback?: Record<string, unknown>;
+};
+
+type AgentTaskStateHistory = {
+  from_status?: string | null;
+  to_status?: string | null;
+  reason?: string | null;
+  changed_at?: string | null;
 };
 
 type AgentAnalysisResponse = {
@@ -78,6 +126,7 @@ type AgentAnalysisResponse = {
     decision_mode?: string;
     validator?: Record<string, unknown>;
     context_pack?: Record<string, unknown>;
+    task?: AgentTaskSummary | null;
   };
   created_at: string;
 };
@@ -92,17 +141,6 @@ type AgentRun = {
   summary?: string | null;
   started_at?: string;
   finished_at?: string | null;
-  created_at?: string;
-};
-
-type AgentMessage = {
-  message_id?: string;
-  id?: string;
-  conversation_id: string;
-  run_id?: string | null;
-  role: "user" | "assistant" | "system";
-  content: string;
-  metadata?: Record<string, unknown>;
   created_at?: string;
 };
 
@@ -136,9 +174,96 @@ type AgentStateResponse = {
   running_count?: number;
 };
 
-type AgentMessagesResponse = {
-  items: AgentMessage[];
-  total: number;
+type AgentMessage = {
+  message_id?: string;
+  id?: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  created_at?: string;
+};
+
+type AgentSchedulerStatus = {
+  enabled?: boolean;
+  settings?: AgentSchedulerSettings | null;
+  running?: boolean;
+  latest_tick?: AgentSchedulerTick | null;
+  latest_error_tick?: AgentSchedulerTick | null;
+  task_summary?: AgentSchedulerTaskSummary | null;
+  patrol_summary?: AgentSchedulerPatrolSummary | null;
+  latest_auto_trigger?: AgentSchedulerAutoTrigger | null;
+  latest_review_result?: AgentSchedulerReviewResult | null;
+  latest_eval_run?: AgentEvalRunSummary | null;
+};
+
+type AgentSchedulerSettings = {
+  patrol_enabled?: boolean;
+  max_pool_patrols_per_tick?: number;
+  required_patrol_pool_ids?: string[];
+  excluded_agent_pool_ids?: string[];
+  max_memory_summaries_per_tick?: number;
+};
+
+type AgentSchedulerTick = {
+  tick_id?: string;
+  status?: string;
+  reason?: string;
+  started_at?: string;
+  finished_at?: string;
+  skip_reason?: string | null;
+  errors?: unknown[];
+};
+
+type AgentSchedulerTaskSummary = {
+  due_observing_count?: number;
+  due_review_count?: number;
+  waiting_human_count?: number;
+  alert_drafted_count?: number;
+};
+
+type AgentSchedulerPatrolSummary = {
+  enabled?: boolean;
+  implemented?: boolean;
+  selected?: number;
+  processed?: number;
+  skipped?: number;
+  errors?: number;
+  latest_tick_at?: string | null;
+  reason?: string | null;
+};
+
+type AgentSchedulerAutoTrigger = {
+  run_id?: string;
+  trigger?: string;
+  status?: string;
+  pool_id?: string | null;
+  task_id?: string | null;
+  signal?: string | null;
+  started_at?: string;
+  finished_at?: string | null;
+  summary?: string | null;
+};
+
+type AgentSchedulerReviewResult = {
+  task_id?: string;
+  pool_id?: string | null;
+  review_result?: string | null;
+  next_status?: string | null;
+  summary?: string | null;
+  reviewed_at?: string | null;
+  memory_id?: string | null;
+};
+
+type AgentEvalRunSummary = {
+  eval_run_id?: string;
+  suite?: string | null;
+  mode?: string | null;
+  status?: string | null;
+  finished_at?: string | null;
+  started_at?: string | null;
+  total?: number;
+  passed?: number;
+  failed?: number;
+  score?: number;
 };
 
 const severityLabels: Record<string, string> = {
@@ -159,9 +284,7 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
   const [report, setReport] = useState<AgentAnalysisResponse | null>(null);
   const [conversationId, setConversationId] = useState("");
   const [messages, setMessages] = useState<AgentMessage[]>([]);
-  const [showFullHistory, setShowFullHistory] = useState(false);
-  const [loadingState, setLoadingState] = useState(false);
-
+  const [schedulerStatus, setSchedulerStatus] = useState<AgentSchedulerStatus | null>(null);
   const selectedPool = useMemo(() => pools.find((pool) => pool.id === selectedPoolId) || null, [pools, selectedPoolId]);
 
   const loadPools = async () => {
@@ -179,7 +302,6 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
   };
 
   const loadAgentState = async () => {
-    setLoadingState(true);
     try {
       const state = await api<AgentStateResponse>("/agent/state", token);
       const restoredReport = restoreReportFromState(state);
@@ -193,18 +315,16 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
       }
     } catch (error) {
       showToast(errorMessage(error), true);
-    } finally {
-      setLoadingState(false);
     }
   };
 
-  const loadConversationMessages = async (nextConversationId: string) => {
-    if (!nextConversationId) {
-      setMessages([]);
-      return;
+  const loadAgentSchedulerStatus = async () => {
+    try {
+      const status = await api<AgentSchedulerStatus>("/agent/scheduler/status", token);
+      setSchedulerStatus(status);
+    } catch {
+      setSchedulerStatus(null);
     }
-    const data = await api<AgentMessagesResponse>(`/agent/conversations/${encodeURIComponent(nextConversationId)}/messages`, token);
-    setMessages(data.items || []);
   };
 
   const analyzePool = async () => {
@@ -216,9 +336,10 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
     try {
       const data = await api<AgentAnalysisResponse>(`/agent/pools/${selectedPoolId}/analyze`, token, { method: "POST" });
       setReport(data);
+      setMessages([]);
       const nextConversationId = data.conversation_id || "";
       setConversationId(nextConversationId);
-      await loadConversationMessages(nextConversationId);
+      void loadAgentSchedulerStatus();
       showToast("Agent 只读分析完成");
     } catch (error) {
       showToast(errorMessage(error), true);
@@ -240,13 +361,14 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
         body: JSON.stringify({ message, pool_id: selectedPoolId || undefined, conversation_id: conversationId || undefined }),
       });
       setReport(data);
+      setMessages([]);
       const nextConversationId = data.conversation_id || conversationId;
       setConversationId(nextConversationId);
-      await loadConversationMessages(nextConversationId);
       setChatMessage("");
       if (data.pool?.id) {
         setSelectedPoolId(String(data.pool.id));
       }
+      void loadAgentSchedulerStatus();
       showToast("Agent 已根据你的问题完成分析");
     } catch (error) {
       showToast(errorMessage(error), true);
@@ -258,6 +380,7 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
   useEffect(() => {
     loadPools();
     loadAgentState();
+    loadAgentSchedulerStatus();
   }, []);
 
   return (
@@ -265,7 +388,6 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
       <div className="topbar">
         <div>
           <h2>Agent分析</h2>
-          <p>基于 Context Pack 和 Level 1 模型生成账号池运营决策，当前阶段只读，不直接执行账号操作。</p>
         </div>
         <div className="button-row">
           <button className="ghost" type="button" onClick={loadPools} disabled={loadingPools}>
@@ -320,54 +442,77 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
             </button>
           </div>
         </div>
-        <AgentMessageList messages={messages} loading={loadingState} expanded={showFullHistory} onToggle={() => setShowFullHistory((value) => !value)} />
       </section>
+
+      <AgentSchedulerSummaryPanel status={schedulerStatus} />
+
+      <AgentRecentConversation messages={messages} />
 
       {report ? <AgentReport report={report} /> : <div className="empty-state">选择账号池后点击“分析”，这里会显示 Agent 决策结果。</div>}
     </section>
   );
 }
 
-function AgentMessageList({
-  messages,
-  loading,
-  expanded,
-  onToggle,
-}: {
-  messages: AgentMessage[];
-  loading: boolean;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  if (loading && !messages.length) {
-    return <div className="agent-message-empty">正在恢复最近一次 Agent 对话...</div>;
-  }
-  if (!messages.length) {
-    return <div className="agent-message-empty">暂无持久化对话消息。</div>;
-  }
-  const visibleMessages = expanded ? messages : messages.slice(-4);
-  const hiddenCount = Math.max(0, messages.length - visibleMessages.length);
+function AgentRecentConversation({ messages }: { messages: AgentMessage[] }) {
+  const visibleMessages = messages.filter((item) => item.role !== "system").slice(-2);
+  if (!visibleMessages.length) return null;
   return (
-    <div className="agent-history-panel">
-      <div className="agent-history-head">
-        <strong>最近对话</strong>
-        <button className="ghost compact-button" type="button" onClick={onToggle}>
-          {expanded ? "收起" : hiddenCount > 0 ? `展开 ${messages.length} 条` : "展开"}
-        </button>
+    <section className="panel agent-recent-conversation">
+      <div className="panel-header">
+        <div>
+          <h3>最近对话</h3>
+          <p>只保留最后两条，完整历史后续放到 run 详情页。</p>
+        </div>
       </div>
-      {!expanded && hiddenCount > 0 && <div className="agent-message-empty">已折叠较早的 {hiddenCount} 条消息。</div>}
-      <div className="agent-message-list">
+      <div className="agent-recent-message-list">
         {visibleMessages.map((message, index) => (
-          <div className={`agent-message-item ${message.role}`} key={message.message_id || message.id || `${message.role}-${index}`}>
-            <div className="agent-message-meta">
-              <strong>{message.role === "user" ? "你" : message.role === "assistant" ? "Agent" : "System"}</strong>
-              <span>{formatDateTime(message.created_at)}</span>
-            </div>
-            <p>{message.content}</p>
+          <div className={`agent-recent-message ${message.role}`} key={message.message_id || message.id || `${message.role}-${index}`}>
+            <span>{message.role === "user" ? "你" : "Agent"} · {formatDateTime(message.created_at)}</span>
+            <strong>{message.content}</strong>
           </div>
         ))}
       </div>
-    </div>
+    </section>
+  );
+}
+
+function AgentSchedulerSummaryPanel({ status }: { status: AgentSchedulerStatus | null }) {
+  const latestTick = status?.latest_tick || null;
+  const taskSummary = status?.task_summary || {};
+  const dueTaskCount = (taskSummary.due_observing_count || 0) + (taskSummary.due_review_count || 0);
+  const latestAutoTrigger = status?.latest_auto_trigger || null;
+  const latestReview = status?.latest_review_result || null;
+  const patrolSummary = status?.patrol_summary || null;
+  const latestEval = status?.latest_eval_run || null;
+  return (
+    <section className="panel agent-scheduler-summary-panel">
+      <div className="panel-header">
+        <div>
+          <h3>Scheduler 状态</h3>
+          <p>Agent 自启动 loop 的简短运行状态。</p>
+        </div>
+        <span className={`status-pill ${status?.enabled ? "success" : "muted"}`}>{status?.enabled ? "loop on" : "loop off"}</span>
+      </div>
+      <div className="compact-stats agent-scheduler-summary-stats">
+        <Metric label="Patrol" value={(patrolSummary?.enabled ?? status?.settings?.patrol_enabled) ? "已启用" : "未启用"} />
+        <Metric label="最近 patrol" value={patrolProcessedText(patrolSummary)} />
+        <Metric label="Eval 状态" value={evalStatusText(latestEval)} />
+        <Metric label="Eval 通过率" value={evalScoreText(latestEval)} />
+        <Metric label="Loop" value={status?.enabled ? "已启用" : "未启用"} />
+        <Metric label="运行中" value={status?.running ? "是" : "否"} />
+        <Metric label="最近 tick" value={formatOptionalDate(latestTick?.finished_at || latestTick?.started_at)} />
+        <Metric label="tick 状态" value={schedulerTickStatusText(latestTick)} />
+        <Metric label="到期 task" value={dueTaskCount ? `${dueTaskCount} 个` : "无"} />
+        <Metric label="等待人工" value={taskSummary.waiting_human_count ? `${taskSummary.waiting_human_count} 个` : "无"} />
+        <Metric label="告警草稿" value={taskSummary.alert_drafted_count ? `${taskSummary.alert_drafted_count} 个` : "无"} />
+        <Metric label="自动触发" value={triggerLabel(latestAutoTrigger?.trigger)} />
+        <Metric label="最近复盘" value={reviewResultLabel(latestReview?.review_result)} />
+      </div>
+      <div className="agent-task-reason">
+        <span>最近自动动作</span>
+        <strong>{schedulerActivityText(latestAutoTrigger, latestReview)}</strong>
+      </div>
+    </section>
   );
 }
 
@@ -377,6 +522,9 @@ function AgentReport({ report }: { report: AgentAnalysisResponse }) {
   const llmMessage =
     displayText(report.llm?.message) ||
     composeFallbackLlmMessage(report.llm?.operator_message, report.llm?.summary, report.llm?.risk_assessment, report.llm?.questions);
+  const evidenceItems = decisionEvidenceItems(report);
+  const eventItems = eventAssessmentItems(decision);
+  const observationItems = dedupe([...(decision.next_observation_focus || []), ...(decision.follow_up_questions || [])].map(displayText).filter(Boolean));
   return (
     <>
       <section className={`agent-result agent-result-${severityTone(report.severity)}`}>
@@ -390,6 +538,8 @@ function AgentReport({ report }: { report: AgentAnalysisResponse }) {
           <strong>{decision.suggested_add_count}</strong>
         </div>
       </section>
+
+      <AgentTaskSummaryPanel task={report.agent?.task || null} />
 
       {report.llm?.configured && (
         <section className="panel">
@@ -436,101 +586,114 @@ function AgentReport({ report }: { report: AgentAnalysisResponse }) {
         <section className="panel">
           <div className="panel-header">
             <div>
-              <h3>建议动作</h3>
-              <p>当前阶段只给建议，不直接执行动作。</p>
+              <h3>核心依据</h3>
+              <p>来自模型整理后的容量、事件、探测和记忆证据。</p>
             </div>
           </div>
           <div className="list">
-            {decisionActions(report).map((action) => (
-              <div className="list-item" key={action}>
-                {action}
+            {(evidenceItems.length ? evidenceItems : ["模型未返回结构化核心依据。"]).map((item) => (
+              <div className="list-item" key={item}>
+                {item}
               </div>
             ))}
           </div>
         </section>
       </section>
 
-      {(decision.data_gaps?.length || decision.next_observation_focus?.length || decision.follow_up_questions?.length) && (
-        <section className="grid two">
-          <section className="panel">
-            <div className="panel-header">
-              <div>
-                <h3>数据不足</h3>
-                <p>模型认为会影响判断质量的数据缺口。</p>
+      <section className="grid two">
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <h3>事件判断摘要</h3>
+              <p>只展示事件流结论，不展开 24h 明细或完整窗口。</p>
+            </div>
+          </div>
+          <div className="list">
+            {(eventItems.length ? eventItems : ["模型未返回明确事件判断。"]).map((item) => (
+              <div className="list-item" key={item}>
+                {item}
               </div>
-            </div>
-            <div className="list">
-              {(decision.data_gaps?.length ? decision.data_gaps : ["暂无明显数据缺口。"]).map((item) => (
-                <div className="list-item" key={item}>
-                  {item}
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="panel">
-            <div className="panel-header">
-              <div>
-                <h3>下一步观察</h3>
-                <p>供人工继续追踪的问题和指标。</p>
-              </div>
-            </div>
-            <div className="list">
-              {[...(decision.next_observation_focus || []), ...(decision.follow_up_questions || [])].map((item) => (
-                <div className="list-item" key={item}>
-                  {item}
-                </div>
-              ))}
-            </div>
-          </section>
+            ))}
+          </div>
         </section>
-      )}
+
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <h3>数据缺口</h3>
+              <p>模型认为会影响判断质量的数据不足。</p>
+            </div>
+          </div>
+          <div className="list">
+            {(decision.data_gaps?.length ? decision.data_gaps : ["暂无明显数据缺口。"]).map((item) => (
+              <div className="list-item" key={item}>
+                {item}
+              </div>
+            ))}
+          </div>
+        </section>
+      </section>
 
       <section className="grid two">
         <section className="panel">
           <div className="panel-header">
             <div>
-              <h3>API账号池状态数据</h3>
-              <p>读取现有缓存，不重新计算、不写回缓存。</p>
+              <h3>下一步观察</h3>
+              <p>供人工继续追踪的问题和指标。</p>
             </div>
           </div>
-          <div className="agent-metric-grid">
-            <Metric label="可用账号" value={numberText(report.capacity.available_accounts)} />
-            <Metric label="active" value={numberText(report.capacity.active_account_count)} />
-            <Metric label="备用" value={numberText(report.capacity.reserve_account_count)} />
-            <Metric label="可用天数" value={daysText(report.capacity.current_speed_days)} />
-            <Metric label="24h 5h峰值" value={multipleText(report.capacity.recent_day_five_hour_peak_multiple)} />
-            <Metric label="突发1h峰值" value={multipleText(report.capacity.burst_1h_five_hour_multiple)} />
-            <Metric label="突发趋势" value={burstTrendText(report.capacity)} />
-            <Metric label="突发1h折算" value={usdText(report.capacity.burst_1h_cost)} />
-            <Metric label="突发5h折算" value={usdText(report.capacity.burst_1h_five_hour_estimated_cost)} />
-            <Metric label="趋势变化" value={percentChangeText(report.capacity.burst_1h_trend_change_percent)} />
-            <Metric label="5h可用" value={usdText(report.capacity.five_hour_remaining_usd)} />
-            <Metric label="7d可用" value={usdText(report.capacity.seven_day_remaining_usd)} />
-            <Metric label="缓存时间" value={formatDateTime(report.capacity.last_refreshed_at)} />
+          <div className="list">
+            {(observationItems.length ? observationItems : ["暂无额外观察项。"]).map((item) => (
+              <div className="list-item" key={item}>
+                {item}
+              </div>
+            ))}
           </div>
         </section>
 
         <section className="panel">
           <div className="panel-header">
             <div>
-              <h3>账号探测数据</h3>
-              <p>读取事件记录中的 401、恢复、重复邮箱和探测新鲜度。</p>
+              <h3>审计与详情</h3>
+              <p>完整 Context Pack、事件窗口和长期记忆暂不在主页面展开。</p>
             </div>
           </div>
-          <div className="agent-metric-grid">
-            <Metric label="探测新鲜" value={report.probe.probe_fresh ? "是" : "否"} />
-            <Metric label="最后探测" value={formatDateTime(report.probe.last_probe_at)} />
-            <Metric label="1h 401" value={numberText(report.probe.detected_401_1h ?? report.probe.pro_401_1h)} />
-            <Metric label="24h 401" value={numberText(report.probe.detected_401_24h ?? report.probe.pro_401_24h)} />
-            <Metric label="7d 401" value={numberText(report.probe.detected_401_7d ?? report.probe.pro_401_7d)} />
-            <Metric label="24h恢复" value={numberText(report.probe.recovered_24h)} />
-            <Metric label="重复邮箱" value={numberText(report.probe.duplicate_email_alert_count)} />
-            <Metric label="7d中位寿命" value={hoursText(report.probe.median_survival_hours_7d)} />
+          <div className="list">
+            <div className="list-item">run：{report.run_id || "-"}</div>
+            <div className="list-item">decision：{report.decision_id || "-"}</div>
+            <div className="list-item">conversation：{report.conversation_id || "-"}</div>
           </div>
         </section>
       </section>
     </>
+  );
+}
+
+function AgentTaskSummaryPanel({ task }: { task: AgentTaskSummary | null }) {
+  const latestReason = taskLatestReason(task);
+  const status = task?.status || "none";
+  return (
+    <section className="panel agent-task-summary-panel">
+      <div className="panel-header">
+        <div>
+          <h3>任务状态</h3>
+          <p>当前 Agent 对这个运营问题的持续跟进状态。</p>
+        </div>
+        <span className={`status-pill ${taskStatusTone(status)}`}>{taskStatusLabel(status)}</span>
+      </div>
+      <div className="compact-stats agent-task-stats">
+        <Metric label="当前状态" value={taskStatusLabel(status)} />
+        <Metric label="等待人工" value={task?.requires_human_confirm ? "是" : "否"} />
+        <Metric label="告警草稿" value={task?.alert_status === "drafted" ? "有" : "无"} />
+        <Metric label="下次观察" value={formatOptionalDate(task?.next_check_at)} />
+        <Metric label="复盘时间" value={formatOptionalDate(task?.review_after)} />
+        <Metric label="更新时间" value={formatOptionalDate(task?.updated_at)} />
+      </div>
+      <div className="agent-task-reason">
+        <span>最近变化</span>
+        <strong>{latestReason || (task ? "暂无状态变化原因。" : "暂无持续任务。")}</strong>
+      </div>
+    </section>
   );
 }
 
@@ -548,6 +711,128 @@ function severityTone(value: string): "success" | "warning" | "danger" | "muted"
   if (value === "warning" || value === "watch") return "warning";
   if (value === "danger" || value === "critical") return "danger";
   return "accent";
+}
+
+function taskStatusLabel(value: string): string {
+  const labels: Record<string, string> = {
+    open: "打开",
+    observing: "观察中",
+    waiting_human: "等待人工",
+    alert_drafted: "告警草稿",
+    review_due: "待复盘",
+    closed: "已关闭",
+    failed: "失败",
+    none: "暂无任务",
+  };
+  return labels[value] || value || "-";
+}
+
+function taskStatusTone(value: string): "success" | "warning" | "danger" | "muted" | "accent" {
+  if (value === "closed") return "success";
+  if (value === "failed") return "danger";
+  if (value === "waiting_human" || value === "alert_drafted" || value === "review_due") return "warning";
+  if (value === "none") return "muted";
+  return "accent";
+}
+
+function formatOptionalDate(value?: string | null): string {
+  return value ? formatDateTime(value) : "-";
+}
+
+function schedulerTickStatusText(tick?: AgentSchedulerTick | null): string {
+  if (!tick) return "-";
+  if (tick.status === "success") return "成功";
+  if (tick.status === "partial") return "部分成功";
+  if (tick.status === "failed") return "失败";
+  if (tick.status === "skipped") return tick.skip_reason === "agent_loop_disabled" ? "已跳过：loop 关闭" : "已跳过";
+  return tick.status || "-";
+}
+
+function triggerLabel(value?: string | null): string {
+  const labels: Record<string, string> = {
+    scheduler_patrol: "定时巡检",
+    scheduler_task_due: "任务到期",
+    scheduler_review_due: "复盘到期",
+    event_spike: "事件突增",
+    memory_daily_summary: "每日记忆",
+    memory_weekly_summary: "每周记忆",
+    notification_dispatch: "通知派发",
+  };
+  return value ? labels[value] || value : "-";
+}
+
+function reviewResultLabel(value?: string | null): string {
+  const labels: Record<string, string> = {
+    useful: "有效",
+    too_conservative: "偏保守",
+    too_aggressive: "偏激进",
+    wrong_interpretation: "判断偏差",
+    insufficient_data: "证据不足",
+  };
+  return value ? labels[value] || value : "-";
+}
+
+function patrolProcessedText(summary?: AgentSchedulerPatrolSummary | null): string {
+  if (!summary) return "-";
+  const processed = Number(summary.processed || 0);
+  const skipped = Number(summary.skipped || 0);
+  const errors = Number(summary.errors || 0);
+  if (!processed && !skipped && !errors) {
+    return summary.enabled ? "本轮暂无处理" : "未启用";
+  }
+  const parts = [`处理 ${processed}`];
+  if (skipped) parts.push(`跳过 ${skipped}`);
+  if (errors) parts.push(`错误 ${errors}`);
+  return parts.join(" / ");
+}
+
+function evalStatusText(run?: AgentEvalRunSummary | null): string {
+  if (!run) return "-";
+  const labels: Record<string, string> = {
+    success: "通过",
+    failed: "未通过",
+    partial: "部分通过",
+    running: "运行中",
+  };
+  return labels[String(run.status || "")] || String(run.status || "-");
+}
+
+function evalScoreText(run?: AgentEvalRunSummary | null): string {
+  if (!run) return "-";
+  const score = Number(run.score);
+  const total = Number(run.total || 0);
+  const passed = Number(run.passed || 0);
+  if (!Number.isFinite(score)) return total ? `${passed}/${total}` : "-";
+  return total ? `${Math.round(score * 100)}% (${passed}/${total})` : `${Math.round(score * 100)}%`;
+}
+
+function schedulerActivityText(autoTrigger?: AgentSchedulerAutoTrigger | null, review?: AgentSchedulerReviewResult | null): string {
+  const triggerTime = autoTrigger?.finished_at || autoTrigger?.started_at || "";
+  const reviewTime = review?.reviewed_at || "";
+  if (reviewTime && (!triggerTime || reviewTime >= triggerTime)) {
+    const result = reviewResultLabel(review?.review_result);
+    const summary = displayText(review?.summary);
+    return [`复盘：${result}`, summary, formatOptionalDate(reviewTime)].filter(Boolean).join(" · ");
+  }
+  if (autoTrigger) {
+    const trigger = triggerLabel(autoTrigger.trigger);
+    const signal = displayText(autoTrigger.signal);
+    const summary = displayText(autoTrigger.summary);
+    return [trigger, signal ? `信号：${signal}` : "", summary, formatOptionalDate(triggerTime)].filter(Boolean).join(" · ");
+  }
+  return "暂无自动触发记录。";
+}
+
+function taskLatestReason(task: AgentTaskSummary | null): string {
+  if (!task) return "";
+  const directReason = displayText(task.latest_state_reason).trim();
+  if (directReason) return directReason;
+  const history = Array.isArray(task.state_history) ? task.state_history : [];
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const reason = displayText(history[index]?.reason).trim();
+    if (reason) return reason;
+  }
+  return "";
 }
 
 function numberText(value: unknown) {
@@ -609,6 +894,32 @@ function decisionReasons(report: AgentAnalysisResponse): string[] {
     .map(displayText)
     .filter(Boolean);
   return dedupe(items).length ? dedupe(items) : ["模型未返回明确原因。"];
+}
+
+function decisionEvidenceItems(report: AgentAnalysisResponse): string[] {
+  const evidence = report.decision.evidence_summary;
+  if (!evidence) return [];
+  return dedupe([
+    ...(evidence.capacity || []).map((item) => `容量：${item}`),
+    ...(evidence.events || []).map((item) => `事件：${item}`),
+    ...(evidence.probe || []).map((item) => `探测：${item}`),
+    ...(evidence.memory || []).map((item) => `记忆：${item}`),
+  ]);
+}
+
+function eventAssessmentItems(decision: AgentDecision): string[] {
+  const assessment = decision.event_assessment;
+  if (!assessment) return [];
+  const items: string[] = [];
+  if (assessment.interpretation) {
+    items.push(assessment.interpretation);
+  }
+  if (assessment.ban_burst_window) {
+    items.push(`集中异常窗口：${assessment.ban_burst_window}`);
+  }
+  items.push(`近期集中封号：${assessment.has_recent_ban_burst ? "是" : "否"}`);
+  items.push(`持续恶化：${assessment.is_continuous_degradation ? "是" : "否"}`);
+  return dedupe(items);
 }
 
 function decisionActions(report: AgentAnalysisResponse): string[] {
@@ -701,8 +1012,45 @@ function normalizeDecision(decisionDoc: AgentPersistedDecision): AgentDecision {
         : [],
     next_observation_focus: stringList(raw.next_observation_focus),
     follow_up_questions: stringList(raw.follow_up_questions),
+    evidence_summary: normalizeEvidenceSummary(raw.evidence_summary),
+    event_assessment: normalizeEventAssessment(raw.event_assessment),
+    memory_used: normalizeMemoryUsed(raw.memory_used),
     inputs: asRecord(raw.inputs),
   };
+}
+
+function normalizeEvidenceSummary(value: unknown): AgentEvidenceSummary {
+  const raw = asRecord(value);
+  return {
+    capacity: stringList(raw.capacity),
+    events: stringList(raw.events),
+    probe: stringList(raw.probe),
+    memory: stringList(raw.memory),
+  };
+}
+
+function normalizeEventAssessment(value: unknown): AgentEventAssessment | undefined {
+  const raw = asRecord(value);
+  if (!Object.keys(raw).length) return undefined;
+  return {
+    has_recent_ban_burst: booleanOr(raw.has_recent_ban_burst, false),
+    ban_burst_window: raw.ban_burst_window === null ? null : textOr(raw.ban_burst_window, ""),
+    is_continuous_degradation: booleanOr(raw.is_continuous_degradation, false),
+    interpretation: textOr(raw.interpretation, ""),
+  };
+}
+
+function normalizeMemoryUsed(value: unknown): AgentMemoryReference[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      const raw = asRecord(item);
+      return {
+        memory_id: textOr(raw.memory_id, ""),
+        reason: textOr(raw.reason, ""),
+      };
+    })
+    .filter((item) => item.memory_id || item.reason);
 }
 
 function restorePool(decisionDoc: AgentPersistedDecision, capacity: Record<string, unknown>): ApiPool {
@@ -715,11 +1063,11 @@ function restorePool(decisionDoc: AgentPersistedDecision, capacity: Record<strin
     site_id: textOr(rawPool.site_id, decisionDoc.site_id || "default"),
     active_group_id: numberOr(rawPool.active_group_id, numberOr(capacity.group_id, 0)),
     verification_group_id: rawPool.verification_group_id === null || rawPool.verification_group_id === undefined ? null : numberOr(rawPool.verification_group_id, 0),
-    min_active: numberOr(rawPool.min_active, 20),
-    target_active: numberOr(rawPool.target_active, 30),
-    max_avg_5h_used: numberOr(rawPool.max_avg_5h_used, 70),
-    max_avg_7d_used: numberOr(rawPool.max_avg_7d_used, 80),
-    min_reserve: numberOr(rawPool.min_reserve, 10),
+    min_active: numberOr(rawPool.min_active, 0),
+    target_active: numberOr(rawPool.target_active, 0),
+    max_avg_5h_used: numberOr(rawPool.max_avg_5h_used, 0),
+    max_avg_7d_used: numberOr(rawPool.max_avg_7d_used, 0),
+    min_reserve: numberOr(rawPool.min_reserve, 0),
     status: rawPool.status === "disabled" ? "disabled" : "active",
     created_at: displayText(rawPool.created_at),
     updated_at: displayText(rawPool.updated_at),
