@@ -708,6 +708,7 @@ function FilterMenu({
           <option value="free">free</option>
           <option value="plus">plus</option>
           <option value="team">team</option>
+          <option value="bug_team">bug team</option>
           <option value="k12">k12</option>
           <option value="pro">pro</option>
         </select>
@@ -1080,6 +1081,7 @@ function eventTone(severity?: string, is401?: boolean): "accent" | "success" | "
 
 function planTagTone(value?: string): string {
   const normalized = (value || "").toLowerCase();
+  if (normalized === "bug_team") return "plan-team";
   if (normalized === "plus") return "plan-plus";
   if (normalized === "free") return "plan-free";
   if (normalized === "team") return "plan-team";
@@ -1090,6 +1092,7 @@ function planTagTone(value?: string): string {
 
 function displayPlan(value?: string) {
   if (!value) return "unknown";
+  if (value.toLowerCase() === "bug_team") return "Bug Team";
   if (value.toLowerCase() === "k12") return "K12";
   return value;
 }

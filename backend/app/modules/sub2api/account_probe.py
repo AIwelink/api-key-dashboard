@@ -14,7 +14,7 @@ from pymongo import UpdateOne
 
 from app.modules.notifications.service import send_notification_event
 from app.modules.sub2api.client import Sub2ApiClient
-from app.modules.sub2api.cache import _get_or_update_group_capacity_summary, get_site, list_sites
+from app.modules.sub2api.cache import _get_or_update_group_capacity_summary, get_site, is_bug_team_account, list_sites
 from app.utils import now_utc, serialize_doc
 
 
@@ -396,6 +396,7 @@ async def probe_site_accounts(db: AsyncIOMotorDatabase, *, site_id: str, group_i
                 previous_snapshot=(previous_identity or {}).get("last_usage_snapshot"),
                 current_snapshot=account.get("usage_snapshot") or {},
                 detected_at=fetched_at,
+                account_type=str(account.get("plan_type") or ""),
             )
             session = await _ensure_session(db, site_id=site_id, account=account, identity=previous_identity, detected_at=fetched_at)
             is_new = previous_identity is None
@@ -556,7 +557,7 @@ def _normalize_probe_account(account: dict[str, Any]) -> dict[str, Any]:
         "schedulable": _bool_or_none(_first_present(account, extra, "schedulable", "is_schedulable", "sub2api_schedulable")),
         "error_message": _first_present(account, extra, "error_message", "last_error", "error", "message"),
         "group_ids": group_ids,
-        "plan_type": _first_present(account, credentials, extra, "plan_type"),
+        "plan_type": "bug_team" if is_bug_team_account(account) else _first_present(account, credentials, extra, "plan_type"),
         "last_used_at": _first_present(account, extra, "last_used_at"),
         "updated_at": _first_present(account, extra, "updated_at"),
         "usage_snapshot": _usage_snapshot(account, extra),
@@ -693,6 +694,7 @@ def _official_usage_refresh_state(
     previous_snapshot: dict[str, Any] | None,
     current_snapshot: dict[str, Any],
     detected_at: datetime,
+    account_type: str | None = None,
 ) -> dict[str, Any]:
     previous_snapshot = previous_snapshot if isinstance(previous_snapshot, dict) else {}
     current_snapshot = current_snapshot if isinstance(current_snapshot, dict) else {}
@@ -700,7 +702,8 @@ def _official_usage_refresh_state(
     current_used = _number_float(current_snapshot.get("codex_7d_used_percent"), none_if_missing=True)
     expected_reset_at = _parse_datetime(previous_snapshot.get("codex_7d_reset_at"))
     eligible = bool(
-        previous_used is not None
+        account_type != "bug_team"
+        and previous_used is not None
         and previous_used > 0
         and current_used is not None
         and current_used == 0
@@ -875,6 +878,7 @@ async def _update_identity_and_events(
             previous_snapshot=identity.get("last_usage_snapshot"),
             current_snapshot=account.get("usage_snapshot") or {},
             detected_at=detected_at,
+            account_type=str(account.get("plan_type") or ""),
         )
         if official_refresh["detected"] and event_enabled:
             changed = True
@@ -1850,6 +1854,8 @@ def _usage_snapshot(account: dict[str, Any], extra: dict[str, Any]) -> dict[str,
         "codex_7d_reset_at",
         "codex_5h_reset_after_seconds",
         "codex_7d_reset_after_seconds",
+        "codex_5h_window_minutes",
+        "codex_7d_window_minutes",
         "codex_5h_actual_cost",
         "codex_7d_actual_cost",
         "codex_5h_total_cost",

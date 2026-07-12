@@ -13,6 +13,7 @@ DEFAULT_CAPACITY_ACCOUNT_LIMITS: dict[str, dict[str, float]] = {
     "free": {"five_hour_usd": 2.0, "seven_day_usd": 10.0},
     "plus": {"five_hour_usd": 28.0, "seven_day_usd": 140.0},
     "team": {"five_hour_usd": 15.0, "seven_day_usd": 75.0},
+    "bug_team": {"five_hour_usd": 230.0, "seven_day_usd": 230.0},
     "k12": {"five_hour_usd": 20.0, "seven_day_usd": 100.0},
     "pro": {"five_hour_usd": 360.0, "seven_day_usd": 2100.0},
 }

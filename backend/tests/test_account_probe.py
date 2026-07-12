@@ -121,6 +121,26 @@ class OfficialUsageRefreshTests(unittest.TestCase):
         self.assertFalse(result["eligible"])
         self.assertFalse(result["detected"])
 
+    def test_bug_team_zero_usage_is_not_an_official_refresh(self) -> None:
+        result = account_probe._official_usage_refresh_state(
+            previous_snapshot={
+                "codex_7d_used_percent": 54,
+                "codex_7d_reset_at": (self.detected_at + timedelta(days=30)).isoformat(),
+            },
+            current_snapshot={
+                "codex_5h_used_percent": 0,
+                "codex_5h_reset_after_seconds": 0,
+                "codex_5h_window_minutes": 0,
+                "codex_7d_used_percent": 0,
+                "codex_7d_window_minutes": 43800,
+            },
+            detected_at=self.detected_at,
+            account_type="bug_team",
+        )
+
+        self.assertFalse(result["eligible"])
+        self.assertFalse(result["detected"])
+
 
 if __name__ == "__main__":
     unittest.main()
