@@ -121,7 +121,7 @@ class OfficialUsageRefreshTests(unittest.TestCase):
         self.assertFalse(result["eligible"])
         self.assertFalse(result["detected"])
 
-    def test_bug_team_zero_usage_is_not_an_official_refresh(self) -> None:
+    def test_bug_team_zero_usage_can_be_a_refresh_candidate(self) -> None:
         result = account_probe._official_usage_refresh_state(
             previous_snapshot={
                 "codex_7d_used_percent": 54,
@@ -135,11 +135,62 @@ class OfficialUsageRefreshTests(unittest.TestCase):
                 "codex_7d_window_minutes": 43800,
             },
             detected_at=self.detected_at,
-            account_type="bug_team",
         )
 
-        self.assertFalse(result["eligible"])
-        self.assertFalse(result["detected"])
+        self.assertTrue(result["eligible"])
+        self.assertTrue(result["detected"])
+
+    def test_single_k12_candidate_does_not_confirm_global_refresh(self) -> None:
+        refresh = account_probe._official_usage_refresh_state(
+            previous_snapshot={
+                "codex_7d_used_percent": 67,
+                "codex_7d_reset_at": (self.detected_at + timedelta(days=5, hours=22)).isoformat(),
+            },
+            current_snapshot={"codex_7d_used_percent": 0},
+            detected_at=self.detected_at,
+        )
+        accounts = [{"plan_type": "k12", "official_refresh": refresh}]
+
+        result = account_probe._official_refresh_consensus(accounts, eligible_account_counts={"k12": 12})
+
+        self.assertTrue(refresh["detected"])
+        self.assertFalse(result["confirmed"])
+        self.assertEqual(result["candidate_count"], 1)
+
+    def test_candidates_from_different_types_do_not_form_consensus(self) -> None:
+        accounts = [
+            {"plan_type": "plus", "official_refresh": {"detected": True}},
+            {"plan_type": "pro", "official_refresh": {"detected": True}},
+        ]
+
+        result = account_probe._official_refresh_consensus(accounts, eligible_account_counts={"plus": 1, "pro": 1})
+
+        self.assertFalse(result["confirmed"])
+        self.assertEqual(result["candidate_count"], 2)
+
+    def test_same_type_candidates_confirm_refresh(self) -> None:
+        accounts = [
+            {"remote_account_id": 1, "plan_type": "pro", "official_refresh": {"detected": True}},
+            {"remote_account_id": 2, "plan_type": "pro", "official_refresh": {"detected": True}},
+        ]
+
+        result = account_probe._official_refresh_consensus(accounts, eligible_account_counts={"pro": 2})
+
+        self.assertTrue(result["confirmed"])
+        self.assertEqual(result["confirmed_account_types"], ["pro"])
+        self.assertEqual([item["remote_account_id"] for item in result["confirmed_accounts"]], [1, 2])
+        self.assertAlmostEqual(result["type_consensus"]["pro"]["candidate_ratio"], 1)
+
+    def test_small_pro_refresh_is_not_diluted_by_plus_accounts(self) -> None:
+        accounts = [
+            {"remote_account_id": 1, "plan_type": "pro", "official_refresh": {"detected": True}},
+            {"remote_account_id": 2, "plan_type": "pro", "official_refresh": {"detected": True}},
+        ]
+
+        result = account_probe._official_refresh_consensus(accounts, eligible_account_counts={"pro": 2, "plus": 100})
+
+        self.assertTrue(result["confirmed"])
+        self.assertEqual(result["confirmed_account_types"], ["pro"])
 
 
 if __name__ == "__main__":
