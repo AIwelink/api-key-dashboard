@@ -44,6 +44,7 @@ type EventSummary = {
   detected_401?: number;
   recovered_401?: number;
   usage_rollovers?: number;
+  official_usage_refreshes?: number;
   duplicate_email_events?: number;
   removed_events?: number;
   today_events?: number;
@@ -212,6 +213,7 @@ const eventTypeOptions = [
   ["401_detected", "401 封号"],
   ["401_recovered", "401 恢复"],
   ["usage_rollover", "用量清零累计"],
+  ["official_usage_refresh", "官方额度刷新"],
   ["missing_suspected", "疑似远端删除"],
   ["remote_removed_confirmed", "确认远端删除"],
   ["duplicate_email_detected", "重复邮箱"],
@@ -471,6 +473,7 @@ export function EventRecordsPage({ token, showToast }: Props) {
         <SummaryItem label="今日封号" value={summary.today_401} tone="warning" />
         <SummaryItem label="异常账号" value={summary.current_abnormal_accounts} tone="warning" />
         <SummaryItem label="清零累计" value={summary.usage_rollovers} />
+        <SummaryItem label="官方刷新" value={summary.official_usage_refreshes} />
         <SummaryItem label="累计消耗" value={formatUsd(summary.cumulative_actual_cost)} strong />
         <SummaryItem label="最近事件" value={formatDateTime(summary.last_event_at)} />
       </section>
@@ -1027,6 +1030,7 @@ function eventTypeLabel(value?: string) {
     "401_detected": "401 封号",
     "401_recovered": "401 恢复",
     usage_rollover: "用量清零累计",
+    official_usage_refresh: "官方额度刷新",
     missing_suspected: "疑似远端删除",
     remote_removed_confirmed: "确认远端删除",
     duplicate_email_detected: "重复邮箱",
