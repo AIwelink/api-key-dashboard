@@ -53,7 +53,7 @@ type ApiPoolResponse = {
   total: number;
 };
 
-type CapacityLimitKey = "free" | "plus" | "team" | "k12" | "pro";
+type CapacityLimitKey = "free" | "plus" | "team" | "bug_team" | "k12" | "pro";
 
 type CapacityLimitForm = Record<CapacityLimitKey, { five_hour_usd: string; seven_day_usd: string }>;
 
@@ -133,6 +133,7 @@ const capacityLimitLabels: Record<CapacityLimitKey, string> = {
   free: "free",
   plus: "plus",
   team: "team 子号",
+  bug_team: "bug team",
   k12: "k12",
   pro: "pro 20x",
 };
@@ -141,6 +142,7 @@ const defaultCapacityLimitForm: CapacityLimitForm = {
   free: { five_hour_usd: "2", seven_day_usd: "10" },
   plus: { five_hour_usd: "28", seven_day_usd: "140" },
   team: { five_hour_usd: "15", seven_day_usd: "75" },
+  bug_team: { five_hour_usd: "230", seven_day_usd: "230" },
   k12: { five_hour_usd: "20", seven_day_usd: "100" },
   pro: { five_hour_usd: "360", seven_day_usd: "2100" },
 };

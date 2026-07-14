@@ -78,6 +78,42 @@ class NotificationChannelUpdate(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+class AgentLlmSettingsUpdate(BaseModel):
+    enabled: bool = False
+    base_url: str | None = Field(default=None, max_length=1000)
+    api_key: str | None = Field(default=None, max_length=2000)
+    level1_model: str | None = Field(default=None, max_length=200)
+    level1_temperature: float = Field(default=0.2, ge=0, le=2)
+    level2_model: str | None = Field(default=None, max_length=200)
+    level2_temperature: float = Field(default=0.2, ge=0, le=2)
+    timeout_seconds: int = Field(default=60, ge=5, le=300)
+    loop_enabled: bool = False
+    loop_interval_seconds: int = Field(default=900, ge=60, le=86400)
+    agent_loop_enabled: bool | None = None
+    scheduler_interval_seconds: int = Field(default=300, ge=60, le=86400)
+    max_tasks_per_tick: int = Field(default=5, ge=1, le=100)
+    max_pool_patrols_per_tick: int = Field(default=3, ge=0, le=100)
+    patrol_enabled: bool = False
+    pool_patrol_interval_minutes: int = Field(default=30, ge=5, le=1440)
+    pool_patrol_cooldown_minutes: int = Field(default=30, ge=0, le=1440)
+    required_patrol_pool_ids: list[str] = Field(default_factory=list, max_length=100)
+    excluded_agent_pool_ids: list[str] = Field(default_factory=list, max_length=100)
+    max_event_triggers_per_tick: int = Field(default=3, ge=0, le=100)
+    max_concurrent_runs: int = Field(default=1, ge=1, le=20)
+    task_cooldown_minutes: int = Field(default=10, ge=0, le=1440)
+    event_trigger_cooldown_minutes: int = Field(default=15, ge=0, le=1440)
+    daily_memory_enabled: bool = True
+    weekly_memory_enabled: bool = True
+    max_memory_summaries_per_tick: int = Field(default=3, ge=0, le=100)
+    memory_summary_catchup_enabled: bool = True
+    notification_dispatch_enabled: bool = False
+    decision_notification_enabled: bool = False
+    decision_notification_min_severity: Literal["healthy", "watch", "warning", "danger", "critical"] = "warning"
+    decision_notification_triggers: list[str] = Field(default_factory=lambda: ["event_spike", "scheduler_task_due", "scheduler_review_due", "scheduler_patrol"], max_length=20)
+    decision_notification_cooldown_minutes: int = Field(default=30, ge=0, le=1440)
+    pool_strategies: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class AccountCreate(BaseModel):
     account_json: dict[str, Any] | list[Any]
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -155,7 +191,7 @@ class CapacityAccountLimit(BaseModel):
 
 
 class CapacityAccountLimitsUpdate(BaseModel):
-    limits: dict[Literal["free", "plus", "team", "k12", "pro"], CapacityAccountLimit]
+    limits: dict[Literal["free", "plus", "team", "bug_team", "k12", "pro"], CapacityAccountLimit]
 
 
 class ApiPoolStatusPreferenceUpdate(BaseModel):

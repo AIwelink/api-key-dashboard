@@ -14,7 +14,7 @@ from pymongo import UpdateOne
 
 from app.modules.notifications.service import send_notification_event
 from app.modules.sub2api.client import Sub2ApiClient
-from app.modules.sub2api.cache import _get_or_update_group_capacity_summary, get_site, list_sites
+from app.modules.sub2api.cache import _get_or_update_group_capacity_summary, get_site, is_bug_team_account, list_sites
 from app.utils import now_utc, serialize_doc
 
 
@@ -23,6 +23,7 @@ logger = logging.getLogger("app.sub2api_account_probe")
 DEFAULT_PROBE_INTERVAL_SECONDS = 180
 DEFAULT_SAMPLE_RETENTION_DAYS = 14
 DEFAULT_MISSING_CONFIRM_COUNT = 3
+CONFIRMED_401_RECOVERY_COUNT = 3
 PROBE_LOOP_SLEEP_SECONDS = 30
 ACCOUNT_LIST_PAGE_SIZE = 200
 MAX_ACCOUNT_LIST_PAGES = 100
@@ -34,7 +35,11 @@ ERROR_401_PATTERN = re.compile(
     re.I,
 )
 PRO_MARKER_PATTERN = re.compile(r"(^|[^a-z0-9])(?:pro|20x)(?:[^a-z0-9]|$)", re.I)
+SPARK_SHADOW_NAME_PATTERN = re.compile(r"\(spark\)\s*$", re.I)
 NOTIFICATION_401_THROTTLE_SECONDS = 180
+OFFICIAL_REFRESH_NOTIFICATION_DEDUPE_HOURS = 24
+OFFICIAL_REFRESH_MIN_ACCOUNT_COUNT = 2
+OFFICIAL_REFRESH_MIN_ACCOUNT_RATIO = 0.8
 SHANGHAI_TZ = timezone(timedelta(hours=8))
 USAGE_WEEKLY_ROLLOVER_FIELDS = (
     "codex_7d_actual_cost",
@@ -356,12 +361,13 @@ async def probe_site_accounts(db: AsyncIOMotorDatabase, *, site_id: str, group_i
             return {"ok": True, "site_id": site_id, "run_id": run_id, "group_ids_checked": [], "message": "no enabled groups due", **counters}
         accounts = [_normalize_probe_account(item) for item in await _fetch_all_accounts(client)]
         fetched_at = now_utc()
+        identity_accounts = [account for account in accounts if not _is_spark_shadow_account(account)]
         all_seen_identity_ids = {
             _identity_id(site_id, str(account.get("normalized_email")))
-            for account in accounts
+            for account in identity_accounts
             if account.get("normalized_email")
         }
-        filtered_accounts = [account for account in accounts if _account_in_enabled_groups(account, enabled_group_ids)]
+        filtered_accounts = [account for account in identity_accounts if _account_in_enabled_groups(account, enabled_group_ids)]
         counters["accounts_seen"] = len(filtered_accounts)
 
         by_email: dict[str, list[dict[str, Any]]] = {}
@@ -375,6 +381,8 @@ async def probe_site_accounts(db: AsyncIOMotorDatabase, *, site_id: str, group_i
 
         seen_identity_ids: set[str] = set()
         seen_remote_ids: set[Any] = set()
+        official_refresh_accounts: list[dict[str, Any]] = []
+        official_refresh_eligible_accounts: dict[str, int] = {}
         sample_ops = []
         accounts_for_identity = _collapse_probe_accounts_by_email(filtered_accounts)
         for account in accounts_for_identity:
@@ -387,6 +395,14 @@ async def probe_site_accounts(db: AsyncIOMotorDatabase, *, site_id: str, group_i
             seen_identity_ids.add(identity_id)
             seen_remote_ids.add(remote_id)
             previous_identity = await db.remote_account_identities.find_one({"_id": identity_id})
+            official_refresh = _official_usage_refresh_state(
+                previous_snapshot=(previous_identity or {}).get("last_usage_snapshot"),
+                current_snapshot=account.get("usage_snapshot") or {},
+                detected_at=fetched_at,
+            )
+            if official_refresh["comparable"]:
+                account_type = _official_refresh_account_type(account)
+                official_refresh_eligible_accounts[account_type] = official_refresh_eligible_accounts.get(account_type, 0) + 1
             session = await _ensure_session(db, site_id=site_id, account=account, identity=previous_identity, detected_at=fetched_at)
             is_new = previous_identity is None
             changed = await _update_identity_and_events(
@@ -404,6 +420,32 @@ async def probe_site_accounts(db: AsyncIOMotorDatabase, *, site_id: str, group_i
                 counters["accounts_changed"] += 1
             if _is_401(account):
                 counters["accounts_401"] += 1
+            if official_refresh["detected"]:
+                official_refresh_accounts.append(account | {"official_refresh": official_refresh})
+
+        refresh_consensus = _official_refresh_consensus(
+            official_refresh_accounts,
+            eligible_account_counts=official_refresh_eligible_accounts,
+        )
+        if refresh_consensus["confirmed"]:
+            confirmed_accounts = refresh_consensus["confirmed_accounts"]
+            try:
+                await _write_official_refresh_events(
+                    db,
+                    site_id=site_id,
+                    detected_at=fetched_at,
+                    accounts=confirmed_accounts,
+                    consensus=refresh_consensus,
+                )
+                await _notify_official_usage_refresh(
+                    db,
+                    site_id=site_id,
+                    detected_at=fetched_at,
+                    accounts=confirmed_accounts,
+                    consensus=refresh_consensus,
+                )
+            except Exception as exc:  # noqa: BLE001 - notification failures must not fail a probe run.
+                logger.warning("sub2api_official_usage_refresh_notification_failed site_id=%s error=%s", site_id, exc)
 
         for account in filtered_accounts:
             remote_id = account.get("remote_account_id")
@@ -533,7 +575,7 @@ def _normalize_probe_account(account: dict[str, Any]) -> dict[str, Any]:
         "schedulable": _bool_or_none(_first_present(account, extra, "schedulable", "is_schedulable", "sub2api_schedulable")),
         "error_message": _first_present(account, extra, "error_message", "last_error", "error", "message"),
         "group_ids": group_ids,
-        "plan_type": _first_present(account, credentials, extra, "plan_type"),
+        "plan_type": "bug_team" if is_bug_team_account(account) else _first_present(account, credentials, extra, "plan_type"),
         "last_used_at": _first_present(account, extra, "last_used_at"),
         "updated_at": _first_present(account, extra, "updated_at"),
         "usage_snapshot": _usage_snapshot(account, extra),
@@ -546,6 +588,8 @@ def _collapse_probe_accounts_by_email(accounts: list[dict[str, Any]]) -> list[di
     by_email: dict[str, dict[str, Any]] = {}
     passthrough: list[dict[str, Any]] = []
     for account in accounts:
+        if _is_spark_shadow_account(account):
+            continue
         email = account.get("normalized_email")
         if not email:
             passthrough.append(account)
@@ -559,6 +603,10 @@ def _collapse_probe_accounts_by_email(accounts: list[dict[str, Any]]) -> list[di
             continue
         by_email[email] = _merge_probe_duplicate_account(current, account)
     return [*by_email.values(), *passthrough]
+
+
+def _is_spark_shadow_account(account: dict[str, Any]) -> bool:
+    return bool(SPARK_SHADOW_NAME_PATTERN.search(str(account.get("name") or "").strip()))
 
 
 def _merge_probe_duplicate_account(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
@@ -657,6 +705,80 @@ def _usage_rollover_state(
             "cumulative_usage_totals": totals,
         },
     }
+
+
+def _official_usage_refresh_state(
+    *,
+    previous_snapshot: dict[str, Any] | None,
+    current_snapshot: dict[str, Any],
+    detected_at: datetime,
+) -> dict[str, Any]:
+    previous_snapshot = previous_snapshot if isinstance(previous_snapshot, dict) else {}
+    current_snapshot = current_snapshot if isinstance(current_snapshot, dict) else {}
+    previous_used = _number_float(previous_snapshot.get("codex_7d_used_percent"), none_if_missing=True)
+    current_used = _number_float(current_snapshot.get("codex_7d_used_percent"), none_if_missing=True)
+    expected_reset_at = _parse_datetime(previous_snapshot.get("codex_7d_reset_at"))
+    comparable = bool(
+        previous_used is not None
+        and previous_used > 0
+        and current_used is not None
+        and expected_reset_at is not None
+        and expected_reset_at > detected_at
+    )
+    eligible = bool(
+        comparable
+        and current_used == 0
+    )
+    return {
+        "comparable": comparable,
+        "eligible": eligible,
+        "detected": eligible,
+        "previous_used_percent": previous_used,
+        "current_used_percent": current_used,
+        "previous_reset_at": expected_reset_at,
+        "current_reset_at": _parse_datetime(current_snapshot.get("codex_7d_reset_at")),
+    }
+
+
+def _official_refresh_consensus(accounts: list[dict[str, Any]], *, eligible_account_counts: dict[str, int]) -> dict[str, Any]:
+    candidates_by_type: dict[str, list[dict[str, Any]]] = {}
+    for account in accounts:
+        refresh = account.get("official_refresh")
+        if not isinstance(refresh, dict) or refresh.get("detected") is not True:
+            continue
+        candidates_by_type.setdefault(_official_refresh_account_type(account), []).append(account)
+
+    type_consensus: dict[str, dict[str, Any]] = {}
+    confirmed_account_types: list[str] = []
+    confirmed_accounts: list[dict[str, Any]] = []
+    for account_type, candidates in sorted(candidates_by_type.items()):
+        eligible_count = int(eligible_account_counts.get(account_type) or 0)
+        candidate_count = len(candidates)
+        candidate_ratio = candidate_count / eligible_count if eligible_count > 0 else 0.0
+        confirmed = candidate_count >= OFFICIAL_REFRESH_MIN_ACCOUNT_COUNT and candidate_ratio >= OFFICIAL_REFRESH_MIN_ACCOUNT_RATIO
+        type_consensus[account_type] = {
+            "confirmed": confirmed,
+            "candidate_count": candidate_count,
+            "eligible_account_count": eligible_count,
+            "candidate_ratio": candidate_ratio,
+        }
+        if confirmed:
+            confirmed_account_types.append(account_type)
+            confirmed_accounts.extend(candidates)
+
+    return {
+        "confirmed": bool(confirmed_account_types),
+        "candidate_count": sum(len(items) for items in candidates_by_type.values()),
+        "confirmed_candidate_count": len(confirmed_accounts),
+        "eligible_account_count": sum(int(value or 0) for value in eligible_account_counts.values()),
+        "confirmed_account_types": confirmed_account_types,
+        "confirmed_accounts": confirmed_accounts,
+        "type_consensus": type_consensus,
+    }
+
+
+def _official_refresh_account_type(account: dict[str, Any]) -> str:
+    return str(account.get("plan_type") or "unknown").strip().lower() or "unknown"
 
 
 def _number_float(value: Any, *, none_if_missing: bool = False) -> float | None:
@@ -764,6 +886,11 @@ async def _update_identity_and_events(
         current_snapshot=account.get("usage_snapshot") or {},
         previous_totals=(identity or {}).get("cumulative_usage_totals") if identity else None,
     )
+    confirmed_401 = _confirmed_401_state(
+        account=account,
+        previous_is_401=bool((identity or {}).get("current_is_401")),
+        previous_recovery_streak=int((identity or {}).get("401_recovery_streak") or 0),
+    )
     changed = False
     if identity is None:
         changed = True
@@ -791,10 +918,10 @@ async def _update_identity_and_events(
             if event_enabled:
                 await _write_event(db, site_id=site_id, event_type="group_changed", severity="info", detected_at=detected_at, account=account, session=session, previous=identity)
         was_401 = bool(identity.get("current_is_401"))
-        is_401 = _is_401(account)
+        is_401 = bool(confirmed_401["is_401"])
         if is_401 and not was_401 and event_enabled:
             await _write_event(db, site_id=site_id, event_type="401_detected", severity="critical", detected_at=detected_at, account=account, session=session, previous=identity)
-        if was_401 and _is_normal(account) and event_enabled:
+        if was_401 and not is_401 and event_enabled:
             await _write_event(db, site_id=site_id, event_type="401_recovered", severity="info", detected_at=detected_at, account=account, session=session, previous=identity)
         if identity_usage["rollover_detected"] and event_enabled:
             await _write_event(
@@ -808,7 +935,6 @@ async def _update_identity_and_events(
                 previous=identity,
                 details=identity_usage["rollover_details"],
             )
-
     duplicate_changed = False
     if setting.get("record_duplicate_email_warning", True):
         current_remote_ids = _normalized_remote_id_signature(account.get("remote_account_ids") or [account.get("remote_account_id")])
@@ -871,7 +997,8 @@ async def _update_identity_and_events(
         "current_status": account.get("status"),
         "current_schedulable": account.get("schedulable"),
         "current_error_message": account.get("error_message"),
-        "current_is_401": _is_401(account),
+        "current_is_401": confirmed_401["is_401"],
+        "401_recovery_streak": confirmed_401["recovery_streak"],
         "current_group_ids": account.get("group_ids") or [],
         "plan_type": account.get("plan_type"),
         "last_usage_snapshot": account.get("usage_snapshot") or {},
@@ -892,12 +1019,12 @@ async def _update_identity_and_events(
         increments["total_sessions"] = 1
     elif str(identity.get("current_session_id")) != str(session["_id"]):
         increments["total_sessions"] = 1
-    if _is_401(account) and not bool((identity or {}).get("current_is_401")):
+    if confirmed_401["is_401"] and not bool((identity or {}).get("current_is_401")):
         if not identity or not identity.get("first_401_at"):
             updates["first_401_at"] = detected_at
         updates["last_401_at"] = detected_at
         increments["total_401_count"] = 1
-    if bool((identity or {}).get("current_is_401")) and _is_normal(account):
+    if bool((identity or {}).get("current_is_401")) and not confirmed_401["is_401"]:
         if not identity or not identity.get("first_recovered_at"):
             updates["first_recovered_at"] = detected_at
         updates["last_recovered_at"] = detected_at
@@ -1357,6 +1484,100 @@ async def _active_dingtalk_channel_ids(db: AsyncIOMotorDatabase) -> list[str]:
     return [str(item["_id"]) async for item in db.notification_channels.find({"status": "active", "channel_type": "dingtalk"}, {"_id": 1})]
 
 
+async def _write_official_refresh_events(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    detected_at: datetime,
+    accounts: list[dict[str, Any]],
+    consensus: dict[str, Any],
+) -> None:
+    for account in accounts:
+        identity_id = _identity_id(site_id, str(account.get("normalized_email") or ""))
+        identity = await db.remote_account_identities.find_one({"_id": identity_id})
+        session = None
+        if identity and identity.get("current_session_id"):
+            session = await db.remote_account_sessions.find_one({"_id": identity["current_session_id"]})
+        await _write_event(
+            db,
+            site_id=site_id,
+            event_type="official_usage_refresh",
+            severity="info",
+            detected_at=detected_at,
+            account=account,
+            session=session,
+            previous=identity,
+            details={
+                **(account.get("official_refresh") if isinstance(account.get("official_refresh"), dict) else {}),
+                "candidate_count": consensus["candidate_count"],
+                "eligible_account_count": consensus["eligible_account_count"],
+                "confirmed_account_types": consensus["confirmed_account_types"],
+                "type_consensus": consensus["type_consensus"],
+                "official_refresh_confirmed": True,
+            },
+        )
+
+
+async def _notify_official_usage_refresh(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    detected_at: datetime,
+    accounts: list[dict[str, Any]],
+    consensus: dict[str, Any],
+) -> dict[str, Any]:
+    dedupe_after = detected_at - timedelta(hours=OFFICIAL_REFRESH_NOTIFICATION_DEDUPE_HOURS)
+    account_types = consensus.get("confirmed_account_types") or []
+    existing = await db.notification_events.find_one(
+        {
+            "event_type": "sub2api.account.official_usage_refresh",
+            "created_at": {"$gte": dedupe_after},
+            "status": {"$in": ["pending", "success", "partial"]},
+            "payload.confirmed_account_types": {"$in": account_types},
+        },
+        {"_id": 1},
+    )
+    if existing:
+        return _notification_skip_result("skipped_duplicate_official_refresh")
+
+    channel_ids = await _active_dingtalk_channel_ids(db)
+    if not channel_ids:
+        return _notification_skip_result("skipped_no_dingtalk")
+
+    account_names = [str(item.get("name") or item.get("email") or item.get("remote_account_id") or "-") for item in accounts]
+    lines = [
+        "### Surprise，OpenAI 额度提前刷新了",
+        f"- 同步刷新账号：{len(accounts)} 个",
+        f"- 账号类型：{'、'.join(account_types)}",
+        f"- 账号：{'、'.join(account_names[:8])}",
+    ]
+    if len(account_names) > 8:
+        lines.append(f"- 其余：{len(account_names) - 8} 个")
+    lines.append(f"- 时间：{_format_shanghai_time(detected_at)}")
+    return await send_notification_event(
+        db,
+        event_type="sub2api.account.official_usage_refresh",
+        severity="info",
+        source="sub2api_account_probe",
+        resource_type="sub2api_site",
+        resource_id=site_id,
+        dedupe_key=f"sub2api.account.official_usage_refresh:{','.join(account_types)}:{detected_at.date().isoformat()}",
+        title="Surprise，OpenAI 额度提前刷新了",
+        text="\n".join(line.replace("### ", "") for line in lines),
+        markdown_text="\n".join(lines),
+        payload={
+            "site_id": site_id,
+            "account_count": len(accounts),
+            "confirmed_account_types": account_types,
+            "type_consensus": consensus.get("type_consensus") or {},
+            "account_names": account_names,
+            "remote_account_ids": [item.get("remote_account_id") for item in accounts],
+            "detected_at": detected_at,
+        },
+        channel_ids=channel_ids,
+    )
+
+
 async def _notification_group_names(db: AsyncIOMotorDatabase, *, site_id: str, group_ids: Any) -> list[str]:
     result: list[str] = []
     if not site_id or not isinstance(group_ids, list):
@@ -1652,6 +1873,25 @@ def _is_401(account: dict[str, Any]) -> bool:
     return bool(ERROR_401_PATTERN.search(str(account.get("error_message") or "")))
 
 
+def _confirmed_401_state(
+    *,
+    account: dict[str, Any],
+    previous_is_401: bool,
+    previous_recovery_streak: int,
+) -> dict[str, int | bool]:
+    if _is_401(account):
+        return {"is_401": True, "recovery_streak": 0}
+    if not previous_is_401:
+        return {"is_401": False, "recovery_streak": 0}
+    if not _is_normal(account):
+        return {"is_401": True, "recovery_streak": 0}
+    recovery_streak = previous_recovery_streak + 1
+    return {
+        "is_401": recovery_streak < CONFIRMED_401_RECOVERY_COUNT,
+        "recovery_streak": recovery_streak,
+    }
+
+
 def _is_normal(account: dict[str, Any]) -> bool:
     status = str(account.get("status") or "").lower()
     return status in STATUS_NORMAL and not account.get("error_message")
@@ -1691,6 +1931,12 @@ def _usage_snapshot(account: dict[str, Any], extra: dict[str, Any]) -> dict[str,
     keys = (
         "codex_5h_used_percent",
         "codex_7d_used_percent",
+        "codex_5h_reset_at",
+        "codex_7d_reset_at",
+        "codex_5h_reset_after_seconds",
+        "codex_7d_reset_after_seconds",
+        "codex_5h_window_minutes",
+        "codex_7d_window_minutes",
         "codex_5h_actual_cost",
         "codex_7d_actual_cost",
         "codex_5h_total_cost",
