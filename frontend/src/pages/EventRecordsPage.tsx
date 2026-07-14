@@ -44,6 +44,7 @@ type EventSummary = {
   detected_401?: number;
   recovered_401?: number;
   usage_rollovers?: number;
+  official_usage_refreshes?: number;
   duplicate_email_events?: number;
   removed_events?: number;
   today_events?: number;
@@ -212,6 +213,7 @@ const eventTypeOptions = [
   ["401_detected", "401 封号"],
   ["401_recovered", "401 恢复"],
   ["usage_rollover", "用量清零累计"],
+  ["official_usage_refresh", "官方额度刷新"],
   ["missing_suspected", "疑似远端删除"],
   ["remote_removed_confirmed", "确认远端删除"],
   ["duplicate_email_detected", "重复邮箱"],
@@ -471,6 +473,7 @@ export function EventRecordsPage({ token, showToast }: Props) {
         <SummaryItem label="今日封号" value={summary.today_401} tone="warning" />
         <SummaryItem label="异常账号" value={summary.current_abnormal_accounts} tone="warning" />
         <SummaryItem label="清零累计" value={summary.usage_rollovers} />
+        <SummaryItem label="官方刷新" value={summary.official_usage_refreshes} />
         <SummaryItem label="累计消耗" value={formatUsd(summary.cumulative_actual_cost)} strong />
         <SummaryItem label="最近事件" value={formatDateTime(summary.last_event_at)} />
       </section>
@@ -705,6 +708,7 @@ function FilterMenu({
           <option value="free">free</option>
           <option value="plus">plus</option>
           <option value="team">team</option>
+          <option value="bug_team">bug team</option>
           <option value="k12">k12</option>
           <option value="pro">pro</option>
         </select>
@@ -1027,6 +1031,7 @@ function eventTypeLabel(value?: string) {
     "401_detected": "401 封号",
     "401_recovered": "401 恢复",
     usage_rollover: "用量清零累计",
+    official_usage_refresh: "官方额度刷新",
     missing_suspected: "疑似远端删除",
     remote_removed_confirmed: "确认远端删除",
     duplicate_email_detected: "重复邮箱",
@@ -1076,6 +1081,7 @@ function eventTone(severity?: string, is401?: boolean): "accent" | "success" | "
 
 function planTagTone(value?: string): string {
   const normalized = (value || "").toLowerCase();
+  if (normalized === "bug_team") return "plan-team";
   if (normalized === "plus") return "plan-plus";
   if (normalized === "free") return "plan-free";
   if (normalized === "team") return "plan-team";
@@ -1086,6 +1092,7 @@ function planTagTone(value?: string): string {
 
 function displayPlan(value?: string) {
   if (!value) return "unknown";
+  if (value.toLowerCase() === "bug_team") return "Bug Team";
   if (value.toLowerCase() === "k12") return "K12";
   return value;
 }

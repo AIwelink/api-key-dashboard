@@ -191,7 +191,7 @@ class CapacityAccountLimit(BaseModel):
 
 
 class CapacityAccountLimitsUpdate(BaseModel):
-    limits: dict[Literal["free", "plus", "team", "k12", "pro"], CapacityAccountLimit]
+    limits: dict[Literal["free", "plus", "team", "bug_team", "k12", "pro"], CapacityAccountLimit]
 
 
 class ApiPoolStatusPreferenceUpdate(BaseModel):

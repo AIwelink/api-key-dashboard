@@ -26,6 +26,7 @@ FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60
 FIVE_HOUR_DYNAMIC_MAX_WAIT_SECONDS = 2 * 60 * 60
 SEVEN_DAY_WINDOW_SECONDS = 7 * 24 * 60 * 60
 SEVEN_DAY_DYNAMIC_MAX_WAIT_SECONDS = 2 * 24 * 60 * 60
+BUG_TEAM_MIN_WINDOW_MINUTES = 28 * 24 * 60
 CAPACITY_ACCOUNT_LIMITS = DEFAULT_CAPACITY_ACCOUNT_LIMITS
 CAPACITY_HEALTH_THRESHOLDS = {
     "exhausted_available_accounts": 2,
@@ -1195,16 +1196,18 @@ def _dynamic_five_hour_usage(account: dict[str, Any] | None, five_hour_limit_usd
             "seven_day_actual_remaining_usd": seven_day_limit_usd,
         }
 
-    used_percent = _usage_number(account, "codex_5h_used_percent")
+    bug_team = is_bug_team_account(account)
+    five_hour_prefix = "codex_7d" if bug_team else "codex_5h"
+    used_percent = _usage_number(account, f"{five_hour_prefix}_used_percent")
     used_percent = _clamp_percent(used_percent if isinstance(used_percent, (int, float)) else 0)
     seven_day_used_percent = _usage_number(account, "codex_7d_used_percent")
     seven_day_used_percent = _clamp_percent(seven_day_used_percent if isinstance(seven_day_used_percent, (int, float)) else 0)
-    reset_after_seconds = _usage_number(account, "codex_5h_reset_after_seconds")
+    reset_after_seconds = _usage_number(account, f"{five_hour_prefix}_reset_after_seconds")
     if not isinstance(reset_after_seconds, (int, float)):
-        reset_at = _parse_datetime(_first_present(account, account.get("extra") if isinstance(account.get("extra"), dict) else {}, "codex_5h_reset_at", "5h_reset_at"))
-        reset_after_seconds = max(0, (reset_at - now_utc()).total_seconds()) if reset_at is not None else FIVE_HOUR_WINDOW_SECONDS
-    window_minutes = _usage_number(account, "codex_5h_window_minutes")
-    window_seconds = max(1.0, float(window_minutes) * 60) if isinstance(window_minutes, (int, float)) and window_minutes > 0 else FIVE_HOUR_WINDOW_SECONDS
+        reset_at = _parse_datetime(_first_present(account, account.get("extra") if isinstance(account.get("extra"), dict) else {}, f"{five_hour_prefix}_reset_at", "7d_reset_at" if bug_team else "5h_reset_at"))
+        reset_after_seconds = max(0, (reset_at - now_utc()).total_seconds()) if reset_at is not None else (SEVEN_DAY_WINDOW_SECONDS if bug_team else FIVE_HOUR_WINDOW_SECONDS)
+    window_minutes = _usage_number(account, f"{five_hour_prefix}_window_minutes")
+    window_seconds = max(1.0, float(window_minutes) * 60) if isinstance(window_minutes, (int, float)) and window_minutes > 0 else (SEVEN_DAY_WINDOW_SECONDS if bug_team else FIVE_HOUR_WINDOW_SECONDS)
     reset_factor = max(0.0, min(1.0, float(reset_after_seconds) / window_seconds))
     actual_used_usd = max(0.0, min(five_hour_limit_usd, five_hour_limit_usd * used_percent / 100))
     seven_day_actual_used_usd = max(0.0, min(seven_day_limit_usd, seven_day_limit_usd * seven_day_used_percent / 100))
@@ -1255,7 +1258,7 @@ def _primary_capacity_type(type_summary: dict[str, dict[str, Any]]) -> str:
     ]
     if not any(count > 0 for _, count in candidates):
         return "total"
-    priority = {"pro": 5, "plus": 4, "k12": 3, "team": 2, "free": 1}
+    priority = {"pro": 6, "bug_team": 5, "plus": 4, "k12": 3, "team": 2, "free": 1}
     return max(candidates, key=lambda item: (item[1], priority.get(item[0], 0)))[0]
 
 
@@ -1264,6 +1267,8 @@ def _capacity_account_type(account: dict[str, Any]) -> str:
     extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
     value = account.get("plan_type") or credentials.get("plan_type") or extra.get("account_type") or extra.get("plan_type")
     normalized = _normalize_capacity_account_type(value)
+    if is_bug_team_account(account):
+        return "bug_team"
     if normalized in {"team", "team_sub", "team-sub", "team_child", "team_child_account", "team子号", "team 子号"}:
         return "team"
     if normalized == "k12":
@@ -1302,6 +1307,17 @@ def _capacity_account_type(account: dict[str, Any]) -> str:
     if str(account.get("platform") or "").lower() == "openai":
         return "free"
     return "other"
+
+
+def is_bug_team_account(account: dict[str, Any]) -> bool:
+    credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
+    extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+    plan_type = _normalize_capacity_account_type(account.get("plan_type") or credentials.get("plan_type") or extra.get("plan_type"))
+    if plan_type not in {"team", "bug_team"}:
+        return False
+    five_hour_window = _usage_number(account, "codex_5h_window_minutes")
+    seven_day_window = _usage_number(account, "codex_7d_window_minutes")
+    return five_hour_window == 0 and isinstance(seven_day_window, (int, float)) and seven_day_window >= BUG_TEAM_MIN_WINDOW_MINUTES
 
 
 def _local_capacity_account_type(account: dict[str, Any]) -> str:

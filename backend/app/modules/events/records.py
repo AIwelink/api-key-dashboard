@@ -401,6 +401,7 @@ async def event_records_summary(
         "detected_401": await _distinct_event_account_count(db, {**query, "event_type": "401_detected"}),
         "recovered_401": await _distinct_event_account_count(db, {**query, "event_type": "401_recovered"}),
         "usage_rollovers": await _distinct_event_account_count(db, {**query, "event_type": "usage_rollover"}),
+        "official_usage_refreshes": await _distinct_event_account_count(db, {**query, "event_type": "official_usage_refresh"}),
         "duplicate_email_events": await _distinct_event_account_count(db, {**query, "event_type": {"$in": ["duplicate_email_detected", "duplicate_email_resolved"]}}),
         "removed_events": await _distinct_event_account_count(db, {**query, "event_type": "remote_removed_confirmed"}),
         "today_events": await _distinct_event_account_count(db, {**query, "detected_at": {"$gte": today_start}}) if today_start else 0,
