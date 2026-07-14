@@ -10,6 +10,7 @@ export type ViewName =
   | "alert-center"
   | "pool-lifecycle"
   | "agent-analysis"
+  | "agent-workbench"
   | "api-tokens"
   | "users"
   | "logs";

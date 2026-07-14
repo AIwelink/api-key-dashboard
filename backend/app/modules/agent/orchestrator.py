@@ -7,7 +7,17 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.modules.agent.capacity import list_agent_pools
 from app.modules.agent.capabilities import invoke_agent_capability
+from app.modules.agent.context_pack import build_agent_context_pack
+from app.modules.agent.decision_core import decide_with_context_pack
 from app.modules.agent.llm import explain_level1_analysis, plan_level1_capabilities
+from app.modules.agent.long_term_memory import build_memory_candidates_from_report, record_operator_feedback_if_present
+from app.modules.agent.memory import (
+    append_agent_message,
+    create_agent_run,
+    fail_agent_run,
+    finish_agent_run,
+    save_agent_decision,
+)
 from app.utils import now_utc, serialize_doc
 
 
@@ -31,47 +41,126 @@ async def run_agent_analysis(
     pool_id: str | None,
     trigger: str,
     allow_planning: bool = True,
+    actor: dict[str, Any] | None = None,
+    conversation_id: str | None = None,
 ) -> dict[str, Any]:
-    pools_response = await list_agent_pools(db)
-    pools = [pool for pool in pools_response.get("items", []) if isinstance(pool, dict)]
-    if not pools:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No analyzable API pools found")
-
     normalized_message = (user_message or "").strip()
-    planning = await _build_plan(
+    run = await create_agent_run(
         db,
-        pools=pools,
-        user_message=normalized_message,
-        pool_id=pool_id,
         trigger=trigger,
-        allow_planning=allow_planning,
+        actor=actor,
+        pool_id=pool_id,
+        user_message=normalized_message or None,
+        conversation_id=conversation_id,
     )
+    run_id = str(run["run_id"])
+    conversation_id = str(run["conversation_id"])
     try:
-        report = await _execute_plan(
+        if trigger == "manual_chat" and normalized_message:
+            await append_agent_message(
+                db,
+                conversation_id=conversation_id,
+                role="user",
+                content=normalized_message,
+                run_id=run_id,
+                pool_id=pool_id,
+                actor=actor,
+            )
+        context_pack = await build_agent_context_pack(
             db,
-            pools=pools,
-            user_message=normalized_message or None,
             trigger=trigger,
-            planning=planning,
+            pool_id=pool_id,
+            user_message=normalized_message or None,
+            conversation_id=conversation_id,
+            actor=actor,
         )
+        target_pool = context_pack.get("target_pool") if isinstance(context_pack.get("target_pool"), dict) else {}
+        resolved_pool_id = str(target_pool.get("pool_id") or pool_id or "").strip() or None
+        operator_feedback_memory = None
+        if trigger == "manual_chat" and normalized_message:
+            operator_feedback_memory = await record_operator_feedback_if_present(
+                db,
+                site_id=str(target_pool.get("site_id")) if target_pool.get("site_id") is not None else None,
+                pool_id=resolved_pool_id,
+                message=normalized_message,
+                run_id=run_id,
+                conversation_id=conversation_id,
+                actor=actor,
+            )
+        pools_response = await list_agent_pools(db)
+        pools = [pool for pool in pools_response.get("items", []) if isinstance(pool, dict)]
+        if not pools:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No analyzable API pools found")
+
+        try:
+            report = await _execute_context_pack_decision(
+                db,
+                context_pack=context_pack,
+                trigger=trigger,
+                user_message=normalized_message or None,
+            )
+        except Exception as exc:  # noqa: BLE001 - keep the Agent usable with the deterministic fallback.
+            planning = await _build_plan(
+                db,
+                pools=pools,
+                user_message=normalized_message,
+                pool_id=resolved_pool_id,
+                trigger=trigger,
+                allow_planning=allow_planning,
+            )
+            fallback_planning = _fallback_plan(
+                pools=pools,
+                pool_id=resolved_pool_id or planning.get("target_pool_id"),
+                user_message=normalized_message,
+                trigger=trigger,
+                reason=f"LLM primary decision failed: {exc}",
+                planner=planning.get("planner") if isinstance(planning.get("planner"), dict) else planning,
+            )
+            report = await _execute_plan(
+                db,
+                pools=pools,
+                user_message=normalized_message or None,
+                trigger=trigger,
+                planning=fallback_planning,
+            )
+        report["run_id"] = run_id
+        report["conversation_id"] = conversation_id
+        report["context_pack_version"] = context_pack.get("schema_version")
+        agent_meta = report.get("agent") if isinstance(report.get("agent"), dict) else {}
+        agent_meta["context_pack"] = _context_pack_trace_summary(context_pack)
+        agent_meta["memory_candidates"] = await build_memory_candidates_from_report(db, report=report)
+        if operator_feedback_memory:
+            agent_meta["operator_feedback_memory"] = {
+                "memory_id": operator_feedback_memory.get("memory_id"),
+                "memory_type": operator_feedback_memory.get("memory_type"),
+                "summary": operator_feedback_memory.get("summary"),
+            }
+        report["agent"] = agent_meta
+        decision_doc = await save_agent_decision(db, run_id=run_id, conversation_id=conversation_id, report=report, actor=actor)
+        decision_id = str(decision_doc["decision_id"])
+        report["decision_id"] = decision_id
+        pool = report.get("pool") if isinstance(report.get("pool"), dict) else {}
+        await append_agent_message(
+            db,
+            conversation_id=conversation_id,
+            role="assistant",
+            content=_assistant_message_from_report(report),
+            run_id=run_id,
+            pool_id=str(pool.get("id")) if pool.get("id") is not None else pool_id,
+            site_id=str(pool.get("site_id")) if pool.get("site_id") is not None else None,
+            actor=None,
+            metadata={
+                "decision_id": decision_id,
+                "severity": report.get("severity"),
+                "decision_mode": report.get("decision_mode") or (report.get("agent") or {}).get("decision_mode"),
+                "validator_status": (report.get("validator") or {}).get("status"),
+            },
+        )
+        await finish_agent_run(db, run_id=run_id, report=report, decision_id=decision_id)
         return report
-    except Exception as exc:  # noqa: BLE001 - keep the Agent usable with the deterministic fallback.
-        if not planning.get("fallback_allowed", True):
-            raise
-        fallback_planning = _fallback_plan(
-            pools=pools,
-            pool_id=pool_id or planning.get("target_pool_id"),
-            user_message=normalized_message,
-            trigger=trigger,
-            reason=f"orchestrated plan failed: {exc}",
-        )
-        return await _execute_plan(
-            db,
-            pools=pools,
-            user_message=normalized_message or None,
-            trigger=trigger,
-            planning=fallback_planning,
-        )
+    except Exception as exc:
+        await fail_agent_run(db, run_id=run_id, error=str(exc) or exc.__class__.__name__)
+        raise
 
 
 async def _build_plan(
@@ -85,6 +174,7 @@ async def _build_plan(
 ) -> dict[str, Any]:
     if allow_planning and user_message:
         plan = await plan_level1_capabilities(
+            db=db,
             user_message=user_message,
             pools=pools,
             selected_pool_id=pool_id,
@@ -102,6 +192,83 @@ async def _build_plan(
             planner=plan,
         )
     return _fallback_plan(pools=pools, pool_id=pool_id, user_message=user_message, trigger=trigger)
+
+
+async def _execute_context_pack_decision(
+    db: AsyncIOMotorDatabase,
+    *,
+    context_pack: dict[str, Any],
+    trigger: str,
+    user_message: str | None,
+) -> dict[str, Any]:
+    decision_result = await decide_with_context_pack(db, context_pack=context_pack)
+    decision = decision_result["decision"]
+    target_pool = context_pack.get("target_pool") if isinstance(context_pack.get("target_pool"), dict) else {}
+    capacity = context_pack.get("capacity") if isinstance(context_pack.get("capacity"), dict) else {}
+    probe = context_pack.get("probe") if isinstance(context_pack.get("probe"), dict) else {}
+    pool = _pool_from_context_pack(context_pack)
+    created_at = now_utc()
+    return serialize_doc(
+        {
+            "report_id": None,
+            "read_only": True,
+            "trigger": trigger,
+            "user_message": user_message,
+            "pool": pool,
+            "severity": decision["severity"],
+            "headline": decision["headline"],
+            "decision": decision,
+            "reasons": decision.get("reasons", []),
+            "suggested_actions": decision.get("suggested_actions", []),
+            "capacity": capacity,
+            "probe": probe,
+            "llm": decision_result["llm"],
+            "agent": {
+                "mode": "llm_primary",
+                "planned_by": "context_pack",
+                "intent": "make_pool_operation_decision",
+                "thought": "后端主动构建 Context Pack，Level 1 模型基于完整上下文输出主决策。",
+                "decision_mode": "llm_primary",
+                "validator": decision_result.get("validator", {}),
+                "capability_plan": [],
+                "capability_trace": [
+                    {
+                        "index": 1,
+                        "capability": "context_pack.build",
+                        "reason": "构建账号池运营决策上下文",
+                        "status": "success",
+                        "summary": {
+                            "schema_version": context_pack.get("schema_version"),
+                            "pool_id": target_pool.get("pool_id"),
+                            "capacity_available": _context_data_quality(context_pack).get("capacity_available"),
+                            "probe_available": _context_data_quality(context_pack).get("probe_available"),
+                        },
+                    },
+                    {
+                        "index": 2,
+                        "capability": "level1.llm_primary_decision",
+                        "reason": "由 Level 1 模型根据 Context Pack 生成运营主决策",
+                        "status": "success",
+                        "summary": {
+                            "severity": decision.get("severity"),
+                            "suggested_add_count": decision.get("suggested_add_count"),
+                            "should_alert": decision.get("should_alert"),
+                            "requires_human_confirm": decision.get("requires_human_confirm"),
+                            "data_gaps": decision.get("data_gaps", []),
+                        },
+                    },
+                ],
+            },
+            "chat": {
+                "intent": "make_pool_operation_decision",
+                "matched_pool_id": pool.get("id"),
+                "matched_pool_name": pool.get("name"),
+            },
+            "decision_mode": "llm_primary",
+            "validator": decision_result.get("validator", {}),
+            "created_at": created_at,
+        }
+    )
 
 
 async def _execute_plan(
@@ -160,6 +327,7 @@ async def _execute_plan(
         )
 
     llm = await explain_level1_analysis(
+        db=db,
         pool=pool,
         capacity=capacity,
         probe=probe,
@@ -356,6 +524,55 @@ def _capability_result_summary(capability: str, result: Any) -> dict[str, Any]:
     return {"keys": list(result.keys())[:10]}
 
 
+def _context_pack_trace_summary(context_pack: dict[str, Any]) -> dict[str, Any]:
+    target_pool = context_pack.get("target_pool") if isinstance(context_pack.get("target_pool"), dict) else {}
+    data_quality = context_pack.get("data_quality") if isinstance(context_pack.get("data_quality"), dict) else {}
+    system_constraints = context_pack.get("system_constraints") if isinstance(context_pack.get("system_constraints"), dict) else {}
+    return {
+        "schema_version": context_pack.get("schema_version"),
+        "target_pool": {
+            "pool_id": target_pool.get("pool_id"),
+            "site_id": target_pool.get("site_id"),
+            "group_id": target_pool.get("group_id"),
+            "name": target_pool.get("name"),
+            "account_type": target_pool.get("account_type"),
+        },
+        "data_quality": {
+            "capacity_available": data_quality.get("capacity_available"),
+            "probe_available": data_quality.get("probe_available"),
+            "event_stream_available": data_quality.get("event_stream_available"),
+            "history_available": data_quality.get("history_available"),
+            "warnings": data_quality.get("warnings") if isinstance(data_quality.get("warnings"), list) else [],
+        },
+        "system_constraints": {
+            "read_only": system_constraints.get("read_only"),
+            "can_send_dingtalk": system_constraints.get("can_send_dingtalk"),
+            "can_push_accounts": system_constraints.get("can_push_accounts"),
+            "can_delete_accounts": system_constraints.get("can_delete_accounts"),
+            "can_buy_accounts": system_constraints.get("can_buy_accounts"),
+        },
+    }
+
+
+def _pool_from_context_pack(context_pack: dict[str, Any]) -> dict[str, Any]:
+    target_pool = context_pack.get("target_pool") if isinstance(context_pack.get("target_pool"), dict) else {}
+    return {
+        "id": target_pool.get("pool_id"),
+        "name": target_pool.get("name"),
+        "account_type": target_pool.get("account_type"),
+        "site_id": target_pool.get("site_id"),
+        "active_group_id": target_pool.get("group_id"),
+        "source": target_pool.get("source"),
+        "remote_status": target_pool.get("remote_status"),
+        "updated_at": target_pool.get("updated_at"),
+    }
+
+
+def _context_data_quality(context_pack: dict[str, Any]) -> dict[str, Any]:
+    value = context_pack.get("data_quality")
+    return value if isinstance(value, dict) else {}
+
+
 def _resolve_pool(pool_id: str, pools: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not pool_id:
         return None
@@ -403,3 +620,13 @@ def _tokens(value: str) -> list[str]:
         for token in value.replace("/", " ").replace("-", " ").replace("_", " ").replace("#", " ").split()
         if len(token) >= 2
     ]
+
+
+def _assistant_message_from_report(report: dict[str, Any]) -> str:
+    llm = report.get("llm") if isinstance(report.get("llm"), dict) else {}
+    for value in (llm.get("message"), llm.get("operator_message"), llm.get("summary"), report.get("headline")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    headline = str(report.get("headline") or "").strip()
+    severity = str(report.get("severity") or "").strip()
+    return headline or (f"Agent analysis finished with severity: {severity}" if severity else "Agent analysis finished.")

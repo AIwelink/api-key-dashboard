@@ -10,11 +10,6 @@ from app.modules.sub2api.cache import get_cache_meta, list_cached_groups
 from app.utils import serialize_doc
 
 AGENT_POOL_DEFAULTS = {
-    "min_active": 20,
-    "target_active": 30,
-    "max_avg_5h_used": 70,
-    "max_avg_7d_used": 80,
-    "min_reserve": 10,
     "status": "active",
 }
 
@@ -97,6 +92,15 @@ async def read_pool_capacity(db: AsyncIOMotorDatabase, pool_id: str) -> dict[str
             "available_accounts": int(_number_or_none(capacity_summary.get("available_accounts")) or 0),
             "available_5h_accounts": int(_number_or_none(capacity_summary.get("available_5h_accounts")) or 0),
             "current_speed_days": _number_or_none(capacity_summary.get("current_speed_days")),
+            "recent_24h_cost": _number_or_none(capacity_summary.get("recent_24h_cost")),
+            "seven_day_24h_peak_cost": _number_or_none(capacity_summary.get("seven_day_24h_peak_cost")),
+            "estimated_recent_24h_consumed_accounts": _number_or_none(
+                capacity_summary.get("estimated_recent_24h_consumed_accounts") or capacity_summary.get("estimated_24h_consumed_accounts")
+            ),
+            "estimated_seven_day_peak_24h_consumed_accounts": _number_or_none(capacity_summary.get("estimated_seven_day_peak_24h_consumed_accounts")),
+            "seven_day_peak_speed_days": _number_or_none(capacity_summary.get("seven_day_peak_speed_days")),
+            "recent_day_five_hour_peak_speed_days": _number_or_none(capacity_summary.get("recent_day_five_hour_peak_speed_days")),
+            "seven_day_five_hour_peak_speed_days": _number_or_none(capacity_summary.get("seven_day_five_hour_peak_speed_days")),
             "recent_day_five_hour_peak_multiple": _number_or_none(capacity_summary.get("recent_day_five_hour_peak_multiple")),
             "seven_day_five_hour_peak_multiple": _number_or_none(capacity_summary.get("seven_day_five_hour_peak_multiple") or capacity_summary.get("five_hour_peak_multiple")),
             "burst_1h_five_hour_multiple": _number_or_none(capacity_summary.get("burst_1h_five_hour_multiple")),

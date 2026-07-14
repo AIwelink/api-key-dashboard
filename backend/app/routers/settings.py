@@ -1,8 +1,17 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
+from app.schemas import AgentLlmSettingsUpdate
 from app.security import require_roles
+from app.modules.agent.llm_client import AgentLlmConfigError, test_agent_llm_connection
+from app.modules.agent.settings import (
+    AgentLlmSettingsValidationError,
+    get_agent_llm_settings,
+    get_agent_llm_settings_private,
+    update_agent_llm_settings,
+    update_agent_llm_test_result,
+)
 from app.modules.system.audit import write_audit_log
 
 
@@ -30,3 +39,85 @@ async def update_sync_policy(
     await db.app_settings.update_one({"_id": "sync_policy"}, {"$set": payload}, upsert=True)
     await write_audit_log(db, actor=actor, action="settings.sync_policy.update", resource_type="setting", resource_id="sync_policy")
     return await get_sync_policy(actor, db)
+
+
+@router.get("/agent-llm")
+async def get_agent_llm_settings_route(
+    _: dict = Depends(require_roles("owner", "admin")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    return await get_agent_llm_settings(db)
+
+
+@router.put("/agent-llm")
+async def put_agent_llm_settings(
+    payload: AgentLlmSettingsUpdate,
+    actor: dict = Depends(require_roles("owner", "admin")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    before = await get_agent_llm_settings(db)
+    try:
+        updated = await update_agent_llm_settings(db, payload=payload, actor=actor)
+    except AgentLlmSettingsValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="settings.agent_llm.update",
+        resource_type="setting",
+        resource_id="agent_llm",
+        before=before,
+        after=updated,
+    )
+    return updated
+
+
+@router.post("/agent-llm/test")
+async def post_agent_llm_test(
+    actor: dict = Depends(require_roles("owner", "admin")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    settings = await get_agent_llm_settings_private(db)
+    try:
+        result = await test_agent_llm_connection(settings)
+        public_settings = await update_agent_llm_test_result(db, ok=True, message=result.get("message") or "Agent LLM connection is ready")
+        response = {**result, "settings": public_settings}
+        await write_audit_log(
+            db,
+            actor=actor,
+            action="settings.agent_llm.test",
+            resource_type="setting",
+            resource_id="agent_llm",
+            after={"ok": True, "message": response.get("message"), "model": response.get("model")},
+        )
+        return response
+    except AgentLlmConfigError as exc:
+        message = str(exc) or exc.__class__.__name__
+        await update_agent_llm_test_result(db, ok=False, message=message)
+        await write_audit_log(
+            db,
+            actor=actor,
+            action="settings.agent_llm.test",
+            resource_type="setting",
+            resource_id="agent_llm",
+            after={"ok": False, "message": message},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=message,
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - test failures are returned to the settings UI.
+        message = str(exc) or exc.__class__.__name__
+        await update_agent_llm_test_result(db, ok=False, message=message)
+        await write_audit_log(
+            db,
+            actor=actor,
+            action="settings.agent_llm.test",
+            resource_type="setting",
+            resource_id="agent_llm",
+            after={"ok": False, "message": message},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=message,
+        ) from exc

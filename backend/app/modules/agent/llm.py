@@ -5,31 +5,40 @@ import logging
 from typing import Any
 
 import httpx
+from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.config import get_settings
+from app.modules.agent.settings import get_agent_llm_runtime_settings
 
 
 logger = logging.getLogger("app.agent_llm")
 
 
-def level1_config() -> dict[str, Any]:
-    settings = get_settings()
+def level1_config(settings: Any | None = None) -> dict[str, Any]:
+    settings = settings or get_settings()
     model = _level1_model(settings)
-    configured = bool(settings.agent_llm_base_url and settings.agent_llm_api_key and model)
+    enabled = bool(getattr(settings, "agent_llm_enabled", True))
+    configured = bool(enabled and settings.agent_llm_base_url and settings.agent_llm_api_key and model)
     return {
         "provider": "openai_compatible",
         "level": "level1",
+        "enabled": enabled,
         "configured": configured,
         "base_url_configured": bool(settings.agent_llm_base_url),
         "api_key_configured": bool(settings.agent_llm_api_key),
         "model": model,
         "temperature": _level1_temperature(settings),
         "timeout_seconds": settings.agent_request_timeout_seconds,
+        "source": getattr(settings, "agent_llm_source", "environment"),
     }
 
 
-def level0_config() -> dict[str, Any]:
-    return level1_config()
+def level0_config(settings: Any | None = None) -> dict[str, Any]:
+    return level1_config(settings)
+
+
+async def level1_config_from_database(db: AsyncIOMotorDatabase) -> dict[str, Any]:
+    return level1_config(await get_agent_llm_runtime_settings(db))
 
 
 async def explain_level1_analysis(
@@ -39,10 +48,11 @@ async def explain_level1_analysis(
     probe: dict[str, Any],
     decision: dict[str, Any],
     user_message: str | None = None,
+    db: AsyncIOMotorDatabase | None = None,
 ) -> dict[str, Any]:
-    settings = get_settings()
+    settings = await get_agent_llm_runtime_settings(db)
     model = _level1_model(settings)
-    if not (settings.agent_llm_base_url and settings.agent_llm_api_key and model):
+    if not (getattr(settings, "agent_llm_enabled", True) and settings.agent_llm_base_url and settings.agent_llm_api_key and model):
         return {"enabled": False, "configured": False}
 
     payload = _analysis_payload(pool=pool, capacity=capacity, probe=probe, decision=decision, user_message=user_message)
@@ -108,10 +118,11 @@ async def plan_level1_capabilities(
     pools: list[dict[str, Any]],
     selected_pool_id: str | None = None,
     trigger: str = "manual_chat",
+    db: AsyncIOMotorDatabase | None = None,
 ) -> dict[str, Any]:
-    settings = get_settings()
+    settings = await get_agent_llm_runtime_settings(db)
     model = _level1_model(settings)
-    if not (settings.agent_llm_base_url and settings.agent_llm_api_key and model):
+    if not (getattr(settings, "agent_llm_enabled", True) and settings.agent_llm_base_url and settings.agent_llm_api_key and model):
         return {"enabled": False, "configured": False}
 
     payload = {
@@ -140,8 +151,6 @@ async def plan_level1_capabilities(
                 "account_type",
                 "site_id",
                 "active_group_id",
-                "target_active",
-                "min_reserve",
             )
             for pool in pools[:50]
         ],
@@ -261,6 +270,9 @@ def _system_prompt() -> str:
         "你是账号池运营 Agent 的 Level 1 决策解释模型。"
         "你只能基于输入的规则引擎结果、容量数据、账号探测数据和用户问题生成运营解释。"
         "不要改写 suggested_add_count、severity、补号数量或任何数值决策。"
+        "不要在面向运营人员的回答里说“规则引擎建议”或“按规则引擎”。"
+        "如果输入中已经有 detected_401_clusters_24h、largest_401_cluster_24h 或 concentrated_401_burst_24h，"
+        "要直接说明 401 是否集中在某一时间段，不要再询问人工确认这一点。"
         "不要建议自动执行推号、删号、买号等高风险动作，只能给人工可读建议。"
         "输出必须是一个 JSON object，字段只能包含 summary、risk_assessment、operator_message、questions。"
         "summary、risk_assessment、operator_message 必须是自然语言字符串，不能是 JSON 字符串或对象。"
@@ -303,8 +315,6 @@ def _analysis_payload(
             "account_type",
             "site_id",
             "active_group_id",
-            "target_active",
-            "min_reserve",
         ),
         "decision": _pick(
             decision,
@@ -387,7 +397,7 @@ def _parse_json_object(content: str) -> dict[str, Any] | None:
 
 
 def _level1_model(settings: Any) -> str | None:
-    return settings.agent_level1_model or settings.agent_level0_model
+    return settings.agent_level1_model or getattr(settings, "agent_level2_model", None) or settings.agent_level0_model
 
 
 def _level1_temperature(settings: Any) -> float:
