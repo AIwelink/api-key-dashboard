@@ -4,6 +4,7 @@ import re
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
+import httpx
 from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReplaceOne, UpdateOne
@@ -17,11 +18,8 @@ logger = logging.getLogger("app.sub2api_cache")
 
 DEFAULT_SITE_ID = "default"
 DEFAULT_REFRESH_INTERVAL_MINUTES = 30
-AUTO_REFRESH_INTERVAL_MINUTES = 30
+MIN_REFRESH_INTERVAL_MINUTES = 1
 REFRESH_DEBOUNCE_SECONDS = 3
-ACCOUNT_USAGE_CONCURRENCY = 50
-ACCOUNT_USAGE_BATCH_SIZE = 50
-ACCOUNT_USAGE_REFRESH_INTERVAL = timedelta(minutes=30)
 FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60
 FIVE_HOUR_DYNAMIC_MAX_WAIT_SECONDS = 2 * 60 * 60
 SEVEN_DAY_WINDOW_SECONDS = 7 * 24 * 60 * 60
@@ -454,7 +452,7 @@ def _site_refresh_interval_minutes(site: dict[str, Any]) -> int:
         interval = int(site.get("refresh_interval_minutes") or DEFAULT_REFRESH_INTERVAL_MINUTES)
     except (TypeError, ValueError):
         interval = DEFAULT_REFRESH_INTERVAL_MINUTES
-    return max(AUTO_REFRESH_INTERVAL_MINUTES, min(interval, 1440))
+    return max(MIN_REFRESH_INTERVAL_MINUTES, min(interval, 1440))
 
 
 async def _delayed_refresh(db: AsyncIOMotorDatabase, site_id: str) -> dict[str, Any]:
@@ -502,33 +500,30 @@ async def _apply_account_usage_windows(
     synced_at: datetime,
 ) -> None:
     await _restore_cached_usage_snapshots(db, site_id, accounts)
-    candidates = [account for account in accounts if _usage_refresh_due(account, synced_at)]
-    candidates.sort(key=lambda account: _usage_synced_at(account) or datetime.min.replace(tzinfo=UTC))
-    selected_accounts = candidates[:ACCOUNT_USAGE_BATCH_SIZE]
+    selected_accounts = [account for account in accounts if account.get("id") is not None]
     if not selected_accounts:
         return
     logger.info(
-        "sub2api_account_usage_refresh_start site_id=%s selected=%s stale=%s total=%s",
+        "sub2api_account_usage_refresh_start site_id=%s selected=%s total=%s throttled=false",
         site_id,
         len(selected_accounts),
-        len(candidates),
         len(accounts),
     )
-    semaphore = asyncio.Semaphore(ACCOUNT_USAGE_CONCURRENCY)
 
-    async def fetch_and_apply(account: dict[str, Any]) -> None:
+    async def fetch_and_apply(account: dict[str, Any], http_client: httpx.AsyncClient) -> None:
         account_id = account.get("id")
         if account_id is None:
             return
-        async with semaphore:
-            try:
-                usage = await client.get_account_usage(account_id, timezone="Asia/Shanghai")
-            except Exception:
-                logger.exception("sub2api_account_usage_fetch_failed account_id=%s", account_id)
-                return
+        try:
+            usage = await client.get_account_usage(account_id, timezone="Asia/Shanghai", http_client=http_client)
+        except Exception:
+            logger.exception("sub2api_account_usage_fetch_failed account_id=%s", account_id)
+            return
         _apply_account_usage_snapshot(account, usage, synced_at)
 
-    await asyncio.gather(*(fetch_and_apply(account) for account in selected_accounts))
+    limits = httpx.Limits(max_connections=None, max_keepalive_connections=200)
+    async with httpx.AsyncClient(timeout=15, limits=limits) as http_client:
+        await asyncio.gather(*(fetch_and_apply(account, http_client) for account in selected_accounts))
 
 
 async def _restore_cached_usage_snapshots(db: AsyncIOMotorDatabase, site_id: str, accounts: list[dict[str, Any]]) -> None:
@@ -590,29 +585,6 @@ def _copy_cached_remote_test(account: dict[str, Any], cached: dict[str, Any]) ->
         account[key] = value
         extra[key] = value
     account["extra"] = extra
-
-
-def _usage_refresh_due(account: dict[str, Any], now: datetime) -> bool:
-    if not _has_account_usage_snapshot(account):
-        return True
-    synced_at = _usage_synced_at(account)
-    if synced_at is None:
-        return True
-    return now - synced_at >= ACCOUNT_USAGE_REFRESH_INTERVAL
-
-
-def _has_account_usage_snapshot(account: dict[str, Any]) -> bool:
-    extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
-    snapshot = account.get("codex_usage_snapshot") or extra.get("codex_usage_snapshot")
-    if not isinstance(snapshot, dict):
-        return False
-    seven_day = snapshot.get("seven_day")
-    return isinstance(seven_day, dict) and isinstance(seven_day.get("window_stats"), dict)
-
-
-def _usage_synced_at(account: dict[str, Any]) -> datetime | None:
-    extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
-    return _parse_datetime(account.get("codex_usage_synced_at") or extra.get("codex_usage_synced_at"))
 
 
 def _apply_account_usage_snapshot(account: dict[str, Any], usage: dict[str, Any], synced_at: datetime) -> None:

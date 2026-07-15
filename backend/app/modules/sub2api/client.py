@@ -49,26 +49,42 @@ class Sub2ApiClient:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="sub2api site base_url is not configured",
             )
+        async with httpx.AsyncClient(timeout=15) as client:
+            return await self._request_admin_with_client(client, method, path, params=params, json=json)
+
+    async def _request_admin_with_client(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not self.configured:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="sub2api site base_url is not configured",
+            )
         target_url = self.admin_url(path)
         response: httpx.Response | None = None
         last_error: httpx.RequestError | None = None
-        async with httpx.AsyncClient(timeout=15) as client:
-            for attempt in range(REQUEST_RETRY_ATTEMPTS):
-                try:
-                    response = await client.request(
-                        method,
-                        target_url,
-                        headers=self.headers(),
-                        params=params,
-                        json=json,
-                    )
-                    last_error = None
-                    if response.status_code not in TRANSIENT_STATUS_CODES:
-                        break
-                except httpx.RequestError as exc:
-                    last_error = exc
-                if attempt < REQUEST_RETRY_ATTEMPTS - 1:
-                    await asyncio.sleep(REQUEST_RETRY_BASE_DELAY_SECONDS * (attempt + 1))
+        for attempt in range(REQUEST_RETRY_ATTEMPTS):
+            try:
+                response = await client.request(
+                    method,
+                    target_url,
+                    headers=self.headers(),
+                    params=params,
+                    json=json,
+                )
+                last_error = None
+                if response.status_code not in TRANSIENT_STATUS_CODES:
+                    break
+            except httpx.RequestError as exc:
+                last_error = exc
+            if attempt < REQUEST_RETRY_ATTEMPTS - 1:
+                await asyncio.sleep(REQUEST_RETRY_BASE_DELAY_SECONDS * (attempt + 1))
         if last_error is not None:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -141,9 +157,27 @@ class Sub2ApiClient:
         response = await self.request_admin("GET", f"/accounts/{account_id}")
         return response.get("data", response)
 
-    async def get_account_usage(self, account_id: int | str, *, timezone: str = "Asia/Shanghai") -> dict[str, Any]:
+    async def get_account_usage(
+        self,
+        account_id: int | str,
+        *,
+        timezone: str = "Asia/Shanghai",
+        http_client: httpx.AsyncClient | None = None,
+    ) -> dict[str, Any]:
         try:
-            response = await self.request_admin("GET", f"/accounts/{account_id}/usage", params={"timezone": timezone})
+            if http_client is not None:
+                response = await self._request_admin_with_client(
+                    http_client,
+                    "GET",
+                    f"/accounts/{account_id}/usage",
+                    params={"timezone": timezone},
+                )
+            else:
+                response = await self.request_admin(
+                    "GET",
+                    f"/accounts/{account_id}/usage",
+                    params={"timezone": timezone},
+                )
             return response.get("data", response)
         except HTTPException as exc:
             logger.warning(

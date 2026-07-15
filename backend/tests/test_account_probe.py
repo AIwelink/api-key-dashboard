@@ -1,9 +1,37 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from datetime import UTC, datetime, timedelta
+from unittest.mock import ANY, AsyncMock, patch
 
 from app.modules.sub2api import account_probe
+
+
+class AccountProbeSchedulingTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncTearDown(self) -> None:
+        account_probe._probe_tasks.clear()
+
+    async def test_same_site_concurrent_probes_share_one_run(self) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def run_probe(*_: object, **__: object) -> dict[str, object]:
+            started.set()
+            await release.wait()
+            return {"ok": True, "site_id": "api-5001"}
+
+        runner = AsyncMock(side_effect=run_probe)
+        with patch.object(account_probe, "_run_site_account_probe", runner):
+            first = asyncio.create_task(account_probe.probe_site_accounts(object(), site_id="api-5001", group_ids=[3]))
+            await started.wait()
+            second = asyncio.create_task(account_probe.probe_site_accounts(object(), site_id="api-5001"))
+            await asyncio.sleep(0)
+            release.set()
+            first_result, second_result = await asyncio.gather(first, second)
+
+        self.assertEqual(first_result, second_result)
+        runner.assert_awaited_once_with(ANY, site_id="api-5001", group_ids=[3])
 
 
 class SparkShadowAccountTests(unittest.TestCase):

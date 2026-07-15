@@ -54,6 +54,9 @@ USAGE_TOTAL_ROLLOVER_FIELDS = (
     "codex_total_token_count",
 )
 
+_probe_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
+_probe_tasks_lock = asyncio.Lock()
+
 
 def default_group_observability_setting(site_id: str, group_id: int, group_name: str | None = None) -> dict[str, Any]:
     now = now_utc()
@@ -309,6 +312,22 @@ async def probe_due_sites(db: AsyncIOMotorDatabase) -> dict[str, Any]:
 
 
 async def probe_site_accounts(db: AsyncIOMotorDatabase, *, site_id: str, group_ids: list[int] | None = None) -> dict[str, Any]:
+    async with _probe_tasks_lock:
+        current = _probe_tasks.get(site_id)
+        if current and not current.done():
+            task = current
+        else:
+            task = asyncio.create_task(_run_site_account_probe(db, site_id=site_id, group_ids=group_ids))
+            _probe_tasks[site_id] = task
+    try:
+        return await task
+    finally:
+        async with _probe_tasks_lock:
+            if _probe_tasks.get(site_id) is task and task.done():
+                _probe_tasks.pop(site_id, None)
+
+
+async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, group_ids: list[int] | None = None) -> dict[str, Any]:
     site = await get_site(db, site_id, include_token=True)
     if not site:
         return {"ok": False, "site_id": site_id, "message": "sub2api site not found"}

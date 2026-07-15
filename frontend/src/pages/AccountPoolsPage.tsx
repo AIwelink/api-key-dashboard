@@ -567,7 +567,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
               <strong>刷新间隔</strong>
             </span>
             <input
-              min={30}
+              min={1}
               max={1440}
               type="number"
               value={siteForm.refresh_interval_minutes}
@@ -657,7 +657,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
         <div className="panel-header">
           <div>
             <h3>账号探测配置</h3>
-            <p>按分组配置轻量探测间隔；详细记录用于后续 Agent 分析账号寿命、401、恢复和重复邮箱。</p>
+            <p>按分组配置轻量探测间隔；间隔从上次完成后计算，同一站点不会重复启动探测。</p>
           </div>
           <div className="button-row">
             <button className="ghost compact-button" type="button" onClick={() => loadObservabilitySettings().catch((error) => showToast(errorMessage(error), true))} disabled={!selectedSiteId}>
