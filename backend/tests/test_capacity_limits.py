@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from app.modules.api_pools import capacity_limits
 from app.modules.api_pools.capacity_limits import normalize_capacity_limits
-from app.modules.sub2api import cache
+from app.modules.sub2api import auto_refill, cache
 
 
 def bug_team_account(*, used_percent: float = 54) -> dict:
@@ -72,6 +74,51 @@ class BugTeamCapacityTests(unittest.TestCase):
         self.assertEqual(cache._capacity_account_type(account), "team")
         self.assertAlmostEqual(usage["actual_used_usd"], 3)
         self.assertAlmostEqual(usage["actual_remaining_usd"], 12)
+
+
+class SiteCapacityLimitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_site_specific_limits_are_loaded_before_legacy_global_limits(self) -> None:
+        app_settings = SimpleNamespace(
+            find_one=AsyncMock(
+                return_value={
+                    "_id": "capacity_account_limits:api-5002",
+                    "site_id": "api-5002",
+                    "limits": {"plus": {"five_hour_usd": 120, "seven_day_usd": 120}},
+                }
+            )
+        )
+        result = await capacity_limits.get_capacity_account_limits(SimpleNamespace(app_settings=app_settings), "api-5002")
+
+        self.assertEqual(result["site_id"], "api-5002")
+        self.assertFalse(result["inherited_from_global"])
+        self.assertEqual(result["limits"]["plus"], {"five_hour_usd": 120.0, "seven_day_usd": 120.0})
+        app_settings.find_one.assert_awaited_once_with({"_id": "capacity_account_limits:api-5002"})
+
+    async def test_missing_site_limits_inherit_legacy_global_limits(self) -> None:
+        app_settings = SimpleNamespace(
+            find_one=AsyncMock(
+                side_effect=[
+                    None,
+                    {"_id": "capacity_account_limits", "limits": {"plus": {"five_hour_usd": 88, "seven_day_usd": 440}}},
+                ]
+            )
+        )
+        result = await capacity_limits.get_capacity_account_limits(SimpleNamespace(app_settings=app_settings), "api-5003")
+
+        self.assertTrue(result["inherited_from_global"])
+        self.assertEqual(result["limits"]["plus"], {"five_hour_usd": 88.0, "seven_day_usd": 440.0})
+
+    def test_auto_refill_uses_capacity_limits_from_the_site_summary(self) -> None:
+        summary = {
+            "account_type": "plus",
+            "capacity_limits": {"plus": {"five_hour_usd": 120, "seven_day_usd": 120}},
+            "active_five_hour_capacity_usd": 0,
+            "active_seven_day_capacity_usd": 0,
+            "recent_day_five_hour_peak_cost": 120,
+            "recent_24h_cost": 0,
+        }
+
+        self.assertEqual(auto_refill._needed_refill_count(summary), 2)
 
 
 class FiveHourCapacityPercentageTests(unittest.IsolatedAsyncioTestCase):

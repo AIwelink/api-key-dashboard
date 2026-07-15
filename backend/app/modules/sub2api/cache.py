@@ -758,7 +758,7 @@ async def _capacity_summary_for_accounts(
     concurrency_summary = _concurrency_capacity_summary(capacity_accounts)
     five_hour_capacity_accounts = [account for account in capacity_accounts if not _is_7d_exhausted(account)]
     used_5h = _average_percent(_usage_number(account, "codex_5h_used_percent") for account in capacity_accounts)
-    capacity_limits = (await get_capacity_account_limits(db))["limits"]
+    capacity_limits = (await get_capacity_account_limits(db, site_id))["limits"]
     type_summary = _capacity_by_account_type(capacity_accounts, five_hour_capacity_accounts, capacity_limits)
     primary_type = _primary_capacity_type(type_summary)
     reserve_type_summary = await _reserve_capacity_by_account_type(db, site_id, group_id, capacity_limits) if group_id is not None else _empty_capacity_type_summary(capacity_limits)
