@@ -1790,6 +1790,7 @@ def _concurrency_capacity_summary(accounts: list[dict[str, Any]]) -> dict[str, A
             near_limit_accounts += 1
 
     temporarily_unavailable = max(0.0, total_capacity - actual_in_use - actual_available)
+    temporarily_unavailable_accounts = five_hour_limited_accounts + short_seven_day_limited_accounts + other_unavailable_accounts
     near_limit_available = max(0.0, actual_available - safe_available)
     used_percent = actual_in_use / total_capacity * 100 if total_capacity > 0 else 0.0
     available_percent = actual_available / total_capacity * 100 if total_capacity > 0 else 0.0
@@ -1800,6 +1801,7 @@ def _concurrency_capacity_summary(accounts: list[dict[str, Any]]) -> dict[str, A
         "concurrency_near_limit_available": _concurrency_number(near_limit_available),
         "concurrency_total_capacity": _concurrency_number(total_capacity),
         "concurrency_temporarily_unavailable": _concurrency_number(temporarily_unavailable),
+        "concurrency_temporarily_unavailable_accounts": temporarily_unavailable_accounts,
         "concurrency_used_percent": round(used_percent, 2),
         "concurrency_available_percent": round(available_percent, 2),
         "concurrency_eligible_accounts": eligible_accounts,

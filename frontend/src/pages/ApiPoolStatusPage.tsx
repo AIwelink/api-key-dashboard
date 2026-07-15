@@ -48,6 +48,7 @@ type CapacitySummary = {
   concurrency_near_limit_available?: number;
   concurrency_total_capacity?: number;
   concurrency_temporarily_unavailable?: number;
+  concurrency_temporarily_unavailable_accounts?: number;
   concurrency_used_percent?: number;
   concurrency_available_percent?: number;
   concurrency_eligible_accounts?: number;
@@ -1222,6 +1223,7 @@ function ConcurrencyCapacitySummary({ summary, loading }: { summary?: CapacitySu
   const nearLimitAvailable = numberValue(summary?.concurrency_near_limit_available);
   const total = numberValue(summary?.concurrency_total_capacity);
   const unavailable = numberValue(summary?.concurrency_temporarily_unavailable);
+  const unavailableAccounts = numberValue(summary?.concurrency_temporarily_unavailable_accounts);
   const actualPercent = total > 0 ? Math.max(0, Math.min(100, (actual / total) * 100)) : 0;
   const safePercent = total > 0 ? Math.max(0, Math.min(100 - actualPercent, (safeAvailable / total) * 100)) : 0;
   const nearLimitPercent = total > 0 ? Math.max(0, Math.min(100 - actualPercent - safePercent, (nearLimitAvailable / total) * 100)) : 0;
@@ -1262,10 +1264,10 @@ function ConcurrencyCapacitySummary({ summary, loading }: { summary?: CapacitySu
         <span className="unavailable" style={{ width: `${unavailablePercent}%` }} />
       </div>
       <div className="concurrency-capacity-legend">
-        <span><i className="used" /><MetricHelp helpKey="当前并发">使用中 {actual}</MetricHelp></span>
-        <span><i className="safe" /><MetricHelp helpKey="安全可用并发">安全可用 {safeAvailable}</MetricHelp></span>
-        <span><i className="near-limit" /><MetricHelp helpKey="临界可用并发">临界可用 {nearLimitAvailable}</MetricHelp></span>
-        <span><i className="unavailable" /><MetricHelp helpKey="暂时不可用并发">暂时不可用 {unavailable}</MetricHelp></span>
+        <span><i className="used" /><MetricHelp helpKey="当前并发">使用中 {actual} 并发</MetricHelp></span>
+        <span><i className="safe" /><MetricHelp helpKey="安全可用并发">安全可用 {safeAvailable} 并发</MetricHelp></span>
+        <span><i className="near-limit" /><MetricHelp helpKey="临界可用并发">临界可用 {nearLimitAvailable} 并发</MetricHelp></span>
+        <span><i className="unavailable" /><MetricHelp helpKey="暂时不可用并发">暂时不可用 {unavailable} 并发 · {unavailableAccounts} 个账号</MetricHelp></span>
       </div>
     </section>
   );
@@ -1481,6 +1483,7 @@ const METRIC_HELP_DETAILS: Record<string, MetricHelpDetail> = {
   "暂时不可用并发": {
     purpose: "显示可恢复总量中因短期限流或调度状态暂时不能使用的部分。",
     formula: "可恢复总并发容量 - 当前并发 - 即时可用并发。",
+    note: "此处主数值单位是并发槽位，不是账号数量；界面会同时显示涉及的账号数。5h 429属于可恢复容量，长期7d、401和Bug Team不进入该值。",
   },
   "容量预估": {
     purpose: "综合账号数量、额度、峰值和消耗速度给出维护状态。",

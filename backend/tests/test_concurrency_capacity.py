@@ -85,6 +85,7 @@ class ConcurrencyCapacityTests(unittest.TestCase):
         self.assertEqual(summary["concurrency_actual_available"], 13)
         self.assertEqual(summary["concurrency_total_capacity"], 38)
         self.assertEqual(summary["concurrency_temporarily_unavailable"], 21)
+        self.assertEqual(summary["concurrency_temporarily_unavailable_accounts"], 3)
         self.assertEqual(summary["concurrency_eligible_accounts"], 6)
         self.assertEqual(summary["concurrency_available_accounts"], 3)
         self.assertEqual(summary["concurrency_safe_accounts"], 1)
