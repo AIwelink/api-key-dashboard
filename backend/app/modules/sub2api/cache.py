@@ -1863,7 +1863,7 @@ def _is_capacity_account(account: dict[str, Any]) -> bool:
     if is_bug_team_account(account) or _is_abnormal_account(account):
         return False
     status = str(account.get("status") or "").lower()
-    if _is_temporary_rate_limit(account):
+    if _is_7d_exhausted(account) or _is_five_hour_rate_limited(account):
         return True
     return status == "active" and account.get("schedulable") is not False
 

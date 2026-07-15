@@ -63,21 +63,32 @@ class ConcurrencyCapacityTests(unittest.TestCase):
                 "codex_7d_used_percent": 100,
                 "codex_7d_reset_after_seconds": 2 * 24 * 60 * 60,
             },
+            {
+                "id": 7,
+                "status": "rate_limited",
+                "schedulable": False,
+                "concurrency": 7,
+                "current_concurrency": 0,
+                "codex_5h_used_percent": 100,
+                "codex_5h_reset_after_seconds": 2 * 60 * 60,
+                "codex_7d_used_percent": 40,
+            },
         ]
 
-        summary = cache._concurrency_capacity_summary(accounts)
+        capacity_accounts = [account for account in accounts if cache._is_capacity_account(account)]
+        summary = cache._concurrency_capacity_summary(capacity_accounts)
 
         self.assertEqual(summary["concurrency_actual_in_use"], 4)
         self.assertEqual(summary["concurrency_safe_available"], 7)
         self.assertEqual(summary["concurrency_near_limit_available"], 6)
         self.assertEqual(summary["concurrency_actual_available"], 13)
-        self.assertEqual(summary["concurrency_total_capacity"], 31)
-        self.assertEqual(summary["concurrency_temporarily_unavailable"], 14)
-        self.assertEqual(summary["concurrency_eligible_accounts"], 5)
+        self.assertEqual(summary["concurrency_total_capacity"], 38)
+        self.assertEqual(summary["concurrency_temporarily_unavailable"], 21)
+        self.assertEqual(summary["concurrency_eligible_accounts"], 6)
         self.assertEqual(summary["concurrency_available_accounts"], 3)
         self.assertEqual(summary["concurrency_safe_accounts"], 1)
         self.assertEqual(summary["concurrency_near_limit_accounts"], 2)
-        self.assertEqual(summary["concurrency_five_hour_limited_accounts"], 1)
+        self.assertEqual(summary["concurrency_five_hour_limited_accounts"], 2)
         self.assertEqual(summary["concurrency_short_seven_day_limited_accounts"], 1)
         self.assertEqual(summary["concurrency_other_unavailable_accounts"], 0)
         self.assertEqual(summary["concurrency_long_seven_day_limited_accounts"], 1)
