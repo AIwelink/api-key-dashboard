@@ -1718,8 +1718,17 @@ def _is_abnormal_account(account: dict[str, Any]) -> bool:
     status = str(account.get("status") or "").lower()
     if status in {"error", "disabled", "paused", "banned", "invalid", "failed"} and not _is_temporary_rate_limit(account):
         return True
-    rate_limit_markers = ("429", "529", "rate limit", "限流")
-    return bool(error_text) and not any(marker in error_text for marker in rate_limit_markers)
+    explicit_error_markers = (
+        "403",
+        "forbidden",
+        "account banned",
+        "account disabled",
+        "account deactivated",
+        "account suspended",
+        "账号封禁",
+        "账号停用",
+    )
+    return any(marker in error_text for marker in explicit_error_markers)
 
 
 def _is_five_hour_rate_limited(account: dict[str, Any]) -> bool:
@@ -1817,7 +1826,7 @@ def _current_concurrency_unavailable_kind(account: dict[str, Any]) -> str | None
     if _is_temporary_rate_limit(account):
         return "five_hour"
     status = str(account.get("status") or "").lower()
-    if status != "active" or account.get("schedulable") is False or bool(account.get("error_message")):
+    if status != "active" or account.get("schedulable") is False:
         return "other"
     return None
 
@@ -1854,7 +1863,7 @@ def _is_capacity_account(account: dict[str, Any]) -> bool:
     status = str(account.get("status") or "").lower()
     if _is_temporary_rate_limit(account):
         return True
-    return status == "active" and account.get("schedulable") is not False and not account.get("error_message")
+    return status == "active" and account.get("schedulable") is not False
 
 
 def _is_temporary_rate_limit(account: dict[str, Any]) -> bool:
@@ -2110,14 +2119,16 @@ def _normalize_account_snapshot(account: dict[str, Any]) -> dict[str, Any]:
             "sub2api_schedulable",
         )
     )
-    normalized["error_message"] = _first_present(
+    error_message = _first_present(
         normalized,
         extra,
         "error_message",
         "last_error",
         "error",
-        "message",
     )
+    if error_message is None and str(normalized.get("status") or "").lower() not in {"active", "ok", "healthy"}:
+        error_message = _first_present(normalized, extra, "message")
+    normalized["error_message"] = error_message
     normalized["current_concurrency"] = _number_or_none(_first_present(normalized, extra, "current_concurrency", "used_concurrency"))
     normalized["concurrency"] = _number_or_none(_first_present(normalized, extra, "concurrency", "max_concurrency"))
     normalized["load_factor"] = _number_or_none(_first_present(normalized, extra, "load_factor"))

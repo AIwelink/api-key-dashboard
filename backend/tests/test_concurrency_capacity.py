@@ -137,6 +137,29 @@ class ConcurrencyCapacityTests(unittest.TestCase):
         self.assertFalse(cache._is_capacity_account(accounts[1]))
         self.assertFalse(cache._is_capacity_account(accounts[2]))
 
+    def test_success_message_does_not_exclude_normal_capacity(self) -> None:
+        normalized = cache._normalize_account_snapshot(
+            {
+                "id": 7,
+                "status": "active",
+                "schedulable": True,
+                "message": "success",
+                "credentials_status": {"status": "valid"},
+                "concurrency": 10,
+                "current_concurrency": 2,
+                "codex_5h_used_percent": 20,
+                "codex_7d_used_percent": 30,
+            }
+        )
+
+        self.assertIsNone(normalized["error_message"])
+        self.assertFalse(cache._is_abnormal_account(normalized))
+        self.assertTrue(cache._is_capacity_account(normalized))
+        concurrency = cache._concurrency_capacity_summary([normalized])
+        self.assertEqual(concurrency["concurrency_actual_in_use"], 2)
+        self.assertEqual(concurrency["concurrency_actual_available"], 8)
+        self.assertEqual(concurrency["concurrency_total_capacity"], 10)
+
 
 if __name__ == "__main__":
     unittest.main()
