@@ -84,8 +84,14 @@ class ConcurrencyCapacityTests(unittest.TestCase):
 
     def test_pool_overview_excludes_bug_team_and_prioritizes_401_as_abnormal(self) -> None:
         accounts = [
-            {"id": 1, "status": "active", "schedulable": True},
-            {"id": 2, "status": "active", "schedulable": False},
+            {"id": 1, "status": "active", "schedulable": True, "credentials_status": "valid"},
+            {
+                "id": 2,
+                "status": "active",
+                "schedulable": False,
+                "credentials_status": {"status": "valid", "expires_at": "2026-07-20T00:00:00Z"},
+                "temp_unschedulable_reason": "manually disabled",
+            },
             {
                 "id": 3,
                 "status": "active",
@@ -125,6 +131,10 @@ class ConcurrencyCapacityTests(unittest.TestCase):
         self.assertEqual(summary["pool_seven_day_rate_limited_accounts"], 1)
         self.assertEqual(summary["pool_abnormal_accounts"], 1)
         self.assertEqual(summary["pool_excluded_bug_team_accounts"], 1)
+        self.assertFalse(cache._is_abnormal_account(accounts[0]))
+        self.assertFalse(cache._is_abnormal_account(accounts[1]))
+        self.assertTrue(cache._is_capacity_account(accounts[0]))
+        self.assertFalse(cache._is_capacity_account(accounts[1]))
         self.assertFalse(cache._is_capacity_account(accounts[2]))
 
 

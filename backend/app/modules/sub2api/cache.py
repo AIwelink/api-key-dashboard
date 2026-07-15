@@ -1684,15 +1684,22 @@ def _pool_account_status_summary(accounts: list[dict[str, Any]]) -> dict[str, in
 
 def _is_abnormal_account(account: dict[str, Any]) -> bool:
     extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
-    values = [
+    error_values = [
         account.get("error_message"),
-        account.get("temp_unschedulable_reason"),
-        account.get("credentials_status"),
         extra.get("error_message"),
         extra.get("last_error"),
-        extra.get("credentials_status"),
     ]
-    combined = " ".join(str(value).lower() for value in values if value is not None)
+    error_text = " ".join(str(value).lower() for value in error_values if value not in (None, ""))
+    authentication_text = " ".join(
+        str(value).lower()
+        for value in [
+            *error_values,
+            account.get("temp_unschedulable_reason"),
+            account.get("credentials_status"),
+            extra.get("credentials_status"),
+        ]
+        if value not in (None, "")
+    )
     authentication_markers = (
         "401",
         "unauthorized",
@@ -1706,13 +1713,13 @@ def _is_abnormal_account(account: dict[str, Any]) -> bool:
         "凭证失效",
         "认证失败",
     )
-    if any(marker in combined for marker in authentication_markers):
+    if any(marker in authentication_text for marker in authentication_markers):
         return True
     status = str(account.get("status") or "").lower()
     if status in {"error", "disabled", "paused", "banned", "invalid", "failed"} and not _is_temporary_rate_limit(account):
         return True
     rate_limit_markers = ("429", "529", "rate limit", "限流")
-    return bool(combined) and not any(marker in combined for marker in rate_limit_markers)
+    return bool(error_text) and not any(marker in error_text for marker in rate_limit_markers)
 
 
 def _is_five_hour_rate_limited(account: dict[str, Any]) -> bool:
