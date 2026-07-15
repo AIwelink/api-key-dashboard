@@ -87,8 +87,8 @@ class FiveHourCapacityPercentageTests(unittest.IsolatedAsyncioTestCase):
                     "codex_5h_used_percent": 100,
                     "codex_5h_reset_after_seconds": 3_600,
                     "codex_5h_window_minutes": 300,
-                    "codex_7d_used_percent": 10,
-                    "codex_7d_reset_after_seconds": 604_800,
+                    "codex_7d_used_percent": 50,
+                    "codex_7d_reset_after_seconds": 86_400,
                     "codex_7d_window_minutes": 10_080,
                 },
             },
@@ -148,6 +148,8 @@ class FiveHourCapacityPercentageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["actual_available_5h_percent"], 25)
         self.assertEqual(summary["active_available_5h_percent"], 65)
         self.assertEqual(summary["active_actual_available_5h_percent"], 25)
+        self.assertEqual(summary["available_7d_percent"], 91)
+        self.assertEqual(summary["actual_available_7d_percent"], 70)
 
 
 if __name__ == "__main__":

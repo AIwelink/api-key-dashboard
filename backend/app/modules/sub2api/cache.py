@@ -812,7 +812,9 @@ async def _capacity_summary_for_accounts(
     active_actual_available_5h_percent = _ratio_percent(active_five_hour_actual_remaining_usd, active_dynamic_five_hour_capacity_usd)
     effective_used_5h = _clamp_percent(100 - available_5h_percent)
     active_effective_used_5h = _clamp_percent(100 - active_available_5h_percent)
-    effective_used_7d = _ratio_percent(seven_day_used_estimated_usd, seven_day_capacity_usd)
+    available_7d_percent = _ratio_percent(seven_day_remaining_estimated_usd, seven_day_capacity_usd)
+    actual_available_7d_percent = _ratio_percent(seven_day_actual_remaining_usd, seven_day_capacity_usd)
+    effective_used_7d = _clamp_percent(100 - available_7d_percent)
     active_effective_used_7d = _ratio_percent(active_seven_day_dynamic_used_usd, active_seven_day_capacity_usd)
     active_five_hour_peak_multiple = _ratio_or_none(active_five_hour_capacity_usd, five_hour_peak_cost)
     active_recent_day_five_hour_peak_multiple = _ratio_or_none(active_five_hour_capacity_usd, recent_day_five_hour_peak_cost)
@@ -883,7 +885,8 @@ async def _capacity_summary_for_accounts(
         "actual_available_5h_percent": actual_available_5h_percent,
         "active_actual_available_5h_percent": active_actual_available_5h_percent,
         "used_7d_percent": effective_used_7d,
-        "available_7d_percent": _clamp_percent(100 - effective_used_7d),
+        "available_7d_percent": available_7d_percent,
+        "actual_available_7d_percent": actual_available_7d_percent,
         "active_used_5h_percent": active_effective_used_5h,
         "active_dynamic_used_5h_percent": active_effective_used_5h,
         "active_used_7d_percent": active_effective_used_7d,
@@ -1660,17 +1663,16 @@ def _pool_account_status_summary(accounts: list[dict[str, Any]]) -> dict[str, in
         if _is_abnormal_account(account):
             abnormal_accounts += 1
             continue
-        if _is_7d_exhausted(account):
+        normal_accounts += 1
+        is_seven_day_rate_limited = _is_7d_exhausted(account)
+        is_five_hour_rate_limited = not is_seven_day_rate_limited and _is_five_hour_rate_limited(account)
+        if is_seven_day_rate_limited:
             seven_day_rate_limited_accounts += 1
-            continue
-        if _is_five_hour_rate_limited(account):
+        elif is_five_hour_rate_limited:
             five_hour_rate_limited_accounts += 1
-            continue
         status = str(account.get("status") or "").lower()
-        if status == "active":
-            normal_accounts += 1
-            if account.get("schedulable") is not False:
-                active_normal_accounts += 1
+        if status == "active" and account.get("schedulable") is not False and not is_seven_day_rate_limited and not is_five_hour_rate_limited:
+            active_normal_accounts += 1
 
     return {
         "pool_normal_accounts": normal_accounts,

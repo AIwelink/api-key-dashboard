@@ -125,7 +125,7 @@ class ConcurrencyCapacityTests(unittest.TestCase):
 
         summary = cache._pool_account_status_summary(accounts)
 
-        self.assertEqual(summary["pool_normal_accounts"], 2)
+        self.assertEqual(summary["pool_normal_accounts"], 4)
         self.assertEqual(summary["pool_active_normal_accounts"], 1)
         self.assertEqual(summary["pool_five_hour_rate_limited_accounts"], 1)
         self.assertEqual(summary["pool_seven_day_rate_limited_accounts"], 1)
