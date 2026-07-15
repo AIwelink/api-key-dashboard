@@ -14,6 +14,152 @@
   --shadow: 0 8px 24px rgba(89, 40, 58, 0.08);
 }
 
+.pool-status-page .metric-help {
+  position: relative;
+  z-index: auto;
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: baseline;
+  color: inherit;
+  cursor: help;
+  outline: none;
+}
+
+.pool-status-page .metric-help:hover,
+.pool-status-page .metric-help:focus,
+.pool-status-page .metric-help:focus-within {
+  z-index: 5000;
+}
+
+.pool-status-page .metric-help-trigger {
+  min-width: 0;
+  border-bottom: 1px dotted color-mix(in srgb, currentColor 48%, transparent);
+}
+
+.pool-status-page .metric-help:focus-visible .metric-help-trigger {
+  border-bottom-color: var(--accent);
+  box-shadow: 0 2px 0 color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.pool-status-page .metric-help-tooltip {
+  position: absolute;
+  z-index: 5000;
+  top: calc(100% + 8px);
+  left: 0;
+  display: grid;
+  width: min(380px, calc(100vw - 32px));
+  gap: 8px;
+  padding: 12px 13px;
+  border: 1px solid #cfd6de;
+  border-radius: 6px;
+  background: #fff;
+  color: #202830;
+  box-shadow: 0 14px 34px rgb(28 39 49 / 20%);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-3px);
+  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+  white-space: normal;
+  text-align: left;
+}
+
+.pool-status-page .metric-help:hover .metric-help-tooltip,
+.pool-status-page .metric-help:focus .metric-help-tooltip,
+.pool-status-page .metric-help:focus-within .metric-help-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.pool-status-page .metric-help-tooltip > strong {
+  color: #141b22;
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 850;
+  line-height: 1.25;
+}
+
+.pool-status-page .metric-help-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 7px;
+  align-items: start;
+  min-width: 0;
+}
+
+.pool-status-page .metric-help-row b,
+.pool-status-page .metric-help-row em {
+  margin: 0;
+  color: #4d5a66;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 500;
+  line-height: 1.55;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.pool-status-page .metric-help-row b {
+  color: #167052;
+  font-weight: 800;
+}
+
+.pool-status-page .metric-help-row.note {
+  padding-top: 7px;
+  border-top: 1px solid #e7ebef;
+}
+
+.pool-status-page .pool-health-grid .mini-metric:last-child .metric-help-tooltip,
+.pool-status-page .concurrency-capacity-values > div:last-child .metric-help-tooltip,
+.pool-status-page .capacity-metric:nth-child(even) .metric-help-tooltip {
+  right: 0;
+  left: auto;
+}
+
+@media (max-width: 720px) {
+  .pool-status-page .capacity-metric,
+  .pool-status-page .pool-health-grid .mini-metric > span {
+    overflow: visible;
+  }
+
+  .pool-status-page .pool-health-grid .mini-metric span.metric-help,
+  .pool-status-page .concurrency-capacity-values span.metric-help,
+  .pool-status-page .capacity-metric span.metric-help {
+    display: inline-flex;
+    max-width: 100%;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .pool-status-page .metric-help-tooltip,
+  .pool-status-page .pool-health-grid .mini-metric:last-child .metric-help-tooltip,
+  .pool-status-page .concurrency-capacity-values > div:last-child .metric-help-tooltip,
+  .pool-status-page .capacity-metric:nth-child(even) .metric-help-tooltip {
+    position: fixed;
+    z-index: 9000;
+    top: auto;
+    right: 12px;
+    bottom: 12px;
+    left: 12px;
+    width: auto;
+    max-height: min(70vh, 460px);
+    overflow-y: auto;
+    pointer-events: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    transform: translateY(6px);
+  }
+
+  .pool-status-page .metric-help:hover .metric-help-tooltip,
+  .pool-status-page .metric-help:focus .metric-help-tooltip,
+  .pool-status-page .metric-help:focus-within .metric-help-tooltip {
+    transform: translateY(0);
+  }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -5095,6 +5241,7 @@ code {
 }
 
 .pool-status-page .pool-health-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0;
 }
 
@@ -5104,6 +5251,126 @@ code {
 
 .pool-status-page .pool-health-main strong {
   font-size: 32px;
+}
+
+.pool-status-page .concurrency-capacity-band {
+  display: grid;
+  gap: 9px;
+  margin: 0 0 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 76%, transparent);
+  padding: 0 0 13px;
+}
+
+.pool-status-page .concurrency-capacity-head,
+.pool-status-page .concurrency-capacity-head > div,
+.pool-status-page .concurrency-capacity-legend {
+  display: flex;
+  align-items: baseline;
+}
+
+.pool-status-page .concurrency-capacity-head {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pool-status-page .concurrency-capacity-head > div {
+  gap: 8px;
+}
+
+.pool-status-page .concurrency-capacity-head span {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 850;
+}
+
+.pool-status-page .concurrency-capacity-head em,
+.pool-status-page .concurrency-capacity-head small {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.pool-status-page .concurrency-capacity-values {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.pool-status-page .concurrency-capacity-values > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  padding: 0 14px;
+  border-right: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+
+.pool-status-page .concurrency-capacity-values > div:first-child {
+  padding-left: 0;
+}
+
+.pool-status-page .concurrency-capacity-values > div:last-child {
+  border-right: 0;
+}
+
+.pool-status-page .concurrency-capacity-values span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pool-status-page .concurrency-capacity-values strong {
+  color: var(--text);
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.pool-status-page .concurrency-capacity-meter {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  overflow: hidden;
+  background: #e5e9ef;
+}
+
+.pool-status-page .concurrency-capacity-meter span {
+  display: block;
+  height: 100%;
+}
+
+.pool-status-page .concurrency-capacity-meter .used,
+.pool-status-page .concurrency-capacity-legend i.used {
+  background: #ef7d4d;
+}
+
+.pool-status-page .concurrency-capacity-meter .safe,
+.pool-status-page .concurrency-capacity-legend i.safe {
+  background: #2f9c67;
+}
+
+.pool-status-page .concurrency-capacity-meter .near-limit,
+.pool-status-page .concurrency-capacity-legend i.near-limit {
+  background: #e1aa35;
+}
+
+.pool-status-page .concurrency-capacity-meter .unavailable,
+.pool-status-page .concurrency-capacity-legend i.unavailable {
+  background: #c8cfd9;
+}
+
+.pool-status-page .concurrency-capacity-legend {
+  flex-wrap: wrap;
+  gap: 5px 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pool-status-page .concurrency-capacity-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.pool-status-page .concurrency-capacity-legend i {
+  width: 8px;
+  height: 8px;
 }
 
 .pool-status-page .capacity-runway-card {
@@ -5236,11 +5503,34 @@ code {
   }
 
   .pool-status-page .pool-health-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .pool-status-page .pool-health-card p {
     display: none;
+  }
+
+  .pool-status-page .concurrency-capacity-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .pool-status-page .concurrency-capacity-values > div {
+    padding: 0 8px;
+  }
+
+  .pool-status-page .concurrency-capacity-values > div:first-child {
+    padding-left: 0;
+  }
+
+  .pool-status-page .concurrency-capacity-values strong {
+    font-size: 20px;
+  }
+
+  .pool-status-page .concurrency-capacity-values span {
+    min-height: 30px;
+    line-height: 1.25;
   }
 
   .duplicate-alert-explain,
@@ -5513,9 +5803,12 @@ code {
     gap: 8px;
   }
 
-  .pool-status-page .pool-mini-metrics,
-  .pool-status-page .pool-health-grid {
+  .pool-status-page .pool-mini-metrics {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .pool-status-page .pool-health-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .pool-status-page .pool-mini-metrics .mini-metric,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import type { ApiPool } from "../types";
@@ -58,7 +58,9 @@ type CapacityLimitKey = "free" | "plus" | "team" | "bug_team" | "k12" | "pro";
 type CapacityLimitForm = Record<CapacityLimitKey, { five_hour_usd: string; seven_day_usd: string }>;
 
 type CapacityLimitsResponse = {
+  site_id?: string | null;
   limits: Record<CapacityLimitKey, { five_hour_usd: number; seven_day_usd: number }>;
+  inherited_from_global?: boolean;
   updated_at?: string | null;
   updated_by_name?: string | null;
 };
@@ -162,8 +164,10 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   const [siteForm, setSiteForm] = useState<SiteForm>(emptySiteForm);
   const [savingSite, setSavingSite] = useState(false);
   const [capacityLimits, setCapacityLimits] = useState<CapacityLimitForm>(defaultCapacityLimitForm);
-  const [capacityLimitsMeta, setCapacityLimitsMeta] = useState<{ updated_at?: string | null; updated_by_name?: string | null }>({});
+  const [capacityLimitsMeta, setCapacityLimitsMeta] = useState<{ updated_at?: string | null; updated_by_name?: string | null; inherited_from_global?: boolean }>({});
+  const [loadingCapacityLimits, setLoadingCapacityLimits] = useState(false);
   const [savingCapacityLimits, setSavingCapacityLimits] = useState(false);
+  const capacityLimitsRequestRef = useRef(0);
   const [observabilitySettings, setObservabilitySettings] = useState<GroupObservabilitySetting[]>([]);
   const [savingObservabilityKey, setSavingObservabilityKey] = useState<string | null>(null);
   const [probing, setProbing] = useState(false);
@@ -308,10 +312,27 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     setLocalPools(data.items);
   };
 
-  const loadCapacityLimits = async () => {
-    const data = await api<CapacityLimitsResponse>("/api-pools/capacity-limits", token);
-    setCapacityLimits(capacityLimitsToForm(data.limits));
-    setCapacityLimitsMeta({ updated_at: data.updated_at, updated_by_name: data.updated_by_name });
+  const loadCapacityLimits = async (siteId = selectedSiteId) => {
+    const requestId = ++capacityLimitsRequestRef.current;
+    setCapacityLimits(capacityLimitsToForm({} as CapacityLimitsResponse["limits"]));
+    setCapacityLimitsMeta({});
+    if (!siteId) {
+      setLoadingCapacityLimits(false);
+      return;
+    }
+    setLoadingCapacityLimits(true);
+    try {
+      const data = await api<CapacityLimitsResponse>(`/api-pools/capacity-limits?site_id=${encodeURIComponent(siteId)}`, token);
+      if (requestId !== capacityLimitsRequestRef.current) return;
+      setCapacityLimits(capacityLimitsToForm(data.limits));
+      setCapacityLimitsMeta({
+        updated_at: data.updated_at,
+        updated_by_name: data.updated_by_name,
+        inherited_from_global: data.inherited_from_global,
+      });
+    } finally {
+      if (requestId === capacityLimitsRequestRef.current) setLoadingCapacityLimits(false);
+    }
   };
 
   const loadObservabilitySettings = async (siteId = selectedSiteId) => {
@@ -355,6 +376,10 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   };
 
   const saveCapacityLimits = async () => {
+    if (!selectedSiteId) {
+      showToast("请先选择站点", true);
+      return;
+    }
     const payload = capacityLimitPayload(capacityLimits);
     if (!payload) {
       showToast("额度估计必须是大于等于 0 的数字", true);
@@ -362,13 +387,13 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     }
     setSavingCapacityLimits(true);
     try {
-      const data = await api<CapacityLimitsResponse>("/api-pools/capacity-limits", token, {
+      const data = await api<CapacityLimitsResponse>(`/api-pools/capacity-limits?site_id=${encodeURIComponent(selectedSiteId)}`, token, {
         method: "PATCH",
         body: JSON.stringify({ limits: payload }),
       });
       setCapacityLimits(capacityLimitsToForm(data.limits));
-      setCapacityLimitsMeta({ updated_at: data.updated_at, updated_by_name: data.updated_by_name });
-      showToast("账号额度估计已保存，后续容量计算会使用新配置");
+      setCapacityLimitsMeta({ updated_at: data.updated_at, updated_by_name: data.updated_by_name, inherited_from_global: false });
+      showToast(`${selectedSite?.name || selectedSiteId} 的账号额度估计已保存`);
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
@@ -402,7 +427,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   };
 
   useEffect(() => {
-    Promise.all([loadSites(), loadLocalPools(), loadReserveSummary(), loadCapacityLimits()]).catch((error) => showToast(errorMessage(error), true));
+    Promise.all([loadSites(), loadLocalPools(), loadReserveSummary()]).catch((error) => showToast(errorMessage(error), true));
   }, []);
 
   useEffect(() => {
@@ -418,7 +443,13 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   }, [selectedSiteId, selectedGroupId]);
 
   useEffect(() => {
-    if (!selectedSiteId) return;
+    if (!selectedSiteId) {
+      setGroups([]);
+      setSelectedGroupId(null);
+      setObservabilitySettings([]);
+      loadCapacityLimits("").catch((error) => showToast(errorMessage(error), true));
+      return;
+    }
     const site = sites.find((item) => item.id === selectedSiteId);
     if (site) {
       setEditingSiteId(site.id);
@@ -428,6 +459,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     setSelectedGroupId(null);
     loadGroups(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
     loadObservabilitySettings(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
+    loadCapacityLimits(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
   }, [selectedSiteId, sites]);
 
   useEffect(() => {
@@ -563,11 +595,11 @@ export function AccountPoolsPage({ token, showToast }: Props) {
         <div className="panel-header">
           <div>
             <h3>账号额度估计</h3>
-            <p>配置每种账号参与容量预估时使用的 5h 和 7d 美金额度；API 账号池状态页后续计算会读取这里的配置。</p>
+            <p>配置当前站点每种账号参与容量预估时使用的 5h 和 7d 美金额度；API 账号池状态页和自动补号会读取这里的配置。</p>
           </div>
           <div className="button-row">
-            <button className="compact-button" type="button" onClick={saveCapacityLimits} disabled={savingCapacityLimits}>
-              {savingCapacityLimits ? "保存中..." : "保存额度估计"}
+            <button className="compact-button" type="button" onClick={saveCapacityLimits} disabled={!selectedSiteId || loadingCapacityLimits || savingCapacityLimits}>
+              {savingCapacityLimits ? "保存中..." : loadingCapacityLimits ? "读取中..." : "保存额度估计"}
             </button>
           </div>
         </div>
@@ -581,6 +613,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                   min={0}
                   step="0.01"
                   type="number"
+                  disabled={!selectedSiteId || loadingCapacityLimits}
                   value={capacityLimits[accountType].five_hour_usd}
                   onChange={(event) =>
                     setCapacityLimits((current) => ({
@@ -596,6 +629,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                   min={0}
                   step="0.01"
                   type="number"
+                  disabled={!selectedSiteId || loadingCapacityLimits}
                   value={capacityLimits[accountType].seven_day_usd}
                   onChange={(event) =>
                     setCapacityLimits((current) => ({
@@ -610,8 +644,12 @@ export function AccountPoolsPage({ token, showToast }: Props) {
         </div>
         <div className="cell-sub">
           {capacityLimitsMeta.updated_at
-            ? `最后保存：${formatDateTime(capacityLimitsMeta.updated_at)}${capacityLimitsMeta.updated_by_name ? ` · ${capacityLimitsMeta.updated_by_name}` : ""}`
-            : "当前使用默认额度估计"}
+            ? `${capacityLimitsMeta.inherited_from_global ? "继承旧全局配置" : `当前站点：${selectedSite?.name || selectedSiteId}`} · 最后保存：${formatDateTime(capacityLimitsMeta.updated_at)}${capacityLimitsMeta.updated_by_name ? ` · ${capacityLimitsMeta.updated_by_name}` : ""}`
+            : selectedSiteId
+              ? loadingCapacityLimits
+                ? `正在读取 ${selectedSite?.name || selectedSiteId} 的额度配置`
+                : `当前站点：${selectedSite?.name || selectedSiteId} · 使用默认额度估计`
+              : "请先选择站点"}
         </div>
       </section>
 

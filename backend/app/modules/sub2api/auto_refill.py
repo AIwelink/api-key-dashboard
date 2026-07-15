@@ -177,7 +177,8 @@ async def auto_refill_group(db: AsyncIOMotorDatabase, *, group_doc: dict[str, An
 
 def _needed_refill_count(summary: dict[str, Any]) -> int:
     account_type = str(summary.get("account_type") or "")
-    limits = CAPACITY_ACCOUNT_LIMITS.get(account_type)
+    configured_limits = summary.get("capacity_limits") if isinstance(summary.get("capacity_limits"), dict) else {}
+    limits = configured_limits.get(account_type) if isinstance(configured_limits.get(account_type), dict) else CAPACITY_ACCOUNT_LIMITS.get(account_type)
     if not limits:
         return 0
     active_5h_capacity = _float_or_zero(summary.get("active_five_hour_capacity_usd"))

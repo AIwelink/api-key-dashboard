@@ -31,25 +31,44 @@ def normalize_capacity_limits(value: Any) -> dict[str, dict[str, float]]:
     return normalized
 
 
-async def get_capacity_account_limits(db: AsyncIOMotorDatabase) -> dict[str, Any]:
-    doc = await db.app_settings.find_one({"_id": CAPACITY_LIMITS_SETTING_ID})
+def capacity_limits_setting_id(site_id: str | None = None) -> str:
+    normalized_site_id = str(site_id or "").strip()
+    return f"{CAPACITY_LIMITS_SETTING_ID}:{normalized_site_id}" if normalized_site_id else CAPACITY_LIMITS_SETTING_ID
+
+
+async def get_capacity_account_limits(db: AsyncIOMotorDatabase, site_id: str | None = None) -> dict[str, Any]:
+    normalized_site_id = str(site_id or "").strip() or None
+    doc = await db.app_settings.find_one({"_id": capacity_limits_setting_id(normalized_site_id)})
+    inherited_from_global = False
+    if doc is None and normalized_site_id is not None:
+        doc = await db.app_settings.find_one({"_id": CAPACITY_LIMITS_SETTING_ID})
+        inherited_from_global = doc is not None
     limits = normalize_capacity_limits((doc or {}).get("limits"))
     return {
+        "site_id": normalized_site_id,
         "limits": limits,
         "default_limits": DEFAULT_CAPACITY_ACCOUNT_LIMITS,
+        "inherited_from_global": inherited_from_global,
         "updated_at": (doc or {}).get("updated_at"),
         "updated_by_user_id": (doc or {}).get("updated_by_user_id"),
         "updated_by_name": (doc or {}).get("updated_by_name"),
     }
 
 
-async def update_capacity_account_limits(db: AsyncIOMotorDatabase, limits: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
+async def update_capacity_account_limits(
+    db: AsyncIOMotorDatabase,
+    limits: dict[str, Any],
+    actor: dict[str, Any],
+    site_id: str | None = None,
+) -> dict[str, Any]:
     normalized = normalize_capacity_limits(limits)
+    normalized_site_id = str(site_id or "").strip() or None
     now = now_utc()
     await db.app_settings.update_one(
-        {"_id": CAPACITY_LIMITS_SETTING_ID},
+        {"_id": capacity_limits_setting_id(normalized_site_id)},
         {
             "$set": {
+                "site_id": normalized_site_id,
                 "limits": normalized,
                 "updated_at": now,
                 "updated_by_user_id": actor.get("_id"),
@@ -59,7 +78,7 @@ async def update_capacity_account_limits(db: AsyncIOMotorDatabase, limits: dict[
         },
         upsert=True,
     )
-    return serialize_doc(await get_capacity_account_limits(db))
+    return serialize_doc(await get_capacity_account_limits(db, normalized_site_id))
 
 
 def _positive_float(value: Any, fallback: float) -> float:

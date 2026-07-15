@@ -26,6 +26,8 @@ FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60
 FIVE_HOUR_DYNAMIC_MAX_WAIT_SECONDS = 2 * 60 * 60
 SEVEN_DAY_WINDOW_SECONDS = 7 * 24 * 60 * 60
 SEVEN_DAY_DYNAMIC_MAX_WAIT_SECONDS = 2 * 24 * 60 * 60
+CONCURRENCY_SAFE_FIVE_HOUR_USAGE_PERCENT = 80
+CONCURRENCY_SAFE_SEVEN_DAY_USAGE_PERCENT = 80
 BUG_TEAM_MIN_WINDOW_MINUTES = 28 * 24 * 60
 CAPACITY_ACCOUNT_LIMITS = DEFAULT_CAPACITY_ACCOUNT_LIMITS
 CAPACITY_HEALTH_THRESHOLDS = {
@@ -750,12 +752,13 @@ async def _capacity_summary_for_accounts(
     *,
     group_id: int | None = None,
 ) -> dict[str, Any]:
+    pool_status_summary = _pool_account_status_summary(accounts)
     capacity_accounts_all = [account for account in accounts if _is_capacity_account(account)]
     capacity_accounts, duplicate_capacity_accounts = _collapse_capacity_accounts_by_email(capacity_accounts_all)
+    concurrency_summary = _concurrency_capacity_summary(capacity_accounts)
     five_hour_capacity_accounts = [account for account in capacity_accounts if not _is_7d_exhausted(account)]
     used_5h = _average_percent(_usage_number(account, "codex_5h_used_percent") for account in capacity_accounts)
-    used_7d = _average_percent(_usage_number(account, "codex_7d_used_percent") for account in capacity_accounts)
-    capacity_limits = (await get_capacity_account_limits(db))["limits"]
+    capacity_limits = (await get_capacity_account_limits(db, site_id))["limits"]
     type_summary = _capacity_by_account_type(capacity_accounts, five_hour_capacity_accounts, capacity_limits)
     primary_type = _primary_capacity_type(type_summary)
     reserve_type_summary = await _reserve_capacity_by_account_type(db, site_id, group_id, capacity_limits) if group_id is not None else _empty_capacity_type_summary(capacity_limits)
@@ -804,9 +807,16 @@ async def _capacity_summary_for_accounts(
     seven_day_used_estimated_usd = active_seven_day_dynamic_used_usd + reserve_seven_day_dynamic_used_usd
     seven_day_remaining_estimated_usd = active_seven_day_dynamic_remaining_usd + reserve_seven_day_dynamic_remaining_usd
     active_seven_day_remaining_estimated_usd = active_seven_day_dynamic_remaining_usd
-    effective_used_5h = _ratio_percent(dynamic_five_hour_used_estimated_usd, five_hour_capacity_usd)
-    active_effective_used_5h = _ratio_percent(active_dynamic_five_hour_used_usd, active_five_hour_capacity_usd)
-    effective_used_7d = _ratio_percent(seven_day_used_estimated_usd, seven_day_capacity_usd)
+    available_5h_percent = _ratio_percent(dynamic_five_hour_remaining_estimated_usd, dynamic_five_hour_capacity_usd)
+    active_available_5h_percent = _ratio_percent(active_dynamic_five_hour_remaining_usd, active_dynamic_five_hour_capacity_usd)
+    actual_available_5h_percent = _ratio_percent(five_hour_actual_remaining_usd, dynamic_five_hour_capacity_usd)
+    active_actual_available_5h_percent = _ratio_percent(active_five_hour_actual_remaining_usd, active_dynamic_five_hour_capacity_usd)
+    effective_used_5h = _clamp_percent(100 - available_5h_percent)
+    active_effective_used_5h = _clamp_percent(100 - active_available_5h_percent)
+    available_7d_percent = _ratio_percent(seven_day_remaining_estimated_usd, seven_day_capacity_usd)
+    actual_available_7d_percent = _ratio_percent(seven_day_actual_remaining_usd, seven_day_capacity_usd)
+    effective_used_7d = _clamp_percent(100 - available_7d_percent)
+    active_effective_used_7d = _ratio_percent(active_seven_day_dynamic_used_usd, active_seven_day_capacity_usd)
     active_five_hour_peak_multiple = _ratio_or_none(active_five_hour_capacity_usd, five_hour_peak_cost)
     active_recent_day_five_hour_peak_multiple = _ratio_or_none(active_five_hour_capacity_usd, recent_day_five_hour_peak_cost)
     active_current_speed_days = _ratio_or_none(active_seven_day_remaining_estimated_usd, recent_24h_cost)
@@ -871,12 +881,16 @@ async def _capacity_summary_for_accounts(
         "reserve_type_summary": reserve_type_summary,
         "capacity_limits": capacity_limits,
         "used_5h_percent": effective_used_5h,
-        "available_5h_percent": _clamp_percent(100 - effective_used_5h),
+        "available_5h_percent": available_5h_percent,
+        "active_available_5h_percent": active_available_5h_percent,
+        "actual_available_5h_percent": actual_available_5h_percent,
+        "active_actual_available_5h_percent": active_actual_available_5h_percent,
         "used_7d_percent": effective_used_7d,
-        "available_7d_percent": _clamp_percent(100 - effective_used_7d),
+        "available_7d_percent": available_7d_percent,
+        "actual_available_7d_percent": actual_available_7d_percent,
         "active_used_5h_percent": active_effective_used_5h,
         "active_dynamic_used_5h_percent": active_effective_used_5h,
-        "active_used_7d_percent": used_7d,
+        "active_used_7d_percent": active_effective_used_7d,
         "active_five_hour_capacity_usd": round(active_five_hour_capacity_usd, 4),
         "active_seven_day_capacity_usd": round(active_seven_day_capacity_usd, 4),
         "reserve_five_hour_capacity_usd": round(selected_reserve["five_hour_capacity_usd"], 4),
@@ -970,6 +984,8 @@ async def _capacity_summary_for_accounts(
         "health_tone": health["tone"],
         "health_reason": health["reason"],
         "auto_refill_required": health["auto_refill_required"],
+        **pool_status_summary,
+        **concurrency_summary,
         "cost_window": cost_summary,
         "total_accounts": len(accounts),
         "capacity_duplicate_email_accounts": duplicate_capacity_accounts,
@@ -1118,7 +1134,20 @@ async def _reserve_capacity_by_account_type(
         ],
     }
     seen_emails: set[str] = set()
-    async for account in db.accounts.find(query, {"metadata.email": 1, "metadata.account_type": 1, "account_json.credentials.email": 1, "account_json.credentials.plan_type": 1, "account_json.extra.email": 1, "account_json.extra.account_type": 1}):
+    projection = {
+        "metadata.email": 1,
+        "metadata.account_type": 1,
+        "account_json.credentials.email": 1,
+        "account_json.credentials.plan_type": 1,
+        "account_json.extra.email": 1,
+        "account_json.extra.account_type": 1,
+        "account_json.extra.plan_type": 1,
+        "account_json.extra.codex_5h_window_minutes": 1,
+        "account_json.extra.codex_7d_window_minutes": 1,
+        "account_json.codex_5h_window_minutes": 1,
+        "account_json.codex_7d_window_minutes": 1,
+    }
+    async for account in db.accounts.find(query, projection):
         email_key = _local_capacity_email_key(account)
         if email_key:
             if email_key in seen_emails:
@@ -1137,7 +1166,7 @@ def _add_capacity_account(
     capacity_limits: dict[str, dict[str, float]] | None = None,
 ) -> None:
     limits_by_type = capacity_limits or CAPACITY_ACCOUNT_LIMITS
-    if account_type not in limits_by_type:
+    if account_type == "bug_team" or account_type not in limits_by_type:
         return
     limits = limits_by_type[account_type]
     dynamic_five_hour = _dynamic_five_hour_usage(account, limits["five_hour_usd"], limits["seven_day_usd"], five_hour_available=five_hour_available)
@@ -1326,6 +1355,15 @@ def _local_capacity_account_type(account: dict[str, Any]) -> str:
     credentials = account_json.get("credentials") if isinstance(account_json.get("credentials"), dict) else {}
     extra = account_json.get("extra") if isinstance(account_json.get("extra"), dict) else {}
     normalized = _normalize_capacity_account_type(metadata.get("account_type") or extra.get("account_type") or credentials.get("plan_type"))
+    five_hour_window = _number_or_none(_first_present(account_json, extra, "codex_5h_window_minutes"))
+    seven_day_window = _number_or_none(_first_present(account_json, extra, "codex_7d_window_minutes"))
+    if normalized == "bug_team" or (
+        normalized == "team"
+        and five_hour_window == 0
+        and isinstance(seven_day_window, (int, float))
+        and seven_day_window >= BUG_TEAM_MIN_WINDOW_MINUTES
+    ):
+        return "bug_team"
     if normalized == "team":
         return "team"
     if normalized == "k12":
@@ -1611,16 +1649,224 @@ def _float_or_zero(value: Any) -> float:
     return float(number) if isinstance(number, (int, float)) else 0.0
 
 
+def _pool_account_status_summary(accounts: list[dict[str, Any]]) -> dict[str, int]:
+    normal_accounts = 0
+    active_normal_accounts = 0
+    five_hour_rate_limited_accounts = 0
+    seven_day_rate_limited_accounts = 0
+    abnormal_accounts = 0
+    excluded_bug_team_accounts = 0
+
+    for account in accounts:
+        if is_bug_team_account(account):
+            excluded_bug_team_accounts += 1
+            continue
+        if _is_abnormal_account(account):
+            abnormal_accounts += 1
+            continue
+        normal_accounts += 1
+        is_seven_day_rate_limited = _is_7d_exhausted(account)
+        is_five_hour_rate_limited = not is_seven_day_rate_limited and _is_five_hour_rate_limited(account)
+        if is_seven_day_rate_limited:
+            seven_day_rate_limited_accounts += 1
+        elif is_five_hour_rate_limited:
+            five_hour_rate_limited_accounts += 1
+        status = str(account.get("status") or "").lower()
+        if status == "active" and account.get("schedulable") is not False and not is_seven_day_rate_limited and not is_five_hour_rate_limited:
+            active_normal_accounts += 1
+
+    return {
+        "pool_normal_accounts": normal_accounts,
+        "pool_active_normal_accounts": active_normal_accounts,
+        "pool_five_hour_rate_limited_accounts": five_hour_rate_limited_accounts,
+        "pool_seven_day_rate_limited_accounts": seven_day_rate_limited_accounts,
+        "pool_abnormal_accounts": abnormal_accounts,
+        "pool_excluded_bug_team_accounts": excluded_bug_team_accounts,
+    }
+
+
+def _is_abnormal_account(account: dict[str, Any]) -> bool:
+    extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+    error_values = [
+        account.get("error_message"),
+        extra.get("error_message"),
+        extra.get("last_error"),
+    ]
+    error_text = " ".join(str(value).lower() for value in error_values if value not in (None, ""))
+    authentication_text = " ".join(
+        str(value).lower()
+        for value in [
+            *error_values,
+            account.get("temp_unschedulable_reason"),
+            account.get("credentials_status"),
+            extra.get("credentials_status"),
+        ]
+        if value not in (None, "")
+    )
+    authentication_markers = (
+        "401",
+        "unauthorized",
+        "authentication failed",
+        "token revoked",
+        "token_invalidated",
+        "token invalidated",
+        "invalid oauth",
+        "invalid token",
+        "oauth token",
+        "凭证失效",
+        "认证失败",
+    )
+    if any(marker in authentication_text for marker in authentication_markers):
+        return True
+    status = str(account.get("status") or "").lower()
+    if status in {"error", "disabled", "paused", "banned", "invalid", "failed"} and not _is_temporary_rate_limit(account):
+        return True
+    explicit_error_markers = (
+        "403",
+        "forbidden",
+        "account banned",
+        "account disabled",
+        "account deactivated",
+        "account suspended",
+        "账号封禁",
+        "账号停用",
+    )
+    return any(marker in error_text for marker in explicit_error_markers)
+
+
+def _is_five_hour_rate_limited(account: dict[str, Any]) -> bool:
+    used_5h = _usage_number(account, "codex_5h_used_percent")
+    if isinstance(used_5h, (int, float)) and used_5h >= 100:
+        return True
+    return _is_temporary_rate_limit(account) and not _is_7d_exhausted(account)
+
+
+def _concurrency_capacity_summary(accounts: list[dict[str, Any]]) -> dict[str, Any]:
+    actual_in_use = 0.0
+    actual_available = 0.0
+    safe_available = 0.0
+    total_capacity = 0.0
+    eligible_accounts = 0
+    available_accounts = 0
+    safe_accounts = 0
+    near_limit_accounts = 0
+    five_hour_limited_accounts = 0
+    short_seven_day_limited_accounts = 0
+    other_unavailable_accounts = 0
+    long_seven_day_limited_accounts = 0
+
+    for account in accounts:
+        maximum = _number_or_none(account.get("concurrency"))
+        if not isinstance(maximum, (int, float)) or maximum <= 0:
+            continue
+        maximum = float(maximum)
+        current = _number_or_none(account.get("current_concurrency"))
+        current = max(0.0, min(maximum, float(current))) if isinstance(current, (int, float)) else 0.0
+
+        if _is_long_seven_day_concurrency_limit(account):
+            long_seven_day_limited_accounts += 1
+            continue
+
+        eligible_accounts += 1
+        total_capacity += maximum
+        actual_in_use += current
+
+        unavailable_kind = _current_concurrency_unavailable_kind(account)
+        if unavailable_kind:
+            if unavailable_kind == "five_hour":
+                five_hour_limited_accounts += 1
+            elif unavailable_kind == "short_seven_day":
+                short_seven_day_limited_accounts += 1
+            else:
+                other_unavailable_accounts += 1
+            continue
+
+        available_accounts += 1
+        remaining = max(0.0, maximum - current)
+        actual_available += remaining
+        if _is_safe_concurrency_account(account):
+            safe_accounts += 1
+            safe_available += remaining
+        else:
+            near_limit_accounts += 1
+
+    temporarily_unavailable = max(0.0, total_capacity - actual_in_use - actual_available)
+    temporarily_unavailable_accounts = five_hour_limited_accounts + short_seven_day_limited_accounts + other_unavailable_accounts
+    near_limit_available = max(0.0, actual_available - safe_available)
+    used_percent = actual_in_use / total_capacity * 100 if total_capacity > 0 else 0.0
+    available_percent = actual_available / total_capacity * 100 if total_capacity > 0 else 0.0
+    return {
+        "concurrency_actual_in_use": _concurrency_number(actual_in_use),
+        "concurrency_actual_available": _concurrency_number(actual_available),
+        "concurrency_safe_available": _concurrency_number(safe_available),
+        "concurrency_near_limit_available": _concurrency_number(near_limit_available),
+        "concurrency_total_capacity": _concurrency_number(total_capacity),
+        "concurrency_temporarily_unavailable": _concurrency_number(temporarily_unavailable),
+        "concurrency_temporarily_unavailable_accounts": temporarily_unavailable_accounts,
+        "concurrency_used_percent": round(used_percent, 2),
+        "concurrency_available_percent": round(available_percent, 2),
+        "concurrency_eligible_accounts": eligible_accounts,
+        "concurrency_available_accounts": available_accounts,
+        "concurrency_safe_accounts": safe_accounts,
+        "concurrency_near_limit_accounts": near_limit_accounts,
+        "concurrency_five_hour_limited_accounts": five_hour_limited_accounts,
+        "concurrency_short_seven_day_limited_accounts": short_seven_day_limited_accounts,
+        "concurrency_other_unavailable_accounts": other_unavailable_accounts,
+        "concurrency_long_seven_day_limited_accounts": long_seven_day_limited_accounts,
+    }
+
+
+def _concurrency_number(value: float) -> int | float:
+    rounded = round(value, 2)
+    return int(rounded) if rounded.is_integer() else rounded
+
+
+def _current_concurrency_unavailable_kind(account: dict[str, Any]) -> str | None:
+    used_5h = _usage_number(account, "codex_5h_used_percent")
+    used_7d = _usage_number(account, "codex_7d_used_percent")
+    if isinstance(used_7d, (int, float)) and used_7d >= 100:
+        return "short_seven_day"
+    if isinstance(used_5h, (int, float)) and used_5h >= 100:
+        return "five_hour"
+    if _is_temporary_rate_limit(account):
+        return "five_hour"
+    status = str(account.get("status") or "").lower()
+    if status != "active" or account.get("schedulable") is False:
+        return "other"
+    return None
+
+
+def _is_safe_concurrency_account(account: dict[str, Any]) -> bool:
+    used_5h = _usage_number(account, "codex_5h_used_percent")
+    used_7d = _usage_number(account, "codex_7d_used_percent")
+    if not isinstance(used_5h, (int, float)) or not isinstance(used_7d, (int, float)):
+        return False
+    return used_5h < CONCURRENCY_SAFE_FIVE_HOUR_USAGE_PERCENT and used_7d < CONCURRENCY_SAFE_SEVEN_DAY_USAGE_PERCENT
+
+
+def _is_long_seven_day_concurrency_limit(account: dict[str, Any]) -> bool:
+    used_7d = _usage_number(account, "codex_7d_used_percent")
+    reset_after = _usage_number(account, "codex_7d_reset_after_seconds")
+    if not isinstance(reset_after, (int, float)):
+        extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+        reset_at = _parse_datetime(_first_present(account, extra, "codex_7d_reset_at", "7d_reset_at"))
+        reset_after = max(0.0, (reset_at - now_utc()).total_seconds()) if reset_at is not None else None
+    has_long_reset = isinstance(reset_after, (int, float)) and reset_after > 24 * 60 * 60
+    return isinstance(used_7d, (int, float)) and used_7d >= 100 and has_long_reset
+
+
 def _is_7d_exhausted(account: dict[str, Any]) -> bool:
     used_7d = _usage_number(account, "codex_7d_used_percent")
     return isinstance(used_7d, (int, float)) and used_7d >= 100
 
 
 def _is_capacity_account(account: dict[str, Any]) -> bool:
+    if is_bug_team_account(account) or _is_abnormal_account(account):
+        return False
     status = str(account.get("status") or "").lower()
-    if _is_temporary_rate_limit(account):
+    if _is_7d_exhausted(account) or _is_five_hour_rate_limited(account):
         return True
-    return status == "active" and account.get("schedulable") is not False and not account.get("error_message")
+    return status == "active" and account.get("schedulable") is not False
 
 
 def _is_temporary_rate_limit(account: dict[str, Any]) -> bool:
@@ -1876,14 +2122,16 @@ def _normalize_account_snapshot(account: dict[str, Any]) -> dict[str, Any]:
             "sub2api_schedulable",
         )
     )
-    normalized["error_message"] = _first_present(
+    error_message = _first_present(
         normalized,
         extra,
         "error_message",
         "last_error",
         "error",
-        "message",
     )
+    if error_message is None and str(normalized.get("status") or "").lower() not in {"active", "ok", "healthy"}:
+        error_message = _first_present(normalized, extra, "message")
+    normalized["error_message"] = error_message
     normalized["current_concurrency"] = _number_or_none(_first_present(normalized, extra, "current_concurrency", "used_concurrency"))
     normalized["concurrency"] = _number_or_none(_first_present(normalized, extra, "concurrency", "max_concurrency"))
     normalized["load_factor"] = _number_or_none(_first_present(normalized, extra, "load_factor"))

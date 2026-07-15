@@ -7,7 +7,7 @@ from app.security import require_roles
 from app.modules.api_pools.pools import create_api_pool, list_api_pools, update_api_pool
 from app.modules.api_pools.status_preferences import get_api_pool_status_preferences, update_api_pool_status_preferences
 from app.modules.system.audit import write_audit_log
-from app.modules.api_pools.capacity_limits import get_capacity_account_limits, update_capacity_account_limits
+from app.modules.api_pools.capacity_limits import capacity_limits_setting_id, get_capacity_account_limits, update_capacity_account_limits
 from app.modules.accounts.pool_lifecycle import capacity_check
 from app.modules.sub2api.account_probe import list_duplicate_email_alerts, list_group_observability_settings, mark_duplicate_email_alert_read, probe_site_accounts, update_group_observability_setting
 from app.modules.sub2api.auto_refill import list_auto_refill_logs
@@ -48,20 +48,29 @@ async def get_auto_refill_logs(
 
 @router.get("/capacity-limits")
 async def get_capacity_limits(
+    site_id: str | None = None,
     _: dict = Depends(require_roles("owner", "admin", "maintainer")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
-    return await get_capacity_account_limits(db)
+    return await get_capacity_account_limits(db, site_id)
 
 
 @router.patch("/capacity-limits")
 async def patch_capacity_limits(
     payload: CapacityAccountLimitsUpdate,
+    site_id: str | None = None,
     actor: dict = Depends(require_roles("owner", "admin")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
-    updated = await update_capacity_account_limits(db, {key: value.model_dump() for key, value in payload.limits.items()}, actor)
-    await write_audit_log(db, actor=actor, action="api_pool.capacity_limits.update", resource_type="setting", resource_id="capacity_account_limits")
+    updated = await update_capacity_account_limits(db, {key: value.model_dump() for key, value in payload.limits.items()}, actor, site_id)
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="api_pool.capacity_limits.update",
+        resource_type="setting",
+        resource_id=capacity_limits_setting_id(site_id),
+        after=updated,
+    )
     return updated
 
 
