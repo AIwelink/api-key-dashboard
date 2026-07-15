@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
@@ -43,20 +44,10 @@ async def refresh_dashboard_snapshots(
                 }
             )
     ranges = dashboard_snapshot_ranges()
-    results = []
-    for range_config in ranges:
-        snapshot = await client.get_dashboard_snapshot(**range_config["params"])
-        result = await store_dashboard_snapshot(
-            db,
-            site_id=site_id,
-            group_id=None,
-            range_type=range_config["range_type"],
-            snapshot=snapshot,
-        )
-        results.append(result)
-    for group_id in group_ids or []:
-        for range_config in ranges:
-            params = dict(range_config["params"])
+
+    async def fetch_and_store(group_id: int | None, range_config: dict[str, Any]) -> dict[str, Any]:
+        params = dict(range_config["params"])
+        if group_id is not None:
             params.update(
                 {
                     "group_id": group_id,
@@ -64,19 +55,28 @@ async def refresh_dashboard_snapshots(
                     "include_group_stats": True,
                 }
             )
-            try:
-                snapshot = await client.get_dashboard_snapshot(**params)
-                result = await store_dashboard_snapshot(
-                    db,
-                    site_id=site_id,
-                    group_id=group_id,
-                    range_type=range_config["range_type"],
-                    snapshot=snapshot,
-                )
-                results.append(result)
-            except Exception as exc:  # noqa: BLE001 - missing one group should not block account cache refresh.
-                logger.warning("sub2api_group_dashboard_refresh_failed site_id=%s group_id=%s error=%s", site_id, group_id, exc)
-                results.append({"ok": False, "site_id": site_id, "group_id": group_id, "range_type": range_config["range_type"], "message": str(exc)})
+        try:
+            snapshot = await client.get_dashboard_snapshot(**params)
+            return await store_dashboard_snapshot(
+                db,
+                site_id=site_id,
+                group_id=group_id,
+                range_type=range_config["range_type"],
+                snapshot=snapshot,
+            )
+        except Exception as exc:
+            if group_id is None:
+                raise
+            logger.warning("sub2api_group_dashboard_refresh_failed site_id=%s group_id=%s error=%s", site_id, group_id, exc)
+            return {"ok": False, "site_id": site_id, "group_id": group_id, "range_type": range_config["range_type"], "message": str(exc)}
+
+    results = await asyncio.gather(
+        *(
+            fetch_and_store(group_id, range_config)
+            for group_id in [None, *(group_ids or [])]
+            for range_config in ranges
+        )
+    )
     summary = {
         "ok": True,
         "site_id": site_id,

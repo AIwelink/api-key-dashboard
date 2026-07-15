@@ -260,32 +260,32 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
             )
 
             client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
-            groups_data = await client.list_groups(page=1, page_size=500)
+            groups_data, raw_accounts = await asyncio.gather(
+                client.list_groups(page=1, page_size=500),
+                _fetch_all_accounts(client),
+            )
             groups = groups_data.get("items", [])
             group_ids = [_int_group_id(group.get("id")) for group in groups if isinstance(group, dict)]
             group_ids = [group_id for group_id in group_ids if group_id is not None]
-            dashboard_summary: dict[str, Any] | None = None
-            try:
-                from app.modules.sub2api.dashboard import refresh_dashboard_snapshots
-
-                dashboard_summary = await refresh_dashboard_snapshots(db, site_id=site_id, client=client, group_ids=group_ids)
-            except Exception as exc:  # noqa: BLE001 - account cache refresh should not fail only because dashboard stats failed.
-                dashboard_summary = {"ok": False, "message": str(exc)}
-                logger.warning("sub2api_dashboard_refresh_failed site_id=%s error=%s", site_id, exc)
-
-            accounts = [_normalize_account_snapshot(account) for account in await _fetch_all_accounts(client)]
+            accounts = [_normalize_account_snapshot(account) for account in raw_accounts]
             fetched_at = now_utc()
-            await _apply_account_usage_windows(db, site_id, client, accounts, fetched_at)
+            dashboard_summary, _ = await asyncio.gather(
+                _refresh_dashboard_for_cache(db, site_id=site_id, client=client, group_ids=group_ids),
+                _apply_account_usage_windows(db, site_id, client, accounts, fetched_at),
+            )
             group_capacity_summaries = await _group_capacity_summaries(db, site_id, accounts)
 
             group_ops = []
+            empty_capacity_summary: dict[str, Any] | None = None
             for group in groups:
                 group_id = group.get("id")
                 if group_id is None:
                     continue
                 capacity_summary = group_capacity_summaries.get(group_id)
                 if capacity_summary is None:
-                    capacity_summary = await _capacity_summary_for_accounts(db, site_id, [])
+                    if empty_capacity_summary is None:
+                        empty_capacity_summary = await _capacity_summary_for_accounts(db, site_id, [])
+                    capacity_summary = empty_capacity_summary
                 group_ops.append(
                     ReplaceOne(
                         {"_id": f"{site_id}:{group_id}"},
@@ -319,14 +319,19 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                 for account in accounts
                 if account.get("id") is not None
             ]
+            cache_writes = []
             if group_ops:
-                await db.sub2api_groups_cache.bulk_write(group_ops, ordered=False)
+                cache_writes.append(db.sub2api_groups_cache.bulk_write(group_ops, ordered=False))
             if account_ops:
-                await db.sub2api_accounts_cache.bulk_write(account_ops, ordered=False)
+                cache_writes.append(db.sub2api_accounts_cache.bulk_write(account_ops, ordered=False))
+            if cache_writes:
+                await asyncio.gather(*cache_writes)
 
             account_ids = [account.get("id") for account in accounts if account.get("id") is not None]
-            await db.sub2api_groups_cache.delete_many({"site_id": site_id, "group_id": {"$nin": group_ids}})
-            await db.sub2api_accounts_cache.delete_many({"site_id": site_id, "sub2api_account_id": {"$nin": account_ids}})
+            await asyncio.gather(
+                db.sub2api_groups_cache.delete_many({"site_id": site_id, "group_id": {"$nin": group_ids}}),
+                db.sub2api_accounts_cache.delete_many({"site_id": site_id, "sub2api_account_id": {"$nin": account_ids}}),
+            )
             try:
                 from app.modules.api_pools.pools import sync_api_pools_from_sub2api_groups
 
@@ -467,29 +472,55 @@ async def _delayed_refresh(db: AsyncIOMotorDatabase, site_id: str) -> dict[str, 
 
 
 async def _fetch_all_accounts(client: Sub2ApiClient) -> list[dict[str, Any]]:
-    page = 1
     page_size = 200
-    accounts: list[dict[str, Any]] = []
-    total: int | None = None
-    while page <= 100:
-        data = await client.list_accounts(
-            page=page,
-            page_size=page_size,
-            sort_by="last_used_at",
-            sort_order="asc",
-            timezone="Asia/Shanghai",
+    request_params = {
+        "page_size": page_size,
+        "sort_by": "last_used_at",
+        "sort_order": "asc",
+        "timezone": "Asia/Shanghai",
+    }
+    first_page = await client.list_accounts(page=1, **request_params)
+    first_items = first_page.get("items", [])
+    accounts = [item for item in first_items if isinstance(item, dict)]
+    if not first_items:
+        return accounts
+
+    total_value = first_page.get("total")
+    total = int(total_value) if isinstance(total_value, int) else None
+    if total is not None:
+        page_count = min(100, max(1, (total + page_size - 1) // page_size))
+        if page_count <= 1:
+            return accounts
+        remaining_pages = await asyncio.gather(
+            *(client.list_accounts(page=page, **request_params) for page in range(2, page_count + 1))
         )
+        for data in remaining_pages:
+            accounts.extend(item for item in data.get("items", []) if isinstance(item, dict))
+        return accounts
+
+    for page in range(2, 101):
+        data = await client.list_accounts(page=page, **request_params)
         items = data.get("items", [])
-        if total is None:
-            total_value = data.get("total")
-            total = int(total_value) if isinstance(total_value, int) else None
-        accounts.extend(items)
+        accounts.extend(item for item in items if isinstance(item, dict))
         if not items:
             break
-        if total is not None and page * page_size >= total:
-            break
-        page += 1
     return accounts
+
+
+async def _refresh_dashboard_for_cache(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    client: Sub2ApiClient,
+    group_ids: list[int],
+) -> dict[str, Any]:
+    try:
+        from app.modules.sub2api.dashboard import refresh_dashboard_snapshots
+
+        return await refresh_dashboard_snapshots(db, site_id=site_id, client=client, group_ids=group_ids)
+    except Exception as exc:  # noqa: BLE001 - account cache refresh should not fail only because dashboard stats failed.
+        logger.warning("sub2api_dashboard_refresh_failed site_id=%s error=%s", site_id, exc)
+        return {"ok": False, "message": str(exc)}
 
 
 async def _apply_account_usage_windows(
@@ -667,10 +698,14 @@ async def _group_capacity_summaries(db: AsyncIOMotorDatabase, site_id: str, acco
     for account in accounts:
         for group_id in _extract_group_ids(account):
             grouped.setdefault(group_id, []).append(account)
-    return {
-        group_id: await _capacity_summary_for_accounts(db, site_id, group_accounts, group_id=group_id)
-        for group_id, group_accounts in grouped.items()
-    }
+    grouped_items = list(grouped.items())
+    summaries = await asyncio.gather(
+        *(
+            _capacity_summary_for_accounts(db, site_id, group_accounts, group_id=group_id)
+            for group_id, group_accounts in grouped_items
+        )
+    )
+    return {group_id: summary for (group_id, _), summary in zip(grouped_items, summaries, strict=True)}
 
 
 def _group_with_capacity_summary(group: dict[str, Any], capacity_summary: dict[str, Any] | None) -> dict[str, Any]:

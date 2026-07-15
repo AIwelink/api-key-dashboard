@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from datetime import UTC, datetime
 from unittest.mock import ANY, AsyncMock, patch
@@ -11,6 +12,27 @@ from app.modules.sub2api.client import Sub2ApiClient
 
 
 class Sub2ApiUsageRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_account_pages_after_first_page_are_fetched_in_parallel(self) -> None:
+        remaining_started: set[int] = set()
+        all_remaining_started = asyncio.Event()
+
+        async def list_accounts(*, page: int, **_: object) -> dict[str, object]:
+            if page == 1:
+                return {"items": [{"id": 1}], "total": 450}
+            remaining_started.add(page)
+            if remaining_started == {2, 3}:
+                all_remaining_started.set()
+            await all_remaining_started.wait()
+            return {"items": [{"id": page}]}
+
+        client = AsyncMock()
+        client.list_accounts.side_effect = list_accounts
+
+        accounts = await asyncio.wait_for(cache._fetch_all_accounts(client), timeout=1)
+
+        self.assertEqual([account["id"] for account in accounts], [1, 2, 3])
+        self.assertEqual(remaining_started, {2, 3})
+
     async def test_account_usage_uses_remote_usage_endpoint(self) -> None:
         requests: list[httpx.Request] = []
 
