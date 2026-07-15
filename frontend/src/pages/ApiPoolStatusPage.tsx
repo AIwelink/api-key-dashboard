@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { errorMessage, formatDateTime, parseDisplayDate, text } from "../utils/format";
@@ -948,9 +948,9 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
 
           <section className="pool-health-card">
             <div className="pool-health-main">
-              <span>账号池概览</span>
+              <span><MetricHelp helpKey="账号池概览">账号池概览</MetricHelp></span>
               <strong>{numberValue(selectedGroup?.capacity_summary?.pool_active_normal_accounts)}</strong>
-              <em>active / 正常 {numberValue(selectedGroup?.capacity_summary?.pool_normal_accounts)}</em>
+              <em><MetricHelp helpKey="active / 正常">active / 正常 {numberValue(selectedGroup?.capacity_summary?.pool_normal_accounts)}</MetricHelp></em>
             </div>
             <div className="pool-health-grid">
               <MiniMetric label="5h 429" value={numberValue(selectedGroup?.capacity_summary?.pool_five_hour_rate_limited_accounts)} />
@@ -1230,7 +1230,7 @@ function ConcurrencyCapacitySummary({ summary, loading }: { summary?: CapacitySu
     <section className="concurrency-capacity-band">
       <div className="concurrency-capacity-head">
         <div>
-          <span>并发容量</span>
+          <span><MetricHelp helpKey="并发容量">并发容量</MetricHelp></span>
           <em>当前使用组</em>
         </div>
         <small>
@@ -1239,19 +1239,19 @@ function ConcurrencyCapacitySummary({ summary, loading }: { summary?: CapacitySu
       </div>
       <div className="concurrency-capacity-values">
         <div>
-          <span>当前并发</span>
+          <span><MetricHelp helpKey="当前并发">当前并发</MetricHelp></span>
           <strong>{loading ? "-" : actual}</strong>
         </div>
         <div>
-          <span>安全可用并发</span>
+          <span><MetricHelp helpKey="安全可用并发">安全可用并发</MetricHelp></span>
           <strong>{loading ? "-" : safeAvailable}</strong>
         </div>
         <div>
-          <span>即时可用并发</span>
+          <span><MetricHelp helpKey="即时可用并发">即时可用并发</MetricHelp></span>
           <strong>{loading ? "-" : immediateAvailable}</strong>
         </div>
         <div>
-          <span>可恢复总并发容量</span>
+          <span><MetricHelp helpKey="可恢复总并发容量">可恢复总并发容量</MetricHelp></span>
           <strong>{loading ? "-" : total}</strong>
         </div>
       </div>
@@ -1262,10 +1262,10 @@ function ConcurrencyCapacitySummary({ summary, loading }: { summary?: CapacitySu
         <span className="unavailable" style={{ width: `${unavailablePercent}%` }} />
       </div>
       <div className="concurrency-capacity-legend">
-        <span><i className="used" />使用中 {actual}</span>
-        <span><i className="safe" />安全可用 {safeAvailable}</span>
-        <span><i className="near-limit" />临界可用 {nearLimitAvailable}</span>
-        <span><i className="unavailable" />暂时不可用 {unavailable}</span>
+        <span><i className="used" /><MetricHelp helpKey="当前并发">使用中 {actual}</MetricHelp></span>
+        <span><i className="safe" /><MetricHelp helpKey="安全可用并发">安全可用 {safeAvailable}</MetricHelp></span>
+        <span><i className="near-limit" /><MetricHelp helpKey="临界可用并发">临界可用 {nearLimitAvailable}</MetricHelp></span>
+        <span><i className="unavailable" /><MetricHelp helpKey="暂时不可用并发">暂时不可用 {unavailable}</MetricHelp></span>
       </div>
     </section>
   );
@@ -1299,7 +1299,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
     <section className={`capacity-runway-card ${tone} ${summary?.health_status || ""}`}>
       <div className="capacity-runway-head">
         <div>
-          <span>容量预估</span>
+          <span><MetricHelp helpKey="容量预估">容量预估</MetricHelp></span>
           <strong>{loading ? "加载中" : summary?.health_label || "暂无数据"}</strong>
           <em>{loading ? "正在读取账号池容量" : capacityHealthReason(summary)}</em>
         </div>
@@ -1424,10 +1424,160 @@ type CapacityMeterOverlay = {
   tone?: CapacityMetricTone;
 };
 
+type MetricHelpDetail = {
+  purpose: string;
+  formula: string;
+  note?: string;
+};
+
+const METRIC_HELP_DETAILS: Record<string, MetricHelpDetail> = {
+  "账号池概览": {
+    purpose: "快速判断当前分组中有多少账号正在工作，以及还有多少账号属于正常资产。",
+    formula: "概览由 active、正常账号、5h 429、7d 429和异常数量共同组成。所有数字来自完整分组缓存，不受当前分页影响。",
+  },
+  "active / 正常": {
+    purpose: "左侧是当前可调度账号，右侧是仍可维护和恢复的正常账号总数。",
+    formula: "active = 正常且调度开启，并且当前没有5h/7d 429；正常 = 全部账号 - Bug Team - 401/封禁等异常账号。正常账号包含429和手动关闭调度的账号。",
+  },
+  "5h 429": {
+    purpose: "显示短周期额度已耗尽、等待5h窗口恢复的账号数量。",
+    formula: "7d未耗尽，并且5h使用率 >= 100%，或远端返回当前有效的429临时限流。",
+    note: "同一账号同时满足5h和7d限流时只计入7d 429，避免重复统计。",
+  },
+  "7d 429": {
+    purpose: "显示周额度已经耗尽的账号数量，用于判断中长期容量缺口。",
+    formula: "账号7d使用率 >= 100%。",
+  },
+  "异常数量": {
+    purpose: "显示无法通过等待额度窗口自行恢复、需要人工处理的账号。",
+    formula: "401、Token revoked、Token invalidated、Authentication failed、403、封禁/停用，或非429的明确错误状态。",
+    note: "凭证错误优先于旧429状态判断；Bug Team单独排除，不计入异常数量。",
+  },
+  "并发容量": {
+    purpose: "判断账号池能同时承接多少请求，以及其中多少并发可以立即、安全地使用。",
+    formula: "按账号的最大并发、当前并发、5h/7d用量和恢复时间汇总。Bug Team、异常账号和需要超过1天恢复的7d 429不进入可恢复总量。",
+  },
+  "当前并发": {
+    purpose: "显示当前已经被请求占用的并发槽位。",
+    formula: "Σ min(账号当前并发, 账号最大并发)，仅统计可恢复并发范围内的账号。",
+  },
+  "安全可用并发": {
+    purpose: "推荐优先使用的低风险并发余量。",
+    formula: "Σ(最大并发 - 当前并发)，且账号正常、可调度、5h使用率 < 80%、7d使用率 < 80%。",
+    note: "安全可用并发是即时可用并发的一部分。",
+  },
+  "即时可用并发": {
+    purpose: "显示此刻可以直接接收新请求的全部并发余量。",
+    formula: "Σ(最大并发 - 当前并发)，排除当前5h/7d 429、异常、关闭调度和其他不可用账号。",
+  },
+  "可恢复总并发容量": {
+    purpose: "显示当前可用并发加上短期恢复后能够重新投入的理论总并发。",
+    formula: "Σ账号最大并发，包含短期5h/7d 429；排除异常、Bug Team和需要超过1天恢复的7d 429。",
+  },
+  "临界可用并发": {
+    purpose: "当前能用，但5h或7d用量已经接近高位的并发余量。",
+    formula: "即时可用并发 - 安全可用并发。通常表示至少一个额度窗口使用率 >= 80%。",
+  },
+  "暂时不可用并发": {
+    purpose: "显示可恢复总量中因短期限流或调度状态暂时不能使用的部分。",
+    formula: "可恢复总并发容量 - 当前并发 - 即时可用并发。",
+  },
+  "容量预估": {
+    purpose: "综合账号数量、额度、峰值和消耗速度给出维护状态。",
+    formula: "优先级依次为等待数据、耗尽、危险、紧张、健康、充裕、十分充裕；判断使用包含备用池后的容量。",
+    note: "耗尽：可用账号 <= 2、最近一天5h < 0.2x或可用不足6小时；危险：<1x或不足1天；紧张：<1.5x或不足3天；充裕：>=3x且>=5天；十分充裕：7天峰值>=5x且峰值速度>=10天。自动补号线为<1.75x或不足3.5天。",
+  },
+  "动态5h总容量": {
+    purpose: "显示当前分组在5h窗口下用于动态评估的总额度。",
+    formula: "Σ对应账号类型的5h额度，包含实际池和备用池；排除Bug Team、异常账号和7d已耗尽账号。",
+  },
+  "总容量：7d": {
+    purpose: "显示当前分组完整的周额度规模。",
+    formula: "Σ对应账号类型的7d额度，包含实际池和备用池；排除Bug Team和异常账号。",
+  },
+  "实际池": {
+    purpose: "当前已经在远端使用分组中的账号额度。",
+    formula: "Σ远端使用池中符合当前账号类型的单账号额度。",
+  },
+  "备用池": {
+    purpose: "本地备用账号可以补入使用池的额度。",
+    formula: "Σ绑定当前站点和分组、处于备用池且符合当前账号类型的单账号额度。",
+  },
+  "动态可用额度": {
+    purpose: "比较动态恢复后的可用额度与此刻实际可用额度。",
+    formula: "动态可用会计入即将刷新的额度；实际可用只按当前使用率计算。双层进度条外层为动态可用，内层为实际可用。",
+  },
+  "可用额度": {
+    purpose: "显示7d窗口的动态可用和当前实际可用额度。",
+    formula: "动态可用会计入2天内即将恢复的周额度；超过2天才恢复的账号只计算当前实际额度。",
+  },
+  "当前已用": {
+    purpose: "显示容量模型中当前已经消耗的等效额度。",
+    formula: "总容量 - 动态可用额度。临近刷新时会按剩余恢复时间折算，因此可能低于按使用率直接计算的已用额度。",
+  },
+  "动态可用": {
+    purpose: "显示当前实际剩余额度，加上短期内即将恢复的可用部分。",
+    formula: "5h：恢复时间<=2小时则按剩余时间/窗口时长折算，否则只算实际剩余；7d使用相同逻辑，但未来恢复上限为2天。",
+  },
+  "实际可用": {
+    purpose: "显示此刻无需等待刷新就能使用的额度。",
+    formula: "Σ 单账号额度 × (1 - 当前使用率)。不计算任何未来刷新。",
+  },
+  "峰值容量：最近一天5h": {
+    purpose: "衡量总容量能覆盖最近24小时内最忙5小时消耗的倍数。",
+    formula: "倍数 = 5h总容量 / 最近24小时内任意连续5小时的最高消耗。",
+  },
+  "峰值容量：7天最高5h": {
+    purpose: "衡量总容量能否覆盖最近7天出现过的最坏5小时峰值。",
+    formula: "倍数 = 5h总容量 / 最近7天内任意连续5小时的最高消耗。",
+  },
+  "突发峰值：1h预估": {
+    purpose: "比5小时峰值更快发现当前小时突然上涨的流量。",
+    formula: "1h预估 = 当前小时已用 / 已经过分钟 × 60；折算5h = 1h预估 × 5；倍数 = 5h总容量 / 折算5h消耗。",
+  },
+  "突发趋势：最近1h": {
+    purpose: "判断近期消耗是在上涨、下降还是保持平稳。",
+    formula: "变化率 = (近3小时平均消耗 - 前3小时平均消耗) / 前3小时平均消耗。再按变化幅度标记趋势强度。",
+  },
+  "预估天数：最近24h": {
+    purpose: "按当前日常速度估算剩余额度还能维持多久。",
+    formula: "可用天数 = 7d动态可用额度 / 最近24小时消耗。",
+  },
+  "预估天数：7天最高24h": {
+    purpose: "按最近7天最忙的一天估算保守可用时间。",
+    formula: "可用天数 = 7d动态可用额度 / 最近7天任意24小时最高消耗。",
+  },
+  "预估消耗：最近24h": {
+    purpose: "把最近24小时成本换算成完整账号周额度数量，方便估算补号规模。",
+    formula: "预估账号数 = 最近24小时消耗 / 当前账号类型的单账号7d额度。",
+  },
+  "预估消耗：7天最高24h": {
+    purpose: "按最近7天最忙的一天换算需要消耗多少个完整账号周额度。",
+    formula: "预估账号数 = 最近7天任意24小时最高消耗 / 当前账号类型的单账号7d额度。",
+  },
+};
+
+function MetricHelp({ helpKey, children }: { helpKey: string; children: ReactNode }) {
+  const tooltipId = useId();
+  const help = METRIC_HELP_DETAILS[helpKey];
+  if (!help) return <>{children}</>;
+  return (
+    <span className="metric-help" tabIndex={0} aria-describedby={tooltipId}>
+      <span className="metric-help-trigger">{children}</span>
+      <span className="metric-help-tooltip" id={tooltipId} role="tooltip">
+        <strong>{helpKey}</strong>
+        <span className="metric-help-row"><b>用途</b><em>{help.purpose}</em></span>
+        <span className="metric-help-row"><b>计算</b><em>{help.formula}</em></span>
+        {help.note ? <span className="metric-help-row note"><b>说明</b><em>{help.note}</em></span> : null}
+      </span>
+    </span>
+  );
+}
+
 function CapacityMoneyLine({ label, values }: { label: string; values: Array<[string, string]> }) {
   return (
     <span className="capacity-money-line">
-      <span>{label}：</span>
+      <span><MetricHelp helpKey={label}>{label}</MetricHelp>：</span>
       {values.map(([itemLabel, itemValue], index) => {
         const itemClass = index === 0 ? "current-used" : index === 1 ? "dynamic-available" : "actual-available";
         return (
@@ -1435,7 +1585,7 @@ function CapacityMoneyLine({ label, values }: { label: string; values: Array<[st
             {index === 1 ? <span aria-hidden="true" className="capacity-money-break" /> : null}
             <span className={`capacity-money-item ${itemClass}`}>
               {index > 0 ? <span className="capacity-money-separator">，</span> : null}
-              <span>{itemLabel} </span>
+              <span><MetricHelp helpKey={itemLabel}>{itemLabel}</MetricHelp> </span>
               <strong>{itemValue}</strong>
             </span>
           </Fragment>
@@ -1541,8 +1691,10 @@ function CapacityMetric({
   return (
     <div className="capacity-metric">
       <span className="capacity-metric-label">
-        <b>{labelMain}</b>
-        {labelSuffix ? <em>：{labelSuffix}</em> : null}
+        <MetricHelp helpKey={label}>
+          <b>{labelMain}</b>
+          {labelSuffix ? <em>：{labelSuffix}</em> : null}
+        </MetricHelp>
       </span>
       <div className="capacity-metric-value-row">
         <strong className={`capacity-metric-value ${tone} ${valueIsMoney ? "money" : ""}`}>
@@ -1562,7 +1714,7 @@ function CapacityMetric({
           <span className="capacity-metric-side-values">
             {visibleSideValues.map((item) => (
               <span className="capacity-metric-side-value" key={item.label}>
-                <em>{item.label}</em>
+                <em><MetricHelp helpKey={item.label}>{item.label}</MetricHelp></em>
                 <b>{item.value}</b>
               </span>
             ))}
@@ -1617,8 +1769,8 @@ function CapacityMeterLegend({
 }) {
   return (
     <div className="capacity-meter-legend">
-      <span className={`capacity-meter-legend-value ${overlay.tone || "muted"}`}>{overlay.label} {overlay.value}</span>
-      <span className={`capacity-meter-legend-value ${baseTone}`}>{baseLabel} {baseValue}</span>
+      <span className={`capacity-meter-legend-value ${overlay.tone || "muted"}`}><MetricHelp helpKey={overlay.label}>{overlay.label}</MetricHelp> {overlay.value}</span>
+      <span className={`capacity-meter-legend-value ${baseTone}`}><MetricHelp helpKey={baseLabel}>{baseLabel}</MetricHelp> {baseValue}</span>
     </div>
   );
 }
@@ -1663,7 +1815,7 @@ function MiniMetric({ label, value }: { label: string; value: number }) {
   return (
     <div className="mini-metric">
       <strong>{value}</strong>
-      <span>{label}</span>
+      <span><MetricHelp helpKey={label}>{label}</MetricHelp></span>
     </div>
   );
 }
