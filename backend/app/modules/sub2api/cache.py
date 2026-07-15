@@ -752,6 +752,7 @@ async def _capacity_summary_for_accounts(
 ) -> dict[str, Any]:
     capacity_accounts_all = [account for account in accounts if _is_capacity_account(account)]
     capacity_accounts, duplicate_capacity_accounts = _collapse_capacity_accounts_by_email(capacity_accounts_all)
+    concurrency_summary = _concurrency_capacity_summary(capacity_accounts)
     five_hour_capacity_accounts = [account for account in capacity_accounts if not _is_7d_exhausted(account)]
     used_5h = _average_percent(_usage_number(account, "codex_5h_used_percent") for account in capacity_accounts)
     used_7d = _average_percent(_usage_number(account, "codex_7d_used_percent") for account in capacity_accounts)
@@ -970,6 +971,7 @@ async def _capacity_summary_for_accounts(
         "health_tone": health["tone"],
         "health_reason": health["reason"],
         "auto_refill_required": health["auto_refill_required"],
+        **concurrency_summary,
         "cost_window": cost_summary,
         "total_accounts": len(accounts),
         "capacity_duplicate_email_accounts": duplicate_capacity_accounts,
@@ -1609,6 +1611,98 @@ def _gte(value: float | None, threshold: float) -> bool:
 def _float_or_zero(value: Any) -> float:
     number = _number_or_none(value)
     return float(number) if isinstance(number, (int, float)) else 0.0
+
+
+def _concurrency_capacity_summary(accounts: list[dict[str, Any]]) -> dict[str, Any]:
+    actual_in_use = 0.0
+    actual_available = 0.0
+    total_capacity = 0.0
+    eligible_accounts = 0
+    available_accounts = 0
+    five_hour_limited_accounts = 0
+    short_seven_day_limited_accounts = 0
+    other_unavailable_accounts = 0
+    long_seven_day_limited_accounts = 0
+
+    for account in accounts:
+        maximum = _number_or_none(account.get("concurrency"))
+        if not isinstance(maximum, (int, float)) or maximum <= 0:
+            continue
+        maximum = float(maximum)
+        current = _number_or_none(account.get("current_concurrency"))
+        current = max(0.0, min(maximum, float(current))) if isinstance(current, (int, float)) else 0.0
+
+        if _is_long_seven_day_concurrency_limit(account):
+            long_seven_day_limited_accounts += 1
+            continue
+
+        eligible_accounts += 1
+        total_capacity += maximum
+        actual_in_use += current
+
+        unavailable_kind = _current_concurrency_unavailable_kind(account)
+        if unavailable_kind:
+            if unavailable_kind == "five_hour":
+                five_hour_limited_accounts += 1
+            elif unavailable_kind == "short_seven_day":
+                short_seven_day_limited_accounts += 1
+            else:
+                other_unavailable_accounts += 1
+            continue
+
+        available_accounts += 1
+        actual_available += max(0.0, maximum - current)
+
+    temporarily_unavailable = max(0.0, total_capacity - actual_in_use - actual_available)
+    used_percent = actual_in_use / total_capacity * 100 if total_capacity > 0 else 0.0
+    available_percent = actual_available / total_capacity * 100 if total_capacity > 0 else 0.0
+    return {
+        "concurrency_actual_in_use": _concurrency_number(actual_in_use),
+        "concurrency_actual_available": _concurrency_number(actual_available),
+        "concurrency_total_capacity": _concurrency_number(total_capacity),
+        "concurrency_temporarily_unavailable": _concurrency_number(temporarily_unavailable),
+        "concurrency_used_percent": round(used_percent, 2),
+        "concurrency_available_percent": round(available_percent, 2),
+        "concurrency_eligible_accounts": eligible_accounts,
+        "concurrency_available_accounts": available_accounts,
+        "concurrency_five_hour_limited_accounts": five_hour_limited_accounts,
+        "concurrency_short_seven_day_limited_accounts": short_seven_day_limited_accounts,
+        "concurrency_other_unavailable_accounts": other_unavailable_accounts,
+        "concurrency_long_seven_day_limited_accounts": long_seven_day_limited_accounts,
+    }
+
+
+def _concurrency_number(value: float) -> int | float:
+    rounded = round(value, 2)
+    return int(rounded) if rounded.is_integer() else rounded
+
+
+def _current_concurrency_unavailable_kind(account: dict[str, Any]) -> str | None:
+    used_5h = _usage_number(account, "codex_5h_used_percent")
+    used_7d = _usage_number(account, "codex_7d_used_percent")
+    if isinstance(used_5h, (int, float)) and used_5h >= 100:
+        return "five_hour"
+    if isinstance(used_7d, (int, float)) and used_7d >= 100:
+        return "short_seven_day"
+    if _is_temporary_rate_limit(account):
+        return "five_hour"
+    status = str(account.get("status") or "").lower()
+    if status != "active" or account.get("schedulable") is False or bool(account.get("error_message")):
+        return "other"
+    return None
+
+
+def _is_long_seven_day_concurrency_limit(account: dict[str, Any]) -> bool:
+    used_7d = _usage_number(account, "codex_7d_used_percent")
+    reset_after = _usage_number(account, "codex_7d_reset_after_seconds")
+    if not isinstance(reset_after, (int, float)):
+        extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+        reset_at = _parse_datetime(_first_present(account, extra, "codex_7d_reset_at", "7d_reset_at"))
+        reset_after = max(0.0, (reset_at - now_utc()).total_seconds()) if reset_at is not None else None
+    has_long_reset = isinstance(reset_after, (int, float)) and reset_after > 24 * 60 * 60
+    if isinstance(used_7d, (int, float)) and used_7d >= 100:
+        return has_long_reset
+    return has_long_reset and _is_temporary_rate_limit(account)
 
 
 def _is_7d_exhausted(account: dict[str, Any]) -> bool:

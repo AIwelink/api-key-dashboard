@@ -5106,6 +5106,121 @@ code {
   font-size: 32px;
 }
 
+.pool-status-page .concurrency-capacity-band {
+  display: grid;
+  gap: 9px;
+  margin: 0 0 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 76%, transparent);
+  padding: 0 0 13px;
+}
+
+.pool-status-page .concurrency-capacity-head,
+.pool-status-page .concurrency-capacity-head > div,
+.pool-status-page .concurrency-capacity-legend {
+  display: flex;
+  align-items: baseline;
+}
+
+.pool-status-page .concurrency-capacity-head {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pool-status-page .concurrency-capacity-head > div {
+  gap: 8px;
+}
+
+.pool-status-page .concurrency-capacity-head span {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 850;
+}
+
+.pool-status-page .concurrency-capacity-head em,
+.pool-status-page .concurrency-capacity-head small {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.pool-status-page .concurrency-capacity-values {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.pool-status-page .concurrency-capacity-values > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  padding: 0 14px;
+  border-right: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+
+.pool-status-page .concurrency-capacity-values > div:first-child {
+  padding-left: 0;
+}
+
+.pool-status-page .concurrency-capacity-values > div:last-child {
+  border-right: 0;
+}
+
+.pool-status-page .concurrency-capacity-values span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pool-status-page .concurrency-capacity-values strong {
+  color: var(--text);
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.pool-status-page .concurrency-capacity-meter {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  overflow: hidden;
+  background: #e5e9ef;
+}
+
+.pool-status-page .concurrency-capacity-meter span {
+  display: block;
+  height: 100%;
+}
+
+.pool-status-page .concurrency-capacity-meter .used,
+.pool-status-page .concurrency-capacity-legend i.used {
+  background: #ef7d4d;
+}
+
+.pool-status-page .concurrency-capacity-meter .available,
+.pool-status-page .concurrency-capacity-legend i.available {
+  background: #2f9c67;
+}
+
+.pool-status-page .concurrency-capacity-meter .unavailable,
+.pool-status-page .concurrency-capacity-legend i.unavailable {
+  background: #c8cfd9;
+}
+
+.pool-status-page .concurrency-capacity-legend {
+  flex-wrap: wrap;
+  gap: 5px 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pool-status-page .concurrency-capacity-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.pool-status-page .concurrency-capacity-legend i {
+  width: 8px;
+  height: 8px;
+}
+
 .pool-status-page .capacity-runway-card {
   gap: 12px;
   margin: 0 0 14px;
@@ -5241,6 +5356,29 @@ code {
 
   .pool-status-page .pool-health-card p {
     display: none;
+  }
+
+  .pool-status-page .concurrency-capacity-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .pool-status-page .concurrency-capacity-values > div {
+    padding: 0 8px;
+  }
+
+  .pool-status-page .concurrency-capacity-values > div:first-child {
+    padding-left: 0;
+  }
+
+  .pool-status-page .concurrency-capacity-values strong {
+    font-size: 20px;
+  }
+
+  .pool-status-page .concurrency-capacity-values span {
+    min-height: 30px;
+    line-height: 1.25;
   }
 
   .duplicate-alert-explain,

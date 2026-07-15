@@ -36,6 +36,18 @@ type Group = {
 type CapacitySummary = {
   available_accounts?: number;
   available_5h_accounts?: number;
+  concurrency_actual_in_use?: number;
+  concurrency_actual_available?: number;
+  concurrency_total_capacity?: number;
+  concurrency_temporarily_unavailable?: number;
+  concurrency_used_percent?: number;
+  concurrency_available_percent?: number;
+  concurrency_eligible_accounts?: number;
+  concurrency_available_accounts?: number;
+  concurrency_five_hour_limited_accounts?: number;
+  concurrency_short_seven_day_limited_accounts?: number;
+  concurrency_other_unavailable_accounts?: number;
+  concurrency_long_seven_day_limited_accounts?: number;
   account_type?: string;
   five_hour_capacity_usd?: number;
   active_five_hour_capacity_usd?: number;
@@ -935,6 +947,8 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
             <p>当前只保留账号池判断真正需要的基础指标；后续会用历史 cost 数据替换为新的容量预估健康度。</p>
           </section>
 
+          <ConcurrencyCapacitySummary summary={selectedGroup?.capacity_summary} loading={capacitySummaryLoading} />
+
           <CapacityRunwaySummary summary={selectedGroup?.capacity_summary} loading={capacitySummaryLoading} />
 
           <div className="list-toolbar">
@@ -1186,6 +1200,53 @@ function AccountSevenDayUsage({ account }: { account: RemoteAccount }) {
   const requestLabel = requestCount === null ? "-" : `${numberValue(requestCount)} 次`;
   const costLabel = totalCost === null ? "$-" : `$${numberValue(totalCost).toFixed(4)}`;
   return <div className="cell-sub total-usage-line">7天 {requestLabel} / {costLabel}</div>;
+}
+
+function ConcurrencyCapacitySummary({ summary, loading }: { summary?: CapacitySummary; loading: boolean }) {
+  const actual = numberValue(summary?.concurrency_actual_in_use);
+  const available = numberValue(summary?.concurrency_actual_available);
+  const total = numberValue(summary?.concurrency_total_capacity);
+  const unavailable = numberValue(summary?.concurrency_temporarily_unavailable);
+  const actualPercent = total > 0 ? Math.max(0, Math.min(100, (actual / total) * 100)) : 0;
+  const availablePercent = total > 0 ? Math.max(0, Math.min(100 - actualPercent, (available / total) * 100)) : 0;
+  const unavailablePercent = Math.max(0, 100 - actualPercent - availablePercent);
+  return (
+    <section className="concurrency-capacity-band">
+      <div className="concurrency-capacity-head">
+        <div>
+          <span>并发容量</span>
+          <em>当前使用组</em>
+        </div>
+        <small>
+          5h限流 {numberValue(summary?.concurrency_five_hour_limited_accounts)} 个 · 短期7d {numberValue(summary?.concurrency_short_seven_day_limited_accounts)} 个 · 长期7d排除 {numberValue(summary?.concurrency_long_seven_day_limited_accounts)} 个
+        </small>
+      </div>
+      <div className="concurrency-capacity-values">
+        <div>
+          <span>实际并发</span>
+          <strong>{loading ? "-" : actual}</strong>
+        </div>
+        <div>
+          <span>实际可用并发</span>
+          <strong>{loading ? "-" : available}</strong>
+        </div>
+        <div>
+          <span>总容量</span>
+          <strong>{loading ? "-" : total}</strong>
+        </div>
+      </div>
+      <div className="concurrency-capacity-meter" aria-label={`实际并发 ${actual}，实际可用并发 ${available}，总容量 ${total}`}>
+        <span className="used" style={{ width: `${actualPercent}%` }} />
+        <span className="available" style={{ width: `${availablePercent}%` }} />
+        <span className="unavailable" style={{ width: `${unavailablePercent}%` }} />
+      </div>
+      <div className="concurrency-capacity-legend">
+        <span><i className="used" />使用中 {actual}</span>
+        <span><i className="available" />当前可用 {available}</span>
+        <span><i className="unavailable" />暂时不可用 {unavailable}</span>
+      </div>
+    </section>
+  );
 }
 
 function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary; loading: boolean }) {
