@@ -141,6 +141,8 @@ async def test_notification_channel(db: AsyncIOMotorDatabase, *, channel_id: str
             result = await _send_dingtalk_test(document, actor=actor)
         elif channel_type == "telegram":
             result = await _send_telegram_test(document, actor=actor)
+        elif channel_type == "feishu":
+            result = await _send_feishu_test(document, actor=actor)
         else:
             raise ValueError(f"暂不支持的通知类型：{channel_type}")
         await db.notification_channels.update_one(
@@ -226,6 +228,8 @@ async def send_notification_event(
                 result = await _send_dingtalk_message(channel, title=title, markdown_text=markdown_text or text)
             elif channel_type == "telegram":
                 result = await _send_telegram_message(channel, text=text)
+            elif channel_type == "feishu":
+                result = await _send_feishu_message(channel, title=title, text=text)
             else:
                 raise ValueError(f"暂不支持的通知类型：{channel_type}")
             success += 1
@@ -359,6 +363,25 @@ async def _send_telegram_test(document: dict[str, Any], *, actor: dict[str, Any]
     return await _send_telegram_message(document, text=text)
 
 
+async def _send_feishu_test(document: dict[str, Any], *, actor: dict[str, Any]) -> dict[str, Any]:
+    config = document.get("config") if isinstance(document.get("config"), dict) else {}
+    webhook_url = str(config.get("webhook_url") or "").strip()
+    if not webhook_url:
+        raise ValueError("飞书 Webhook 地址未配置")
+
+    settings = get_settings()
+    actor_name = actor.get("name") or actor.get("email") or actor.get("_id") or "未知用户"
+    text = "\n".join(
+        [
+            f"通知名称：{document.get('name') or document.get('_id')}",
+            f"系统：{settings.app_name}",
+            f"操作人：{actor_name}",
+            f"时间：{now_utc().isoformat()}",
+        ]
+    )
+    return await _send_feishu_message(document, title="AIwelink 通知测试", text=text)
+
+
 async def _send_dingtalk_message(document: dict[str, Any], *, title: str, markdown_text: str) -> dict[str, Any]:
     config = document.get("config") if isinstance(document.get("config"), dict) else {}
     webhook_url = str(config.get("webhook_url") or "").strip()
@@ -421,6 +444,39 @@ async def _send_telegram_message(document: dict[str, Any], *, text: str) -> dict
     if isinstance(data, dict) and data.get("ok") is not True:
         raise RuntimeError(f"Telegram 返回失败：{data}")
     return {"message": "Telegram 通知已发送"}
+
+
+async def _send_feishu_message(document: dict[str, Any], *, title: str, text: str) -> dict[str, Any]:
+    config = document.get("config") if isinstance(document.get("config"), dict) else {}
+    webhook_url = str(config.get("webhook_url") or "").strip()
+    signing_secret = str(config.get("signing_secret") or "").strip()
+    if not webhook_url:
+        raise ValueError("飞书 Webhook 地址未配置")
+
+    payload: dict[str, Any] = {
+        "msg_type": "text",
+        "content": {"text": f"{title}\n{text}"},
+    }
+    if signing_secret:
+        timestamp = str(int(now_utc().timestamp()))
+        string_to_sign = f"{timestamp}\n{signing_secret}"
+        signature = hmac.new(string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
+        payload["timestamp"] = timestamp
+        payload["sign"] = base64.b64encode(signature).decode("utf-8")
+
+    status_code, response_text = await asyncio.to_thread(_post_json_sync, webhook_url, payload)
+    if status_code >= 400:
+        raise RuntimeError(f"飞书 Webhook 请求失败：HTTP {status_code} {response_text}")
+    try:
+        data = json.loads(response_text) if response_text else None
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        code = data.get("code", data.get("StatusCode"))
+        if code not in (0, "0", None):
+            raise RuntimeError(f"飞书 Webhook 返回失败：{data}")
+        return {"message": data.get("msg") or data.get("StatusMessage") or "飞书通知已发送"}
+    return {"message": response_text or "飞书通知已发送"}
 
 
 def _post_json_sync(url: str, payload: dict[str, Any]) -> tuple[int, str]:

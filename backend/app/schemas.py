@@ -49,7 +49,7 @@ class ApiTokenCreate(BaseModel):
 
 class NotificationChannelCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    channel_type: Literal["dingtalk", "telegram"] = "dingtalk"
+    channel_type: Literal["dingtalk", "telegram", "feishu"] = "dingtalk"
     status: Literal["active", "disabled"] = "active"
     webhook_url: str | None = Field(default=None, min_length=1, max_length=1000)
     signing_secret: str | None = Field(default=None, min_length=1, max_length=500)
@@ -65,6 +65,8 @@ class NotificationChannelCreate(BaseModel):
         if self.channel_type == "telegram":
             if not self.telegram_bot_token or not self.telegram_chat_id:
                 raise ValueError("Telegram 通知需要 Bot Token 和 Chat ID")
+        if self.channel_type == "feishu" and not self.webhook_url:
+            raise ValueError("飞书通知需要 Webhook 地址")
         return self
 
 

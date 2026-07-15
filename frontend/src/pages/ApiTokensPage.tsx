@@ -26,7 +26,7 @@ type ApiToken = {
 type NotificationChannel = {
   id: string;
   name: string;
-  channel_type: "dingtalk" | "telegram";
+  channel_type: "dingtalk" | "telegram" | "feishu";
   status: "active" | "disabled";
   note?: string | null;
   webhook_configured?: boolean;
@@ -47,7 +47,7 @@ type NotificationChannel = {
 
 type NotificationForm = {
   name: string;
-  channel_type: "dingtalk" | "telegram";
+  channel_type: "dingtalk" | "telegram" | "feishu";
   status: "active" | "disabled";
   webhook_url: string;
   signing_secret: string;
@@ -333,6 +333,10 @@ export function ApiTokensPage({ token, showToast }: Props) {
       if (!editingChannelId || webhookUrl) payload.webhook_url = webhookUrl;
       if (!editingChannelId || signingSecret) payload.signing_secret = signingSecret;
     }
+    if (notificationForm.channel_type === "feishu") {
+      if (!editingChannelId || webhookUrl) payload.webhook_url = webhookUrl;
+      if (signingSecret) payload.signing_secret = signingSecret;
+    }
     if (notificationForm.channel_type === "telegram") {
       if (!editingChannelId || telegramBotToken) payload.telegram_bot_token = telegramBotToken;
       if (!editingChannelId || telegramChatId) payload.telegram_chat_id = telegramChatId;
@@ -499,11 +503,18 @@ export function ApiTokensPage({ token, showToast }: Props) {
     loader().catch((error) => showToast(errorMessage(error), true));
   };
 
-  const channelLabel = (item: NotificationChannel) => (item.channel_type === "telegram" ? "TG机器人" : "钉钉");
+  const channelLabel = (item: NotificationChannel) => {
+    if (item.channel_type === "telegram") return "TG机器人";
+    if (item.channel_type === "feishu") return "飞书";
+    return "钉钉";
+  };
 
   const channelConfigSummary = (item: NotificationChannel) => {
     if (item.channel_type === "telegram") {
       return `Bot Token ${item.telegram_bot_token_configured ? item.telegram_bot_token_preview || "已配置" : "未配置"} · Chat ID ${item.telegram_chat_id || "未配置"}`;
+    }
+    if (item.channel_type === "feishu") {
+      return `Webhook ${item.webhook_configured ? item.webhook_preview || "已配置" : "未配置"} · 加签 ${item.signing_secret_configured ? "已配置" : "未配置（可选）"}`;
     }
     return `Webhook ${item.webhook_configured ? item.webhook_preview || "已配置" : "未配置"} · 加签 ${item.signing_secret_configured ? "已配置" : "未配置"}`;
   };
@@ -658,7 +669,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
             <div className="panel-header">
               <div>
                 <h3>{editingChannelId ? "编辑通知" : "新增通知"}</h3>
-                <p>当前支持钉钉自定义机器人和 Telegram 机器人。</p>
+                <p>当前支持钉钉、飞书自定义机器人和 Telegram 机器人。</p>
               </div>
               {editingChannelId && (
                 <button className="ghost" onClick={resetNotificationForm} type="button">
@@ -675,9 +686,10 @@ export function ApiTokensPage({ token, showToast }: Props) {
                 <select
                   disabled={!!editingChannelId}
                   value={notificationForm.channel_type}
-                  onChange={(event) => setNotificationForm((current) => ({ ...current, channel_type: event.target.value as "dingtalk" | "telegram" }))}
+                  onChange={(event) => setNotificationForm((current) => ({ ...current, channel_type: event.target.value as "dingtalk" | "telegram" | "feishu" }))}
                 >
                   <option value="dingtalk">钉钉自定义机器人</option>
+                  <option value="feishu">飞书自定义机器人</option>
                   <option value="telegram">TG 机器人</option>
                 </select>
               </label>
@@ -708,6 +720,29 @@ export function ApiTokensPage({ token, showToast }: Props) {
                       value={notificationForm.signing_secret}
                       onChange={(event) => setNotificationForm((current) => ({ ...current, signing_secret: event.target.value }))}
                       placeholder={editingChannelId ? "留空不修改" : "SEC..."}
+                    />
+                  </label>
+                </>
+              )}
+              {notificationForm.channel_type === "feishu" && (
+                <>
+                  <label>
+                    飞书自定义机器人 Webhook 地址 *
+                    <textarea
+                      required={!editingChannelId}
+                      rows={3}
+                      value={notificationForm.webhook_url}
+                      onChange={(event) => setNotificationForm((current) => ({ ...current, webhook_url: event.target.value }))}
+                      placeholder={editingChannelId ? "留空不修改" : "https://open.feishu.cn/open-apis/bot/v2/hook/..."}
+                    />
+                  </label>
+                  <label>
+                    飞书自定义机器人加签密钥（可选）
+                    <input
+                      type="password"
+                      value={notificationForm.signing_secret}
+                      onChange={(event) => setNotificationForm((current) => ({ ...current, signing_secret: event.target.value }))}
+                      placeholder={editingChannelId ? "留空不修改" : "飞书机器人安全设置中的签名校验密钥"}
                     />
                   </label>
                 </>
