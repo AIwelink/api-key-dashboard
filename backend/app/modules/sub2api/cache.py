@@ -26,7 +26,8 @@ FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60
 FIVE_HOUR_DYNAMIC_MAX_WAIT_SECONDS = 2 * 60 * 60
 SEVEN_DAY_WINDOW_SECONDS = 7 * 24 * 60 * 60
 SEVEN_DAY_DYNAMIC_MAX_WAIT_SECONDS = 2 * 24 * 60 * 60
-CONCURRENCY_SAFE_USAGE_PERCENT = 80
+CONCURRENCY_SAFE_FIVE_HOUR_USAGE_PERCENT = 80
+CONCURRENCY_SAFE_SEVEN_DAY_USAGE_PERCENT = 80
 BUG_TEAM_MIN_WINDOW_MINUTES = 28 * 24 * 60
 CAPACITY_ACCOUNT_LIMITS = DEFAULT_CAPACITY_ACCOUNT_LIMITS
 CAPACITY_HEALTH_THRESHOLDS = {
@@ -1840,7 +1841,7 @@ def _is_safe_concurrency_account(account: dict[str, Any]) -> bool:
     used_7d = _usage_number(account, "codex_7d_used_percent")
     if not isinstance(used_5h, (int, float)) or not isinstance(used_7d, (int, float)):
         return False
-    return used_5h < CONCURRENCY_SAFE_USAGE_PERCENT and used_7d < CONCURRENCY_SAFE_USAGE_PERCENT
+    return used_5h < CONCURRENCY_SAFE_FIVE_HOUR_USAGE_PERCENT and used_7d < CONCURRENCY_SAFE_SEVEN_DAY_USAGE_PERCENT
 
 
 def _is_long_seven_day_concurrency_limit(account: dict[str, Any]) -> bool:

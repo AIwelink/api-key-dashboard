@@ -6,6 +6,15 @@ from app.modules.sub2api import cache
 
 
 class ConcurrencyCapacityTests(unittest.TestCase):
+    def test_five_hour_and_seven_day_safe_thresholds_are_both_eighty_percent(self) -> None:
+        safe = {"codex_5h_used_percent": 79.99, "codex_7d_used_percent": 79.99}
+        five_hour_boundary = {"codex_5h_used_percent": 80, "codex_7d_used_percent": 20}
+        seven_day_boundary = {"codex_5h_used_percent": 20, "codex_7d_used_percent": 80}
+
+        self.assertTrue(cache._is_safe_concurrency_account(safe))
+        self.assertFalse(cache._is_safe_concurrency_account(five_hour_boundary))
+        self.assertFalse(cache._is_safe_concurrency_account(seven_day_boundary))
+
     def test_three_level_concurrency_capacity_rules(self) -> None:
         accounts = [
             {
