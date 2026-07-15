@@ -806,8 +806,12 @@ async def _capacity_summary_for_accounts(
     seven_day_used_estimated_usd = active_seven_day_dynamic_used_usd + reserve_seven_day_dynamic_used_usd
     seven_day_remaining_estimated_usd = active_seven_day_dynamic_remaining_usd + reserve_seven_day_dynamic_remaining_usd
     active_seven_day_remaining_estimated_usd = active_seven_day_dynamic_remaining_usd
-    effective_used_5h = _ratio_percent(dynamic_five_hour_used_estimated_usd, five_hour_capacity_usd)
-    active_effective_used_5h = _ratio_percent(active_dynamic_five_hour_used_usd, active_five_hour_capacity_usd)
+    available_5h_percent = _ratio_percent(dynamic_five_hour_remaining_estimated_usd, dynamic_five_hour_capacity_usd)
+    active_available_5h_percent = _ratio_percent(active_dynamic_five_hour_remaining_usd, active_dynamic_five_hour_capacity_usd)
+    actual_available_5h_percent = _ratio_percent(five_hour_actual_remaining_usd, dynamic_five_hour_capacity_usd)
+    active_actual_available_5h_percent = _ratio_percent(active_five_hour_actual_remaining_usd, active_dynamic_five_hour_capacity_usd)
+    effective_used_5h = _clamp_percent(100 - available_5h_percent)
+    active_effective_used_5h = _clamp_percent(100 - active_available_5h_percent)
     effective_used_7d = _ratio_percent(seven_day_used_estimated_usd, seven_day_capacity_usd)
     active_effective_used_7d = _ratio_percent(active_seven_day_dynamic_used_usd, active_seven_day_capacity_usd)
     active_five_hour_peak_multiple = _ratio_or_none(active_five_hour_capacity_usd, five_hour_peak_cost)
@@ -874,7 +878,10 @@ async def _capacity_summary_for_accounts(
         "reserve_type_summary": reserve_type_summary,
         "capacity_limits": capacity_limits,
         "used_5h_percent": effective_used_5h,
-        "available_5h_percent": _clamp_percent(100 - effective_used_5h),
+        "available_5h_percent": available_5h_percent,
+        "active_available_5h_percent": active_available_5h_percent,
+        "actual_available_5h_percent": actual_available_5h_percent,
+        "active_actual_available_5h_percent": active_actual_available_5h_percent,
         "used_7d_percent": effective_used_7d,
         "available_7d_percent": _clamp_percent(100 - effective_used_7d),
         "active_used_5h_percent": active_effective_used_5h,

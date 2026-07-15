@@ -153,6 +153,9 @@ type CapacitySummary = {
   auto_refill_required?: boolean;
   used_5h_percent?: number;
   available_5h_percent?: number;
+  active_available_5h_percent?: number;
+  actual_available_5h_percent?: number;
+  active_actual_available_5h_percent?: number;
   used_7d_percent?: number;
   available_7d_percent?: number;
   active_used_5h_percent?: number;
@@ -1287,9 +1290,13 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
   const sevenDayUsedPercent = summary?.used_7d_percent;
   const activeFiveHourUsedPercent = summary?.active_dynamic_used_5h_percent ?? summary?.active_used_5h_percent;
   const activeSevenDayUsedPercent = summary?.active_used_7d_percent;
-  const fiveHourRemainingPercent = remainingPercent(fiveHourUsedPercent);
+  const fiveHourRemainingPercent = summary?.available_5h_percent ?? remainingPercent(fiveHourUsedPercent);
+  const activeFiveHourRemainingPercent = summary?.active_available_5h_percent ?? remainingPercent(activeFiveHourUsedPercent);
+  const actualFiveHourRemainingPercent = summary?.actual_available_5h_percent
+    ?? availabilityPercent(summary?.five_hour_actual_remaining_usd, summary?.dynamic_five_hour_capacity_usd ?? summary?.five_hour_capacity_usd);
+  const activeActualFiveHourRemainingPercent = summary?.active_actual_available_5h_percent
+    ?? availabilityPercent(summary?.active_five_hour_actual_remaining_usd, summary?.active_dynamic_five_hour_capacity_usd ?? summary?.active_five_hour_capacity_usd);
   const sevenDayRemainingPercent = remainingPercent(sevenDayUsedPercent);
-  const activeFiveHourRemainingPercent = remainingPercent(activeFiveHourUsedPercent);
   const activeSevenDayRemainingPercent = remainingPercent(activeSevenDayUsedPercent);
   return (
     <section className={`capacity-runway-card ${tone} ${summary?.health_status || ""}`}>
@@ -1322,8 +1329,23 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           percent={fiveHourRemainingPercent}
           tone={capacityAvailabilityTone(fiveHourUsedPercent, fiveHourRemainingPercent)}
           overlay={capacityOverlayWithReserve(summary?.reserve_five_hour_capacity_usd, "实际池", formatPercent(activeFiveHourRemainingPercent), activeFiveHourRemainingPercent, capacityAvailabilityTone(activeFiveHourUsedPercent, activeFiveHourRemainingPercent))}
+          meterLabel="动态可用"
           meterValue={formatPercent(fiveHourRemainingPercent)}
           reverse
+          secondary={{
+            label: "实际可用",
+            value: formatPercent(actualFiveHourRemainingPercent),
+            percent: actualFiveHourRemainingPercent,
+            tone: capacityAvailabilityTone(null, actualFiveHourRemainingPercent),
+            overlay: capacityOverlayWithReserve(
+              summary?.reserve_five_hour_capacity_usd,
+              "实际池",
+              formatPercent(activeActualFiveHourRemainingPercent),
+              activeActualFiveHourRemainingPercent,
+              capacityAvailabilityTone(null, activeActualFiveHourRemainingPercent),
+            ),
+            reverse: true,
+          }}
         />
         <CapacityMetric
           label="总容量：7d"
@@ -1497,6 +1519,7 @@ function CapacityMetric({
   percent,
   tone = "muted",
   overlay,
+  meterLabel,
   meterValue,
   reverse = false,
   showMeterHead = false,
@@ -1512,6 +1535,7 @@ function CapacityMetric({
   percent?: number | null;
   tone?: CapacityMetricTone;
   overlay?: CapacityMeterOverlay;
+  meterLabel?: string;
   meterValue?: string;
   reverse?: boolean;
   showMeterHead?: boolean;
@@ -1521,6 +1545,7 @@ function CapacityMetric({
     percent?: number | null;
     tone?: CapacityMetricTone;
     overlay?: CapacityMeterOverlay;
+    reverse?: boolean;
   };
 }) {
   const [labelMain, labelSuffix] = label.split("：");
@@ -1565,10 +1590,10 @@ function CapacityMetric({
       )}
       {percent !== undefined && percent !== null && (
         <div className="capacity-primary-meter">
-          {showMeterHead && (
+          {(showMeterHead || meterLabel) && (
             <div className="capacity-secondary-head">
-              <span>{sub}</span>
-              <strong className={`capacity-secondary-value ${tone}`}>{value}</strong>
+              <span>{meterLabel || sub}</span>
+              <strong className={`capacity-secondary-value ${tone}`}>{meterValue || value}</strong>
             </div>
           )}
           {overlay && <CapacityMeterLegend overlay={overlay} reserveValue={meterValue || value} reserveTone={tone} />}
@@ -1584,7 +1609,7 @@ function CapacityMetric({
           {secondary.percent !== undefined && secondary.percent !== null && (
             <>
               {secondary.overlay && <CapacityMeterLegend overlay={secondary.overlay} reserveValue={secondary.value} reserveTone={secondary.tone || "muted"} />}
-              <CapacityMeter label={`${label} ${secondary.label}`} percent={secondary.percent} tone={secondary.tone || "muted"} overlay={secondary.overlay} />
+              <CapacityMeter label={`${label} ${secondary.label}`} percent={secondary.percent} tone={secondary.tone || "muted"} overlay={secondary.overlay} reverse={secondary.reverse} />
             </>
           )}
         </div>
@@ -1993,6 +2018,14 @@ function remainingPercent(usedValue: unknown): number | null {
   const number = optionalNumberValue(usedValue);
   if (number === null) return null;
   return clampPercent(100 - number);
+}
+
+function availabilityPercent(remainingValue: unknown, capacityValue: unknown): number | null {
+  const remaining = optionalNumberValue(remainingValue);
+  const capacity = optionalNumberValue(capacityValue);
+  if (remaining === null || capacity === null) return null;
+  if (capacity <= 0) return 0;
+  return clampPercent((remaining / capacity) * 100);
 }
 
 function multipleScalePercent(value: unknown): number | null {
