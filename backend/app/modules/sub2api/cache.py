@@ -1821,10 +1821,10 @@ def _concurrency_number(value: float) -> int | float:
 def _current_concurrency_unavailable_kind(account: dict[str, Any]) -> str | None:
     used_5h = _usage_number(account, "codex_5h_used_percent")
     used_7d = _usage_number(account, "codex_7d_used_percent")
-    if isinstance(used_5h, (int, float)) and used_5h >= 100:
-        return "five_hour"
     if isinstance(used_7d, (int, float)) and used_7d >= 100:
         return "short_seven_day"
+    if isinstance(used_5h, (int, float)) and used_5h >= 100:
+        return "five_hour"
     if _is_temporary_rate_limit(account):
         return "five_hour"
     status = str(account.get("status") or "").lower()
@@ -1849,9 +1849,7 @@ def _is_long_seven_day_concurrency_limit(account: dict[str, Any]) -> bool:
         reset_at = _parse_datetime(_first_present(account, extra, "codex_7d_reset_at", "7d_reset_at"))
         reset_after = max(0.0, (reset_at - now_utc()).total_seconds()) if reset_at is not None else None
     has_long_reset = isinstance(reset_after, (int, float)) and reset_after > 24 * 60 * 60
-    if isinstance(used_7d, (int, float)) and used_7d >= 100:
-        return has_long_reset
-    return has_long_reset and _is_temporary_rate_limit(account)
+    return isinstance(used_7d, (int, float)) and used_7d >= 100 and has_long_reset
 
 
 def _is_7d_exhausted(account: dict[str, Any]) -> bool:

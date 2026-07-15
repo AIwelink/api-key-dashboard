@@ -72,6 +72,7 @@ class ConcurrencyCapacityTests(unittest.TestCase):
                 "codex_5h_used_percent": 100,
                 "codex_5h_reset_after_seconds": 2 * 60 * 60,
                 "codex_7d_used_percent": 40,
+                "codex_7d_reset_after_seconds": 6 * 24 * 60 * 60,
             },
         ]
 
@@ -92,6 +93,7 @@ class ConcurrencyCapacityTests(unittest.TestCase):
         self.assertEqual(summary["concurrency_short_seven_day_limited_accounts"], 1)
         self.assertEqual(summary["concurrency_other_unavailable_accounts"], 0)
         self.assertEqual(summary["concurrency_long_seven_day_limited_accounts"], 1)
+        self.assertFalse(cache._is_long_seven_day_concurrency_limit(accounts[6]))
 
     def test_pool_overview_excludes_bug_team_and_prioritizes_401_as_abnormal(self) -> None:
         accounts = [
