@@ -5145,7 +5145,7 @@ code {
 
 .pool-status-page .concurrency-capacity-values {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .pool-status-page .concurrency-capacity-values > div {
@@ -5193,9 +5193,14 @@ code {
   background: #ef7d4d;
 }
 
-.pool-status-page .concurrency-capacity-meter .available,
-.pool-status-page .concurrency-capacity-legend i.available {
+.pool-status-page .concurrency-capacity-meter .safe,
+.pool-status-page .concurrency-capacity-legend i.safe {
   background: #2f9c67;
+}
+
+.pool-status-page .concurrency-capacity-meter .near-limit,
+.pool-status-page .concurrency-capacity-legend i.near-limit {
+  background: #e1aa35;
 }
 
 .pool-status-page .concurrency-capacity-meter .unavailable,

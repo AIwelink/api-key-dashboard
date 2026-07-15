@@ -26,6 +26,7 @@ FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60
 FIVE_HOUR_DYNAMIC_MAX_WAIT_SECONDS = 2 * 60 * 60
 SEVEN_DAY_WINDOW_SECONDS = 7 * 24 * 60 * 60
 SEVEN_DAY_DYNAMIC_MAX_WAIT_SECONDS = 2 * 24 * 60 * 60
+CONCURRENCY_SAFE_USAGE_PERCENT = 80
 BUG_TEAM_MIN_WINDOW_MINUTES = 28 * 24 * 60
 CAPACITY_ACCOUNT_LIMITS = DEFAULT_CAPACITY_ACCOUNT_LIMITS
 CAPACITY_HEALTH_THRESHOLDS = {
@@ -1616,9 +1617,12 @@ def _float_or_zero(value: Any) -> float:
 def _concurrency_capacity_summary(accounts: list[dict[str, Any]]) -> dict[str, Any]:
     actual_in_use = 0.0
     actual_available = 0.0
+    safe_available = 0.0
     total_capacity = 0.0
     eligible_accounts = 0
     available_accounts = 0
+    safe_accounts = 0
+    near_limit_accounts = 0
     five_hour_limited_accounts = 0
     short_seven_day_limited_accounts = 0
     other_unavailable_accounts = 0
@@ -1651,20 +1655,31 @@ def _concurrency_capacity_summary(accounts: list[dict[str, Any]]) -> dict[str, A
             continue
 
         available_accounts += 1
-        actual_available += max(0.0, maximum - current)
+        remaining = max(0.0, maximum - current)
+        actual_available += remaining
+        if _is_safe_concurrency_account(account):
+            safe_accounts += 1
+            safe_available += remaining
+        else:
+            near_limit_accounts += 1
 
     temporarily_unavailable = max(0.0, total_capacity - actual_in_use - actual_available)
+    near_limit_available = max(0.0, actual_available - safe_available)
     used_percent = actual_in_use / total_capacity * 100 if total_capacity > 0 else 0.0
     available_percent = actual_available / total_capacity * 100 if total_capacity > 0 else 0.0
     return {
         "concurrency_actual_in_use": _concurrency_number(actual_in_use),
         "concurrency_actual_available": _concurrency_number(actual_available),
+        "concurrency_safe_available": _concurrency_number(safe_available),
+        "concurrency_near_limit_available": _concurrency_number(near_limit_available),
         "concurrency_total_capacity": _concurrency_number(total_capacity),
         "concurrency_temporarily_unavailable": _concurrency_number(temporarily_unavailable),
         "concurrency_used_percent": round(used_percent, 2),
         "concurrency_available_percent": round(available_percent, 2),
         "concurrency_eligible_accounts": eligible_accounts,
         "concurrency_available_accounts": available_accounts,
+        "concurrency_safe_accounts": safe_accounts,
+        "concurrency_near_limit_accounts": near_limit_accounts,
         "concurrency_five_hour_limited_accounts": five_hour_limited_accounts,
         "concurrency_short_seven_day_limited_accounts": short_seven_day_limited_accounts,
         "concurrency_other_unavailable_accounts": other_unavailable_accounts,
@@ -1690,6 +1705,14 @@ def _current_concurrency_unavailable_kind(account: dict[str, Any]) -> str | None
     if status != "active" or account.get("schedulable") is False or bool(account.get("error_message")):
         return "other"
     return None
+
+
+def _is_safe_concurrency_account(account: dict[str, Any]) -> bool:
+    used_5h = _usage_number(account, "codex_5h_used_percent")
+    used_7d = _usage_number(account, "codex_7d_used_percent")
+    if not isinstance(used_5h, (int, float)) or not isinstance(used_7d, (int, float)):
+        return False
+    return used_5h < CONCURRENCY_SAFE_USAGE_PERCENT and used_7d < CONCURRENCY_SAFE_USAGE_PERCENT
 
 
 def _is_long_seven_day_concurrency_limit(account: dict[str, Any]) -> bool:

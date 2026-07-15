@@ -38,12 +38,16 @@ type CapacitySummary = {
   available_5h_accounts?: number;
   concurrency_actual_in_use?: number;
   concurrency_actual_available?: number;
+  concurrency_safe_available?: number;
+  concurrency_near_limit_available?: number;
   concurrency_total_capacity?: number;
   concurrency_temporarily_unavailable?: number;
   concurrency_used_percent?: number;
   concurrency_available_percent?: number;
   concurrency_eligible_accounts?: number;
   concurrency_available_accounts?: number;
+  concurrency_safe_accounts?: number;
+  concurrency_near_limit_accounts?: number;
   concurrency_five_hour_limited_accounts?: number;
   concurrency_short_seven_day_limited_accounts?: number;
   concurrency_other_unavailable_accounts?: number;
@@ -1204,12 +1208,15 @@ function AccountSevenDayUsage({ account }: { account: RemoteAccount }) {
 
 function ConcurrencyCapacitySummary({ summary, loading }: { summary?: CapacitySummary; loading: boolean }) {
   const actual = numberValue(summary?.concurrency_actual_in_use);
-  const available = numberValue(summary?.concurrency_actual_available);
+  const safeAvailable = numberValue(summary?.concurrency_safe_available);
+  const immediateAvailable = numberValue(summary?.concurrency_actual_available);
+  const nearLimitAvailable = numberValue(summary?.concurrency_near_limit_available);
   const total = numberValue(summary?.concurrency_total_capacity);
   const unavailable = numberValue(summary?.concurrency_temporarily_unavailable);
   const actualPercent = total > 0 ? Math.max(0, Math.min(100, (actual / total) * 100)) : 0;
-  const availablePercent = total > 0 ? Math.max(0, Math.min(100 - actualPercent, (available / total) * 100)) : 0;
-  const unavailablePercent = Math.max(0, 100 - actualPercent - availablePercent);
+  const safePercent = total > 0 ? Math.max(0, Math.min(100 - actualPercent, (safeAvailable / total) * 100)) : 0;
+  const nearLimitPercent = total > 0 ? Math.max(0, Math.min(100 - actualPercent - safePercent, (nearLimitAvailable / total) * 100)) : 0;
+  const unavailablePercent = Math.max(0, 100 - actualPercent - safePercent - nearLimitPercent);
   return (
     <section className="concurrency-capacity-band">
       <div className="concurrency-capacity-head">
@@ -1218,31 +1225,37 @@ function ConcurrencyCapacitySummary({ summary, loading }: { summary?: CapacitySu
           <em>当前使用组</em>
         </div>
         <small>
-          5h限流 {numberValue(summary?.concurrency_five_hour_limited_accounts)} 个 · 短期7d {numberValue(summary?.concurrency_short_seven_day_limited_accounts)} 个 · 长期7d排除 {numberValue(summary?.concurrency_long_seven_day_limited_accounts)} 个
+          安全账号 {numberValue(summary?.concurrency_safe_accounts)} 个 · 临界账号 {numberValue(summary?.concurrency_near_limit_accounts)} 个 · 5h限流 {numberValue(summary?.concurrency_five_hour_limited_accounts)} 个 · 短期7d {numberValue(summary?.concurrency_short_seven_day_limited_accounts)} 个 · 长期7d排除 {numberValue(summary?.concurrency_long_seven_day_limited_accounts)} 个
         </small>
       </div>
       <div className="concurrency-capacity-values">
         <div>
-          <span>实际并发</span>
+          <span>当前并发</span>
           <strong>{loading ? "-" : actual}</strong>
         </div>
         <div>
-          <span>实际可用并发</span>
-          <strong>{loading ? "-" : available}</strong>
+          <span>安全可用并发</span>
+          <strong>{loading ? "-" : safeAvailable}</strong>
         </div>
         <div>
-          <span>总容量</span>
+          <span>即时可用并发</span>
+          <strong>{loading ? "-" : immediateAvailable}</strong>
+        </div>
+        <div>
+          <span>可恢复总并发容量</span>
           <strong>{loading ? "-" : total}</strong>
         </div>
       </div>
-      <div className="concurrency-capacity-meter" aria-label={`实际并发 ${actual}，实际可用并发 ${available}，总容量 ${total}`}>
+      <div className="concurrency-capacity-meter" aria-label={`当前并发 ${actual}，安全可用并发 ${safeAvailable}，即时可用并发 ${immediateAvailable}，可恢复总并发容量 ${total}`}>
         <span className="used" style={{ width: `${actualPercent}%` }} />
-        <span className="available" style={{ width: `${availablePercent}%` }} />
+        <span className="safe" style={{ width: `${safePercent}%` }} />
+        <span className="near-limit" style={{ width: `${nearLimitPercent}%` }} />
         <span className="unavailable" style={{ width: `${unavailablePercent}%` }} />
       </div>
       <div className="concurrency-capacity-legend">
         <span><i className="used" />使用中 {actual}</span>
-        <span><i className="available" />当前可用 {available}</span>
+        <span><i className="safe" />安全可用 {safeAvailable}</span>
+        <span><i className="near-limit" />临界可用 {nearLimitAvailable}</span>
         <span><i className="unavailable" />暂时不可用 {unavailable}</span>
       </div>
     </section>
