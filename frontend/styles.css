@@ -5095,6 +5095,7 @@ code {
 }
 
 .pool-status-page .pool-health-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0;
 }
 
@@ -5356,7 +5357,7 @@ code {
   }
 
   .pool-status-page .pool-health-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .pool-status-page .pool-health-card p {
@@ -5656,9 +5657,12 @@ code {
     gap: 8px;
   }
 
-  .pool-status-page .pool-mini-metrics,
-  .pool-status-page .pool-health-grid {
+  .pool-status-page .pool-mini-metrics {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .pool-status-page .pool-health-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .pool-status-page .pool-mini-metrics .mini-metric,

@@ -82,6 +82,51 @@ class ConcurrencyCapacityTests(unittest.TestCase):
         self.assertEqual(summary["concurrency_other_unavailable_accounts"], 0)
         self.assertEqual(summary["concurrency_long_seven_day_limited_accounts"], 1)
 
+    def test_pool_overview_excludes_bug_team_and_prioritizes_401_as_abnormal(self) -> None:
+        accounts = [
+            {"id": 1, "status": "active", "schedulable": True},
+            {"id": 2, "status": "active", "schedulable": False},
+            {
+                "id": 3,
+                "status": "active",
+                "schedulable": False,
+                "error_message": "Authentication failed (401): token invalidated",
+            },
+            {
+                "id": 4,
+                "status": "error",
+                "error_message": "429 rate limit",
+                "codex_5h_used_percent": 100,
+                "codex_7d_used_percent": 30,
+            },
+            {
+                "id": 5,
+                "status": "error",
+                "error_message": "429 rate limit",
+                "codex_5h_used_percent": 20,
+                "codex_7d_used_percent": 100,
+            },
+            {
+                "id": 6,
+                "status": "error",
+                "plan_type": "team",
+                "error_message": "429 rate limit",
+                "codex_5h_window_minutes": 0,
+                "codex_7d_window_minutes": 43_800,
+                "codex_7d_used_percent": 100,
+            },
+        ]
+
+        summary = cache._pool_account_status_summary(accounts)
+
+        self.assertEqual(summary["pool_normal_accounts"], 2)
+        self.assertEqual(summary["pool_active_normal_accounts"], 1)
+        self.assertEqual(summary["pool_five_hour_rate_limited_accounts"], 1)
+        self.assertEqual(summary["pool_seven_day_rate_limited_accounts"], 1)
+        self.assertEqual(summary["pool_abnormal_accounts"], 1)
+        self.assertEqual(summary["pool_excluded_bug_team_accounts"], 1)
+        self.assertFalse(cache._is_capacity_account(accounts[2]))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -31,22 +31,7 @@ class BugTeamCapacityTests(unittest.TestCase):
     def test_bug_team_is_detected_before_regular_team(self) -> None:
         self.assertEqual(cache._capacity_account_type(bug_team_account()), "bug_team")
 
-    def test_bug_team_uses_seven_day_window_for_both_estimates(self) -> None:
-        account = bug_team_account(used_percent=54)
-
-        usage = cache._dynamic_five_hour_usage(
-            account,
-            five_hour_limit_usd=230,
-            seven_day_limit_usd=230,
-            five_hour_available=True,
-        )
-
-        self.assertAlmostEqual(usage["actual_used_usd"], 124.2)
-        self.assertAlmostEqual(usage["actual_remaining_usd"], 105.8)
-        self.assertAlmostEqual(usage["seven_day_actual_used_usd"], 124.2)
-        self.assertAlmostEqual(usage["seven_day_actual_remaining_usd"], 105.8)
-
-    def test_bug_team_is_separate_in_capacity_summary(self) -> None:
+    def test_bug_team_is_excluded_from_capacity_summary(self) -> None:
         limits = normalize_capacity_limits(None)
 
         summary = cache._capacity_by_account_type(
@@ -55,10 +40,12 @@ class BugTeamCapacityTests(unittest.TestCase):
             limits,
         )
 
-        self.assertEqual(cache._primary_capacity_type(summary), "bug_team")
-        self.assertEqual(summary["bug_team"]["available_accounts"], 1)
-        self.assertAlmostEqual(summary["bug_team"]["five_hour_capacity_usd"], 230)
-        self.assertAlmostEqual(summary["bug_team"]["seven_day_capacity_usd"], 230)
+        self.assertFalse(cache._is_capacity_account(bug_team_account()))
+        self.assertEqual(cache._primary_capacity_type(summary), "total")
+        self.assertEqual(summary["bug_team"]["available_accounts"], 0)
+        self.assertEqual(summary["total"]["available_accounts"], 0)
+        self.assertAlmostEqual(summary["total"]["five_hour_capacity_usd"], 0)
+        self.assertAlmostEqual(summary["total"]["seven_day_capacity_usd"], 0)
 
     def test_regular_team_keeps_its_five_hour_window(self) -> None:
         account = {

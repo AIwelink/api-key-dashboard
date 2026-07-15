@@ -36,6 +36,12 @@ type Group = {
 type CapacitySummary = {
   available_accounts?: number;
   available_5h_accounts?: number;
+  pool_normal_accounts?: number;
+  pool_active_normal_accounts?: number;
+  pool_five_hour_rate_limited_accounts?: number;
+  pool_seven_day_rate_limited_accounts?: number;
+  pool_abnormal_accounts?: number;
+  pool_excluded_bug_team_accounts?: number;
   concurrency_actual_in_use?: number;
   concurrency_actual_available?: number;
   concurrency_safe_available?: number;
@@ -939,16 +945,15 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
           <section className="pool-health-card">
             <div className="pool-health-main">
               <span>账号池概览</span>
-              <strong>{numberValue(selectedGroup?.active_account_count)}</strong>
-              <em>active / {numberValue(selectedGroup?.account_count)}</em>
+              <strong>{numberValue(selectedGroup?.capacity_summary?.pool_active_normal_accounts)}</strong>
+              <em>active / 正常 {numberValue(selectedGroup?.capacity_summary?.pool_normal_accounts)}</em>
             </div>
             <div className="pool-health-grid">
-              <MiniMetric label="可用账号" value={numberValue(selectedGroup?.capacity_summary?.available_accounts)} />
-              <MiniMetric label="5h可用" value={numberValue(selectedGroup?.capacity_summary?.available_5h_accounts)} />
-              <MiniMetric label="限流中" value={numberValue(selectedGroup?.rate_limited_account_count) || accountSummary.rateLimited} />
-              <MiniMetric label="异常" value={accountSummary.error} />
+              <MiniMetric label="5h 429" value={numberValue(selectedGroup?.capacity_summary?.pool_five_hour_rate_limited_accounts)} />
+              <MiniMetric label="7d 429" value={numberValue(selectedGroup?.capacity_summary?.pool_seven_day_rate_limited_accounts)} />
+              <MiniMetric label="异常数量" value={numberValue(selectedGroup?.capacity_summary?.pool_abnormal_accounts)} />
             </div>
-            <p>当前只保留账号池判断真正需要的基础指标；后续会用历史 cost 数据替换为新的容量预估健康度。</p>
+            <p>已排除 Bug Team {numberValue(selectedGroup?.capacity_summary?.pool_excluded_bug_team_accounts)} 个，不参与概览与容量计算。</p>
           </section>
 
           <ConcurrencyCapacitySummary summary={selectedGroup?.capacity_summary} loading={capacitySummaryLoading} />
@@ -1316,7 +1321,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           }
           percent={fiveHourRemainingPercent}
           tone={capacityAvailabilityTone(fiveHourUsedPercent, fiveHourRemainingPercent)}
-          overlay={capacityOverlay("实际池", formatPercent(activeFiveHourRemainingPercent), activeFiveHourRemainingPercent, capacityAvailabilityTone(activeFiveHourUsedPercent, activeFiveHourRemainingPercent))}
+          overlay={capacityOverlayWithReserve(summary?.reserve_five_hour_capacity_usd, "实际池", formatPercent(activeFiveHourRemainingPercent), activeFiveHourRemainingPercent, capacityAvailabilityTone(activeFiveHourUsedPercent, activeFiveHourRemainingPercent))}
           meterValue={formatPercent(fiveHourRemainingPercent)}
           reverse
         />
@@ -1339,7 +1344,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           }
           percent={sevenDayRemainingPercent}
           tone={capacityAvailabilityTone(sevenDayUsedPercent, sevenDayRemainingPercent)}
-          overlay={capacityOverlay("实际池", formatPercent(activeSevenDayRemainingPercent), activeSevenDayRemainingPercent, capacityAvailabilityTone(activeSevenDayUsedPercent, activeSevenDayRemainingPercent))}
+          overlay={capacityOverlayWithReserve(summary?.reserve_seven_day_capacity_usd, "实际池", formatPercent(activeSevenDayRemainingPercent), activeSevenDayRemainingPercent, capacityAvailabilityTone(activeSevenDayUsedPercent, activeSevenDayRemainingPercent))}
           meterValue={formatPercent(sevenDayRemainingPercent)}
           reverse
         />
@@ -1349,7 +1354,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`峰值 ${formatUsd(recentDayFiveHourPeak)}，总容量：5h ${formatUsd(summary?.five_hour_capacity_usd)}`}
           percent={multipleScalePercent(recentDayFiveHourPeakMultiple)}
           tone={multipleScaleTone(recentDayFiveHourPeakMultiple)}
-          overlay={capacityOverlay("使用池", formatMultiple(activeRecentDayFiveHourPeakMultiple), multipleScalePercent(activeRecentDayFiveHourPeakMultiple), multipleScaleTone(activeRecentDayFiveHourPeakMultiple))}
+          overlay={capacityOverlayWithReserve(summary?.reserve_five_hour_capacity_usd, "使用池", formatMultiple(activeRecentDayFiveHourPeakMultiple), multipleScalePercent(activeRecentDayFiveHourPeakMultiple), multipleScaleTone(activeRecentDayFiveHourPeakMultiple))}
         />
         <CapacityMetric
           label="峰值容量：7天最高5h"
@@ -1357,7 +1362,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`峰值 ${formatUsd(sevenDayFiveHourPeak)}，总容量：5h ${formatUsd(summary?.five_hour_capacity_usd)}`}
           percent={multipleScalePercent(sevenDayFiveHourPeakMultiple)}
           tone={multipleScaleTone(sevenDayFiveHourPeakMultiple)}
-          overlay={capacityOverlay("使用池", formatMultiple(activeSevenDayFiveHourPeakMultiple), multipleScalePercent(activeSevenDayFiveHourPeakMultiple), multipleScaleTone(activeSevenDayFiveHourPeakMultiple))}
+          overlay={capacityOverlayWithReserve(summary?.reserve_five_hour_capacity_usd, "使用池", formatMultiple(activeSevenDayFiveHourPeakMultiple), multipleScalePercent(activeSevenDayFiveHourPeakMultiple), multipleScaleTone(activeSevenDayFiveHourPeakMultiple))}
         />
         <CapacityMetric
           label="突发峰值：1h预估"
@@ -1365,7 +1370,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`当前小时已用 ${formatUsd(summary?.burst_1h_observed_cost)}，按${formatMinutes(summary?.burst_1h_elapsed_minutes)}折算1h ${formatUsd(summary?.burst_1h_cost)}，折算5h ${formatUsd(summary?.burst_1h_five_hour_estimated_cost)}`}
           percent={multipleScalePercent(burstOneHourMultiple)}
           tone={multipleScaleTone(burstOneHourMultiple)}
-          overlay={capacityOverlay("使用池", formatMultiple(activeBurstOneHourMultiple), multipleScalePercent(activeBurstOneHourMultiple), multipleScaleTone(activeBurstOneHourMultiple))}
+          overlay={capacityOverlayWithReserve(summary?.reserve_five_hour_capacity_usd, "使用池", formatMultiple(activeBurstOneHourMultiple), multipleScalePercent(activeBurstOneHourMultiple), multipleScaleTone(activeBurstOneHourMultiple))}
         />
         <CapacityMetric
           label="突发趋势：最近1h"
@@ -1380,7 +1385,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`按最近24h消耗 ${formatUsd(summary?.recent_24h_cost)}`}
           percent={daysScalePercent(recent24hSpeedDays)}
           tone={daysScaleTone(recent24hSpeedDays)}
-          overlay={capacityOverlay("使用池", formatDays(activeRecent24hSpeedDays), daysScalePercent(activeRecent24hSpeedDays), daysScaleTone(activeRecent24hSpeedDays))}
+          overlay={capacityOverlayWithReserve(summary?.reserve_seven_day_capacity_usd, "使用池", formatDays(activeRecent24hSpeedDays), daysScalePercent(activeRecent24hSpeedDays), daysScaleTone(activeRecent24hSpeedDays))}
         />
         <CapacityMetric
           label="预估天数：7天最高24h"
@@ -1388,7 +1393,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`按7天最高24h消耗 ${formatUsd(summary?.seven_day_24h_peak_cost)}`}
           percent={daysScalePercent(sevenDayPeak24hSpeedDays)}
           tone={daysScaleTone(sevenDayPeak24hSpeedDays)}
-          overlay={capacityOverlay("使用池", formatDays(activeSevenDayPeak24hSpeedDays), daysScalePercent(activeSevenDayPeak24hSpeedDays), daysScaleTone(activeSevenDayPeak24hSpeedDays))}
+          overlay={capacityOverlayWithReserve(summary?.reserve_seven_day_capacity_usd, "使用池", formatDays(activeSevenDayPeak24hSpeedDays), daysScalePercent(activeSevenDayPeak24hSpeedDays), daysScaleTone(activeSevenDayPeak24hSpeedDays))}
         />
         <CapacityMetric
           label="预估消耗：最近24h"
@@ -1455,6 +1460,18 @@ function CapacitySubText({ value }: { value: ReactNode }) {
 function capacityOverlay(label: string, value: string, percent?: number | null, tone?: CapacityMetricTone): CapacityMeterOverlay | undefined {
   if (percent === undefined || percent === null) return undefined;
   return { label, value, percent, tone };
+}
+
+function capacityOverlayWithReserve(
+  reserveCapacity: unknown,
+  label: string,
+  value: string,
+  percent?: number | null,
+  tone?: CapacityMetricTone,
+): CapacityMeterOverlay | undefined {
+  const reserve = optionalNumberValue(reserveCapacity);
+  if (reserve === null || reserve <= 0) return undefined;
+  return capacityOverlay(label, value, percent, tone);
 }
 
 function capacitySideValue(label: string, value: unknown) {
@@ -1706,6 +1723,7 @@ function summarizeRemoteAccounts(accounts: RemoteAccount[]) {
 
 function accountHealth(account: RemoteAccount): "healthy" | "warning" | "error" | "unknown" {
   const status = (account.status || "").toLowerCase();
+  if (isAuthenticationError(account)) return "error";
   if (!status) return "unknown";
   if (isTemporaryRateLimit(account)) return "warning";
   if (["error", "disabled", "paused", "banned", "invalid", "failed"].includes(status)) return "error";
@@ -1728,7 +1746,34 @@ function isTemporaryRateLimit(account: RemoteAccount): boolean {
   ]
     .map((value) => text(value).toLowerCase())
     .join(" ");
-  return hasActiveUntil || combined.includes("rate limit") || combined.includes("限流");
+  return hasActiveUntil || combined.includes("429") || combined.includes("529") || combined.includes("rate limit") || combined.includes("限流");
+}
+
+function isAuthenticationError(account: RemoteAccount): boolean {
+  const extra = account.extra || {};
+  const combined = [
+    account.error_message,
+    account.temp_unschedulable_reason,
+    account.credentials_status,
+    extra.error_message,
+    extra.last_error,
+    extra.credentials_status,
+  ]
+    .map((value) => text(value).toLowerCase())
+    .join(" ");
+  return [
+    "401",
+    "unauthorized",
+    "authentication failed",
+    "token revoked",
+    "token_invalidated",
+    "token invalidated",
+    "invalid oauth",
+    "invalid token",
+    "oauth token",
+    "凭证失效",
+    "认证失败",
+  ].some((marker) => combined.includes(marker));
 }
 
 function isFutureDate(value: unknown): boolean {
@@ -1739,6 +1784,13 @@ function isFutureDate(value: unknown): boolean {
 
 function accountStatusView(account: RemoteAccount): { label: string; tone: "accent" | "success" | "warning" | "danger" | "muted"; detail?: string } {
   const status = (account.status || "").toLowerCase();
+  if (isAuthenticationError(account)) {
+    return {
+      label: "异常",
+      tone: "danger",
+      detail: account.error_message ? text(account.error_message) : account.temp_unschedulable_reason ? text(account.temp_unschedulable_reason) : "账号凭证认证失败",
+    };
+  }
   if (isFutureDate(account.temp_unschedulable_until)) {
     return {
       label: "临时不可调度",
