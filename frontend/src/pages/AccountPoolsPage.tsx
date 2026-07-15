@@ -567,7 +567,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
               <strong>刷新间隔</strong>
             </span>
             <input
-              min={1}
+              min={30}
               max={1440}
               type="number"
               value={siteForm.refresh_interval_minutes}

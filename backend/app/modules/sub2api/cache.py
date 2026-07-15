@@ -74,6 +74,10 @@ _site_locks: dict[str, asyncio.Lock] = {}
 
 def public_site(site: dict[str, Any]) -> dict[str, Any]:
     result = dict(site)
+    result.setdefault("refresh_interval_minutes", DEFAULT_REFRESH_INTERVAL_MINUTES)
+    result.setdefault("auto_remove_abnormal_accounts", False)
+    result.setdefault("status", "active")
+    result.setdefault("source", "database")
     result["token_configured"] = bool(result.get("token"))
     result.pop("token", None)
     return result
@@ -114,8 +118,7 @@ async def update_site_config(db: AsyncIOMotorDatabase, site_id: str, payload: di
     if "status" in payload:
         updates["status"] = str(payload["status"] or "active")
     if "refresh_interval_minutes" in payload:
-        interval = int(payload["refresh_interval_minutes"])
-        updates["refresh_interval_minutes"] = max(AUTO_REFRESH_INTERVAL_MINUTES, min(interval, 1440))
+        updates["refresh_interval_minutes"] = _site_refresh_interval_minutes(payload)
     if "auto_remove_abnormal_accounts" in payload:
         updates["auto_remove_abnormal_accounts"] = bool(payload["auto_remove_abnormal_accounts"])
     await db.sub2api_sites.update_one({"_id": site_id}, {"$set": updates})
@@ -134,7 +137,7 @@ async def create_site_config(db: AsyncIOMotorDatabase, payload: dict[str, Any]) 
         "base_url": base_url,
         "token": str(payload.get("token") or "").strip(),
         "status": str(payload.get("status") or "active"),
-        "refresh_interval_minutes": max(AUTO_REFRESH_INTERVAL_MINUTES, min(int(payload.get("refresh_interval_minutes") or DEFAULT_REFRESH_INTERVAL_MINUTES), 1440)),
+        "refresh_interval_minutes": _site_refresh_interval_minutes(payload),
         "auto_remove_abnormal_accounts": bool(payload.get("auto_remove_abnormal_accounts", False)),
         "source": "database",
         "created_at": now,
@@ -434,22 +437,7 @@ async def refresh_scheduler_loop(db: AsyncIOMotorDatabase) -> None:
                 if not site or site.get("status") != "active":
                     continue
                 site_id = str(site.get("id"))
-                try:
-                    from app.modules.sub2api.dashboard import refresh_dashboard_snapshots
-
-                    full_site = await get_site(db, site_id, include_token=True)
-                    if full_site:
-                        client = Sub2ApiClient(base_url=full_site.get("base_url"), token=full_site.get("token"))
-                        cached_group_docs = db.sub2api_groups_cache.find({"site_id": site_id}, {"group_id": 1})
-                        group_ids = [
-                            int(doc["group_id"])
-                            async for doc in cached_group_docs
-                            if isinstance(doc.get("group_id"), int)
-                        ]
-                        await refresh_dashboard_snapshots(db, site_id=site_id, client=client, group_ids=group_ids)
-                except Exception as exc:  # noqa: BLE001 - dashboard usage stats should not block account cache refresh.
-                    logger.warning("sub2api_dashboard_scheduler_failed site_id=%s error=%s", site_id, exc)
-                interval = AUTO_REFRESH_INTERVAL_MINUTES
+                interval = _site_refresh_interval_minutes(site)
                 meta = await get_cache_meta(db, site_id)
                 last_refreshed_at = meta.get("last_refreshed_at")
                 if _is_due(last_refreshed_at, interval):
@@ -459,6 +447,14 @@ async def refresh_scheduler_loop(db: AsyncIOMotorDatabase) -> None:
         except Exception:
             logger.exception("sub2api_refresh_scheduler_failed")
         await asyncio.sleep(30)
+
+
+def _site_refresh_interval_minutes(site: dict[str, Any]) -> int:
+    try:
+        interval = int(site.get("refresh_interval_minutes") or DEFAULT_REFRESH_INTERVAL_MINUTES)
+    except (TypeError, ValueError):
+        interval = DEFAULT_REFRESH_INTERVAL_MINUTES
+    return max(AUTO_REFRESH_INTERVAL_MINUTES, min(interval, 1440))
 
 
 async def _delayed_refresh(db: AsyncIOMotorDatabase, site_id: str) -> dict[str, Any]:
