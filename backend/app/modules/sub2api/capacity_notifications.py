@@ -228,6 +228,11 @@ def _capacity_notification_text(
             f"分组：{group_name}（#{group_id}）",
             f"当前状态：{summary.get('health_label') or HEALTH_LABELS.get(str(summary.get('health_status'))) or '-'}",
             f"通知阈值：{THRESHOLD_LABELS.get(threshold, threshold)}",
+            f"压力阶段：{summary.get('pressure_stage_label') or '等待数据'}",
+            f"实际 / 动态可用：{_hours(summary.get('actual_runway_hours'))} / {_hours(summary.get('dynamic_runway_hours'))}",
+            f"TPM / RPM：{_metric(summary.get('pressure_tpm'))} / {_metric(summary.get('pressure_rpm'))}",
+            f"并发覆盖：{_multiple(summary.get('concurrency_coverage'))}",
+            f"建议补号：{int(summary.get('recommended_refill_accounts') or 0)} 个",
             f"动态 5h 可用：{_percent(summary.get('available_5h_percent'))}，{_money(summary.get('dynamic_five_hour_remaining_estimated_usd'))} / {_money(summary.get('dynamic_five_hour_capacity_usd'))}",
             f"7d 可用：{_percent(summary.get('available_7d_percent'))}，{_money(summary.get('seven_day_remaining_estimated_usd'))} / {_money(summary.get('seven_day_capacity_usd'))}",
             f"可用账号：{int(summary.get('available_accounts') or 0)}，5h 可用账号：{int(summary.get('available_5h_accounts') or 0)}",
@@ -238,6 +243,34 @@ def _capacity_notification_text(
 
 def _notification_severity(health_status: str) -> str:
     return {"tight": "warning", "danger": "danger", "exhausted": "critical"}.get(health_status, "warning")
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _hours(value: Any) -> str:
+    number = _number(value)
+    if number is None:
+        return "-"
+    if number < 1:
+        return f"{round(number * 60)}分钟"
+    return f"{number:.1f}小时"
+
+
+def _metric(value: Any) -> str:
+    number = _number(value)
+    return "-" if number is None else f"{number:,.0f}"
+
+
+def _multiple(value: Any) -> str:
+    number = _number(value)
+    return "-" if number is None else f"{number:.2f}x"
 
 
 def _integer(value: Any) -> int | None:

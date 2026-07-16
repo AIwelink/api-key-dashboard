@@ -10,6 +10,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReplaceOne, UpdateOne
 
 from app.modules.api_pools.capacity_limits import DEFAULT_CAPACITY_ACCOUNT_LIMITS, get_capacity_account_limits
+from app.modules.sub2api.capacity_risk import calculate_capacity_risk
 from app.modules.sub2api.client import Sub2ApiClient
 from app.utils import now_utc, serialize_doc
 
@@ -804,9 +805,7 @@ async def _capacity_summary_for_accounts(
     capacity_limits = (await get_capacity_account_limits(db, site_id))["limits"]
     type_summary = _capacity_by_account_type(capacity_accounts, five_hour_capacity_accounts, capacity_limits)
     primary_type = _primary_capacity_type(type_summary)
-    reserve_type_summary = await _reserve_capacity_by_account_type(db, site_id, group_id, capacity_limits) if group_id is not None else _empty_capacity_type_summary(capacity_limits)
-    if primary_type == "total" and reserve_type_summary["total"]["available_accounts"] > 0:
-        primary_type = _primary_capacity_type(reserve_type_summary)
+    reserve_type_summary = _empty_capacity_type_summary(capacity_limits)
     selected = type_summary.get(primary_type, type_summary["total"])
     selected_reserve = reserve_type_summary.get(primary_type, reserve_type_summary["total"])
     cost_summary = await _dashboard_cost_summary(db, site_id, group_id=group_id)
@@ -896,7 +895,7 @@ async def _capacity_summary_for_accounts(
     recent_5h_remaining_usd = max(0.0, five_hour_capacity_usd - recent_5h_cost)
     recent_24h_remaining_usd = max(0.0, twenty_four_hour_capacity_usd - recent_24h_cost)
     seven_day_remaining_usd = max(0.0, seven_day_capacity_usd - seven_day_cost)
-    health = _capacity_health(
+    historical_health = _capacity_health(
         available_accounts=selected["available_accounts"] + selected_reserve["available_accounts"],
         reserve_accounts=selected_reserve["available_accounts"],
         five_hour_capacity_usd=five_hour_capacity_usd,
@@ -912,7 +911,40 @@ async def _capacity_summary_for_accounts(
         seven_day_peak_speed_days=seven_day_peak_speed_days,
         five_x_speed_days=five_x_speed_days,
     )
+    tpm_samples = await _load_group_tpm_samples(db, site_id=site_id, group_id=group_id)
+    concurrency_total = float(concurrency_summary.get("concurrency_total_capacity") or 0)
+    concurrency_accounts = int(concurrency_summary.get("concurrency_eligible_accounts") or 0)
+    average_account_concurrency = concurrency_total / concurrency_accounts if concurrency_accounts > 0 else 0.0
+    realtime_risk = calculate_capacity_risk(
+        samples=tpm_samples,
+        now=now_utc(),
+        cost_per_token=_number_or_none(cost_summary.get("recent_6h_cost_per_token")),
+        actual_five_hour_remaining_usd=five_hour_actual_remaining_usd,
+        dynamic_five_hour_remaining_usd=dynamic_five_hour_remaining_estimated_usd,
+        actual_seven_day_remaining_usd=seven_day_actual_remaining_usd,
+        dynamic_seven_day_remaining_usd=seven_day_remaining_estimated_usd,
+        available_accounts=selected["available_accounts"],
+        safe_concurrency_available=float(concurrency_summary.get("concurrency_safe_available") or 0),
+        per_account_five_hour_usd=float(selected_limits.get("five_hour_usd") or 0),
+        per_account_seven_day_usd=float(selected_limits.get("seven_day_usd") or 0),
+        average_account_concurrency=average_account_concurrency,
+    )
+    if realtime_risk["ready"]:
+        health = {
+            "status": realtime_risk["health_status"],
+            "label": realtime_risk["health_label"],
+            "tone": realtime_risk["health_tone"],
+            "reason": realtime_risk["health_reason"],
+        }
+    else:
+        health = historical_health
+    risk_details = {
+        key: value
+        for key, value in realtime_risk.items()
+        if key not in {"health_status", "health_label", "health_tone", "health_reason"}
+    }
     return {
+        "capacity_model": "single_pool_realtime",
         "available_accounts": selected["available_accounts"] + selected_reserve["available_accounts"],
         "available_5h_accounts": selected["available_5h_accounts"] + selected_reserve["available_5h_accounts"],
         "active_available_accounts": selected["available_accounts"],
@@ -1026,7 +1058,11 @@ async def _capacity_summary_for_accounts(
         "health_label": health["label"],
         "health_tone": health["tone"],
         "health_reason": health["reason"],
-        "auto_refill_required": health["auto_refill_required"],
+        "auto_refill_required": False,
+        "realtime_risk_ready": realtime_risk["ready"],
+        "replenishment_required": realtime_risk["replenishment_required"] if realtime_risk["ready"] else False,
+        "recommended_refill_accounts": realtime_risk["recommended_refill_accounts"] if realtime_risk["ready"] else 0,
+        **risk_details,
         **pool_status_summary,
         **concurrency_summary,
         "cost_window": cost_summary,
@@ -1453,6 +1489,10 @@ async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, gro
     seven_day_24h_peak_cost = round(max(daily_costs) if daily_costs else _rolling_peak_cost(hourly, 24), 6)
     recent_24h_cost = round(sum(_float_or_zero(doc.get("cost")) for doc in hourly[-24:]), 6)
     recent_5h_cost = round(sum(_float_or_zero(doc.get("cost")) for doc in hourly[-5:]), 6)
+    recent_6h_docs = hourly[-6:]
+    recent_6h_cost = sum(_float_or_zero(doc.get("actual_cost") if doc.get("actual_cost") is not None else doc.get("cost")) for doc in recent_6h_docs)
+    recent_6h_tokens = sum(_float_or_zero(doc.get("total_tokens")) for doc in recent_6h_docs)
+    recent_6h_cost_per_token = recent_6h_cost / recent_6h_tokens if recent_6h_tokens > 0 else None
     seven_day_cost = round(sum(daily_costs), 6)
     return {
         "five_hour_peak_cost": five_hour_peak_cost,
@@ -1462,12 +1502,37 @@ async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, gro
         "seven_day_24h_peak_cost": seven_day_24h_peak_cost,
         "recent_24h_cost": recent_24h_cost,
         "recent_5h_cost": recent_5h_cost,
+        "recent_6h_cost": round(recent_6h_cost, 6),
+        "recent_6h_tokens": round(recent_6h_tokens),
+        "recent_6h_cost_per_token": recent_6h_cost_per_token,
         "seven_day_cost": seven_day_cost,
         "hourly_points": len(hourly_docs),
         "daily_points": len(daily_docs),
         "group_id": group_id,
         "calculated_at": now_utc(),
     }
+
+
+async def _load_group_tpm_samples(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    group_id: int | None,
+) -> list[dict[str, Any]]:
+    collection = getattr(db, "sub2api_tpm_samples", None)
+    if group_id is None or collection is None:
+        return []
+    cutoff = now_utc() - timedelta(hours=6)
+    cursor = collection.find(
+        {"site_id": site_id, "group_id": group_id, "sampled_at": {"$gte": cutoff}},
+        {
+            "sampled_at": 1,
+            "tpm": 1,
+            "rpm": 1,
+            "average_duration_ms": 1,
+        },
+    ).sort("sampled_at", 1).limit(400)
+    return [doc async for doc in cursor]
 
 
 def _five_hour_daily_peak_cost(hourly: list[dict[str, Any]]) -> float:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import UTC, datetime, timedelta
 
-from app.modules.sub2api.capacity_notifications import capacity_notification_decision
+from app.modules.sub2api.capacity_notifications import _capacity_notification_text, capacity_notification_decision
 
 
 class CapacityNotificationDecisionTests(unittest.TestCase):
@@ -79,6 +79,36 @@ class CapacityNotificationDecisionTests(unittest.TestCase):
 
         self.assertFalse(decision["send"])
         self.assertEqual(decision["reason"], "above_threshold")
+
+
+class CapacityNotificationTextTests(unittest.TestCase):
+    def test_realtime_risk_fields_are_included(self) -> None:
+        message = _capacity_notification_text(
+            site_id="api-5001",
+            group_id=3,
+            group_name="Plus 池",
+            threshold="tight",
+            summary={
+                "health_status": "tight",
+                "health_label": "需要补号",
+                "health_reason": "动态容量不足 3 小时",
+                "pressure_stage_label": "加速上涨",
+                "actual_runway_hours": 1.25,
+                "dynamic_runway_hours": 2.5,
+                "pressure_tpm": 497365,
+                "pressure_rpm": 45,
+                "concurrency_coverage": 1.08,
+                "recommended_refill_accounts": 4,
+                "available_accounts": 12,
+                "available_5h_accounts": 10,
+            },
+        )
+
+        self.assertIn("压力阶段：加速上涨", message)
+        self.assertIn("实际 / 动态可用：1.2小时 / 2.5小时", message)
+        self.assertIn("TPM / RPM：497,365 / 45", message)
+        self.assertIn("并发覆盖：1.08x", message)
+        self.assertIn("建议补号：4 个", message)
 
 
 if __name__ == "__main__":

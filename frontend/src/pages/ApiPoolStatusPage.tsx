@@ -34,6 +34,7 @@ type Group = {
 };
 
 type CapacitySummary = {
+  capacity_model?: string;
   available_accounts?: number;
   available_5h_accounts?: number;
   pool_normal_accounts?: number;
@@ -152,6 +153,24 @@ type CapacitySummary = {
   health_tone?: "excellent" | "info" | "success" | "warning" | "danger" | "muted";
   health_reason?: string;
   auto_refill_required?: boolean;
+  realtime_risk_ready?: boolean;
+  pressure_stage?: string;
+  pressure_stage_label?: string;
+  pressure_tpm?: number;
+  pressure_rpm?: number;
+  sample_count?: number;
+  actual_runway_hours?: number | null;
+  dynamic_runway_hours?: number | null;
+  target_runway_hours?: number;
+  actual_target_hours?: number;
+  estimated_concurrency?: number;
+  concurrency_coverage?: number | null;
+  concurrency_target_coverage?: number;
+  replenishment_required?: boolean;
+  recommended_refill_accounts?: number;
+  quota_refill_accounts?: number;
+  concurrency_refill_accounts?: number;
+  inventory_risk?: boolean;
   used_5h_percent?: number;
   available_5h_percent?: number;
   active_available_5h_percent?: number;
@@ -1280,15 +1299,10 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
   const sevenDayFiveHourPeakMultiple = summary?.five_hour_peak_multiple;
   const recentDayFiveHourPeak = summary?.recent_day_five_hour_peak_cost;
   const recentDayFiveHourPeakMultiple = summary?.recent_day_five_hour_peak_multiple;
-  const activeSevenDayFiveHourPeakMultiple = summary?.active_five_hour_peak_multiple;
-  const activeRecentDayFiveHourPeakMultiple = summary?.active_recent_day_five_hour_peak_multiple;
   const burstOneHourMultiple = summary?.burst_1h_five_hour_multiple;
-  const activeBurstOneHourMultiple = summary?.active_burst_1h_five_hour_multiple;
   const burstTrendTone = burstTrendMetricTone(summary?.burst_1h_trend, summary?.burst_1h_trend_strength);
   const recent24hSpeedDays = summary?.current_speed_days;
-  const activeRecent24hSpeedDays = summary?.active_current_speed_days;
   const sevenDayPeak24hSpeedDays = summary?.seven_day_peak_speed_days;
-  const activeSevenDayPeak24hSpeedDays = summary?.active_seven_day_peak_speed_days;
   const fiveHourUsedPercent = summary?.used_5h_percent;
   const sevenDayUsedPercent = summary?.used_7d_percent;
   const fiveHourRemainingPercent = summary?.available_5h_percent ?? remainingPercent(fiveHourUsedPercent);
@@ -1311,10 +1325,6 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
         <CapacityMetric
           label="动态5h总容量"
           value={formatUsd(summary?.dynamic_five_hour_capacity_usd ?? summary?.five_hour_capacity_usd)}
-          sideValues={[
-            capacitySideValue("实际池", summary?.active_five_hour_capacity_usd),
-            capacitySideValue("备用池", summary?.reserve_five_hour_capacity_usd),
-          ]}
           sub={
             <CapacityMoneyLine
               label="动态可用额度"
@@ -1335,10 +1345,6 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
         <CapacityMetric
           label="总容量：7d"
           value={formatUsd(summary?.seven_day_capacity_usd)}
-          sideValues={[
-            capacitySideValue("实际池", summary?.active_seven_day_capacity_usd),
-            capacitySideValue("备用池", summary?.reserve_seven_day_capacity_usd),
-          ]}
           sub={
             <CapacityMoneyLine
               label="可用额度"
@@ -1357,12 +1363,35 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           reverse
         />
         <CapacityMetric
+          label="实时可用时间"
+          value={formatRunwayHours(summary?.dynamic_runway_hours)}
+          sub={`实际可用 ${formatRunwayHours(summary?.actual_runway_hours)} · 动态目标 ${formatRunwayHours(summary?.target_runway_hours ?? 3)}`}
+          percent={runwayScalePercent(summary?.dynamic_runway_hours, summary?.target_runway_hours ?? 3)}
+          tone={runwayTone(summary?.dynamic_runway_hours, summary?.realtime_risk_ready)}
+          meterLegendLabel="动态覆盖"
+          meterValue={formatRunwayHours(summary?.dynamic_runway_hours)}
+        />
+        <CapacityMetric
+          label="压力阶段"
+          value={summary?.pressure_stage_label || "等待数据"}
+          sub={`TPM ${formatRate(summary?.pressure_tpm)} · RPM ${formatRate(summary?.pressure_rpm)} · ${summary?.sample_count || 0} 个分钟样本`}
+          tone={pressureStageTone(summary?.pressure_stage)}
+        />
+        <CapacityMetric
+          label="安全并发覆盖"
+          value={formatMultiple(summary?.concurrency_coverage)}
+          sub={`压力并发 ${formatRate(summary?.estimated_concurrency)} · 安全可用 ${formatRate(summary?.concurrency_safe_available)} · 建议补号 ${Math.max(0, Math.round(numberValue(summary?.recommended_refill_accounts)))} 个`}
+          percent={runwayScalePercent(summary?.concurrency_coverage, summary?.concurrency_target_coverage ?? 1.2)}
+          tone={concurrencyCoverageTone(summary?.concurrency_coverage, summary?.realtime_risk_ready)}
+          meterLegendLabel="目标"
+          meterValue={formatMultiple(summary?.concurrency_target_coverage ?? 1.2)}
+        />
+        <CapacityMetric
           label="峰值容量：最近一天5h"
           value={formatMultiple(recentDayFiveHourPeakMultiple)}
           sub={`峰值 ${formatUsd(recentDayFiveHourPeak)}，总容量：5h ${formatUsd(summary?.five_hour_capacity_usd)}`}
           percent={multipleScalePercent(recentDayFiveHourPeakMultiple)}
           tone={multipleScaleTone(recentDayFiveHourPeakMultiple)}
-          overlay={capacityOverlayWithReserve(summary?.reserve_five_hour_capacity_usd, "使用池", formatMultiple(activeRecentDayFiveHourPeakMultiple), multipleScalePercent(activeRecentDayFiveHourPeakMultiple), multipleScaleTone(activeRecentDayFiveHourPeakMultiple))}
         />
         <CapacityMetric
           label="峰值容量：7天最高5h"
@@ -1370,7 +1399,6 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`峰值 ${formatUsd(sevenDayFiveHourPeak)}，总容量：5h ${formatUsd(summary?.five_hour_capacity_usd)}`}
           percent={multipleScalePercent(sevenDayFiveHourPeakMultiple)}
           tone={multipleScaleTone(sevenDayFiveHourPeakMultiple)}
-          overlay={capacityOverlayWithReserve(summary?.reserve_five_hour_capacity_usd, "使用池", formatMultiple(activeSevenDayFiveHourPeakMultiple), multipleScalePercent(activeSevenDayFiveHourPeakMultiple), multipleScaleTone(activeSevenDayFiveHourPeakMultiple))}
         />
         <CapacityMetric
           label="突发峰值：1h预估"
@@ -1378,7 +1406,6 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`当前小时已用 ${formatUsd(summary?.burst_1h_observed_cost)}，按${formatMinutes(summary?.burst_1h_elapsed_minutes)}折算1h ${formatUsd(summary?.burst_1h_cost)}，折算5h ${formatUsd(summary?.burst_1h_five_hour_estimated_cost)}`}
           percent={multipleScalePercent(burstOneHourMultiple)}
           tone={multipleScaleTone(burstOneHourMultiple)}
-          overlay={capacityOverlayWithReserve(summary?.reserve_five_hour_capacity_usd, "使用池", formatMultiple(activeBurstOneHourMultiple), multipleScalePercent(activeBurstOneHourMultiple), multipleScaleTone(activeBurstOneHourMultiple))}
         />
         <CapacityMetric
           label="突发趋势：最近1h"
@@ -1393,7 +1420,6 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`按最近24h消耗 ${formatUsd(summary?.recent_24h_cost)}`}
           percent={daysScalePercent(recent24hSpeedDays)}
           tone={daysScaleTone(recent24hSpeedDays)}
-          overlay={capacityOverlayWithReserve(summary?.reserve_seven_day_capacity_usd, "使用池", formatDays(activeRecent24hSpeedDays), daysScalePercent(activeRecent24hSpeedDays), daysScaleTone(activeRecent24hSpeedDays))}
         />
         <CapacityMetric
           label="预估天数：7天最高24h"
@@ -1401,7 +1427,6 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`按7天最高24h消耗 ${formatUsd(summary?.seven_day_24h_peak_cost)}`}
           percent={daysScalePercent(sevenDayPeak24hSpeedDays)}
           tone={daysScaleTone(sevenDayPeak24hSpeedDays)}
-          overlay={capacityOverlayWithReserve(summary?.reserve_seven_day_capacity_usd, "使用池", formatDays(activeSevenDayPeak24hSpeedDays), daysScalePercent(activeSevenDayPeak24hSpeedDays), daysScaleTone(activeSevenDayPeak24hSpeedDays))}
         />
         <CapacityMetric
           label="预估消耗：最近24h"
@@ -1486,17 +1511,17 @@ const METRIC_HELP_DETAILS: Record<string, MetricHelpDetail> = {
     note: "此处主数值单位是并发槽位，不是账号数量；界面会同时显示涉及的账号数。5h 429属于可恢复容量，长期7d、401和Bug Team不进入该值。",
   },
   "容量预估": {
-    purpose: "综合账号数量、额度、峰值和消耗速度给出维护状态。",
-    formula: "优先级依次为等待数据、耗尽、危险、紧张、健康、充裕、十分充裕；判断使用包含备用池后的容量。",
-    note: "耗尽：可用账号 <= 2、最近一天5h < 0.2x或可用不足6小时；危险：<1x或不足1天；紧张：<1.5x或不足3天；充裕：>=3x且>=5天；十分充裕：7天峰值>=5x且峰值速度>=10天。自动补号线为<1.75x或不足3.5天。",
+    purpose: "使用每分钟 TPM/RPM、实际额度和安全并发判断当前分组还能支撑多久。",
+    formula: "压力速度取 EMA15、最近2小时P90和趋势调整EMA5中的最大值；只计算远端实际账号，不计算可用池或备选池。",
+    note: "耗尽：账号 <=2或动态不足30分钟；危险：实际不足1小时、动态不足1小时或并发<1x；需要补号：动态不足3小时或并发<1.2x。分钟数据不足15条时暂用历史公式。",
   },
   "动态5h总容量": {
     purpose: "显示当前分组在5h窗口下用于动态评估的总额度。",
-    formula: "Σ对应账号类型的5h额度，包含实际池和备用池；排除Bug Team、异常账号和7d已耗尽账号。",
+    formula: "Σ远端当前分组中对应账号类型的5h额度；排除Bug Team、异常账号和7d已耗尽账号。",
   },
   "总容量：7d": {
     purpose: "显示当前分组完整的周额度规模。",
-    formula: "Σ对应账号类型的7d额度，包含实际池和备用池；排除Bug Team和异常账号。",
+    formula: "Σ远端当前分组中对应账号类型的7d额度；排除Bug Team和异常账号。",
   },
   "实际池": {
     purpose: "当前已经在远端使用分组中的账号额度。",
@@ -1621,31 +1646,12 @@ function capacityOverlay(label: string, value: string, percent?: number | null, 
   return { label, value, percent, tone };
 }
 
-function capacityOverlayWithReserve(
-  reserveCapacity: unknown,
-  label: string,
-  value: string,
-  percent?: number | null,
-  tone?: CapacityMetricTone,
-): CapacityMeterOverlay | undefined {
-  const reserve = optionalNumberValue(reserveCapacity);
-  if (reserve === null || reserve <= 0) return undefined;
-  return capacityOverlay(label, value, percent, tone);
-}
-
-function capacitySideValue(label: string, value: unknown) {
-  if (value === undefined || value === null) return undefined;
-  return { label, value: formatUsd(value) };
-}
-
 function capacityHealthReason(summary?: CapacitySummary) {
   if (!summary) return "等待 dashboard cost 数据";
-  const reserve = numberValue(summary.reserve_available_accounts);
-  const active = numberValue(summary.active_available_accounts);
-  const suffix = reserve > 0 ? `，含备用池 ${reserve} 个，使用池 ${active} 个` : "";
   const reason = summary.health_reason || "等待 dashboard cost 数据";
-  const refill = summary.auto_refill_required && !reason.includes("自动补号") ? "；已触发自动补号阈值" : "";
-  return `${reason}${suffix}${refill}`;
+  const recommended = Math.max(0, Math.round(numberValue(summary.recommended_refill_accounts)));
+  const refill = summary.replenishment_required && recommended > 0 ? `；建议补号 ${recommended} 个` : "";
+  return `${reason}${refill}`;
 }
 
 function CapacityMetric({
@@ -2081,6 +2087,54 @@ function formatMultiple(value: unknown): string {
   const number = optionalNumberValue(value);
   if (number === null) return "-";
   return `${number.toFixed(2)}x`;
+}
+
+function formatRunwayHours(value: unknown): string {
+  const number = optionalNumberValue(value);
+  if (number === null) return "-";
+  if (number < 1) return `${Math.max(0, Math.round(number * 60))}分钟`;
+  if (number < 10) return `${number.toFixed(1)}小时`;
+  return `${number.toFixed(0)}小时`;
+}
+
+function formatRate(value: unknown): string {
+  const number = optionalNumberValue(value);
+  if (number === null) return "-";
+  return Math.round(number).toLocaleString("zh-CN");
+}
+
+function runwayScalePercent(value: unknown, target: unknown): number | null {
+  const number = optionalNumberValue(value);
+  const targetNumber = optionalNumberValue(target);
+  if (number === null || targetNumber === null || targetNumber <= 0) return null;
+  return Math.max(0, Math.min(100, number / targetNumber * 100));
+}
+
+function runwayTone(value: unknown, ready: unknown): CapacityMetricTone {
+  if (ready !== true) return "muted";
+  const number = optionalNumberValue(value);
+  if (number === null) return "muted";
+  if (number < 1) return "danger";
+  if (number < 3) return "warning";
+  if (number >= 6) return "info";
+  return "success";
+}
+
+function concurrencyCoverageTone(value: unknown, ready: unknown): CapacityMetricTone {
+  if (ready !== true) return "muted";
+  const number = optionalNumberValue(value);
+  if (number === null) return "success";
+  if (number < 1) return "danger";
+  if (number < 1.2) return "warning";
+  return "success";
+}
+
+function pressureStageTone(value?: string): CapacityMetricTone {
+  if (value === "peak_guard") return "danger";
+  if (value === "accelerating" || value === "transmission") return "warning";
+  if (value === "inventory_risk") return "info";
+  if (value === "stable" || value === "recovering") return "success";
+  return "muted";
 }
 
 function formatPercentChange(value: unknown): string {

@@ -73,6 +73,7 @@ async def sample_group_tpm(
         "reported_tpm": reported_tpm,
         "calculated_tpm": calculated_tpm,
         "rpm": _nonnegative_number(stats.get("rpm")),
+        "average_duration_ms": _nonnegative_number(stats.get("average_duration_ms")),
         "total_tokens": total_tokens,
         "input_tokens": _nonnegative_integer(stats.get("total_input_tokens")),
         "output_tokens": _nonnegative_integer(stats.get("total_output_tokens")),

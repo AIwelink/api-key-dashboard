@@ -35,6 +35,7 @@ class TpmSampleTests(unittest.IsolatedAsyncioTestCase):
                 "stats_updated_at": "2026-07-16T06:53:09Z",
                 "rpm": 45,
                 "tpm": 497365,
+                "average_duration_ms": 19419.18,
                 "total_input_tokens": 17355853370,
                 "total_output_tokens": 1294748591,
                 "total_cache_creation_tokens": 22572283,
@@ -79,6 +80,7 @@ class TpmSampleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(document["reported_tpm"], 497365.0)
         self.assertIsNone(document["calculated_tpm"])
         self.assertEqual(document["rpm"], 45.0)
+        self.assertEqual(document["average_duration_ms"], 19419.18)
         self.assertEqual(document["source"], "reported")
         self.assertEqual(document["group_id"], 5)
         self.assertEqual(document["input_tokens"], 17355853370)
