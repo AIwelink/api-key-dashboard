@@ -108,6 +108,33 @@ class SiteCapacityLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["inherited_from_global"])
         self.assertEqual(result["limits"]["plus"], {"five_hour_usd": 88.0, "seven_day_usd": 440.0})
 
+    async def test_updating_site_limits_invalidates_cached_group_capacity(self) -> None:
+        app_settings = SimpleNamespace(
+            update_one=AsyncMock(),
+            find_one=AsyncMock(
+                return_value={
+                    "_id": "capacity_account_limits:api-5001",
+                    "site_id": "api-5001",
+                    "limits": {"plus": {"five_hour_usd": 120, "seven_day_usd": 600}},
+                }
+            ),
+        )
+        groups_cache = SimpleNamespace(update_many=AsyncMock())
+        db = SimpleNamespace(app_settings=app_settings, sub2api_groups_cache=groups_cache)
+
+        await capacity_limits.update_capacity_account_limits(
+            db,
+            normalize_capacity_limits({"plus": {"five_hour_usd": 120, "seven_day_usd": 600}}),
+            {"_id": "owner-1", "name": "Owner"},
+            "api-5001",
+        )
+
+        groups_cache.update_many.assert_awaited_once()
+        query, update = groups_cache.update_many.await_args.args
+        self.assertEqual(query, {"site_id": "api-5001"})
+        self.assertIn("capacity_summary", update["$unset"])
+        self.assertIn("group.capacity_summary", update["$unset"])
+
     def test_auto_refill_uses_capacity_limits_from_the_site_summary(self) -> None:
         summary = {
             "account_type": "plus",
@@ -197,6 +224,93 @@ class FiveHourCapacityPercentageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["active_actual_available_5h_percent"], 25)
         self.assertEqual(summary["available_7d_percent"], 91)
         self.assertEqual(summary["actual_available_7d_percent"], 70)
+
+    async def test_plus_dynamic_capacity_uses_site_specific_five_hour_limit(self) -> None:
+        limits = normalize_capacity_limits({"plus": {"five_hour_usd": 120, "seven_day_usd": 600}})
+        accounts = [
+            {
+                "id": 1,
+                "status": "active",
+                "schedulable": True,
+                "plan_type": "plus",
+                "extra": {
+                    "codex_5h_used_percent": 20,
+                    "codex_5h_reset_after_seconds": 3_600,
+                    "codex_5h_window_minutes": 300,
+                    "codex_7d_used_percent": 40,
+                    "codex_7d_reset_after_seconds": 86_400,
+                    "codex_7d_window_minutes": 10_080,
+                },
+            },
+            {
+                "id": 2,
+                "status": "active",
+                "schedulable": True,
+                "plan_type": "plus",
+                "extra": {
+                    "codex_5h_used_percent": 100,
+                    "codex_5h_reset_after_seconds": 7_200,
+                    "codex_5h_window_minutes": 300,
+                    "codex_7d_used_percent": 80,
+                    "codex_7d_reset_after_seconds": 86_400,
+                    "codex_7d_window_minutes": 10_080,
+                },
+            },
+            {
+                "id": 3,
+                "status": "active",
+                "schedulable": True,
+                "plan_type": "plus",
+                "extra": {
+                    "codex_5h_used_percent": 10,
+                    "codex_5h_reset_after_seconds": 3_600,
+                    "codex_5h_window_minutes": 300,
+                    "codex_7d_used_percent": 100,
+                    "codex_7d_reset_after_seconds": 86_400,
+                    "codex_7d_window_minutes": 10_080,
+                },
+            },
+        ]
+        empty_reserve = cache._empty_capacity_type_summary(limits)
+        cost_summary = {
+            "five_hour_peak_cost": 0.0,
+            "recent_day_five_hour_peak_cost": 0.0,
+            "seven_day_24h_peak_cost": 0.0,
+            "recent_5h_cost": 0.0,
+            "recent_24h_cost": 0.0,
+            "seven_day_cost": 0.0,
+            "burst_1h": {
+                "observed_cost": 0.0,
+                "elapsed_minutes": 60,
+                "projection_multiplier": 1.0,
+                "cost": 0.0,
+                "five_hour_estimated_cost": 0.0,
+                "source": "test",
+                "window_count": 0,
+                "trend": "steady",
+                "trend_label": "平稳",
+                "trend_strength": "weak",
+                "trend_strength_label": "弱",
+                "trend_change_percent": 0.0,
+                "previous_cost": 0.0,
+                "trend_recent_avg_cost": 0.0,
+                "trend_baseline_avg_cost": 0.0,
+                "trend_recent_hours": 0,
+                "trend_baseline_hours": 0,
+            },
+        }
+
+        with (
+            patch.object(cache, "get_capacity_account_limits", AsyncMock(return_value={"limits": limits})),
+            patch.object(cache, "_reserve_capacity_by_account_type", AsyncMock(return_value=empty_reserve)),
+            patch.object(cache, "_dashboard_cost_summary", AsyncMock(return_value=cost_summary)),
+        ):
+            summary = await cache._capacity_summary_for_accounts(object(), "api-5001", accounts, group_id=1)
+
+        self.assertEqual(summary["account_type"], "plus")
+        self.assertEqual(summary["capacity_limits"]["plus"]["five_hour_usd"], 120)
+        self.assertEqual(summary["active_five_hour_capacity_usd"], 360)
+        self.assertEqual(summary["dynamic_five_hour_capacity_usd"], 240)
 
 
 if __name__ == "__main__":
