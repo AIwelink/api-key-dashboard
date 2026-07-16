@@ -7,7 +7,7 @@ from typing import Any
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.modules.events.records import event_records_summary, list_event_records
-from app.modules.sub2api.account_probe import list_duplicate_email_alerts
+from app.modules.sub2api.account_probe import CONFIRMED_401_RECOVERY_COUNT, list_duplicate_email_alerts
 from app.utils import now_utc, serialize_doc
 
 
@@ -83,6 +83,10 @@ async def read_probe_summary(
         "pro_401_24h": detected_401_24h,
         "pro_401_7d": detected_401_7d,
         "recovered_24h": recovered_24h,
+        "confirmed_401_recoveries_24h": recovered_24h,
+        "401_recovery_required_healthy_probes": CONFIRMED_401_RECOVERY_COUNT,
+        "official_usage_refreshes_24h": int(summary_24h.get("official_usage_refreshes") or 0),
+        "official_usage_refreshes_7d": int(summary_7d.get("official_usage_refreshes") or 0),
         "detected_401_clusters_24h": detected_401_clusters_24h,
         "largest_401_cluster_24h": largest_401_cluster_24h,
         "concentrated_401_burst_24h": _is_concentrated_401_burst(largest_401_cluster_24h, detected_401_24h),

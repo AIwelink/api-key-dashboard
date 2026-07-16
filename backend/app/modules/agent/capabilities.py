@@ -5,7 +5,7 @@ from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.modules.agent.capacity import read_pool_capacity
+from app.modules.agent.capacity import compact_agent_pool_capacity, read_pool_capacity
 from app.modules.agent.decision import decide_pool_action
 from app.modules.agent.probe import read_probe_summary
 
@@ -48,7 +48,7 @@ def build_read_only_agent_capabilities(db: AsyncIOMotorDatabase) -> dict[str, Ba
     @_agent_capability("api_pool_status.get")
     async def api_pool_status_get(pool_id: str) -> dict[str, Any]:
         """Read existing cached API pool capacity status by pool id. This never refreshes sub2api."""
-        return await read_pool_capacity(db, pool_id)
+        return compact_agent_pool_capacity(await read_pool_capacity(db, pool_id))
 
     @_agent_capability("account_probe.get")
     async def account_probe_get(site_id: str, group_id: int, account_type: str | None = None) -> dict[str, Any]:

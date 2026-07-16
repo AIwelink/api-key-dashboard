@@ -137,6 +137,172 @@ async def read_pool_capacity(db: AsyncIOMotorDatabase, pool_id: str) -> dict[str
     )
 
 
+def build_agent_capacity_status(capacity: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the main-system capacity summary into a compact LLM view."""
+
+    if not isinstance(capacity, dict) or not capacity:
+        return {}
+    summary = _capacity_summary(capacity)
+    pool = capacity.get("pool") if isinstance(capacity.get("pool"), dict) else {}
+    account_type = _capacity_account_type(capacity)
+    five_hour_limit = capacity_account_limit_usd(capacity, window="five_hour")
+    seven_day_limit = capacity_account_limit_usd(capacity, window="seven_day")
+    limits_available = five_hour_limit is not None or seven_day_limit is not None
+    configured_limits = summary.get("capacity_limits") if isinstance(summary.get("capacity_limits"), dict) else {}
+    configured_account_limits = configured_limits.get(account_type) if isinstance(configured_limits.get(account_type), dict) else {}
+    limits_source = "capacity_summary.capacity_limits" if configured_account_limits else "legacy_capacity_fields" if limits_available else None
+
+    return {
+        "schema_version": "agent_capacity_status.v1",
+        "site_id": capacity.get("site_id") or pool.get("site_id"),
+        "group_id": capacity.get("group_id") or pool.get("active_group_id"),
+        "account_type": account_type,
+        "account_limits_usd": {
+            "five_hour": five_hour_limit,
+            "seven_day": seven_day_limit,
+            "source": limits_source,
+        },
+        "accounts": {
+            "active": _first_number(capacity.get("active_account_count"), summary.get("active_available_accounts")),
+            "reserve": _first_number(capacity.get("reserve_account_count"), summary.get("reserve_available_accounts")),
+            "available": _first_number(capacity.get("available_accounts"), summary.get("available_accounts")),
+            "available_5h": _first_number(capacity.get("available_5h_accounts"), summary.get("available_5h_accounts")),
+            "total": _first_number(capacity.get("total_account_count"), summary.get("total_accounts")),
+        },
+        "pool_conditions": {
+            "normal_accounts": _number_or_none(summary.get("pool_normal_accounts")),
+            "active_normal_accounts": _number_or_none(summary.get("pool_active_normal_accounts")),
+            "five_hour_rate_limited_accounts": _number_or_none(summary.get("pool_five_hour_rate_limited_accounts")),
+            "seven_day_rate_limited_accounts": _number_or_none(summary.get("pool_seven_day_rate_limited_accounts")),
+            "abnormal_accounts": _number_or_none(summary.get("pool_abnormal_accounts")),
+            "excluded_bug_team_accounts": _number_or_none(summary.get("pool_excluded_bug_team_accounts")),
+            "duplicate_email_accounts_collapsed": _number_or_none(summary.get("capacity_duplicate_email_accounts")),
+        },
+        "five_hour": {
+            "dynamic_capacity_usd": _summary_number(capacity, "dynamic_five_hour_capacity_usd", "five_hour_capacity_usd"),
+            "dynamic_used_usd": _summary_number(capacity, "dynamic_five_hour_used_estimated_usd", "five_hour_used_estimated_usd"),
+            "dynamic_available_usd": _summary_number(capacity, "dynamic_five_hour_remaining_estimated_usd", "five_hour_remaining_estimated_usd"),
+            "actual_used_usd": _summary_number(capacity, "five_hour_actual_used_usd"),
+            "actual_available_usd": _summary_number(capacity, "five_hour_actual_remaining_usd"),
+            "available_percent": _summary_number(capacity, "available_5h_percent"),
+            "active_available_percent": _summary_number(capacity, "active_available_5h_percent"),
+            "actual_available_percent": _summary_number(capacity, "actual_available_5h_percent"),
+            "active_actual_available_percent": _summary_number(capacity, "active_actual_available_5h_percent"),
+        },
+        "seven_day": {
+            "capacity_usd": _summary_number(capacity, "seven_day_capacity_usd"),
+            "dynamic_used_usd": _summary_number(capacity, "seven_day_used_estimated_usd"),
+            "dynamic_available_usd": _summary_number(capacity, "seven_day_remaining_estimated_usd"),
+            "actual_used_usd": _summary_number(capacity, "seven_day_actual_used_usd"),
+            "actual_available_usd": _summary_number(capacity, "seven_day_actual_remaining_usd"),
+            "available_percent": _summary_number(capacity, "available_7d_percent"),
+            "actual_available_percent": _summary_number(capacity, "actual_available_7d_percent"),
+        },
+        "demand": {
+            "recent_5h_cost_usd": _summary_number(capacity, "recent_5h_cost"),
+            "recent_24h_cost_usd": _summary_number(capacity, "recent_24h_cost"),
+            "seven_day_24h_peak_cost_usd": _summary_number(capacity, "seven_day_24h_peak_cost"),
+            "burst_1h_observed_cost_usd": _summary_number(capacity, "burst_1h_observed_cost"),
+            "burst_1h_estimated_5h_cost_usd": _summary_number(capacity, "burst_1h_five_hour_estimated_cost"),
+        },
+        "coverage": {
+            "recent_day_5h_peak_multiple": _summary_number(capacity, "recent_day_five_hour_peak_multiple"),
+            "seven_day_5h_peak_multiple": _summary_number(capacity, "seven_day_five_hour_peak_multiple", "five_hour_peak_multiple"),
+            "burst_1h_estimated_5h_multiple": _summary_number(capacity, "burst_1h_five_hour_multiple"),
+            "active_burst_1h_estimated_5h_multiple": _summary_number(capacity, "active_burst_1h_five_hour_multiple"),
+            "recent_24h_runway_days": _summary_number(capacity, "current_speed_days"),
+            "seven_day_peak_runway_days": _summary_number(capacity, "seven_day_peak_speed_days"),
+        },
+        "health": {
+            "status": capacity.get("health_status") or summary.get("health_status"),
+            "label": capacity.get("health_label") or summary.get("health_label"),
+            "reason": summary.get("health_reason"),
+        },
+        "freshness": {
+            "cache_fresh": capacity.get("cache_fresh"),
+            "last_refreshed_at": capacity.get("last_refreshed_at"),
+            "capacity_calculated_at": capacity.get("capacity_calculated_at") or summary.get("calculated_at"),
+        },
+    }
+
+
+def build_agent_concurrency_status(capacity: dict[str, Any]) -> dict[str, Any]:
+    """Return the concurrency fields that are useful for Agent decisions."""
+
+    if not isinstance(capacity, dict) or not capacity:
+        return {}
+    values = {
+        "actual_in_use": _summary_number(capacity, "concurrency_actual_in_use"),
+        "actual_available": _summary_number(capacity, "concurrency_actual_available"),
+        "safe_available": _summary_number(capacity, "concurrency_safe_available"),
+        "near_limit_available": _summary_number(capacity, "concurrency_near_limit_available"),
+        "temporarily_unavailable": _summary_number(capacity, "concurrency_temporarily_unavailable"),
+        "total_capacity": _summary_number(capacity, "concurrency_total_capacity"),
+        "used_percent": _summary_number(capacity, "concurrency_used_percent"),
+        "available_percent": _summary_number(capacity, "concurrency_available_percent"),
+    }
+    accounts = {
+        "eligible": _summary_number(capacity, "concurrency_eligible_accounts"),
+        "available": _summary_number(capacity, "concurrency_available_accounts"),
+        "safe": _summary_number(capacity, "concurrency_safe_accounts"),
+        "near_limit": _summary_number(capacity, "concurrency_near_limit_accounts"),
+        "temporarily_unavailable": _summary_number(capacity, "concurrency_temporarily_unavailable_accounts"),
+        "five_hour_limited": _summary_number(capacity, "concurrency_five_hour_limited_accounts"),
+        "short_seven_day_limited": _summary_number(capacity, "concurrency_short_seven_day_limited_accounts"),
+        "long_seven_day_limited": _summary_number(capacity, "concurrency_long_seven_day_limited_accounts"),
+        "other_unavailable": _summary_number(capacity, "concurrency_other_unavailable_accounts"),
+    }
+    return {
+        "schema_version": "agent_concurrency_status.v1",
+        "available": any(value is not None for value in (*values.values(), *accounts.values())),
+        **values,
+        "accounts": accounts,
+    }
+
+
+def compact_agent_pool_capacity(capacity: dict[str, Any]) -> dict[str, Any]:
+    """Build the capability response without exposing the raw capacity payload."""
+
+    pool = capacity.get("pool") if isinstance(capacity.get("pool"), dict) else {}
+    return {
+        "pool": {
+            "pool_id": pool.get("id"),
+            "site_id": capacity.get("site_id") or pool.get("site_id"),
+            "group_id": capacity.get("group_id") or pool.get("active_group_id"),
+            "name": pool.get("name"),
+            "account_type": _capacity_account_type(capacity),
+        },
+        "capacity_status": build_agent_capacity_status(capacity),
+        "concurrency_status": build_agent_concurrency_status(capacity),
+        "data_quality": {
+            "data_source": capacity.get("data_source"),
+            "refresh_behavior": capacity.get("refresh_behavior"),
+            "cache_fresh": capacity.get("cache_fresh"),
+            "last_refreshed_at": capacity.get("last_refreshed_at"),
+        },
+    }
+
+
+def capacity_account_limit_usd(capacity: dict[str, Any], *, window: str) -> float | None:
+    """Read the effective site/account-type limit without hard-coded plan values."""
+
+    summary = _capacity_summary(capacity)
+    account_type = _capacity_account_type(capacity)
+    limits = summary.get("capacity_limits") if isinstance(summary.get("capacity_limits"), dict) else {}
+    account_limits = limits.get(account_type) if isinstance(limits.get(account_type), dict) else {}
+    key = "five_hour_usd" if window == "five_hour" else "seven_day_usd"
+    configured = _number_or_none(account_limits.get(key))
+    if configured is not None:
+        return configured
+
+    legacy_keys = (
+        ("single_account_5h_limit_usd", "account_5h_limit_usd", "five_hour_limit_per_account_usd")
+        if window == "five_hour"
+        else ("single_account_7d_limit_usd", "account_7d_limit_usd", "seven_day_limit_per_account_usd")
+    )
+    return _summary_number(capacity, *legacy_keys)
+
+
 async def _resolve_agent_pool(db: AsyncIOMotorDatabase, pool_id: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
     parsed = _parse_live_pool_id(pool_id)
     if parsed is None:
@@ -303,6 +469,41 @@ def _number_or_none(value: Any) -> float | None:
         return float(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def _capacity_summary(capacity: dict[str, Any]) -> dict[str, Any]:
+    return capacity.get("capacity_summary") if isinstance(capacity.get("capacity_summary"), dict) else {}
+
+
+def _capacity_account_type(capacity: dict[str, Any]) -> str:
+    summary = _capacity_summary(capacity)
+    pool = capacity.get("pool") if isinstance(capacity.get("pool"), dict) else {}
+    supported = {"free", "plus", "team", "bug_team", "k12", "pro"}
+    summary_type = str(summary.get("account_type") or "").strip().lower()
+    if summary_type in supported:
+        return summary_type
+    pool_type = str(pool.get("account_type") or "").strip().lower()
+    return pool_type if pool_type in supported else summary_type or pool_type or "unknown"
+
+
+def _summary_number(capacity: dict[str, Any], *keys: str) -> float | None:
+    summary = _capacity_summary(capacity)
+    for key in keys:
+        value = _number_or_none(capacity.get(key))
+        if value is not None:
+            return value
+        value = _number_or_none(summary.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _first_number(*values: Any) -> float | None:
+    for value in values:
+        parsed = _number_or_none(value)
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _int_or_none(value: Any) -> int | None:

@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.modules.agent.capacity import read_pool_capacity
+from app.modules.agent.capacity import build_agent_capacity_status, build_agent_concurrency_status, read_pool_capacity
 from app.modules.agent.event_stream import read_agent_event_windows
 from app.modules.agent.llm_client import invoke_agent_level1_json
 from app.modules.agent.long_term_memory import save_agent_memory_summary
@@ -413,6 +413,8 @@ def _capacity_review_view(capacity: dict[str, Any]) -> dict[str, Any]:
         "seven_day_remaining_usd": capacity.get("seven_day_remaining_usd"),
         "health_status": capacity.get("health_status"),
         "capacity_calculated_at": capacity.get("capacity_calculated_at"),
+        "capacity_status": build_agent_capacity_status(capacity),
+        "concurrency_status": build_agent_concurrency_status(capacity),
     }
 
 
@@ -453,6 +455,7 @@ def _event_windows_review_view(event_windows: dict[str, Any]) -> dict[str, Any]:
             "event_type_counts": summary.get("event_type_counts"),
             "status_transition_counts": summary.get("status_transition_counts"),
             "error_category_counts": summary.get("error_category_counts"),
+            "special_events": summary.get("special_events"),
             "high_value_event_count": summary.get("high_value_event_count"),
             "busiest_day": summary.get("busiest_day"),
             "busiest_hour": summary.get("busiest_hour"),

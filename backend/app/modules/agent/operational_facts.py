@@ -13,8 +13,8 @@ def build_capacity_dictionary(account_type: str | None = None) -> dict[str, str]
     normalized_type = (account_type or "account").strip().lower()
     return {
         "account_type": f"当前账号池识别为 {normalized_type} 类型；不同类型账号的额度含义应结合主系统容量数据理解。",
-        "single_account_5h_limit_usd": "单个账号在 5h 窗口内可用额度。pro 账号当前通常按 360 美元理解。",
-        "single_account_7d_limit_usd": "单个账号在 7d 窗口内可用额度。pro 账号当前通常按 2100 美元理解。",
+        "single_account_5h_limit_usd": "当前站点为该账号类型配置的单账号 5h 可用额度，必须读取 capacity_status.account_limits_usd，不能按账号类型硬编码。",
+        "single_account_7d_limit_usd": "当前站点为该账号类型配置的单账号 7d 可用额度，必须读取 capacity_status.account_limits_usd，不能按账号类型硬编码。",
         "dynamic_5h_total_usd": "综合账号当前已用比例和未来刷新恢复额度后，估算出的 5h 动态总容量。",
         "dynamic_5h_used_usd": "当前账号池按动态 5h 口径估算的已使用金额。",
         "dynamic_5h_available_usd": "当前账号池按动态 5h 口径估算的剩余可用金额。",
@@ -42,6 +42,8 @@ def build_capacity_dictionary(account_type: str | None = None) -> dict[str, str]
 def build_operational_facts(
     *,
     capacity: dict[str, Any],
+    capacity_status: dict[str, Any] | None = None,
+    concurrency_status: dict[str, Any] | None = None,
     probe: dict[str, Any],
     event_windows: dict[str, Any],
     recent_decisions: list[dict[str, Any]],
@@ -54,7 +56,8 @@ def build_operational_facts(
     """
 
     return {
-        "capacity_facts": _capacity_facts(capacity),
+        "capacity_facts": _capacity_facts(capacity) + _normalized_capacity_facts(capacity_status or {}),
+        "concurrency_facts": _concurrency_facts(concurrency_status or {}),
         "usage_facts": _usage_facts(capacity),
         "burst_facts": _burst_facts(capacity),
         "event_facts": _event_facts(event_windows),
@@ -100,6 +103,48 @@ def _capacity_facts(capacity: dict[str, Any]) -> list[str]:
             facts.append(f"最近一天 5h 峰值容量倍数为 {recent_peak}x，表示当前池子低于最近峰值需求。")
         else:
             facts.append(f"最近一天 5h 峰值容量倍数为 {recent_peak}x，表示当前池子可以覆盖最近峰值需求。")
+    return facts
+
+
+def _normalized_capacity_facts(capacity_status: dict[str, Any]) -> list[str]:
+    facts: list[str] = []
+    if not capacity_status:
+        return facts
+    limits = capacity_status.get("account_limits_usd") if isinstance(capacity_status.get("account_limits_usd"), dict) else {}
+    if limits.get("five_hour") is not None or limits.get("seven_day") is not None:
+        facts.append(
+            f"当前站点 {capacity_status.get('account_type') or '未知'} 账号额度配置为 5h {limits.get('five_hour') if limits.get('five_hour') is not None else '未知'} 美元、"
+            f"7d {limits.get('seven_day') if limits.get('seven_day') is not None else '未知'} 美元。"
+        )
+    conditions = capacity_status.get("pool_conditions") if isinstance(capacity_status.get("pool_conditions"), dict) else {}
+    if any(value is not None for value in conditions.values()):
+        facts.append(
+            "账号状态分类："
+            f"正常 {conditions.get('normal_accounts') if conditions.get('normal_accounts') is not None else '未知'}，"
+            f"5h 限流 {conditions.get('five_hour_rate_limited_accounts') if conditions.get('five_hour_rate_limited_accounts') is not None else '未知'}，"
+            f"7d 限流 {conditions.get('seven_day_rate_limited_accounts') if conditions.get('seven_day_rate_limited_accounts') is not None else '未知'}，"
+            f"异常 {conditions.get('abnormal_accounts') if conditions.get('abnormal_accounts') is not None else '未知'}。"
+        )
+    return facts
+
+
+def _concurrency_facts(concurrency_status: dict[str, Any]) -> list[str]:
+    if not concurrency_status or concurrency_status.get("available") is not True:
+        return []
+    facts = [
+        "当前并发容量："
+        f"总容量 {concurrency_status.get('total_capacity') if concurrency_status.get('total_capacity') is not None else '未知'}，"
+        f"已占用 {concurrency_status.get('actual_in_use') if concurrency_status.get('actual_in_use') is not None else '未知'}，"
+        f"安全可用 {concurrency_status.get('safe_available') if concurrency_status.get('safe_available') is not None else '未知'}，"
+        f"临界可用 {concurrency_status.get('near_limit_available') if concurrency_status.get('near_limit_available') is not None else '未知'}，"
+        f"暂时不可用 {concurrency_status.get('temporarily_unavailable') if concurrency_status.get('temporarily_unavailable') is not None else '未知'}。"
+    ]
+    accounts = concurrency_status.get("accounts") if isinstance(concurrency_status.get("accounts"), dict) else {}
+    if accounts.get("temporarily_unavailable"):
+        facts.append(
+            f"暂时不可用并发涉及 {accounts.get('temporarily_unavailable')} 个账号，其中 5h 限流 {accounts.get('five_hour_limited') or 0} 个，"
+            f"短期 7d 限流 {accounts.get('short_seven_day_limited') or 0} 个。"
+        )
     return facts
 
 

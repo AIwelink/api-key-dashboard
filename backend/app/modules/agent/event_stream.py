@@ -7,6 +7,7 @@ from typing import Any
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.modules.events.records import list_event_records
+from app.modules.sub2api.account_probe import CONFIRMED_401_RECOVERY_COUNT
 from app.utils import serialize_doc
 
 
@@ -146,6 +147,7 @@ def _window_summary(
     summary = response.get("summary") if isinstance(response.get("summary"), dict) else {}
     daily_counts = _daily_event_counts(items)
     hourly_counts = _hourly_event_counts(items)
+    event_type_counts = _event_type_counts(items)
     return {
         "window": range_value,
         "site_id": site_id,
@@ -153,7 +155,7 @@ def _window_summary(
         "group_id": group_id,
         "total_events": response.get("total"),
         "account_count": _account_count(items),
-        "event_type_counts": _event_type_counts(items),
+        "event_type_counts": event_type_counts,
         "status_transition_counts": _status_transition_counts(items),
         "error_category_counts": _error_category_counts(items),
         "severity_counts": _severity_counts(items),
@@ -165,6 +167,7 @@ def _window_summary(
         "first_event_at": _first_event_at(items),
         "last_event_at": _last_event_at(items) or summary.get("last_event_at"),
         "summary": summary,
+        "special_events": _special_event_summary(summary=summary, event_type_counts=event_type_counts),
         "clusters": _event_clusters(items),
         "top_accounts": _top_accounts(items),
         "interpretation": _window_interpretation(range_value, response=response, items=items),
@@ -203,7 +206,76 @@ def _event_detail(item: dict[str, Any], *, site_id: str, group_id: int, pool_id:
         "normal_use_seconds": item.get("normal_use_seconds"),
         "usage_duration_seconds": item.get("usage_duration_seconds"),
         "message": _short_text(item.get("current_error_message") or item.get("raw_excerpt"), limit=180),
+        "evidence": _event_evidence(item),
     }
+
+
+def _special_event_summary(*, summary: dict[str, Any], event_type_counts: dict[str, int]) -> dict[str, Any]:
+    official_refresh_count = _int_or_none(summary.get("official_usage_refreshes"))
+    recovered_count = _int_or_none(summary.get("recovered_401"))
+    return {
+        "official_usage_refresh": {
+            "confirmed_account_count": official_refresh_count
+            if official_refresh_count is not None
+            else int(event_type_counts.get("official_usage_refresh") or 0),
+            "meaning": "同账号类型达到共识的官方额度提前刷新，不应解释为用户消耗骤降。",
+        },
+        "duplicate_email_resolved": {
+            "event_count": int(event_type_counts.get("duplicate_email_resolved") or 0),
+            "meaning": "重复邮箱对应的多个远端账号已收敛，容量重复计算风险已解除。",
+        },
+        "confirmed_401_recovery": {
+            "account_count": recovered_count if recovered_count is not None else int(event_type_counts.get("401_recovered") or 0),
+            "required_consecutive_healthy_probes": CONFIRMED_401_RECOVERY_COUNT,
+            "meaning": "只有连续健康探测达到阈值后才记录 401_recovered。",
+        },
+    }
+
+
+def _event_evidence(item: dict[str, Any]) -> dict[str, Any] | None:
+    event_type = str(item.get("event_type") or "")
+    details = item.get("details") if isinstance(item.get("details"), dict) else {}
+    if event_type == "official_usage_refresh":
+        return {
+            "official_refresh_confirmed": details.get("official_refresh_confirmed") is True,
+            "confirmed_account_types": _string_list(details.get("confirmed_account_types")),
+            "candidate_count": _int_or_none(details.get("candidate_count")),
+            "eligible_account_count": _int_or_none(details.get("eligible_account_count")),
+            "type_consensus": _compact_type_consensus(details.get("type_consensus")),
+            "previous_used_percent": _number_or_none(details.get("previous_used_percent")),
+            "current_used_percent": _number_or_none(details.get("current_used_percent")),
+            "previous_reset_at": details.get("previous_reset_at"),
+            "current_reset_at": details.get("current_reset_at"),
+        }
+    if event_type == "duplicate_email_resolved":
+        return {
+            "duplicate_state": details.get("duplicate_state") or "resolved",
+            "previous_remote_account_count": _int_or_none(details.get("previous_count")),
+            "current_remote_account_count": _int_or_none(details.get("count")),
+        }
+    if event_type == "401_recovered":
+        return {
+            "recovery_confirmed": True,
+            "healthy_probe_streak": _int_or_none(details.get("healthy_probe_streak")) or CONFIRMED_401_RECOVERY_COUNT,
+            "required_consecutive_healthy_probes": _int_or_none(details.get("required_healthy_probes")) or CONFIRMED_401_RECOVERY_COUNT,
+        }
+    return None
+
+
+def _compact_type_consensus(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for account_type, item in list(value.items())[:8]:
+        if not isinstance(item, dict):
+            continue
+        result[str(account_type)] = {
+            "confirmed": item.get("confirmed") is True,
+            "candidate_count": _int_or_none(item.get("candidate_count")),
+            "eligible_account_count": _int_or_none(item.get("eligible_account_count")),
+            "candidate_ratio": _number_or_none(item.get("candidate_ratio")),
+        }
+    return result
 
 
 def _event_type_counts(items: list[dict[str, Any]]) -> dict[str, int]:
@@ -446,7 +518,17 @@ def _window_interpretation(range_value: str, *, response: dict[str, Any], items:
         interpretations.append(f"最近 {range_value} 记录到 {detected_401} 个账号出现 401。")
     recovered_401 = summary.get("recovered_401")
     if recovered_401:
-        interpretations.append(f"最近 {range_value} 记录到 {recovered_401} 个账号从 401 恢复。")
+        interpretations.append(
+            f"最近 {range_value} 记录到 {recovered_401} 个账号经连续 {CONFIRMED_401_RECOVERY_COUNT} 次健康探测确认从 401 恢复。"
+        )
+    official_refreshes = summary.get("official_usage_refreshes")
+    if official_refreshes:
+        interpretations.append(
+            f"最近 {range_value} 有 {official_refreshes} 个账号经同类型共识确认发生官方额度提前刷新，不应把额度归零解释为消耗骤降或容量异常。"
+        )
+    duplicate_resolved = _event_type_counts(items).get("duplicate_email_resolved")
+    if duplicate_resolved:
+        interpretations.append(f"最近 {range_value} 出现 {duplicate_resolved} 条重复邮箱已解决事件，相关容量重复计算风险已解除。")
     usage_rollovers = summary.get("usage_rollovers")
     if usage_rollovers:
         interpretations.append(f"最近 {range_value} 出现 {usage_rollovers} 个额度重置或限额相关事件。")
@@ -594,6 +676,10 @@ def _event_priority(item: dict[str, Any]) -> int:
         score += 90
     if event_type in {"401_recovered", "remote_account_reappeared"}:
         score += 75
+    if event_type == "official_usage_refresh":
+        score += 80
+    if event_type == "duplicate_email_resolved":
+        score += 70
     if event_type == "usage_rollover" or "limit" in message or "quota" in message:
         score += 65
     if previous_status and current_status and previous_status != current_status:
@@ -654,6 +740,23 @@ def _group_id_from_pool_id(pool_id: str | None) -> int | None:
     return None
 
 
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()][:8]
+
+
+def _number_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _empty_event_windows(*, site_id: str | None, group_id: int | None, pool_id: str | None, reason: str) -> dict[str, Any]:
     resolved_pool_id = pool_id or (f"sub2api:{site_id}:{group_id}" if site_id and group_id is not None else None)
     return serialize_doc(
@@ -703,6 +806,7 @@ def _empty_window_summary(
         "first_event_at": None,
         "last_event_at": None,
         "summary": {},
+        "special_events": {},
         "clusters": [],
         "top_accounts": [],
         "interpretation": [],

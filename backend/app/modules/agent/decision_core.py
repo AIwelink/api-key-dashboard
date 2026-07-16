@@ -43,8 +43,9 @@ async def decide_with_context_pack(
 def _system_prompt_with_event_windows() -> str:
     return _system_prompt() + (
         "\n\nContext Pack v2 reading instructions:\n"
-        "You will receive Context Pack v2. Before making a decision, read operational_facts, event_windows, long_term_memory, capacity_dictionary, capacity, and probe.\n"
-        "Prioritize operational_facts, event_windows, and long_term_memory as the organized decision context.\n"
+        "You will receive Context Pack v2. Before making a decision, read operational_facts, capacity_status, concurrency_status, event_windows, long_term_memory, capacity_dictionary, capacity, and probe.\n"
+        "Prioritize operational_facts, capacity_status, concurrency_status, event_windows, and long_term_memory as the organized decision context.\n"
+        "capacity_status and concurrency_status are compact normalized views of the main-system capacity data; prefer them over guessing from legacy fields.\n"
         "capacity_dictionary explains what capacity metrics mean; it is not itself a current pool conclusion.\n"
         "operational_facts are deterministic facts summarized by the backend from raw data; they are evidence, not the final business decision.\n"
         "Account replenishment count, risk severity, whether to alert, whether human confirmation is needed, and next actions are still your judgment.\n"
@@ -63,6 +64,9 @@ def _system_prompt_with_event_windows() -> str:
         "event_windows.summary_1h, summary_6h, summary_24h, and summary_7d are aggregate summaries for different time windows.\n"
         "Use these windows to decide whether the pool is seeing an immediate 1h burst, a 6h deterioration, a 24h same-day incident, or a 7d recurring pattern.\n"
         "Use clusters, top_accounts, event_type_counts, status_transition_counts, and error_category_counts as direct evidence.\n"
+        "Treat official_usage_refresh as a confirmed quota refresh only when its evidence shows type-level consensus; do not misread the quota reset as a sudden usage drop.\n"
+        "Treat duplicate_email_resolved as evidence that the duplicate-capacity risk was resolved, while still considering newer duplicate_email_detected events.\n"
+        "A 401_recovered event is emitted only after the configured consecutive healthy-probe threshold, so treat its recovery_confirmation evidence as confirmed rather than a single healthy sample.\n"
         "If event_windows already shows that 401 events are concentrated in a time window, treat that as known evidence and do not ask the operator whether the 401s are concentrated.\n"
         "When explaining the decision in Chinese, mention the relevant time window explicitly, such as recent 1h, recent 6h, recent 24h, or recent 7d.\n"
         "\nContext Pack v2 long-term memory instructions:\n"

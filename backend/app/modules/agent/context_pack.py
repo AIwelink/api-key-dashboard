@@ -5,7 +5,13 @@ from typing import Any
 from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.modules.agent.capacity import list_agent_pools, read_pool_capacity
+from app.modules.agent.capacity import (
+    build_agent_capacity_status,
+    build_agent_concurrency_status,
+    capacity_account_limit_usd,
+    list_agent_pools,
+    read_pool_capacity,
+)
 from app.modules.agent.event_stream import read_agent_event_stream_summary, read_agent_event_windows
 from app.modules.agent.long_term_memory import get_agent_long_term_memory
 from app.modules.agent.memory import AGENT_DECISIONS_COLLECTION, AGENT_MESSAGES_COLLECTION
@@ -105,6 +111,8 @@ async def build_agent_context_pack(
         long_term_memory = _empty_long_term_memory()
 
     capacity_summary = _summarize_capacity(capacity)
+    capacity_status = build_agent_capacity_status(capacity)
+    concurrency_status = build_agent_concurrency_status(capacity)
     probe_summary = _summarize_probe(probe)
     event_stream_summary = _summarize_event_stream(event_stream)
     event_windows_summary = _summarize_event_windows(event_windows, event_stream_summary)
@@ -112,6 +120,8 @@ async def build_agent_context_pack(
     capacity_dictionary = build_capacity_dictionary(_clean_optional_string(target_pool_info.get("account_type")))
     operational_facts = build_operational_facts(
         capacity=capacity_summary,
+        capacity_status=capacity_status,
+        concurrency_status=concurrency_status,
         probe=probe_summary,
         event_windows=event_windows_summary,
         recent_decisions=recent_decisions,
@@ -130,6 +140,8 @@ async def build_agent_context_pack(
         },
         "target_pool": target_pool_info,
         "api_pool_status": _summarize_api_pool_status(target_pool, capacity),
+        "capacity_status": capacity_status,
+        "concurrency_status": concurrency_status,
         "capacity": capacity_summary,
         "capacity_dictionary": capacity_dictionary,
         "operational_facts": operational_facts,
@@ -310,6 +322,10 @@ def _summarize_probe(probe: dict[str, Any]) -> dict[str, Any]:
         "detected_401_24h": probe.get("detected_401_24h"),
         "detected_401_7d": probe.get("detected_401_7d"),
         "recovered_24h": probe.get("recovered_24h"),
+        "confirmed_401_recoveries_24h": probe.get("confirmed_401_recoveries_24h"),
+        "401_recovery_required_healthy_probes": probe.get("401_recovery_required_healthy_probes"),
+        "official_usage_refreshes_24h": probe.get("official_usage_refreshes_24h"),
+        "official_usage_refreshes_7d": probe.get("official_usage_refreshes_7d"),
         "detected_401_clusters_24h": probe.get("detected_401_clusters_24h"),
         "largest_401_cluster_24h": probe.get("largest_401_cluster_24h"),
         "concentrated_401_burst_24h": probe.get("concentrated_401_burst_24h"),
@@ -396,6 +412,7 @@ def _empty_event_summary(window: str, *, source: str | None = None) -> dict[str,
         "event_type_counts": {},
         "status_transition_counts": {},
         "error_category_counts": {},
+        "special_events": {},
         "clusters": [],
         "interpretation": [],
         "source": source,
@@ -885,33 +902,11 @@ def _from_capacity_summary(capacity: dict[str, Any], *keys: str) -> float | None
 
 
 def _single_account_5h_limit_usd(capacity: dict[str, Any]) -> float | None:
-    summary = capacity.get("capacity_summary") if isinstance(capacity.get("capacity_summary"), dict) else {}
-    configured = _number_or_none(
-        summary.get("single_account_5h_limit_usd")
-        or summary.get("account_5h_limit_usd")
-        or summary.get("five_hour_limit_per_account_usd")
-    )
-    if configured is not None:
-        return configured
-    pool = capacity.get("pool") if isinstance(capacity.get("pool"), dict) else {}
-    if str(pool.get("account_type") or "").strip().lower() == "pro":
-        return 360.0
-    return None
+    return capacity_account_limit_usd(capacity, window="five_hour")
 
 
 def _single_account_7d_limit_usd(capacity: dict[str, Any]) -> float | None:
-    summary = capacity.get("capacity_summary") if isinstance(capacity.get("capacity_summary"), dict) else {}
-    configured = _number_or_none(
-        summary.get("single_account_7d_limit_usd")
-        or summary.get("account_7d_limit_usd")
-        or summary.get("seven_day_limit_per_account_usd")
-    )
-    if configured is not None:
-        return configured
-    pool = capacity.get("pool") if isinstance(capacity.get("pool"), dict) else {}
-    if str(pool.get("account_type") or "").strip().lower() == "pro":
-        return 2100.0
-    return None
+    return capacity_account_limit_usd(capacity, window="seven_day")
 
 
 def _actor_id(actor: dict[str, Any] | None) -> str | None:

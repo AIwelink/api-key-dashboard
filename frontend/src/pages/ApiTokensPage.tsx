@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useId, useState } from "react";
 import { api } from "../api/client";
 import type { ApiPool } from "../types";
 import { errorMessage, formatDateTime } from "../utils/format";
@@ -134,6 +134,95 @@ type AgentLlmForm = {
 };
 
 const decisionNotificationTriggerOptions = ["event_spike", "scheduler_task_due", "scheduler_review_due", "scheduler_patrol"];
+
+type AgentSettingHelpDetail = {
+  purpose: string;
+  note?: string;
+};
+
+const AGENT_SETTING_HELP: Record<string, AgentSettingHelpDetail> = {
+  "Base URL": {
+    purpose: "Agent 调用的 OpenAI 兼容接口地址，通常以 /v1 结尾。",
+    note: "修改后建议先保存，再执行连接测试。",
+  },
+  "API Key": {
+    purpose: "调用模型接口使用的密钥。编辑已有配置时留空表示保留当前密钥。",
+  },
+  "主决策模型": {
+    purpose: "Level 1 模型负责意图判断、账号池分析、决策和总结，是当前 Agent 的主要模型。",
+  },
+  "主决策温度": {
+    purpose: "控制主模型输出的随机性。数值越低越稳定，运营决策通常建议使用较低值。",
+    note: "一般建议 0 到 0.3。",
+  },
+  "增强模型": {
+    purpose: "预留的 Level 2 模型，可用于更复杂的复盘或判断；留空时不使用。",
+  },
+  "增强模型温度": {
+    purpose: "控制 Level 2 模型输出随机性，仅在配置了增强模型时生效。",
+  },
+  "请求超时": {
+    purpose: "单次模型请求最多等待的秒数，超时后本次 Agent run 会按失败处理。",
+  },
+  "Scheduler Loop": {
+    purpose: "开启后，后台会按调度间隔醒来，检查到期任务、事件、巡检、记忆和通知。",
+    note: "Loop 只是唤醒器；是否主动分析账号池还受巡检和事件触发配置控制。",
+  },
+  "调度间隔": {
+    purpose: "Scheduler 两次醒来之间的时间。300 秒表示每 5 分钟检查一次。",
+  },
+  "账号池巡检": {
+    purpose: "开启后，Loop 会按巡检规则选择账号池并触发 Agent 分析。关闭时仍可处理已有到期任务和事件触发。",
+  },
+  "每轮最多处理任务": {
+    purpose: "每次调度 tick 最多跟进多少个到期 Agent task，防止单轮积压过多。",
+  },
+  "每轮最多巡检池": {
+    purpose: "每次调度 tick 最多主动巡检多少个账号池。必巡池会优先占用名额。",
+  },
+  "巡检间隔": {
+    purpose: "同一账号池正常情况下两次巡检之间至少间隔多少分钟。",
+  },
+  "巡检冷却": {
+    purpose: "账号池刚完成巡检后，在冷却时间内不会再次被巡检触发。",
+  },
+  "每轮最多事件触发": {
+    purpose: "每次 tick 最多处理多少个事件突增信号，避免异常集中时同时创建过多 Agent run。",
+  },
+  "最大并发运行数": {
+    purpose: "同时允许执行的 Agent run 数量，用于限制 LLM 请求和后台负载。",
+  },
+  "任务冷却": {
+    purpose: "同一个持续任务两次自动运行之间的最小间隔。",
+  },
+  "事件冷却": {
+    purpose: "同类事件突增在冷却时间内只触发一次，避免相同信号重复唤醒 Agent。",
+  },
+  "每轮最多记忆总结": {
+    purpose: "每个 tick 最多为多少个账号池生成每日或每周长期记忆。",
+  },
+  "决策通知冷却": {
+    purpose: "同一账号池的自动决策通知最小发送间隔，用于避免群内重复刷屏。",
+  },
+  "最低通知风险等级": {
+    purpose: "只有达到该风险等级及以上的 Agent 决策才允许发送通知。",
+  },
+  "每日记忆总结": {
+    purpose: "自动总结前一天的容量、事件、决策、任务变化和人工反馈。",
+  },
+  "每周记忆总结": {
+    purpose: "自动总结上一周的账号质量、风险时段、决策效果和经验。",
+  },
+  "记忆补生成": {
+    purpose: "发现历史周期缺少每日或每周总结时，允许后续 tick 分批补齐。",
+  },
+  "告警草稿派发": {
+    purpose: "允许 Scheduler 按通知策略处理 alert_drafted 任务。默认关闭时只保留草稿。",
+  },
+  "自动决策通知": {
+    purpose: "把选定自动触发来源产生的 Agent 决策摘要发送到已配置的钉钉机器人。",
+  },
+};
 
 const emptyNotificationForm: NotificationForm = {
   name: "",
@@ -434,7 +523,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
       });
       setAgentLlmSettings(updated);
       setAgentLlmForm((current) => ({ ...current, api_key: "" }));
-      showToast("Agent LLM settings saved");
+      showToast("Agent LLM 配置已保存");
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
@@ -489,7 +578,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
       } else {
         await loadAgentLlmSettings();
       }
-      showToast(result.message || "Agent LLM connection test passed");
+      showToast(result.message || "Agent LLM 连接测试通过");
     } catch (error) {
       await loadAgentLlmSettings().catch(() => undefined);
       showToast(errorMessage(error), true);
@@ -787,20 +876,20 @@ export function ApiTokensPage({ token, showToast }: Props) {
             <div className="panel-header">
               <div>
                 <h3>Agent LLM</h3>
-                <p>OpenAI-compatible endpoint for the account-pool Agent.</p>
+                <p>配置账号池运营 Agent 使用的模型、调度、巡检、记忆和通知策略。</p>
               </div>
-              <span className={`status-pill ${agentLlmSettings?.enabled ? "success" : ""}`}>{agentLlmSettings?.enabled ? "Enabled" : "Disabled"}</span>
+              <span className={`status-pill ${agentLlmSettings?.enabled ? "success" : ""}`}>{agentLlmSettings?.enabled ? "已启用" : "未启用"}</span>
             </div>
             <form className="form-grid single" onSubmit={submitAgentLlmSettings}>
               <label>
-                Enable Agent LLM calls
+                启用 Agent LLM 调用
                 <select value={agentLlmForm.enabled ? "yes" : "no"} onChange={(event) => setAgentLlmForm((current) => ({ ...current, enabled: event.target.value === "yes" }))}>
                   <option value="yes">是</option>
                   <option value="no">否</option>
                 </select>
               </label>
               <label>
-                Base URL
+                <AgentSettingHelp helpKey="Base URL">Base URL</AgentSettingHelp>
                 <input
                   value={agentLlmForm.base_url}
                   onChange={(event) => setAgentLlmForm((current) => ({ ...current, base_url: event.target.value }))}
@@ -808,17 +897,17 @@ export function ApiTokensPage({ token, showToast }: Props) {
                 />
               </label>
               <label>
-                API Key
+                <AgentSettingHelp helpKey="API Key">API Key</AgentSettingHelp>
                 <input
                   type="password"
                   value={agentLlmForm.api_key}
                   onChange={(event) => setAgentLlmForm((current) => ({ ...current, api_key: event.target.value }))}
-                  placeholder={agentLlmSettings?.api_key_configured ? "Leave blank to keep current key" : "sk-..."}
+                  placeholder={agentLlmSettings?.api_key_configured ? "留空以保留当前密钥" : "sk-..."}
                 />
               </label>
-              <div className="muted">Current key: {agentLlmSettings?.api_key_configured ? agentLlmSettings.api_key_preview || "configured" : "not configured"}</div>
+              <div className="muted">当前密钥：{agentLlmSettings?.api_key_configured ? agentLlmSettings.api_key_preview || "已配置" : "未配置"}</div>
               <label>
-                Level 1 Model
+                <AgentSettingHelp helpKey="主决策模型">主决策模型（Level 1）</AgentSettingHelp>
                 <input
                   value={agentLlmForm.level1_model}
                   onChange={(event) => setAgentLlmForm((current) => ({ ...current, level1_model: event.target.value }))}
@@ -826,7 +915,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
                 />
               </label>
               <label>
-                Level 1 Temperature
+                <AgentSettingHelp helpKey="主决策温度">主决策温度</AgentSettingHelp>
                 <input
                   min="0"
                   max="2"
@@ -837,15 +926,15 @@ export function ApiTokensPage({ token, showToast }: Props) {
                 />
               </label>
               <label>
-                Level 2 Model
+                <AgentSettingHelp helpKey="增强模型">增强模型（Level 2，可选）</AgentSettingHelp>
                 <input
                   value={agentLlmForm.level2_model}
                   onChange={(event) => setAgentLlmForm((current) => ({ ...current, level2_model: event.target.value }))}
-                  placeholder="optional"
+                  placeholder="可选"
                 />
               </label>
               <label>
-                Level 2 Temperature
+                <AgentSettingHelp helpKey="增强模型温度">增强模型温度</AgentSettingHelp>
                 <input
                   min="0"
                   max="2"
@@ -856,7 +945,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
                 />
               </label>
               <label>
-                Timeout Seconds
+                <AgentSettingHelp helpKey="请求超时">请求超时（秒）</AgentSettingHelp>
                 <input
                   min="5"
                   max="300"
@@ -866,14 +955,14 @@ export function ApiTokensPage({ token, showToast }: Props) {
                 />
               </label>
               <label>
-                Enable Agent scheduler loop
+                <AgentSettingHelp helpKey="Scheduler Loop">启用 Scheduler Loop</AgentSettingHelp>
                 <select value={agentLlmForm.loop_enabled ? "yes" : "no"} onChange={(event) => setAgentLlmForm((current) => ({ ...current, loop_enabled: event.target.value === "yes" }))}>
                   <option value="yes">是</option>
                   <option value="no">否</option>
                 </select>
               </label>
               <label>
-                Scheduler Interval Seconds
+                <AgentSettingHelp helpKey="调度间隔">调度间隔（秒）</AgentSettingHelp>
                 <input
                   min="60"
                   max="86400"
@@ -883,15 +972,15 @@ export function ApiTokensPage({ token, showToast }: Props) {
                 />
               </label>
               <label>
-                Enable pool patrol
+                <AgentSettingHelp helpKey="账号池巡检">启用账号池巡检</AgentSettingHelp>
                 <select value={agentLlmForm.patrol_enabled ? "yes" : "no"} onChange={(event) => setAgentLlmForm((current) => ({ ...current, patrol_enabled: event.target.value === "yes" }))}>
-                  <option value="yes">Yes</option>
-                  <option value="no">No</option>
+                  <option value="yes">是</option>
+                  <option value="no">否</option>
                 </select>
               </label>
               <div className="agent-scheduler-grid">
                 <label>
-                  Max tasks / tick
+                  <AgentSettingHelp helpKey="每轮最多处理任务">每轮最多处理任务</AgentSettingHelp>
                   <input
                     min="1"
                     max="100"
@@ -901,7 +990,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
                   />
                 </label>
                 <label>
-                  Max patrols / tick
+                  <AgentSettingHelp helpKey="每轮最多巡检池">每轮最多巡检池</AgentSettingHelp>
                   <input
                     min="0"
                     max="100"
@@ -911,7 +1000,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
                   />
                 </label>
                 <label>
-                  Patrol interval minutes
+                  <AgentSettingHelp helpKey="巡检间隔">巡检间隔（分钟）</AgentSettingHelp>
                   <input
                     min="5"
                     max="1440"
@@ -921,7 +1010,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
                   />
                 </label>
                 <label>
-                  Patrol cooldown minutes
+                  <AgentSettingHelp helpKey="巡检冷却">巡检冷却（分钟）</AgentSettingHelp>
                   <input
                     min="0"
                     max="1440"
@@ -931,8 +1020,8 @@ export function ApiTokensPage({ token, showToast }: Props) {
                   />
                 </label>
                 <div className="agent-required-patrol-field">
-                  <strong>Required patrol pools</strong>
-                  <div className="muted">Required pools are selected first; the remaining patrol slots use normal priority.</div>
+                  <strong>必巡账号池</strong>
+                  <div className="muted">必巡池会优先选择，剩余巡检名额再按普通优先级分配。</div>
                   <div className="agent-required-patrol-list">
                     {agentPools.length ? (
                       agentPools.map((pool) => (
@@ -942,17 +1031,17 @@ export function ApiTokensPage({ token, showToast }: Props) {
                             checked={agentLlmForm.required_patrol_pool_ids.includes(pool.id)}
                             onChange={() => toggleRequiredPatrolPool(pool.id)}
                           />
-                          <span>{pool.name} / {pool.account_type} / group #{pool.active_group_id}</span>
+                          <span>{pool.name} / {pool.account_type} / 分组 #{pool.active_group_id}</span>
                         </label>
                       ))
                     ) : (
-                      <div className="muted">No active pools available.</div>
+                      <div className="muted">暂无可用账号池。</div>
                     )}
                   </div>
                 </div>
                 <div className="agent-required-patrol-field">
-                  <strong>Excluded Agent pools</strong>
-                  <div className="muted">Excluded pools are ignored by patrol and event-spike auto runs.</div>
+                  <strong>排除的 Agent 账号池</strong>
+                  <div className="muted">排除后，巡检和事件突增自动运行都会忽略这些池。</div>
                   <div className="agent-required-patrol-list">
                     {agentPools.length ? (
                       agentPools.map((pool) => (
@@ -962,16 +1051,16 @@ export function ApiTokensPage({ token, showToast }: Props) {
                             checked={agentLlmForm.excluded_agent_pool_ids.includes(pool.id)}
                             onChange={() => toggleExcludedAgentPool(pool.id)}
                           />
-                          <span>{pool.name} / {pool.account_type} / group #{pool.active_group_id}</span>
+                          <span>{pool.name} / {pool.account_type} / 分组 #{pool.active_group_id}</span>
                         </label>
                       ))
                     ) : (
-                      <div className="muted">No active pools available.</div>
+                      <div className="muted">暂无可用账号池。</div>
                     )}
                   </div>
                 </div>
                 <label>
-                  Max event triggers / tick
+                  <AgentSettingHelp helpKey="每轮最多事件触发">每轮最多事件触发</AgentSettingHelp>
                   <input
                     min="0"
                     max="100"
@@ -981,7 +1070,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
                   />
                 </label>
                 <label>
-                  Max concurrent runs
+                  <AgentSettingHelp helpKey="最大并发运行数">最大并发运行数</AgentSettingHelp>
                   <input
                     min="1"
                     max="20"
@@ -991,7 +1080,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
                   />
                 </label>
                 <label>
-                  Task cooldown minutes
+                  <AgentSettingHelp helpKey="任务冷却">任务冷却（分钟）</AgentSettingHelp>
                   <input
                     min="0"
                     max="1440"
@@ -1001,7 +1090,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
                   />
                 </label>
                 <label>
-                  Event cooldown minutes
+                  <AgentSettingHelp helpKey="事件冷却">事件冷却（分钟）</AgentSettingHelp>
                   <input
                     min="0"
                     max="1440"
@@ -1011,7 +1100,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
                   />
                 </label>
                 <label>
-                  Max memory summaries / tick
+                  <AgentSettingHelp helpKey="每轮最多记忆总结">每轮最多记忆总结</AgentSettingHelp>
                   <input
                     min="0"
                     max="100"
@@ -1021,7 +1110,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
                   />
                 </label>
                 <label>
-                  Decision notify cooldown minutes
+                  <AgentSettingHelp helpKey="决策通知冷却">决策通知冷却（分钟）</AgentSettingHelp>
                   <input
                     min="0"
                     max="1440"
@@ -1031,49 +1120,49 @@ export function ApiTokensPage({ token, showToast }: Props) {
                   />
                 </label>
                 <label>
-                  Decision notify min severity
+                  <AgentSettingHelp helpKey="最低通知风险等级">最低通知风险等级</AgentSettingHelp>
                   <select
                     value={agentLlmForm.decision_notification_min_severity}
                     onChange={(event) => setAgentLlmForm((current) => ({ ...current, decision_notification_min_severity: event.target.value }))}
                   >
-                    <option value="watch">watch</option>
-                    <option value="warning">warning</option>
-                    <option value="danger">danger</option>
-                    <option value="critical">critical</option>
+                    <option value="watch">观察（watch）</option>
+                    <option value="warning">预警（warning）</option>
+                    <option value="danger">紧张（danger）</option>
+                    <option value="critical">危险（critical）</option>
                   </select>
                 </label>
               </div>
               <div className="agent-scheduler-switches">
                 <label>
-                  Daily memory summary
+                  <AgentSettingHelp helpKey="每日记忆总结">每日记忆总结</AgentSettingHelp>
                   <select value={agentLlmForm.daily_memory_enabled ? "yes" : "no"} onChange={(event) => setAgentLlmForm((current) => ({ ...current, daily_memory_enabled: event.target.value === "yes" }))}>
                     <option value="yes">是</option>
                     <option value="no">否</option>
                   </select>
                 </label>
                 <label>
-                  Weekly memory summary
+                  <AgentSettingHelp helpKey="每周记忆总结">每周记忆总结</AgentSettingHelp>
                   <select value={agentLlmForm.weekly_memory_enabled ? "yes" : "no"} onChange={(event) => setAgentLlmForm((current) => ({ ...current, weekly_memory_enabled: event.target.value === "yes" }))}>
                     <option value="yes">是</option>
                     <option value="no">否</option>
                   </select>
                 </label>
                 <label>
-                  Memory catch-up
+                  <AgentSettingHelp helpKey="记忆补生成">记忆补生成</AgentSettingHelp>
                   <select value={agentLlmForm.memory_summary_catchup_enabled ? "yes" : "no"} onChange={(event) => setAgentLlmForm((current) => ({ ...current, memory_summary_catchup_enabled: event.target.value === "yes" }))}>
                     <option value="yes">是</option>
                     <option value="no">否</option>
                   </select>
                 </label>
                 <label>
-                  Notification dispatch
+                  <AgentSettingHelp helpKey="告警草稿派发">告警草稿派发</AgentSettingHelp>
                   <select value={agentLlmForm.notification_dispatch_enabled ? "yes" : "no"} onChange={(event) => setAgentLlmForm((current) => ({ ...current, notification_dispatch_enabled: event.target.value === "yes" }))}>
                     <option value="yes">是</option>
                     <option value="no">否</option>
                   </select>
                 </label>
                 <label>
-                  Decision notifications
+                  <AgentSettingHelp helpKey="自动决策通知">自动决策通知</AgentSettingHelp>
                   <select value={agentLlmForm.decision_notification_enabled ? "yes" : "no"} onChange={(event) => setAgentLlmForm((current) => ({ ...current, decision_notification_enabled: event.target.value === "yes" }))}>
                     <option value="yes">是</option>
                     <option value="no">否</option>
@@ -1081,8 +1170,8 @@ export function ApiTokensPage({ token, showToast }: Props) {
                 </label>
               </div>
               <div className="agent-required-patrol-field">
-                <strong>Decision notification triggers</strong>
-                <div className="muted">Send DingTalk summaries for selected automatic Agent runs. DingTalk webhook is reused from Notifications.</div>
+                <strong>决策通知触发来源</strong>
+                <div className="muted">为勾选的自动 Agent 运行发送钉钉摘要，复用“通知”页面中已配置的钉钉机器人。</div>
                 <div className="agent-required-patrol-list">
                   {decisionNotificationTriggerOptions.map((trigger) => (
                     <label className="checkbox-row" key={trigger}>
@@ -1091,51 +1180,51 @@ export function ApiTokensPage({ token, showToast }: Props) {
                         checked={agentLlmForm.decision_notification_triggers.includes(trigger)}
                         onChange={() => toggleDecisionNotificationTrigger(trigger)}
                       />
-                      <span>{trigger}</span>
+                      <span>{agentTriggerLabel(trigger)}</span>
                     </label>
                   ))}
                 </div>
               </div>
-              <div className="muted">Pool-level Agent strategies are reserved for a later task; this stage only saves global scheduler configuration.</div>
+              <div className="muted">当前保存的是全局调度配置，池级 Agent 策略仍为后续扩展项。</div>
               <div className="button-row">
                 <button className="success-button" disabled={busy} type="submit">
-                  Save Agent LLM
+                  保存 Agent LLM 配置
                 </button>
                 <button className="ghost" disabled={busy} onClick={testAgentLlmSettings} type="button">
-                  Test saved config
+                  测试已保存配置
                 </button>
               </div>
             </form>
           </section>
 
           <section className="panel">
-            <h3>Connection Status</h3>
+            <h3>连接状态</h3>
             <div className="list">
               <div className="list-item">
                 <div>
-                  <strong>Saved configuration</strong>
-                  <div className="muted">Base URL {agentLlmSettings?.base_url ? "configured" : "not configured"}</div>
-                  <div className="muted">Level 1 model {agentLlmSettings?.level1_model || "-"}</div>
-                  <div className="muted">Level 2 model {agentLlmSettings?.level2_model || "-"}</div>
-                  <div className="muted">Timeout {agentLlmSettings?.timeout_seconds ?? "-"}s</div>
-                  <div className="muted">Scheduler loop {(agentLlmSettings?.agent_loop_enabled ?? agentLlmSettings?.loop_enabled) ? "enabled" : "disabled"}</div>
-                  <div className="muted">Pool patrol {agentLlmSettings?.patrol_enabled ? "enabled" : "disabled"}</div>
-                  <div className="muted">Scheduler interval {agentLlmSettings?.scheduler_interval_seconds ?? "-"}s</div>
-                  <div className="muted">Max tasks / patrols / events {agentLlmSettings?.max_tasks_per_tick ?? "-"} / {agentLlmSettings?.max_pool_patrols_per_tick ?? "-"} / {agentLlmSettings?.max_event_triggers_per_tick ?? "-"}</div>
-                  <div className="muted">Required patrol pools {agentLlmSettings?.required_patrol_pool_ids?.length ?? 0}</div>
-                  <div className="muted">Excluded Agent pools {agentLlmSettings?.excluded_agent_pool_ids?.length ?? 0}</div>
-                  <div className="muted">Memory daily / weekly {agentLlmSettings?.daily_memory_enabled ? "on" : "off"} / {agentLlmSettings?.weekly_memory_enabled ? "on" : "off"} · max {agentLlmSettings?.max_memory_summaries_per_tick ?? "-"}</div>
-                  <div className="muted">Notification dispatch {agentLlmSettings?.notification_dispatch_enabled ? "enabled" : "disabled"}</div>
-                  <div className="muted">Decision notifications {agentLlmSettings?.decision_notification_enabled ? "enabled" : "disabled"} · min {agentLlmSettings?.decision_notification_min_severity || "warning"} · cooldown {agentLlmSettings?.decision_notification_cooldown_minutes ?? "-"}m</div>
-                  <div className="muted">Decision notify triggers {(agentLlmSettings?.decision_notification_triggers || []).join(", ") || "-"}</div>
+                  <strong>已保存配置</strong>
+                  <div className="muted">Base URL：{agentLlmSettings?.base_url ? "已配置" : "未配置"}</div>
+                  <div className="muted">主决策模型：{agentLlmSettings?.level1_model || "-"}</div>
+                  <div className="muted">增强模型：{agentLlmSettings?.level2_model || "-"}</div>
+                  <div className="muted">请求超时：{agentLlmSettings?.timeout_seconds ?? "-"} 秒</div>
+                  <div className="muted">Scheduler Loop：{(agentLlmSettings?.agent_loop_enabled ?? agentLlmSettings?.loop_enabled) ? "已启用" : "未启用"}</div>
+                  <div className="muted">账号池巡检：{agentLlmSettings?.patrol_enabled ? "已启用" : "未启用"}</div>
+                  <div className="muted">调度间隔：{agentLlmSettings?.scheduler_interval_seconds ?? "-"} 秒</div>
+                  <div className="muted">每轮任务 / 巡检 / 事件：{agentLlmSettings?.max_tasks_per_tick ?? "-"} / {agentLlmSettings?.max_pool_patrols_per_tick ?? "-"} / {agentLlmSettings?.max_event_triggers_per_tick ?? "-"}</div>
+                  <div className="muted">必巡账号池：{agentLlmSettings?.required_patrol_pool_ids?.length ?? 0} 个</div>
+                  <div className="muted">排除账号池：{agentLlmSettings?.excluded_agent_pool_ids?.length ?? 0} 个</div>
+                  <div className="muted">每日 / 每周记忆：{agentLlmSettings?.daily_memory_enabled ? "开" : "关"} / {agentLlmSettings?.weekly_memory_enabled ? "开" : "关"} · 每轮最多 {agentLlmSettings?.max_memory_summaries_per_tick ?? "-"}</div>
+                  <div className="muted">告警草稿派发：{agentLlmSettings?.notification_dispatch_enabled ? "已启用" : "未启用"}</div>
+                  <div className="muted">自动决策通知：{agentLlmSettings?.decision_notification_enabled ? "已启用" : "未启用"} · 最低 {agentSeverityLabel(agentLlmSettings?.decision_notification_min_severity)} · 冷却 {agentLlmSettings?.decision_notification_cooldown_minutes ?? "-"} 分钟</div>
+                  <div className="muted">通知触发来源：{(agentLlmSettings?.decision_notification_triggers || []).map(agentTriggerLabel).join("、") || "-"}</div>
                 </div>
               </div>
               <div className="list-item">
                 <div>
-                  <strong>Last test</strong>
-                  <div className="muted">Time {formatDateTime(agentLlmSettings?.last_test_at)}</div>
+                  <strong>最近测试</strong>
+                  <div className="muted">时间：{formatDateTime(agentLlmSettings?.last_test_at)}</div>
                   <div className={agentLlmSettings?.last_test_status === "success" ? "success-text" : "warning-text"}>
-                    Status {agentLlmSettings?.last_test_status || "-"}
+                    状态：{deliveryStatusLabel(agentLlmSettings?.last_test_status)}
                   </div>
                   {agentLlmSettings?.last_test_message && <div className="agent-test-message">{agentLlmSettings.last_test_message}</div>}
                 </div>
@@ -1146,6 +1235,42 @@ export function ApiTokensPage({ token, showToast }: Props) {
       )}
     </section>
   );
+}
+
+function AgentSettingHelp({ helpKey, children }: { helpKey: string; children: ReactNode }) {
+  const tooltipId = useId();
+  const help = AGENT_SETTING_HELP[helpKey];
+  if (!help) return <>{children}</>;
+  return (
+    <span className="agent-setting-help" tabIndex={0} aria-describedby={tooltipId}>
+      <span className="agent-setting-help-trigger">{children}</span>
+      <span className="agent-setting-help-tooltip" id={tooltipId} role="tooltip">
+        <strong>{children}</strong>
+        <span>{help.purpose}</span>
+        {help.note ? <em>{help.note}</em> : null}
+      </span>
+    </span>
+  );
+}
+
+function agentTriggerLabel(value?: string | null) {
+  const labels: Record<string, string> = {
+    event_spike: "事件突增",
+    scheduler_task_due: "任务到期",
+    scheduler_review_due: "复盘到期",
+    scheduler_patrol: "定时巡检",
+  };
+  return value ? labels[value] || value : "-";
+}
+
+function agentSeverityLabel(value?: string | null) {
+  const labels: Record<string, string> = {
+    watch: "观察",
+    warning: "预警",
+    danger: "紧张",
+    critical: "危险",
+  };
+  return value ? labels[value] || value : "-";
 }
 
 function deliveryStatusLabel(value?: string | null) {

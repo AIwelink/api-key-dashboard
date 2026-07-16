@@ -710,6 +710,71 @@ legend {
   overflow: auto;
 }
 
+.agent-setting-help {
+  cursor: help;
+  display: inline-flex;
+  position: relative;
+  width: fit-content;
+  z-index: 4;
+}
+
+.agent-setting-help-trigger {
+  border-bottom: 1px dashed #a75b74;
+}
+
+.agent-setting-help:focus-visible .agent-setting-help-trigger {
+  outline: 2px solid #f0aec4;
+  outline-offset: 2px;
+}
+
+.agent-setting-help-tooltip {
+  background: #fff;
+  border: 1px solid #d9b6c3;
+  border-radius: 6px;
+  bottom: calc(100% + 8px);
+  box-shadow: 0 12px 30px rgba(58, 24, 37, 0.16);
+  color: var(--text);
+  display: none;
+  gap: 7px;
+  left: 0;
+  line-height: 1.45;
+  padding: 11px 12px;
+  position: absolute;
+  text-align: left;
+  width: min(320px, calc(100vw - 48px));
+  z-index: 80;
+}
+
+.agent-setting-help:hover .agent-setting-help-tooltip,
+.agent-setting-help:focus .agent-setting-help-tooltip,
+.agent-setting-help:focus-within .agent-setting-help-tooltip {
+  display: grid;
+}
+
+.agent-setting-help-tooltip strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.agent-setting-help-tooltip span,
+.agent-setting-help-tooltip em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.agent-setting-help-tooltip em {
+  border-top: 1px solid var(--line);
+  color: #8a5367;
+  padding-top: 7px;
+}
+
+.agent-scheduler-grid > label:nth-of-type(even) .agent-setting-help-tooltip {
+  left: auto;
+  right: 0;
+}
+
 .checkbox-row {
   align-items: center;
   display: flex;
@@ -2910,10 +2975,24 @@ legend {
 
 .agent-scheduler-summary-stats {
   align-items: stretch;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
 }
 
 .agent-scheduler-summary-stats .agent-metric {
-  flex: 1 1 132px;
+  align-content: start;
+  display: grid;
+  gap: 4px;
+  min-height: 62px;
+  padding: 9px 11px;
+}
+
+.agent-scheduler-summary-stats .agent-metric strong {
+  line-height: 1.35;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .agent-recent-conversation {

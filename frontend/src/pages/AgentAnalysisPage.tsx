@@ -227,6 +227,7 @@ type AgentSchedulerPatrolSummary = {
   processed?: number;
   skipped?: number;
   errors?: number;
+  pending?: number;
   latest_tick_at?: string | null;
   reason?: string | null;
 };
@@ -494,15 +495,15 @@ function AgentSchedulerSummaryPanel({ status }: { status: AgentSchedulerStatus |
         <span className={`status-pill ${status?.enabled ? "success" : "muted"}`}>{status?.enabled ? "loop on" : "loop off"}</span>
       </div>
       <div className="compact-stats agent-scheduler-summary-stats">
-        <Metric label="Patrol" value={(patrolSummary?.enabled ?? status?.settings?.patrol_enabled) ? "已启用" : "未启用"} />
-        <Metric label="最近 patrol" value={patrolProcessedText(patrolSummary)} />
-        <Metric label="Eval 状态" value={evalStatusText(latestEval)} />
-        <Metric label="Eval 通过率" value={evalScoreText(latestEval)} />
-        <Metric label="Loop" value={status?.enabled ? "已启用" : "未启用"} />
+        <Metric label="巡检开关" value={(patrolSummary?.enabled ?? status?.settings?.patrol_enabled) ? "已启用" : "未启用"} />
+        <Metric label="最近巡检" value={patrolProcessedText(patrolSummary)} />
+        <Metric label="评测状态" value={evalStatusText(latestEval)} />
+        <Metric label="评测通过率" value={evalScoreText(latestEval)} />
+        <Metric label="Loop 开关" value={status?.enabled ? "已启用" : "未启用"} />
         <Metric label="运行中" value={status?.running ? "是" : "否"} />
-        <Metric label="最近 tick" value={formatOptionalDate(latestTick?.finished_at || latestTick?.started_at)} />
-        <Metric label="tick 状态" value={schedulerTickStatusText(latestTick)} />
-        <Metric label="到期 task" value={dueTaskCount ? `${dueTaskCount} 个` : "无"} />
+        <Metric label="最近调度时间" value={formatOptionalDate(latestTick?.finished_at || latestTick?.started_at)} />
+        <Metric label="调度状态" value={schedulerTickStatusText(latestTick)} />
+        <Metric label="到期任务" value={dueTaskCount ? `${dueTaskCount} 个` : "无"} />
         <Metric label="等待人工" value={taskSummary.waiting_human_count ? `${taskSummary.waiting_human_count} 个` : "无"} />
         <Metric label="告警草稿" value={taskSummary.alert_drafted_count ? `${taskSummary.alert_drafted_count} 个` : "无"} />
         <Metric label="自动触发" value={triggerLabel(latestAutoTrigger?.trigger)} />
@@ -698,10 +699,11 @@ function AgentTaskSummaryPanel({ task }: { task: AgentTaskSummary | null }) {
 }
 
 function Metric({ label, value }: { label: string; value: unknown }) {
+  const displayValue = String(value ?? "-");
   return (
-    <div className="compact-stat agent-metric">
+    <div className="compact-stat agent-metric" title={`${label}：${displayValue}`}>
       <span>{label}</span>
-      <strong>{String(value ?? "-")}</strong>
+      <strong>{displayValue}</strong>
     </div>
   );
 }
@@ -741,9 +743,10 @@ function formatOptionalDate(value?: string | null): string {
 
 function schedulerTickStatusText(tick?: AgentSchedulerTick | null): string {
   if (!tick) return "-";
+  const errorCount = Array.isArray(tick.errors) ? tick.errors.length : 0;
   if (tick.status === "success") return "成功";
-  if (tick.status === "partial") return "部分成功";
-  if (tick.status === "failed") return "失败";
+  if (tick.status === "partial") return errorCount ? `部分成功 · ${errorCount} 个错误` : "部分成功";
+  if (tick.status === "failed") return errorCount ? `失败 · ${errorCount} 个错误` : "失败";
   if (tick.status === "skipped") return tick.skip_reason === "agent_loop_disabled" ? "已跳过：loop 关闭" : "已跳过";
   return tick.status || "-";
 }
@@ -774,14 +777,17 @@ function reviewResultLabel(value?: string | null): string {
 
 function patrolProcessedText(summary?: AgentSchedulerPatrolSummary | null): string {
   if (!summary) return "-";
+  const selected = Number(summary.selected || 0);
   const processed = Number(summary.processed || 0);
   const skipped = Number(summary.skipped || 0);
   const errors = Number(summary.errors || 0);
-  if (!processed && !skipped && !errors) {
+  const pending = Number(summary.pending || 0);
+  if (!selected && !processed && !skipped && !errors && !pending) {
     return summary.enabled ? "本轮暂无处理" : "未启用";
   }
-  const parts = [`处理 ${processed}`];
+  const parts = [`选中 ${selected}`, `处理 ${processed}`];
   if (skipped) parts.push(`跳过 ${skipped}`);
+  if (pending) parts.push(`待处理 ${pending}`);
   if (errors) parts.push(`错误 ${errors}`);
   return parts.join(" / ");
 }
