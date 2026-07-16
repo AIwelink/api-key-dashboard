@@ -5,6 +5,15 @@ from app.security import hash_password
 from app.utils import now_utc
 
 
+async def ensure_tpm_indexes(db: AsyncIOMotorDatabase) -> None:
+    await db.sub2api_tpm_samples.create_index(
+        [("site_id", 1), ("group_id", 1), ("bucket_at", 1)],
+        unique=True,
+    )
+    await db.sub2api_tpm_samples.create_index("expires_at", expireAfterSeconds=0)
+    await db.sub2api_tpm_samples.create_index([("site_id", 1), ("group_id", 1), ("sampled_at", -1)])
+
+
 async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.users.create_index("email", unique=True)
     await db.api_tokens.create_index("token_hash", unique=True)
@@ -89,6 +98,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.sub2api_dashboard_snapshots.create_index([("site_id", 1), ("range_type", 1)])
     await db.sub2api_dashboard_snapshots.create_index([("site_id", 1), ("group_id", 1), ("range_type", 1)])
     await db.sub2api_dashboard_meta.create_index("updated_at")
+    await ensure_tpm_indexes(db)
     await db.sub2api_auto_refill_meta.create_index("last_finished_at")
     await db.group_observability_settings.create_index([("site_id", 1), ("group_id", 1)], unique=True)
     await db.group_observability_settings.create_index("status")
@@ -111,6 +121,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.remote_account_probe_samples.create_index([("site_id", 1), ("sampled_at", -1)])
     await db.remote_account_probe_runs.create_index([("site_id", 1), ("started_at", -1)])
     await db.remote_account_probe_meta.create_index("last_probe_at")
+    await db.sub2api_capacity_notification_meta.create_index([("site_id", 1), ("group_id", 1)], unique=True)
     await db.agent_runs.create_index([("created_at", -1)])
     await db.agent_runs.create_index([("status", 1), ("created_at", -1)])
     await db.agent_runs.create_index([("pool_id", 1), ("created_at", -1)])

@@ -209,6 +209,9 @@ class GroupObservabilitySettingUpdate(BaseModel):
     record_usage_samples: bool | None = None
     record_status_events: bool | None = None
     record_duplicate_email_warning: bool | None = None
+    capacity_notification_enabled: bool | None = None
+    capacity_notification_threshold: Literal["tight", "danger", "exhausted"] | None = None
+    capacity_notification_cooldown_minutes: int | None = Field(default=None, ge=5, le=1440)
 
 
 class AlertReadRequest(BaseModel):

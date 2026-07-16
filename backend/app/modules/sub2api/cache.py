@@ -278,7 +278,7 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
             group_ops = []
             empty_capacity_summary: dict[str, Any] | None = None
             for group in groups:
-                group_id = group.get("id")
+                group_id = _int_group_id(group.get("id"))
                 if group_id is None:
                     continue
                 capacity_summary = group_capacity_summaries.get(group_id)
@@ -286,6 +286,7 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                     if empty_capacity_summary is None:
                         empty_capacity_summary = await _capacity_summary_for_accounts(db, site_id, [])
                     capacity_summary = empty_capacity_summary
+                    group_capacity_summaries[group_id] = capacity_summary
                 group_ops.append(
                     ReplaceOne(
                         {"_id": f"{site_id}:{group_id}"},
@@ -332,6 +333,19 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                 db.sub2api_groups_cache.delete_many({"site_id": site_id, "group_id": {"$nin": group_ids}}),
                 db.sub2api_accounts_cache.delete_many({"site_id": site_id, "sub2api_account_id": {"$nin": account_ids}}),
             )
+            capacity_notification_summary: dict[str, Any] | None = None
+            try:
+                from app.modules.sub2api.capacity_notifications import evaluate_capacity_notifications
+
+                capacity_notification_summary = await evaluate_capacity_notifications(
+                    db,
+                    site_id=site_id,
+                    groups=groups,
+                    capacity_summaries=group_capacity_summaries,
+                )
+            except Exception as exc:  # noqa: BLE001 - notification failures must not fail cache refresh.
+                capacity_notification_summary = {"ok": False, "message": str(exc)}
+                logger.warning("sub2api_capacity_notification_failed site_id=%s error=%s", site_id, exc)
             try:
                 from app.modules.api_pools.pools import sync_api_pools_from_sub2api_groups
 
@@ -354,6 +368,7 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                 "auto_removed_abnormal_accounts": auto_remove_summary.get("removed", 0) if auto_remove_summary else 0,
                 "auto_remove_abnormal_failed": auto_remove_summary.get("failed", 0) if auto_remove_summary else 0,
                 "dashboard": dashboard_summary,
+                "capacity_notifications": capacity_notification_summary,
                 "started_at": started_at,
                 "finished_at": now_utc(),
             }

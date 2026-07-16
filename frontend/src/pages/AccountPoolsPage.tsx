@@ -77,6 +77,12 @@ type GroupObservabilitySetting = {
   record_usage_samples?: boolean;
   record_status_events?: boolean;
   record_duplicate_email_warning?: boolean;
+  capacity_notification_enabled?: boolean;
+  capacity_notification_threshold?: "tight" | "danger" | "exhausted";
+  capacity_notification_cooldown_minutes?: number;
+  capacity_notification_last_at?: string | null;
+  capacity_notification_last_status?: string | null;
+  capacity_notification_last_health_status?: string | null;
   group_account_count?: number;
   group_active_account_count?: number;
   updated_at?: string;
@@ -656,8 +662,8 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       <section className="panel observability-config-panel">
         <div className="panel-header">
           <div>
-            <h3>账号探测配置</h3>
-            <p>按分组配置轻量探测间隔；间隔从上次完成后计算，同一站点不会重复启动探测。</p>
+            <h3>分组监控与通知</h3>
+            <p>按分组配置账号探测和容量预警；容量通知会发送到所有已启用的通知通道。</p>
           </div>
           <div className="button-row">
             <button className="ghost compact-button" type="button" onClick={() => loadObservabilitySettings().catch((error) => showToast(errorMessage(error), true))} disabled={!selectedSiteId}>
@@ -679,6 +685,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                 <th>详细记录</th>
                 <th>样本保留</th>
                 <th>记录内容</th>
+                <th>容量通知</th>
                 <th>最后更新</th>
               </tr>
             </thead>
@@ -781,13 +788,68 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                         </label>
                       </div>
                     </td>
+                    <td>
+                      <div className="inline-check-stack">
+                        <label className="inline-check">
+                          <input
+                            checked={setting.capacity_notification_enabled === true}
+                            disabled={busy}
+                            type="checkbox"
+                            onChange={(event) => saveObservabilitySetting(setting, { capacity_notification_enabled: event.target.checked })}
+                          />
+                          <span>{setting.capacity_notification_enabled === true ? "开启" : "关闭"}</span>
+                        </label>
+                        <select
+                          disabled={busy || setting.capacity_notification_enabled !== true}
+                          value={setting.capacity_notification_threshold || "tight"}
+                          onChange={(event) =>
+                            saveObservabilitySetting(setting, {
+                              capacity_notification_threshold: event.target.value as "tight" | "danger" | "exhausted",
+                            })
+                          }
+                        >
+                          <option value="tight">紧张及以下</option>
+                          <option value="danger">危险及以下</option>
+                          <option value="exhausted">仅耗尽</option>
+                        </select>
+                        <div>
+                          <input
+                            className="compact-number-input"
+                            disabled={busy || setting.capacity_notification_enabled !== true}
+                            min={5}
+                            max={1440}
+                            type="number"
+                            defaultValue={setting.capacity_notification_cooldown_minutes || 60}
+                            onBlur={(event) =>
+                              saveObservabilitySetting(setting, {
+                                capacity_notification_cooldown_minutes: clampInt(
+                                  event.target.value,
+                                  5,
+                                  1440,
+                                  setting.capacity_notification_cooldown_minutes || 60,
+                                ),
+                              })
+                            }
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") event.currentTarget.blur();
+                            }}
+                          />
+                          <span className="cell-sub"> 分钟重复提醒</span>
+                        </div>
+                        {setting.capacity_notification_last_at && (
+                          <span className="cell-sub">
+                            最近 {formatDateTime(setting.capacity_notification_last_at)} · {setting.capacity_notification_last_status || "-"}
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td>{formatDateTime(setting.updated_at)}</td>
                   </tr>
                 );
               })}
               {!observabilitySettings.length && (
                 <tr>
-                  <td className="muted" colSpan={8}>
+                  <td className="muted" colSpan={9}>
                     暂无分组探测配置，请先同步 sub2api 分组。
                   </td>
                 </tr>

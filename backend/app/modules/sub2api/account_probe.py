@@ -74,6 +74,9 @@ def default_group_observability_setting(site_id: str, group_id: int, group_name:
         "record_usage_samples": not likely_free,
         "record_status_events": True,
         "record_duplicate_email_warning": True,
+        "capacity_notification_enabled": False,
+        "capacity_notification_threshold": "tight",
+        "capacity_notification_cooldown_minutes": 60,
         "missing_confirm_count": DEFAULT_MISSING_CONFIRM_COUNT,
         "status": "active",
         "created_at": now,
@@ -88,6 +91,11 @@ async def list_group_observability_settings(db: AsyncIOMotorDatabase, site_id: s
         if isinstance(doc.get("group_id"), int)
     }
     group_docs = db.sub2api_groups_cache.find({"site_id": site_id}).sort("group_id", 1)
+    notification_meta = {
+        int(doc["group_id"]): doc
+        async for doc in db.sub2api_capacity_notification_meta.find({"site_id": site_id})
+        if isinstance(doc.get("group_id"), int)
+    }
     items: list[dict[str, Any]] = []
     seen: set[int] = set()
     async for group_doc in group_docs:
@@ -101,6 +109,10 @@ async def list_group_observability_settings(db: AsyncIOMotorDatabase, site_id: s
         setting["group_name"] = setting.get("group_name") or group_name
         setting["group_account_count"] = group.get("account_count")
         setting["group_active_account_count"] = group.get("active_account_count")
+        meta = notification_meta.get(group_id, {})
+        setting["capacity_notification_last_at"] = meta.get("last_attempt_at")
+        setting["capacity_notification_last_status"] = meta.get("last_delivery_status")
+        setting["capacity_notification_last_health_status"] = meta.get("last_notified_status")
         items.append(serialize_doc(setting))
     for group_id, setting in settings.items():
         if group_id not in seen:
@@ -129,6 +141,9 @@ async def update_group_observability_setting(
         "record_usage_samples",
         "record_status_events",
         "record_duplicate_email_warning",
+        "capacity_notification_enabled",
+        "capacity_notification_threshold",
+        "capacity_notification_cooldown_minutes",
     }
     updates = {key: payload[key] for key in allowed if key in payload and payload[key] is not None}
     updates["group_name"] = group_name

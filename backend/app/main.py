@@ -17,6 +17,7 @@ from app.modules.sub2api.account_probe import probe_scheduler_loop
 from app.modules.sub2api.auto_refill import auto_refill_scheduler_loop
 from app.modules.sub2api.cache import refresh_account_caches_for_all_sites, refresh_scheduler_loop
 from app.modules.sub2api.dashboard import refresh_due_dashboard_snapshots_for_all_sites
+from app.modules.sub2api.tpm_sampler import tpm_sampler_loop
 
 
 settings_obj = get_settings()
@@ -40,6 +41,7 @@ async def lifespan(app_instance: FastAPI):
     refresh_task = asyncio.create_task(refresh_scheduler_loop(db))
     account_probe_task = asyncio.create_task(probe_scheduler_loop(db))
     auto_refill_task = asyncio.create_task(auto_refill_scheduler_loop(db))
+    tpm_sampler_task = asyncio.create_task(tpm_sampler_loop(db))
     cleanup_task = asyncio.create_task(log_cleanup_loop(settings_obj))
     await start_agent_scheduler(app_instance)
     try:
@@ -48,7 +50,7 @@ async def lifespan(app_instance: FastAPI):
     finally:
         logger.info("app_stopping")
         await stop_agent_scheduler(app_instance)
-        for task in (dashboard_startup_task, account_cache_startup_task, refresh_task, account_probe_task, auto_refill_task, cleanup_task):
+        for task in (dashboard_startup_task, account_cache_startup_task, refresh_task, account_probe_task, auto_refill_task, tpm_sampler_task, cleanup_task):
             task.cancel()
             try:
                 await task
