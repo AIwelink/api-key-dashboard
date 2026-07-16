@@ -38,6 +38,14 @@ TRIGGER_REASON_LABELS = {
     "status_worsened": "容量状态继续恶化",
     "cooldown_elapsed": "危险状态持续，冷却时间已到",
 }
+REFILL_ACCOUNT_TYPE_LABELS = {
+    "free": "Free",
+    "plus": "Plus",
+    "team": "Team",
+    "k12": "K12",
+    "pro": "Pro",
+}
+REFILL_REFERENCE_NOTE = "仅供参考，请结合实时供货和账号质量判断。"
 SHANGHAI_TZ = timezone(timedelta(hours=8))
 
 
@@ -285,7 +293,7 @@ def _capacity_notification_text(
             f"TPM / RPM：{_metric(summary.get('pressure_tpm'))} / {_metric(summary.get('pressure_rpm'))}",
             f"并发覆盖：{_multiple(summary.get('concurrency_coverage'))}",
             f"当前账号：{int(summary.get('available_accounts') or 0)} 个，5h 可用 {int(summary.get('available_5h_accounts') or 0)} 个",
-            f"建议动作：{_refill_action(summary.get('recommended_refill_accounts'))}",
+            f"建议动作：{_refill_action(summary.get('recommended_refill_accounts'), summary.get('recommended_refill_options'))}",
             f"判断原因：{summary.get('health_reason') or '-'}",
         ]
     )
@@ -392,8 +400,21 @@ def _money(value: Any) -> str:
         return "-"
 
 
-def _refill_action(value: Any) -> str:
+def _refill_action(value: Any, options: Any = None) -> str:
+    option_parts: list[str] = []
+    if isinstance(options, dict):
+        for option_key, raw_option in options.items():
+            if not isinstance(raw_option, dict):
+                continue
+            count = _integer(raw_option.get("recommended_refill_accounts")) or 0
+            if count <= 0:
+                continue
+            account_type = str(raw_option.get("account_type") or option_key or "").strip().lower()
+            label = REFILL_ACCOUNT_TYPE_LABELS.get(account_type, account_type.upper() or "账号")
+            option_parts.append(f"补 {label} {count} 个")
+    if option_parts:
+        return f"{'，或'.join(option_parts)}。{REFILL_REFERENCE_NOTE}"
     count = _integer(value) or 0
     if count > 0:
-        return f"补充 {count} 个账号"
+        return f"补充 {count} 个账号。{REFILL_REFERENCE_NOTE}"
     return "无需补号，检查并发、异常账号或采样数据"

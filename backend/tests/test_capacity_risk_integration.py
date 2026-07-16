@@ -100,6 +100,9 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["health_status"], "tight")
         self.assertTrue(summary["replenishment_required"])
         self.assertEqual(summary["recommended_refill_accounts"], 1)
+        self.assertEqual(list(summary["recommended_refill_options"]), ["plus", "k12"])
+        self.assertEqual(summary["recommended_refill_options"]["plus"]["recommended_refill_accounts"], 1)
+        self.assertEqual(summary["recommended_refill_options"]["k12"]["recommended_refill_accounts"], 1)
         self.assertFalse(summary["auto_refill_required"])
 
     async def test_realtime_risk_replaces_historical_day_scale_status(self) -> None:

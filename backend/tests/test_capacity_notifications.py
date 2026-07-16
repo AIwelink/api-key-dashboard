@@ -162,6 +162,10 @@ class CapacityNotificationTextTests(unittest.TestCase):
                 "pressure_rpm": 45,
                 "concurrency_coverage": 1.08,
                 "recommended_refill_accounts": 4,
+                "recommended_refill_options": {
+                    "plus": {"account_type": "plus", "recommended_refill_accounts": 2},
+                    "k12": {"account_type": "k12", "recommended_refill_accounts": 9},
+                },
                 "available_accounts": 12,
                 "available_5h_accounts": 10,
                 "five_hour_actual_remaining_usd": 80,
@@ -180,7 +184,7 @@ class CapacityNotificationTextTests(unittest.TestCase):
         self.assertIn("5h 可用：实际 $80.00 / 动态 $160.00 / 容量 $220.00", message)
         self.assertIn("7d 可用：实际 $500.00 / 动态 $700.00 / 容量 $900.00", message)
         self.assertIn("当前账号：12 个，5h 可用 10 个", message)
-        self.assertIn("建议动作：补充 4 个账号", message)
+        self.assertIn("建议动作：补 Plus 2 个，或补 K12 9 个。仅供参考，请结合实时供货和账号质量判断。", message)
         self.assertIn("判断原因：动态容量不足 3 小时", message)
 
     def test_recovery_text_contains_current_operating_state(self) -> None:

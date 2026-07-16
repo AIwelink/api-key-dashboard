@@ -47,6 +47,8 @@ def calculate_capacity_risk(
     per_account_five_hour_usd: float,
     per_account_seven_day_usd: float,
     average_account_concurrency: float,
+    refill_account_options: dict[str, dict[str, Any]] | None = None,
+    primary_refill_account_type: str | None = None,
 ) -> dict[str, Any]:
     now = _as_utc(now)
     normalized = _normalized_samples(samples)
@@ -143,11 +145,26 @@ def calculate_capacity_risk(
     )
     account_floor_refill = max(0, 3 - max(0, int(available_accounts)))
     recommended_refill_accounts = max(quota_refill_accounts, concurrency_refill_accounts, account_floor_refill)
+    recommended_refill_options = _recommended_refill_options(
+        refill_account_options=refill_account_options,
+        burn_usd_per_hour=burn_usd_per_hour,
+        actual_five_hour_remaining_usd=actual_five_hour_remaining_usd,
+        dynamic_five_hour_remaining_usd=dynamic_five_hour_remaining_usd,
+        dynamic_seven_day_remaining_usd=dynamic_seven_day_remaining_usd,
+        estimated_concurrency=estimated_concurrency,
+        safe_concurrency_available=safe_concurrency_available,
+        average_account_concurrency=average_account_concurrency,
+        account_floor_refill=account_floor_refill,
+    )
+    primary_option = recommended_refill_options.get(str(primary_refill_account_type or "").strip().lower())
+    if primary_option is not None:
+        recommended_refill_accounts = primary_option["recommended_refill_accounts"]
     replenishment_required = not inventory_risk and (
         health_status in {"tight", "danger", "exhausted"} or recommended_refill_accounts > 0
     )
     if not replenishment_required:
         recommended_refill_accounts = 0
+        recommended_refill_options = {}
 
     health_label, health_tone = HEALTH_META[health_status]
     return {
@@ -183,6 +200,7 @@ def calculate_capacity_risk(
         "quota_refill_accounts": quota_refill_accounts,
         "concurrency_refill_accounts": concurrency_refill_accounts,
         "recommended_refill_accounts": recommended_refill_accounts,
+        "recommended_refill_options": recommended_refill_options,
     }
 
 
@@ -203,6 +221,7 @@ def _pending_summary(*, sample_count: int, latest_sampled_at: datetime | None) -
         "quota_refill_accounts": 0,
         "concurrency_refill_accounts": 0,
         "recommended_refill_accounts": 0,
+        "recommended_refill_options": {},
         "target_runway_hours": DYNAMIC_RUNWAY_TARGET_HOURS,
         "actual_target_hours": ACTUAL_RUNWAY_TARGET_HOURS,
         "concurrency_target_coverage": SAFE_CONCURRENCY_TARGET,
@@ -282,6 +301,51 @@ def _concurrency_refill_accounts(
 ) -> int:
     gap = max(0.0, estimated_concurrency * SAFE_CONCURRENCY_TARGET - max(0.0, safe_concurrency_available))
     return _ceil_ratio(gap, average_account_concurrency)
+
+
+def _recommended_refill_options(
+    *,
+    refill_account_options: dict[str, dict[str, Any]] | None,
+    burn_usd_per_hour: float,
+    actual_five_hour_remaining_usd: float,
+    dynamic_five_hour_remaining_usd: float,
+    dynamic_seven_day_remaining_usd: float,
+    estimated_concurrency: float,
+    safe_concurrency_available: float,
+    average_account_concurrency: float,
+    account_floor_refill: int,
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(refill_account_options, dict):
+        return {}
+    concurrency_refill = _concurrency_refill_accounts(
+        estimated_concurrency=estimated_concurrency,
+        safe_concurrency_available=safe_concurrency_available,
+        average_account_concurrency=average_account_concurrency,
+    )
+    result: dict[str, dict[str, Any]] = {}
+    for raw_account_type, raw_limits in refill_account_options.items():
+        account_type = str(raw_account_type or "").strip().lower()
+        if not account_type or not isinstance(raw_limits, dict):
+            continue
+        five_hour_limit = _positive(raw_limits.get("five_hour_usd"))
+        seven_day_limit = _positive(raw_limits.get("seven_day_usd"))
+        if five_hour_limit is None or seven_day_limit is None:
+            continue
+        quota_refill = _quota_refill_accounts(
+            burn_usd_per_hour=burn_usd_per_hour,
+            actual_five_hour_remaining_usd=actual_five_hour_remaining_usd,
+            dynamic_five_hour_remaining_usd=dynamic_five_hour_remaining_usd,
+            dynamic_seven_day_remaining_usd=dynamic_seven_day_remaining_usd,
+            per_account_five_hour_usd=five_hour_limit,
+            per_account_seven_day_usd=seven_day_limit,
+        )
+        result[account_type] = {
+            "account_type": account_type,
+            "quota_refill_accounts": quota_refill,
+            "concurrency_refill_accounts": concurrency_refill,
+            "recommended_refill_accounts": max(quota_refill, concurrency_refill, account_floor_refill),
+        }
+    return result
 
 
 def _normalized_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:

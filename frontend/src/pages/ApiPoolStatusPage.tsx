@@ -168,6 +168,12 @@ type CapacitySummary = {
   concurrency_target_coverage?: number;
   replenishment_required?: boolean;
   recommended_refill_accounts?: number;
+  recommended_refill_options?: Record<string, {
+    account_type?: string;
+    quota_refill_accounts?: number;
+    concurrency_refill_accounts?: number;
+    recommended_refill_accounts?: number;
+  }>;
   quota_refill_accounts?: number;
   concurrency_refill_accounts?: number;
   inventory_risk?: boolean;
@@ -1380,7 +1386,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
         <CapacityMetric
           label="安全并发覆盖"
           value={formatMultiple(summary?.concurrency_coverage)}
-          sub={`压力并发 ${formatRate(summary?.estimated_concurrency)} · 安全可用 ${formatRate(summary?.concurrency_safe_available)} · 建议补号 ${Math.max(0, Math.round(numberValue(summary?.recommended_refill_accounts)))} 个`}
+          sub={`压力并发 ${formatRate(summary?.estimated_concurrency)} · 安全可用 ${formatRate(summary?.concurrency_safe_available)}${refillRecommendationText(summary, true) ? ` · ${refillRecommendationText(summary, true)}` : ""}`}
           percent={runwayScalePercent(summary?.concurrency_coverage, summary?.concurrency_target_coverage ?? 1.2)}
           tone={concurrencyCoverageTone(summary?.concurrency_coverage, summary?.realtime_risk_ready)}
           meterLegendLabel="目标"
@@ -1648,9 +1654,38 @@ function capacityOverlay(label: string, value: string, percent?: number | null, 
 function capacityHealthReason(summary?: CapacitySummary) {
   if (!summary) return "等待 dashboard cost 数据";
   const reason = summary.health_reason || "等待 dashboard cost 数据";
-  const recommended = Math.max(0, Math.round(numberValue(summary.recommended_refill_accounts)));
-  const refill = summary.replenishment_required && recommended > 0 ? `；建议补号 ${recommended} 个` : "";
+  const recommendation = refillRecommendationText(summary);
+  const refill = recommendation ? `；${recommendation}` : "";
   return `${reason}${refill}`;
+}
+
+const refillAccountTypeLabels: Record<string, string> = {
+  free: "Free",
+  plus: "Plus",
+  team: "Team",
+  k12: "K12",
+  pro: "Pro",
+};
+
+function refillRecommendationText(summary?: CapacitySummary, compact = false) {
+  if (!summary?.replenishment_required) return "";
+  const options = Object.entries(summary.recommended_refill_options || {})
+    .map(([key, option]) => {
+      const count = Math.max(0, Math.round(numberValue(option.recommended_refill_accounts)));
+      if (count <= 0) return "";
+      const accountType = String(option.account_type || key).trim().toLowerCase();
+      const label = refillAccountTypeLabels[accountType] || accountType.toUpperCase() || "账号";
+      return `${label} ${count} 个`;
+    })
+    .filter(Boolean);
+  if (options.length > 0) {
+    if (compact) return `建议 ${options.join(" / ")}（仅供参考）`;
+    return `建议补号：${options.join("，或 ")}。仅供参考，请结合实时供货和账号质量判断。`;
+  }
+  const legacyCount = Math.max(0, Math.round(numberValue(summary.recommended_refill_accounts)));
+  if (legacyCount <= 0) return "";
+  if (compact) return `建议 ${legacyCount} 个（仅供参考）`;
+  return `建议补号：${legacyCount} 个。仅供参考，请结合实时供货和账号质量判断。`;
 }
 
 function CapacityMetric({

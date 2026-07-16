@@ -165,6 +165,41 @@ class CapacityRiskTests(unittest.TestCase):
         self.assertEqual(result["concurrency_refill_accounts"], 2)
         self.assertEqual(result["recommended_refill_accounts"], 2)
 
+    def test_refill_options_use_same_gap_with_each_account_type_limits(self) -> None:
+        result = calculate(
+            samples([1000] * 20),
+            cost_per_token=1 / 1000,
+            actual_five_hour_remaining_usd=0.0,
+            dynamic_five_hour_remaining_usd=0.0,
+            actual_seven_day_remaining_usd=0.0,
+            dynamic_seven_day_remaining_usd=0.0,
+            safe_concurrency_available=0.0,
+            refill_account_options={
+                "plus": {"five_hour_usd": 110.0, "seven_day_usd": 110.0},
+                "k12": {"five_hour_usd": 20.0, "seven_day_usd": 100.0},
+            },
+            primary_refill_account_type="plus",
+        )
+
+        self.assertEqual(result["recommended_refill_accounts"], 2)
+        self.assertEqual(
+            result["recommended_refill_options"],
+            {
+                "plus": {
+                    "account_type": "plus",
+                    "quota_refill_accounts": 2,
+                    "concurrency_refill_accounts": 2,
+                    "recommended_refill_accounts": 2,
+                },
+                "k12": {
+                    "account_type": "k12",
+                    "quota_refill_accounts": 9,
+                    "concurrency_refill_accounts": 2,
+                    "recommended_refill_accounts": 9,
+                },
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

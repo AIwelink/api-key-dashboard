@@ -29,6 +29,10 @@ CONCURRENCY_SAFE_FIVE_HOUR_USAGE_PERCENT = 80
 CONCURRENCY_SAFE_SEVEN_DAY_USAGE_PERCENT = 80
 BUG_TEAM_MIN_WINDOW_MINUTES = 28 * 24 * 60
 CAPACITY_ACCOUNT_LIMITS = DEFAULT_CAPACITY_ACCOUNT_LIMITS
+REFILL_ACCOUNT_TYPES_BY_POOL = {
+    "plus": ("plus", "k12"),
+    "pro": ("pro",),
+}
 CAPACITY_HEALTH_THRESHOLDS = {
     "exhausted_available_accounts": 2,
     "exhausted_recent_day_peak_multiple": 0.2,
@@ -932,6 +936,8 @@ async def _capacity_summary_for_accounts(
         per_account_five_hour_usd=float(selected_limits.get("five_hour_usd") or 0),
         per_account_seven_day_usd=float(selected_limits.get("seven_day_usd") or 0),
         average_account_concurrency=average_account_concurrency,
+        refill_account_options=_refill_account_options(primary_type, capacity_limits),
+        primary_refill_account_type=primary_type,
     )
     if realtime_risk["ready"]:
         health = {
@@ -1372,6 +1378,21 @@ def _primary_capacity_type(type_summary: dict[str, dict[str, Any]]) -> str:
         return "total"
     priority = {"pro": 6, "bug_team": 5, "plus": 4, "k12": 3, "team": 2, "free": 1}
     return max(candidates, key=lambda item: (item[1], priority.get(item[0], 0)))[0]
+
+
+def _refill_account_options(
+    primary_type: str,
+    capacity_limits: dict[str, dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    normalized_type = str(primary_type or "").strip().lower()
+    if normalized_type in {"", "total", "bug_team"}:
+        return {}
+    account_types = REFILL_ACCOUNT_TYPES_BY_POOL.get(normalized_type, (normalized_type,))
+    return {
+        account_type: dict(capacity_limits[account_type])
+        for account_type in account_types
+        if account_type in capacity_limits
+    }
 
 
 def _capacity_account_type(account: dict[str, Any]) -> str:

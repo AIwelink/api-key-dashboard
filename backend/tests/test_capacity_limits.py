@@ -26,6 +26,14 @@ def bug_team_account(*, used_percent: float = 54) -> dict:
 
 
 class BugTeamCapacityTests(unittest.TestCase):
+    def test_refill_options_are_bound_to_primary_pool_type(self) -> None:
+        limits = normalize_capacity_limits(None)
+
+        self.assertEqual(list(cache._refill_account_options("plus", limits)), ["plus", "k12"])
+        self.assertEqual(list(cache._refill_account_options("pro", limits)), ["pro"])
+        self.assertEqual(list(cache._refill_account_options("team", limits)), ["team"])
+        self.assertEqual(list(cache._refill_account_options("k12", limits)), ["k12"])
+
     def test_missing_remote_plan_type_defaults_to_k12(self) -> None:
         account = cache._normalize_account_snapshot(
             {
