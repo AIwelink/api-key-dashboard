@@ -26,6 +26,36 @@ def bug_team_account(*, used_percent: float = 54) -> dict:
 
 
 class BugTeamCapacityTests(unittest.TestCase):
+    def test_missing_remote_plan_type_defaults_to_k12(self) -> None:
+        account = cache._normalize_account_snapshot(
+            {
+                "id": 1,
+                "plan_type": "",
+                "credentials": {"plan_type": ""},
+                "status": "active",
+            }
+        )
+
+        self.assertEqual(account["plan_type"], "k12")
+        self.assertEqual(account["codex_plan_type_source"], "fallback_k12")
+        self.assertEqual(cache._capacity_account_type(account), "k12")
+
+    def test_cached_plan_type_replaces_temporary_k12_fallback(self) -> None:
+        account = cache._normalize_account_snapshot({"id": 1, "plan_type": "", "status": "error"})
+
+        cache._copy_cached_plan_type(account, {"id": 1, "plan_type": "plus"})
+
+        self.assertEqual(account["plan_type"], "plus")
+        self.assertEqual(account["codex_plan_type_source"], "cached")
+        self.assertEqual(cache._capacity_account_type(account), "plus")
+
+    def test_remote_plan_type_is_not_replaced_by_cached_value(self) -> None:
+        account = cache._normalize_account_snapshot({"id": 1, "plan_type": "pro", "status": "active"})
+
+        cache._copy_cached_plan_type(account, {"id": 1, "plan_type": "plus"})
+
+        self.assertEqual(account["plan_type"], "pro")
+
     def test_old_saved_limits_receive_bug_team_defaults(self) -> None:
         limits = normalize_capacity_limits({"team": {"five_hour_usd": 15, "seven_day_usd": 75}})
 

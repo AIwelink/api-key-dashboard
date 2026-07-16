@@ -402,6 +402,7 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
         seen_remote_ids: set[Any] = set()
         official_refresh_accounts: list[dict[str, Any]] = []
         official_refresh_eligible_accounts: dict[str, int] = {}
+        resolved_plan_types: dict[str, tuple[str, str]] = {}
         sample_ops = []
         accounts_for_identity = _collapse_probe_accounts_by_email(filtered_accounts)
         for account in accounts_for_identity:
@@ -414,6 +415,11 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
             seen_identity_ids.add(identity_id)
             seen_remote_ids.add(remote_id)
             previous_identity = await db.remote_account_identities.find_one({"_id": identity_id})
+            account["plan_type"], account["plan_type_source"] = _resolved_probe_plan_type(
+                account.get("plan_type"),
+                (previous_identity or {}).get("plan_type"),
+            )
+            resolved_plan_types[normalized_email] = (account["plan_type"], account["plan_type_source"])
             official_refresh = _official_usage_refresh_state(
                 previous_snapshot=(previous_identity or {}).get("last_usage_snapshot"),
                 current_snapshot=account.get("usage_snapshot") or {},
@@ -471,6 +477,8 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
             normalized_email = account.get("normalized_email")
             if not remote_id or not normalized_email:
                 continue
+            if normalized_email in resolved_plan_types:
+                account["plan_type"], account["plan_type_source"] = resolved_plan_types[normalized_email]
             setting = _setting_for_account(settings, account)
             session = await db.remote_account_sessions.find_one({"identity_id": _identity_id(site_id, normalized_email), "status": "open"})
             if setting.get("detailed_enabled") is not False and setting.get("record_usage_samples") is not False:
@@ -800,6 +808,16 @@ def _official_refresh_account_type(account: dict[str, Any]) -> str:
     return str(account.get("plan_type") or "unknown").strip().lower() or "unknown"
 
 
+def _resolved_probe_plan_type(current: Any, previous: Any) -> tuple[str, str]:
+    current_value = str(current or "").strip()
+    if current_value:
+        return current_value, "remote"
+    previous_value = str(previous or "").strip()
+    if previous_value:
+        return previous_value, "cached"
+    return "k12", "fallback_k12"
+
+
 def _number_float(value: Any, *, none_if_missing: bool = False) -> float | None:
     if value is None or value == "":
         return None if none_if_missing else 0.0
@@ -1020,6 +1038,7 @@ async def _update_identity_and_events(
         "401_recovery_streak": confirmed_401["recovery_streak"],
         "current_group_ids": account.get("group_ids") or [],
         "plan_type": account.get("plan_type"),
+        "plan_type_source": account.get("plan_type_source"),
         "last_usage_snapshot": account.get("usage_snapshot") or {},
         "cumulative_usage_totals": identity_usage["totals"],
         "cumulative_usage_snapshot": identity_usage["snapshot"],

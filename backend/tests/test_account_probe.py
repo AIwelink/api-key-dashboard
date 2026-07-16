@@ -34,6 +34,17 @@ class AccountProbeSchedulingTests(unittest.IsolatedAsyncioTestCase):
         runner.assert_awaited_once_with(ANY, site_id="api-5001", group_ids=[3])
 
 
+class AccountProbePlanTypeTests(unittest.TestCase):
+    def test_empty_remote_plan_type_keeps_previous_value(self) -> None:
+        self.assertEqual(account_probe._resolved_probe_plan_type("", "plus"), ("plus", "cached"))
+
+    def test_empty_remote_plan_type_without_history_defaults_to_k12(self) -> None:
+        self.assertEqual(account_probe._resolved_probe_plan_type("", None), ("k12", "fallback_k12"))
+
+    def test_remote_plan_type_wins_over_history(self) -> None:
+        self.assertEqual(account_probe._resolved_probe_plan_type("pro", "plus"), ("pro", "remote"))
+
+
 class SparkShadowAccountTests(unittest.TestCase):
     def test_spark_shadow_is_excluded_from_email_identity(self) -> None:
         main = {

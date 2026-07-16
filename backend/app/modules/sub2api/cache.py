@@ -581,8 +581,33 @@ async def _restore_cached_usage_snapshots(db: AsyncIOMotorDatabase, site_id: str
         cached = cached_by_remote_id.get(account.get("id"))
         if isinstance(cached, dict):
             cached_account = cached.get("account", {}) if isinstance(cached.get("account"), dict) else {}
+            _copy_cached_plan_type(account, cached_account)
             _copy_cached_usage(account, cached_account)
             _copy_cached_remote_test(account, cached)
+
+
+def _copy_cached_plan_type(account: dict[str, Any], cached: dict[str, Any]) -> None:
+    extra = dict(account.get("extra") if isinstance(account.get("extra"), dict) else {})
+    source = str(account.get("codex_plan_type_source") or extra.get("codex_plan_type_source") or "")
+    if source != "fallback_k12":
+        return
+
+    cached_credentials = cached.get("credentials") if isinstance(cached.get("credentials"), dict) else {}
+    cached_extra = cached.get("extra") if isinstance(cached.get("extra"), dict) else {}
+    cached_plan_type = _first_present(cached, cached_credentials, cached_extra, "plan_type")
+    if cached_plan_type is None:
+        return
+    cached_plan_type = str(cached_plan_type).strip()
+    if not cached_plan_type:
+        return
+
+    cached_source = str(cached.get("codex_plan_type_source") or cached_extra.get("codex_plan_type_source") or "")
+    resolved_source = "fallback_k12" if cached_source == "fallback_k12" else "cached"
+    account["plan_type"] = cached_plan_type
+    account["codex_plan_type_source"] = resolved_source
+    extra["plan_type"] = cached_plan_type
+    extra["codex_plan_type_source"] = resolved_source
+    account["extra"] = extra
 
 
 def _copy_cached_usage(account: dict[str, Any], cached: dict[str, Any]) -> None:
@@ -2088,6 +2113,15 @@ def _normalize_account_snapshot(account: dict[str, Any]) -> dict[str, Any]:
         value = _first_present(normalized, credentials, extra, field)
         if value is not None:
             normalized[field] = value
+
+    plan_type = str(_first_present(normalized, credentials, extra, "plan_type") or "").strip()
+    if plan_type:
+        normalized["plan_type"] = plan_type
+    else:
+        normalized["plan_type"] = "k12"
+        normalized["codex_plan_type_source"] = "fallback_k12"
+        extra["plan_type"] = "k12"
+        extra["codex_plan_type_source"] = "fallback_k12"
 
     credential_expires_at = _first_present(credentials, extra, "expires_at", "credential_expires_at")
     if credential_expires_at is not None:
