@@ -1387,6 +1387,12 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           meterValue={formatMultiple(summary?.concurrency_target_coverage ?? 1.2)}
         />
         <CapacityMetric
+          label="突发趋势：最近1h"
+          value={burstTrendLabel(summary)}
+          sub={burstTrendSubText(summary)}
+          tone={burstTrendTone}
+        />
+        <CapacityMetric
           label="峰值容量：最近一天5h"
           value={formatMultiple(recentDayFiveHourPeakMultiple)}
           sub={`峰值 ${formatUsd(recentDayFiveHourPeak)}，总容量：5h ${formatUsd(summary?.five_hour_capacity_usd)}`}
@@ -1407,13 +1413,6 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           percent={multipleScalePercent(burstOneHourMultiple)}
           tone={multipleScaleTone(burstOneHourMultiple)}
         />
-        <CapacityMetric
-          label="突发趋势：最近1h"
-          value={burstTrendLabel(summary)}
-          sub={burstTrendSubText(summary)}
-          tone={burstTrendTone}
-        />
-
         <CapacityMetric
           label="预估天数：最近24h"
           value={formatDays(recent24hSpeedDays)}

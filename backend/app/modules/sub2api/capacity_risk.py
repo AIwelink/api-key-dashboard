@@ -92,7 +92,11 @@ def calculate_capacity_risk(
     rpm_medium_ratio = _ratio(rpm_ema_15, rpm_ema_60)
     demand_ratio = max(tpm_momentum, tpm_medium_ratio, rpm_momentum, rpm_medium_ratio)
     trend_multiplier = min(1.5, max(1.0, tpm_momentum))
-    pressure_tpm = max(tpm_ema_15, tpm_p90_2h, tpm_ema_5 * trend_multiplier)
+    falling = _is_falling(tpm_values, tpm_ema_5=tpm_ema_5, tpm_ema_15=tpm_ema_15)
+    if falling:
+        pressure_tpm = max(tpm_ema_5, tpm_ema_15)
+    else:
+        pressure_tpm = max(tpm_ema_15, tpm_p90_2h, tpm_ema_5 * trend_multiplier)
     pressure_rpm = rpm_ema_5
     estimated_concurrency = pressure_rpm * average_duration_ms / 60_000
     concurrency_coverage = _coverage(safe_concurrency_available, estimated_concurrency)
@@ -115,7 +119,6 @@ def calculate_capacity_risk(
         dynamic_runway_hours=dynamic_runway_hours,
         concurrency_coverage=concurrency_coverage,
     )
-    falling = _is_falling(tpm_values, tpm_ema_5=tpm_ema_5, tpm_ema_15=tpm_ema_15)
     inventory_risk = falling and dynamic_runway_hours is not None and dynamic_runway_hours > INVENTORY_RISK_RUNWAY_HOURS
     pressure_stage = _pressure_stage(
         health_status=health_status,

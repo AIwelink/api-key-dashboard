@@ -806,8 +806,8 @@ async def _capacity_summary_for_accounts(
     type_summary = _capacity_by_account_type(capacity_accounts, five_hour_capacity_accounts, capacity_limits)
     primary_type = _primary_capacity_type(type_summary)
     reserve_type_summary = _empty_capacity_type_summary(capacity_limits)
-    selected = type_summary.get(primary_type, type_summary["total"])
-    selected_reserve = reserve_type_summary.get(primary_type, reserve_type_summary["total"])
+    selected = type_summary["total"]
+    selected_reserve = reserve_type_summary["total"]
     cost_summary = await _dashboard_cost_summary(db, site_id, group_id=group_id)
     five_hour_peak_cost = cost_summary["five_hour_peak_cost"]
     recent_day_five_hour_peak_cost = cost_summary["recent_day_five_hour_peak_cost"]
@@ -818,7 +818,11 @@ async def _capacity_summary_for_accounts(
     seven_day_cost = cost_summary["seven_day_cost"]
     active_five_hour_capacity_usd = selected["five_hour_capacity_usd"]
     active_seven_day_capacity_usd = selected["seven_day_capacity_usd"]
-    selected_limits = capacity_limits.get(primary_type, {})
+    selected_account_count = int(selected["available_accounts"])
+    selected_limits = {
+        "five_hour_usd": active_five_hour_capacity_usd / selected_account_count if selected_account_count > 0 else 0.0,
+        "seven_day_usd": active_seven_day_capacity_usd / selected_account_count if selected_account_count > 0 else 0.0,
+    }
     selected_seven_day_limit_usd = float(selected_limits.get("seven_day_usd") or 0)
     estimated_recent_24h_consumed_accounts = _ratio_or_none(recent_24h_cost, selected_seven_day_limit_usd)
     estimated_seven_day_peak_24h_consumed_accounts = _ratio_or_none(seven_day_24h_peak_cost, selected_seven_day_limit_usd)
