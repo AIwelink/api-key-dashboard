@@ -4,6 +4,8 @@
 
 Keep server-backed data on every active application page current without resetting user context or interrupting account operations.
 
+The API pool status page is the primary target and acceptance surface. Its site metadata, groups, account overview, concurrency capacity, capacity forecast, and visible account page must update together on each automatic refresh.
+
 ## Refresh Policy
 
 - Refresh the currently mounted page every 60 seconds.
@@ -25,6 +27,8 @@ Login and account-upload forms have no server collection to poll and therefore d
 ## Existing Status Refresh
 
 The API pool status page will use the shared 60-second policy for cached frontend data. This is separate from the explicit remote Sub2API synchronization action: automatic frontend refresh reads current backend cache and does not force a remote cache rebuild every minute.
+
+The refresh preserves the selected site and group, account status filter, page number, page size, pinned selections, expanded details, and scroll position. It replaces the status data only after the complete refresh succeeds so the page does not briefly show mixed or empty statistics.
 
 ## Verification
 
