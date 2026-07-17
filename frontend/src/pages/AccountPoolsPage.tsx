@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import { errorMessage, formatDateTime } from "../utils/format";
 
 type Props = {
@@ -269,6 +270,14 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     const data = await api<GroupObservabilityResponse>(`/api-pools/observability/groups?site_id=${encodeURIComponent(siteId)}`, token);
     setObservabilitySettings(data.items);
   };
+
+  usePageAutoRefresh(
+    () => loadObservabilitySettings(selectedSiteId),
+    {
+      enabled: Boolean(selectedSiteId && isSub2ApiSite),
+      paused: Boolean(refreshing || savingSite || savingCapacityLimits || savingObservabilityKey || probing || confirmState),
+    },
+  );
 
   const saveObservabilitySetting = async (setting: GroupObservabilitySetting, updates: Partial<GroupObservabilitySetting>) => {
     if (!selectedSiteId) return;

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import { errorMessage, formatDateTime, pretty, text } from "../utils/format";
 
 type Props = {
@@ -270,7 +271,7 @@ export function EventRecordsPage({ token, showToast }: Props) {
     }
   };
 
-  const loadData = async ({ force = false } = {}) => {
+  const loadData = async ({ force = false, silent = false }: { force?: boolean; silent?: boolean } = {}) => {
     if (!force) {
       const cached = getEventRecordsDataCache(viewMode, filters);
       if (cached && cached.skip === skip) {
@@ -330,7 +331,7 @@ export function EventRecordsPage({ token, showToast }: Props) {
         });
       }
     } catch (error) {
-      showToast(errorMessage(error), true);
+      if (!silent) showToast(errorMessage(error), true);
     } finally {
       setLoading(false);
     }
@@ -379,6 +380,10 @@ export function EventRecordsPage({ token, showToast }: Props) {
       return next;
     });
   };
+
+  usePageAutoRefresh(() => loadData({ force: true, silent: true }), {
+    paused: Boolean(detailIdentityId || detailLoading),
+  });
 
   useEffect(() => {
     loadSites();

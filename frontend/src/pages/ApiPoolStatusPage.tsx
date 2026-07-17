@@ -1,6 +1,7 @@
 import { Fragment, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import { errorMessage, formatDateTime, parseDisplayDate, text } from "../utils/format";
 
 type Props = {
@@ -384,7 +385,6 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   const [savingPreference, setSavingPreference] = useState<"site" | "group" | null>(null);
 
   const selectedSite = sites.find((site) => site.id === selectedSiteId) || null;
-  const refreshIntervalMinutes = selectedSite?.refresh_interval_minutes || 30;
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) || null;
   const sortedSites = useMemo(() => sortSitesByPinned(sites, statusPreferences.pinned_site_id), [sites, statusPreferences.pinned_site_id]);
   const sortedGroups = useMemo(() => sortGroupsByPinned(groups, statusPreferences.pinned_group_id), [groups, statusPreferences.pinned_group_id]);
@@ -454,17 +454,21 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     }
   };
 
+  const fetchAccountPage = async (siteId: string, groupId: number, page: number) => {
+    const params = new URLSearchParams({
+      page: String(page),
+      page_size: String(accountPageSize),
+    });
+    if (statusFilter) params.set("status", statusFilter);
+    return api<AccountsResponse>(`/sub2api-sites/${siteId}/groups/${groupId}/accounts?${params.toString()}`, token);
+  };
+
   const loadAccounts = async (siteId = selectedSiteId, groupId = selectedGroupId, page = accountPage) => {
     if (!siteId || groupId === null) return;
     const requestKey = accountCacheKey(siteId, groupId, page, accountPageSize, statusFilter);
     setLoadingAccountsKey(requestKey);
     try {
-      const params = new URLSearchParams({
-        page: String(page),
-        page_size: String(accountPageSize),
-      });
-      if (statusFilter) params.set("status", statusFilter);
-      const data = await api<AccountsResponse>(`/sub2api-sites/${siteId}/groups/${groupId}/accounts?${params.toString()}`, token);
+      const data = await fetchAccountPage(siteId, groupId, page);
       cacheAccounts(siteId, groupId, page, accountPageSize, statusFilter, {
         items: data.items,
         total: data.total,
@@ -484,6 +488,67 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     } finally {
       setLoadingAccountsKey((current) => (current === requestKey ? null : current));
     }
+  };
+
+  const refreshStatusData = async () => {
+    const refreshContextKey = currentAccountKeyRef.current;
+    const [sitesData, preferences] = await Promise.all([
+      api<SitesResponse>("/sub2api-sites?site_type=sub2api", token),
+      api<StatusPreferences>("/api-pools/status-preferences", token),
+    ]);
+    const nextSiteId = chooseSiteId(sitesData.items, selectedSiteId, preferences.pinned_site_id);
+    if (!nextSiteId) {
+      if (currentAccountKeyRef.current !== refreshContextKey) return;
+      setSites(sitesData.items);
+      setStatusPreferences(preferences);
+      setSelectedSiteId("");
+      setGroups([]);
+      setSelectedGroupId(null);
+      setAccounts([]);
+      setAccountsTotal(0);
+      setAccountsDataKey("");
+      return;
+    }
+
+    const groupsData = await api<GroupsResponse>(`/sub2api-sites/${nextSiteId}/groups?page=1&page_size=100`, token);
+    const nextGroupId = chooseGroupId(groupsData.items, selectedGroupId, preferences.pinned_group_id);
+    if (nextGroupId === null) {
+      if (currentAccountKeyRef.current !== refreshContextKey) return;
+      setSites(sitesData.items);
+      setStatusPreferences(preferences);
+      setSelectedSiteId(nextSiteId);
+      setGroups(groupsData.items);
+      setSelectedGroupId(null);
+      setAccounts([]);
+      setAccountsTotal(0);
+      setAccountsDataKey("");
+      setLastLoadedAt(groupsData.cache_meta?.last_refreshed_at || null);
+      return;
+    }
+
+    const requestKey = accountCacheKey(nextSiteId, nextGroupId, accountPage, accountPageSize, statusFilter);
+    const accountsData = await fetchAccountPage(nextSiteId, nextGroupId, accountPage);
+    if (currentAccountKeyRef.current !== refreshContextKey) return;
+    const snapshotLoadedAt = accountsData.cache_meta?.last_refreshed_at || groupsData.cache_meta?.last_refreshed_at || lastLoadedAt;
+    const nextGroups = accountsData.capacity_summary
+      ? groupsData.items.map((group) => (group.id === nextGroupId ? { ...group, capacity_summary: accountsData.capacity_summary } : group))
+      : groupsData.items;
+    cacheAccounts(nextSiteId, nextGroupId, accountPage, accountPageSize, statusFilter, {
+      items: accountsData.items,
+      total: accountsData.total,
+      capacitySummary: accountsData.capacity_summary,
+      lastLoadedAt: snapshotLoadedAt,
+      cachedAt: Date.now(),
+    });
+    setSites(sitesData.items);
+    setStatusPreferences(preferences);
+    setSelectedSiteId(nextSiteId);
+    setGroups(nextGroups);
+    setSelectedGroupId(nextGroupId);
+    setAccounts(accountsData.items);
+    setAccountsTotal(accountsData.total);
+    setAccountsDataKey(requestKey);
+    setLastLoadedAt(snapshotLoadedAt);
   };
 
   const hydrateAccountsFromCache = (siteId: string, groupId: number, page: number, pageSize: number, filter: string) => {
@@ -674,6 +739,11 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     );
   };
 
+  usePageAutoRefresh(refreshStatusData, {
+    enabled: Boolean(selectedSiteId && selectedGroupId !== null),
+    paused: Boolean(refreshingRemote || refreshingFrontend || remoteActionBusyId !== null || confirmState || savingPreference),
+  });
+
   const testConnection = async () => {
     if (!selectedSiteId) return;
     try {
@@ -779,23 +849,6 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     return () => window.removeEventListener("sub2api-cache-updated", handleCacheUpdated);
   }, [selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter]);
 
-  useEffect(() => {
-    if (!selectedSiteId) return;
-    const intervalMs = Math.max(30, refreshIntervalMinutes || 30) * 60_000;
-    const timer = window.setInterval(() => {
-      loadGroups(selectedSiteId)
-        .then((nextGroups) => {
-          const nextGroupId = chooseGroupId(nextGroups, selectedGroupId, statusPreferences.pinned_group_id);
-          if (nextGroupId !== null) {
-            return loadAccounts(selectedSiteId, nextGroupId, accountPage);
-          }
-          return undefined;
-        })
-        .catch((error) => showToast(errorMessage(error), true));
-    }, intervalMs);
-    return () => window.clearInterval(timer);
-  }, [selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter, refreshIntervalMinutes, statusPreferences.pinned_group_id]);
-
   const refreshAll = async () => {
     if (!selectedSiteId) return;
     setRefreshingRemote(true);
@@ -828,15 +881,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     if (!selectedSiteId) return;
     setRefreshingFrontend(true);
     try {
-      const nextGroups = await loadGroups(selectedSiteId);
-      const nextGroupId = chooseGroupId(nextGroups, selectedGroupId, statusPreferences.pinned_group_id);
-      if (nextGroupId !== null) {
-        setSelectedGroupId(nextGroupId);
-        await loadAccounts(selectedSiteId, nextGroupId, accountPage);
-      } else {
-        setAccounts([]);
-        setAccountsTotal(0);
-      }
+      await refreshStatusData();
       showToast("前端数据已刷新");
     } catch (error) {
       showToast(errorMessage(error), true);

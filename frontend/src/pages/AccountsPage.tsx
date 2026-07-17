@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import type { AccountDocument, AccountType, PoolStatus } from "../types";
 import { errorMessage, formatDateTime, formatPayment, pretty, text } from "../utils/format";
 import { parseLooseJsonLocal } from "../utils/jsonParser";
@@ -92,6 +93,10 @@ export function AccountsPage({ token, showToast }: Props) {
     setAccounts(data.items);
     setTotal(data.total);
   };
+
+  usePageAutoRefresh(loadAccounts, {
+    paused: Boolean(editingAccount || busyId || bulkBusy || confirmState),
+  });
 
   useEffect(() => {
     loadAccounts().catch((error) => showToast(errorMessage(error), true));

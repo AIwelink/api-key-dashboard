@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import type { ApiPool } from "../types";
 import { errorMessage, formatDateTime } from "../utils/format";
 
@@ -287,7 +288,7 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
   const [schedulerStatus, setSchedulerStatus] = useState<AgentSchedulerStatus | null>(null);
   const selectedPool = useMemo(() => pools.find((pool) => pool.id === selectedPoolId) || null, [pools, selectedPoolId]);
 
-  const loadPools = async () => {
+  const loadPools = async (silent = false) => {
     setLoadingPools(true);
     try {
       const data = await api<PoolsResponse>("/agent/pools", token);
@@ -295,13 +296,13 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
       setPools(activePools);
       setSelectedPoolId((current) => (activePools.some((pool) => pool.id === current) ? current : activePools[0]?.id || ""));
     } catch (error) {
-      showToast(errorMessage(error), true);
+      if (!silent) showToast(errorMessage(error), true);
     } finally {
       setLoadingPools(false);
     }
   };
 
-  const loadAgentState = async () => {
+  const loadAgentState = async (silent = false) => {
     try {
       const state = await api<AgentStateResponse>("/agent/state", token);
       const restoredReport = restoreReportFromState(state);
@@ -314,7 +315,7 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
         setSelectedPoolId(String(restoredPoolId));
       }
     } catch (error) {
-      showToast(errorMessage(error), true);
+      if (!silent) showToast(errorMessage(error), true);
     }
   };
 
@@ -377,6 +378,13 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
     }
   };
 
+  usePageAutoRefresh(
+    async () => {
+      await Promise.all([loadPools(true), loadAgentState(true), loadAgentSchedulerStatus()]);
+    },
+    { paused: Boolean(analyzing || chatBusy) },
+  );
+
   useEffect(() => {
     loadPools();
     loadAgentState();
@@ -390,7 +398,7 @@ export function AgentAnalysisPage({ token, showToast }: Props) {
           <h2>Agent分析</h2>
         </div>
         <div className="button-row">
-          <button className="ghost" type="button" onClick={loadPools} disabled={loadingPools}>
+          <button className="ghost" type="button" onClick={() => void loadPools()} disabled={loadingPools}>
             {loadingPools ? "加载中..." : "刷新账号池"}
           </button>
           <button type="button" onClick={analyzePool} disabled={!selectedPoolId || analyzing}>

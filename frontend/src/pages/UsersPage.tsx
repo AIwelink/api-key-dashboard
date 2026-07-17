@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../api/client";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import type { User, UserRole, UserStatus } from "../types";
 import { errorMessage } from "../utils/format";
 
@@ -45,6 +46,8 @@ export function UsersPage({ token, showToast }: Props) {
     const data = await api<{ items: User[] }>("/users", token);
     setUsers(data.items);
   };
+
+  usePageAutoRefresh(loadUsers, { paused: Boolean(editingUser || busy) });
 
   useEffect(() => {
     loadUsers().catch((error) => showToast(errorMessage(error), true));
