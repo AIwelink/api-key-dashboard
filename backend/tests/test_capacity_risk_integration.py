@@ -134,6 +134,33 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["recommended_refill_options"]["k12"]["recommended_refill_accounts"], 1)
         self.assertFalse(summary["auto_refill_required"])
 
+    async def test_missing_concurrency_history_stays_pending_instead_of_using_historical_danger(self) -> None:
+        limits = normalize_capacity_limits({"plus": {"five_hour_usd": 2, "seven_day_usd": 10}})
+        incomplete_samples = minute_samples()
+        for sample in incomplete_samples:
+            sample.pop("current_concurrency")
+        incomplete_samples[-1]["current_concurrency"] = 1
+
+        with (
+            patch.object(cache, "now_utc", return_value=NOW),
+            patch.object(cache, "get_capacity_account_limits", AsyncMock(return_value={"limits": limits})),
+            patch.object(cache, "_dashboard_cost_summary", AsyncMock(return_value=cost_summary(historical_peak=100))),
+            patch.object(cache, "_load_group_tpm_samples", AsyncMock(return_value=incomplete_samples)),
+        ):
+            summary = await cache._capacity_summary_for_accounts(
+                object(),
+                "api-5001",
+                remote_accounts(used_5h_percent=0),
+                group_id=3,
+            )
+
+        self.assertFalse(summary["realtime_risk_ready"])
+        self.assertEqual(summary["health_status"], "pending")
+        self.assertEqual(summary["health_label"], "等待数据")
+        self.assertEqual(summary["pressure_stage"], "waiting_data")
+        self.assertFalse(summary["replenishment_required"])
+        self.assertEqual(summary["recommended_refill_accounts"], 0)
+
     async def test_realtime_risk_replaces_historical_day_scale_status(self) -> None:
         limits = normalize_capacity_limits({"plus": {"five_hour_usd": 2, "seven_day_usd": 10}})
 

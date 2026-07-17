@@ -236,7 +236,7 @@ def _pending_summary(
         "health_status": "pending",
         "health_label": label,
         "health_tone": tone,
-        "health_reason": "分钟 TPM/RPM 数据不足，暂用历史容量判断",
+        "health_reason": "分钟 TPM/RPM/并发数据仍在积累，暂不进行容量告警",
         "replenishment_required": False,
         "quota_refill_accounts": 0,
         "concurrency_refill_accounts": 0,

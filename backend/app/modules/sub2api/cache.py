@@ -903,22 +903,6 @@ async def _capacity_summary_for_accounts(
     recent_5h_remaining_usd = max(0.0, five_hour_capacity_usd - recent_5h_cost)
     recent_24h_remaining_usd = max(0.0, twenty_four_hour_capacity_usd - recent_24h_cost)
     seven_day_remaining_usd = max(0.0, seven_day_capacity_usd - seven_day_cost)
-    historical_health = _capacity_health(
-        available_accounts=selected["available_accounts"] + selected_reserve["available_accounts"],
-        reserve_accounts=selected_reserve["available_accounts"],
-        five_hour_capacity_usd=five_hour_capacity_usd,
-        seven_day_capacity_usd=seven_day_capacity_usd,
-        five_hour_peak_multiple=five_hour_peak_multiple,
-        active_five_hour_peak_multiple=active_five_hour_peak_multiple,
-        recent_day_five_hour_peak_multiple=recent_day_five_hour_peak_multiple,
-        active_recent_day_five_hour_peak_multiple=active_recent_day_five_hour_peak_multiple,
-        twenty_four_hour_peak_multiple=twenty_four_hour_peak_multiple,
-        current_speed_multiple=current_speed_multiple,
-        current_speed_days=current_speed_days,
-        active_current_speed_days=active_current_speed_days,
-        seven_day_peak_speed_days=seven_day_peak_speed_days,
-        five_x_speed_days=five_x_speed_days,
-    )
     tpm_samples = await _load_group_tpm_samples(db, site_id=site_id, group_id=group_id)
     concurrency_total = float(concurrency_summary.get("concurrency_total_capacity") or 0)
     concurrency_accounts = int(concurrency_summary.get("concurrency_eligible_accounts") or 0)
@@ -939,15 +923,12 @@ async def _capacity_summary_for_accounts(
         refill_account_options=_refill_account_options(primary_type, capacity_limits),
         primary_refill_account_type=primary_type,
     )
-    if realtime_risk["ready"]:
-        health = {
-            "status": realtime_risk["health_status"],
-            "label": realtime_risk["health_label"],
-            "tone": realtime_risk["health_tone"],
-            "reason": realtime_risk["health_reason"],
-        }
-    else:
-        health = historical_health
+    health = {
+        "status": realtime_risk["health_status"],
+        "label": realtime_risk["health_label"],
+        "tone": realtime_risk["health_tone"],
+        "reason": realtime_risk["health_reason"],
+    }
     risk_details = {
         key: value
         for key, value in realtime_risk.items()
