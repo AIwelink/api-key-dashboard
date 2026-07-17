@@ -9,6 +9,7 @@ export type ViewName =
   | "event-records"
   | "alert-center"
   | "pool-lifecycle"
+  | "client-sites"
   | "agent-analysis"
   | "agent-workbench"
   | "api-tokens"

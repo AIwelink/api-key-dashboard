@@ -94,7 +94,8 @@ def public_site(site: dict[str, Any]) -> dict[str, Any]:
 
 
 async def get_site(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SITE_ID, *, include_token: bool = False) -> dict[str, Any] | None:
-    doc = await db.sub2api_sites.find_one({"_id": site_id, "status": {"$ne": "deleted"}})
+    query = sub2api_site_query(status={"$ne": "deleted"}) | {"_id": site_id}
+    doc = await db.sub2api_sites.find_one(query)
     if doc is None:
         return None
     site = dict(doc)
@@ -110,26 +111,27 @@ async def get_site(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SITE_ID, *, 
 
 
 async def list_sites(db: AsyncIOMotorDatabase, *, site_type: str | None = None) -> dict[str, Any]:
-    query: dict[str, Any] = {"status": {"$ne": "deleted"}}
     if site_type is not None:
         normalized_type = normalize_site_type(site_type)
-        query = sub2api_site_query(status={"$ne": "deleted"}) if normalized_type == "sub2api" else query | {"site_type": "newapi"}
+        if normalized_type != "sub2api":
+            raise ValueError("customer sites must be configured through /api/client-sites")
+    query = sub2api_site_query(status={"$ne": "deleted"})
     cursor = db.sub2api_sites.find(query).sort([("created_at", 1), ("_id", 1)])
     items = [public_site(doc | {"id": doc["_id"]}) async for doc in cursor]
     return {"items": items, "total": len(items)}
 
 
 async def update_site_config(db: AsyncIOMotorDatabase, site_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    current = await db.sub2api_sites.find_one({"_id": site_id, "status": {"$ne": "deleted"}})
+    site_query = sub2api_site_query(status={"$ne": "deleted"}) | {"_id": site_id}
+    current = await db.sub2api_sites.find_one(site_query)
     if current is None:
         return {}
     updates: dict[str, Any] = {"updated_at": now_utc()}
     normalized_type = normalize_site_type(payload.get("site_type", current.get("site_type")))
-    admin_user_id = str(payload.get("admin_user_id", current.get("admin_user_id")) or "").strip()
-    if normalized_type == "newapi" and not admin_user_id:
-        raise ValueError("admin_user_id is required for newapi sites")
-    updates["site_type"] = normalized_type
-    updates["admin_user_id"] = admin_user_id if normalized_type == "newapi" else ""
+    if normalized_type != "sub2api":
+        raise ValueError("customer sites must be configured through /api/client-sites")
+    updates["site_type"] = "sub2api"
+    updates["admin_user_id"] = ""
     if "name" in payload:
         updates["name"] = str(payload["name"] or site_id).strip() or site_id
     if "base_url" in payload:
@@ -146,7 +148,7 @@ async def update_site_config(db: AsyncIOMotorDatabase, site_id: str, payload: di
         updates["uptime_kuma_url"] = _optional_http_url(payload.get("uptime_kuma_url"), "uptime_kuma_url")
     if str(payload.get("uptime_kuma_api_key") or "").strip():
         updates["uptime_kuma_api_key"] = str(payload["uptime_kuma_api_key"]).strip()
-    await db.sub2api_sites.update_one({"_id": site_id}, {"$set": updates})
+    await db.sub2api_sites.update_one(site_query, {"$set": updates})
     return await get_site(db, site_id) or {}
 
 
@@ -156,16 +158,15 @@ async def create_site_config(db: AsyncIOMotorDatabase, payload: dict[str, Any]) 
     if not site_id or not base_url:
         return {}
     normalized_type = normalize_site_type(payload.get("site_type"))
-    admin_user_id = str(payload.get("admin_user_id") or "").strip()
-    if normalized_type == "newapi" and not admin_user_id:
-        raise ValueError("admin_user_id is required for newapi sites")
+    if normalized_type != "sub2api":
+        raise ValueError("customer sites must be configured through /api/client-sites")
     now = now_utc()
     doc = {
         "_id": site_id,
         "name": str(payload.get("name") or site_id).strip() or site_id,
         "base_url": base_url,
-        "site_type": normalized_type,
-        "admin_user_id": admin_user_id if normalized_type == "newapi" else "",
+        "site_type": "sub2api",
+        "admin_user_id": "",
         "token": str(payload.get("token") or "").strip(),
         "status": str(payload.get("status") or "active"),
         "refresh_interval_minutes": _site_refresh_interval_minutes(payload),
@@ -181,8 +182,9 @@ async def create_site_config(db: AsyncIOMotorDatabase, payload: dict[str, Any]) 
 
 
 async def delete_site_config(db: AsyncIOMotorDatabase, site_id: str) -> bool:
+    site_query = sub2api_site_query(status={"$ne": "deleted"}) | {"_id": site_id}
     result = await db.sub2api_sites.update_one(
-        {"_id": site_id, "status": {"$ne": "deleted"}},
+        site_query,
         {"$set": {"status": "deleted", "deleted_at": now_utc(), "updated_at": now_utc()}},
     )
     return result.modified_count > 0

@@ -870,6 +870,10 @@ legend {
   box-shadow: none;
 }
 
+.client-site-updated-at {
+  margin-top: 12px;
+}
+
 .site-config-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));

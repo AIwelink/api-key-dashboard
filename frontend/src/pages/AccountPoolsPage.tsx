@@ -13,8 +13,6 @@ type Props = {
 type Site = {
   id: string;
   name: string;
-  site_type?: "sub2api" | "newapi";
-  admin_user_id?: string;
   base_url?: string;
   status: string;
   token_configured: boolean;
@@ -88,8 +86,6 @@ type RefreshResponse = {
 type SiteForm = {
   id: string;
   name: string;
-  site_type: "sub2api" | "newapi";
-  admin_user_id: string;
   base_url: string;
   token: string;
   status: string;
@@ -111,8 +107,6 @@ type ConfirmState = {
 const emptySiteForm: SiteForm = {
   id: "",
   name: "",
-  site_type: "sub2api",
-  admin_user_id: "",
   base_url: "",
   token: "",
   status: "active",
@@ -158,10 +152,9 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 
   const selectedSite = sites.find((site) => site.id === selectedSiteId) || null;
-  const isSub2ApiSite = siteForm.site_type === "sub2api";
 
   const loadSites = async () => {
-    const data = await api<SitesResponse>("/sub2api-sites", token);
+    const data = await api<SitesResponse>("/sub2api-sites?site_type=sub2api", token);
     setSites(data.items);
     if (!selectedSiteId && data.items[0]) {
       setSelectedSiteId(data.items[0].id);
@@ -178,8 +171,6 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     const payload = {
       id: siteForm.id.trim(),
       name: siteForm.name.trim(),
-      site_type: siteForm.site_type,
-      admin_user_id: siteForm.admin_user_id.trim(),
       base_url: siteForm.base_url.trim(),
       status: siteForm.status,
       refresh_interval_minutes: siteForm.refresh_interval_minutes,
@@ -190,10 +181,6 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     };
     if (!payload.id || !payload.base_url) {
       showToast("站点 ID 和 Base URL 必填", true);
-      return;
-    }
-    if (payload.site_type === "newapi" && !payload.admin_user_id) {
-      showToast("NewAPI 站点必须填写 Admin User ID", true);
       return;
     }
     setSavingSite(true);
@@ -212,7 +199,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       setSelectedSiteId(saved.id);
       setEditingSiteId(saved.id);
       setSiteForm(siteToForm(saved));
-      showToast("站点配置已保存");
+      showToast("账号池站点已保存");
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
@@ -284,7 +271,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   usePageAutoRefresh(
     () => loadObservabilitySettings(selectedSiteId),
     {
-      enabled: Boolean(selectedSiteId && isSub2ApiSite),
+      enabled: Boolean(selectedSiteId),
       paused: Boolean(refreshing || savingSite || savingCapacityLimits || savingObservabilityKey || probing || confirmState),
     },
   );
@@ -350,7 +337,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   };
 
   const refreshRemoteCache = async () => {
-    if (!selectedSiteId || !isSub2ApiSite) return;
+    if (!selectedSiteId) return;
     setRefreshing(true);
     try {
       const result = await api<RefreshResponse>(`/sub2api-sites/${selectedSiteId}/refresh`, token, { method: "POST" });
@@ -377,13 +364,11 @@ export function AccountPoolsPage({ token, showToast }: Props) {
         loadSites().catch((error) => showToast(errorMessage(error), true));
         return;
       }
-      if (isSub2ApiSite) {
-        loadObservabilitySettings(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
-      }
+      loadObservabilitySettings(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
     };
     window.addEventListener("sub2api-cache-updated", handleCacheUpdated);
     return () => window.removeEventListener("sub2api-cache-updated", handleCacheUpdated);
-  }, [selectedSiteId, isSub2ApiSite]);
+  }, [selectedSiteId]);
 
   useEffect(() => {
     if (!selectedSiteId) {
@@ -396,23 +381,18 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       setEditingSiteId(site.id);
       setSiteForm(siteToForm(site));
     }
-    if ((site?.site_type || "sub2api") === "sub2api") {
-      loadObservabilitySettings(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
-      loadCapacityLimits(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
-    } else {
-      setObservabilitySettings([]);
-      loadCapacityLimits("").catch((error) => showToast(errorMessage(error), true));
-    }
+    loadObservabilitySettings(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
+    loadCapacityLimits(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
   }, [selectedSiteId, sites]);
 
   return (
     <section className="view accounts-page">
       <div className="topbar">
         <div>
-          <h2>站点配置</h2>
-          <p>统一管理 Sub2API 与 NewAPI 客户端连接；不同类型使用独立的管理协议。</p>
+          <h2>账号池管理</h2>
+          <p>管理账号池后端 Sub2API、分组探测、容量参数和监控映射。</p>
         </div>
-        {isSub2ApiSite && editingSiteId && (
+        {editingSiteId && (
           <button type="button" onClick={refreshRemoteCache} disabled={!selectedSiteId || refreshing}>
             {refreshing ? "同步中..." : "同步 Sub2API 账号池数据"}
           </button>
@@ -422,8 +402,8 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       <section className="panel site-config-panel">
         <div className="panel-header">
           <div>
-            <h3>客户端连接</h3>
-            <p>Sub2API 用于账号池调度；NewAPI 保存客户端地址、API Key 与管理员身份。</p>
+            <h3>账号池后端连接</h3>
+            <p>这里只配置承载账号与调度状态的 Sub2API，不包含向客户提供服务的站点。</p>
           </div>
           <div className="button-row">
             <button className="compact-button" type="button" onClick={saveSiteForm} disabled={savingSite}>
@@ -446,32 +426,11 @@ export function AccountPoolsPage({ token, showToast }: Props) {
               <option value="">选择已有站点</option>
               {sites.map((site) => (
                 <option key={site.id} value={site.id}>
-                  [{(site.site_type || "sub2api") === "newapi" ? "NewAPI" : "Sub2API"}] {site.name || site.id}
+                  {site.name || site.id}
                 </option>
               ))}
             </select>
           </label>
-          <fieldset className="span-2 segmented site-type-segment">
-            <legend>客户端类型</legend>
-            <label>
-              <input
-                checked={siteForm.site_type === "sub2api"}
-                name="site-type"
-                onChange={() => setSiteForm((current) => ({ ...current, site_type: "sub2api", admin_user_id: "" }))}
-                type="radio"
-              />
-              Sub2API
-            </label>
-            <label>
-              <input
-                checked={siteForm.site_type === "newapi"}
-                name="site-type"
-                onChange={() => setSiteForm((current) => ({ ...current, site_type: "newapi" }))}
-                type="radio"
-              />
-              NewAPI
-            </label>
-          </fieldset>
           <label>
             <span className="field-label">
               <strong>站点 ID</strong>
@@ -480,7 +439,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
               value={siteForm.id}
               disabled={Boolean(editingSiteId)}
               onChange={(event) => setSiteForm((current) => ({ ...current, id: event.target.value }))}
-              placeholder={siteForm.site_type === "newapi" ? "newapi-us01" : "api-5001"}
+              placeholder="api-5001"
             />
           </label>
           <label>
@@ -490,7 +449,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
             <input
               value={siteForm.name}
               onChange={(event) => setSiteForm((current) => ({ ...current, name: event.target.value }))}
-              placeholder={siteForm.site_type === "newapi" ? "NewAPI US01" : "Sub2API US06"}
+              placeholder="Sub2API US06"
             />
           </label>
           <label className="span-2">
@@ -500,23 +459,9 @@ export function AccountPoolsPage({ token, showToast }: Props) {
             <input
               value={siteForm.base_url}
               onChange={(event) => setSiteForm((current) => ({ ...current, base_url: event.target.value }))}
-              placeholder={siteForm.site_type === "newapi" ? "https://newapi.example.com" : "http://104.238.221.47:5001"}
+              placeholder="http://104.238.221.47:5001"
             />
           </label>
-          {siteForm.site_type === "newapi" && (
-            <label>
-              <span className="field-label">
-                <strong>Admin User ID</strong>
-                <span>（必填）</span>
-              </span>
-              <input
-                value={siteForm.admin_user_id}
-                onChange={(event) => setSiteForm((current) => ({ ...current, admin_user_id: event.target.value }))}
-                placeholder="例如 1"
-                required
-              />
-            </label>
-          )}
           <label>
             <span className="field-label">
               <strong>API Key</strong>
@@ -537,8 +482,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
               <option value="disabled">disabled</option>
             </select>
           </label>
-          {siteForm.site_type === "sub2api" && (
-            <>
+          <>
               <label>
                 <span className="field-label">
                   <strong>刷新间隔</strong>
@@ -588,12 +532,11 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                 />
                 {selectedSite?.uptime_kuma_api_key_configured && <span className="cell-sub">密钥已配置</span>}
               </label>
-            </>
-          )}
+          </>
         </div>
       </section>
 
-      {isSub2ApiSite && editingSiteId && (
+      {editingSiteId && (
         <>
       <section className="panel capacity-limit-config-panel">
         <div className="panel-header">
@@ -949,8 +892,6 @@ function siteToForm(site: Site): SiteForm {
   return {
     id: site.id,
     name: site.name || site.id,
-    site_type: site.site_type || "sub2api",
-    admin_user_id: site.admin_user_id || "",
     base_url: site.base_url || "",
     token: "",
     status: site.status || "active",

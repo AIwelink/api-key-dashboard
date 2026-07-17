@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import PROJECT_ROOT, get_settings
 from app.database import close_mongo_connection, connect_to_mongo, get_db
 from app.logging_config import RequestLoggingMiddleware, cleanup_old_logs, log_cleanup_loop, setup_logging
-from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, event_records, import_batches, imports, notifications, settings, sub2api_sites, sync, todo_items, users
+from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, client_sites, event_records, import_batches, imports, notifications, settings, sub2api_sites, sync, todo_items, users
 from app.modules.system.bootstrap import ensure_bootstrap_data, ensure_indexes
 from app.modules.agent.scheduler import start_agent_scheduler, stop_agent_scheduler
 from app.modules.sub2api.account_probe import probe_scheduler_loop
@@ -88,6 +88,7 @@ app.include_router(import_batches.router, prefix="/api")
 app.include_router(imports.router, prefix="/api")
 app.include_router(api_pools.router, prefix="/api")
 app.include_router(api_tokens.router, prefix="/api")
+app.include_router(client_sites.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")
 app.include_router(event_records.router, prefix="/api")
 app.include_router(sync.router, prefix="/api")

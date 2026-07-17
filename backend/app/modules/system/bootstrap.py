@@ -90,6 +90,9 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.todo_items.create_index("pool_id")
     await db.todo_items.create_index("todo_type")
     await db.sub2api_sites.create_index("status")
+    await db.client_sites.create_index("status")
+    await db.client_sites.create_index("client_type")
+    await db.client_sites.create_index("created_at")
     await db.sub2api_groups_cache.create_index([("site_id", 1), ("group_id", 1)], unique=True)
     await db.sub2api_accounts_cache.create_index([("site_id", 1), ("group_ids", 1), ("status", 1)])
     await db.sub2api_accounts_cache.create_index([("site_id", 1), ("sub2api_account_id", 1)])
@@ -209,4 +212,7 @@ async def ensure_initial_owner(db: AsyncIOMotorDatabase) -> None:
 
 
 async def ensure_bootstrap_data(db: AsyncIOMotorDatabase) -> None:
+    from app.modules.system.client_sites import migrate_legacy_client_sites
+
     await ensure_initial_owner(db)
+    await migrate_legacy_client_sites(db)
