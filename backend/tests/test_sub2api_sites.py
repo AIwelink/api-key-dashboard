@@ -25,6 +25,71 @@ class Sub2ApiSiteRefreshIntervalTests(unittest.TestCase):
         self.assertEqual(cache._site_refresh_interval_minutes({"refresh_interval_minutes": "invalid"}), 30)
 
 
+class UptimeKumaSiteSettingsTests(unittest.IsolatedAsyncioTestCase):
+    def test_public_site_masks_uptime_kuma_api_key(self) -> None:
+        site = cache.public_site(
+            {
+                "_id": "api-5001",
+                "token": "sub2-secret",
+                "uptime_kuma_url": "https://status.aiwelink.cn",
+                "uptime_kuma_api_key": "uptime-secret",
+            }
+        )
+
+        self.assertEqual(site["uptime_kuma_url"], "https://status.aiwelink.cn")
+        self.assertTrue(site["uptime_kuma_api_key_configured"])
+        self.assertNotIn("uptime_kuma_api_key", site)
+
+    async def test_create_persists_uptime_kuma_connection(self) -> None:
+        stored = {
+            "_id": "api-5001",
+            "name": "Sub2API US06",
+            "base_url": "https://sub2api.example.com",
+            "site_type": "sub2api",
+            "token": "sub2-secret",
+            "uptime_kuma_url": "https://status.aiwelink.cn",
+            "uptime_kuma_api_key": "uptime-secret",
+            "status": "active",
+        }
+        sites = SimpleNamespace(replace_one=AsyncMock(), find_one=AsyncMock(return_value=stored))
+        db = SimpleNamespace(sub2api_sites=sites)
+
+        result = await cache.create_site_config(db, stored | {"id": stored["_id"]})
+
+        saved = sites.replace_one.await_args.args[1]
+        self.assertEqual(saved["uptime_kuma_url"], "https://status.aiwelink.cn")
+        self.assertEqual(saved["uptime_kuma_api_key"], "uptime-secret")
+        self.assertTrue(result["uptime_kuma_api_key_configured"])
+        self.assertNotIn("uptime_kuma_api_key", result)
+
+    async def test_blank_update_does_not_clear_existing_uptime_kuma_api_key(self) -> None:
+        current = {
+            "_id": "api-5001",
+            "site_type": "sub2api",
+            "base_url": "https://sub2api.example.com",
+            "token": "sub2-secret",
+            "uptime_kuma_url": "https://status.aiwelink.cn",
+            "uptime_kuma_api_key": "uptime-secret",
+            "status": "active",
+        }
+        sites = SimpleNamespace(
+            find_one=AsyncMock(side_effect=[current, current]),
+            update_one=AsyncMock(),
+        )
+        db = SimpleNamespace(sub2api_sites=sites)
+
+        result = await cache.update_site_config(
+            db,
+            "api-5001",
+            {"uptime_kuma_url": "https://status.aiwelink.cn/", "uptime_kuma_api_key": ""},
+        )
+
+        updates = sites.update_one.await_args.args[1]["$set"]
+        self.assertEqual(updates["uptime_kuma_url"], "https://status.aiwelink.cn")
+        self.assertNotIn("uptime_kuma_api_key", updates)
+        self.assertTrue(result["uptime_kuma_api_key_configured"])
+
+
 class AsyncCursor:
     def __init__(self, items: list[dict[str, object]]) -> None:
         self.items = items

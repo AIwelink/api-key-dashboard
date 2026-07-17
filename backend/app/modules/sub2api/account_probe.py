@@ -77,6 +77,7 @@ def default_group_observability_setting(site_id: str, group_id: int, group_name:
         "capacity_notification_enabled": False,
         "capacity_notification_threshold": "tight",
         "capacity_notification_cooldown_minutes": 60,
+        "uptime_kuma_monitor_url": "",
         "missing_confirm_count": DEFAULT_MISSING_CONFIRM_COUNT,
         "status": "active",
         "created_at": now,
@@ -144,6 +145,7 @@ async def update_group_observability_setting(
         "capacity_notification_enabled",
         "capacity_notification_threshold",
         "capacity_notification_cooldown_minutes",
+        "uptime_kuma_monitor_url",
     }
     updates = {key: payload[key] for key in allowed if key in payload and payload[key] is not None}
     updates["group_name"] = group_name

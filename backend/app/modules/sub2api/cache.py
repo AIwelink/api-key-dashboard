@@ -4,6 +4,7 @@ import math
 import re
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import HTTPException, status
@@ -86,7 +87,9 @@ def public_site(site: dict[str, Any]) -> dict[str, Any]:
     result.setdefault("status", "active")
     result.setdefault("source", "database")
     result["token_configured"] = bool(result.get("token"))
+    result["uptime_kuma_api_key_configured"] = bool(result.get("uptime_kuma_api_key"))
     result.pop("token", None)
+    result.pop("uptime_kuma_api_key", None)
     return result
 
 
@@ -139,6 +142,10 @@ async def update_site_config(db: AsyncIOMotorDatabase, site_id: str, payload: di
         updates["refresh_interval_minutes"] = _site_refresh_interval_minutes(payload)
     if "auto_remove_abnormal_accounts" in payload:
         updates["auto_remove_abnormal_accounts"] = bool(payload["auto_remove_abnormal_accounts"])
+    if "uptime_kuma_url" in payload:
+        updates["uptime_kuma_url"] = _optional_http_url(payload.get("uptime_kuma_url"), "uptime_kuma_url")
+    if str(payload.get("uptime_kuma_api_key") or "").strip():
+        updates["uptime_kuma_api_key"] = str(payload["uptime_kuma_api_key"]).strip()
     await db.sub2api_sites.update_one({"_id": site_id}, {"$set": updates})
     return await get_site(db, site_id) or {}
 
@@ -163,6 +170,8 @@ async def create_site_config(db: AsyncIOMotorDatabase, payload: dict[str, Any]) 
         "status": str(payload.get("status") or "active"),
         "refresh_interval_minutes": _site_refresh_interval_minutes(payload),
         "auto_remove_abnormal_accounts": bool(payload.get("auto_remove_abnormal_accounts", False)),
+        "uptime_kuma_url": _optional_http_url(payload.get("uptime_kuma_url"), "uptime_kuma_url"),
+        "uptime_kuma_api_key": str(payload.get("uptime_kuma_api_key") or "").strip(),
         "source": "database",
         "created_at": now,
         "updated_at": now,
@@ -183,6 +192,16 @@ def normalize_site_type(value: Any) -> str:
     normalized = str(value or DEFAULT_SITE_TYPE).strip().lower()
     if normalized not in SITE_TYPES:
         raise ValueError(f"unsupported site_type: {normalized}")
+    return normalized
+
+
+def _optional_http_url(value: Any, field_name: str) -> str:
+    normalized = str(value or "").strip().rstrip("/")
+    if not normalized:
+        return ""
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{field_name} must be an http or https URL")
     return normalized
 
 

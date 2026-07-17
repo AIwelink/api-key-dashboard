@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import { errorMessage, formatDateTime } from "../utils/format";
+import { safeHttpUrl } from "../utils/url";
 
 type Props = {
   token: string;
@@ -19,6 +20,8 @@ type Site = {
   token_configured: boolean;
   refresh_interval_minutes?: number;
   auto_remove_abnormal_accounts?: boolean;
+  uptime_kuma_url?: string;
+  uptime_kuma_api_key_configured?: boolean;
 };
 
 type SitesResponse = {
@@ -56,6 +59,7 @@ type GroupObservabilitySetting = {
   capacity_notification_last_at?: string | null;
   capacity_notification_last_status?: string | null;
   capacity_notification_last_health_status?: string | null;
+  uptime_kuma_monitor_url?: string;
   group_account_count?: number;
   group_active_account_count?: number;
   updated_at?: string;
@@ -91,6 +95,8 @@ type SiteForm = {
   status: string;
   refresh_interval_minutes: number;
   auto_remove_abnormal_accounts: boolean;
+  uptime_kuma_url: string;
+  uptime_kuma_api_key: string;
 };
 
 type ConfirmState = {
@@ -112,6 +118,8 @@ const emptySiteForm: SiteForm = {
   status: "active",
   refresh_interval_minutes: 30,
   auto_remove_abnormal_accounts: false,
+  uptime_kuma_url: "",
+  uptime_kuma_api_key: "",
 };
 
 const capacityLimitLabels: Record<CapacityLimitKey, string> = {
@@ -176,7 +184,9 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       status: siteForm.status,
       refresh_interval_minutes: siteForm.refresh_interval_minutes,
       auto_remove_abnormal_accounts: siteForm.auto_remove_abnormal_accounts,
+      uptime_kuma_url: siteForm.uptime_kuma_url.trim(),
       ...(siteForm.token.trim() ? { token: siteForm.token.trim() } : {}),
+      ...(siteForm.uptime_kuma_api_key.trim() ? { uptime_kuma_api_key: siteForm.uptime_kuma_api_key.trim() } : {}),
     };
     if (!payload.id || !payload.base_url) {
       showToast("站点 ID 和 Base URL 必填", true);
@@ -555,6 +565,29 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                   <em>{siteForm.auto_remove_abnormal_accounts ? "已开启" : "已关闭"}</em>
                 </span>
               </label>
+              <label className="span-2">
+                <span className="field-label">
+                  <strong>Uptime Kuma 地址</strong>
+                </span>
+                <input
+                  value={siteForm.uptime_kuma_url}
+                  onChange={(event) => setSiteForm((current) => ({ ...current, uptime_kuma_url: event.target.value }))}
+                  placeholder="https://status.aiwelink.cn"
+                  type="url"
+                />
+              </label>
+              <label>
+                <span className="field-label">
+                  <strong>Uptime Kuma API Key</strong>
+                </span>
+                <input
+                  value={siteForm.uptime_kuma_api_key}
+                  onChange={(event) => setSiteForm((current) => ({ ...current, uptime_kuma_api_key: event.target.value }))}
+                  placeholder={selectedSite?.uptime_kuma_api_key_configured ? "已配置，留空不修改" : "API Key"}
+                  type="password"
+                />
+                {selectedSite?.uptime_kuma_api_key_configured && <span className="cell-sub">密钥已配置</span>}
+              </label>
             </>
           )}
         </div>
@@ -651,6 +684,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                 <th>样本保留</th>
                 <th>记录内容</th>
                 <th>容量通知</th>
+                <th>Uptime Kuma</th>
                 <th>最后更新</th>
               </tr>
             </thead>
@@ -658,6 +692,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
               {observabilitySettings.map((setting) => {
                 const rowKey = `${setting.site_id}:${setting.group_id}`;
                 const busy = savingObservabilityKey === rowKey;
+                const uptimeMonitorHref = safeHttpUrl(setting.uptime_kuma_monitor_url);
                 return (
                   <tr key={rowKey}>
                     <td>
@@ -808,13 +843,43 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                         )}
                       </div>
                     </td>
+                    <td className="uptime-monitor-cell">
+                      <div className="uptime-monitor-field">
+                        <input
+                          key={`${rowKey}:${setting.uptime_kuma_monitor_url || ""}`}
+                          defaultValue={setting.uptime_kuma_monitor_url || ""}
+                          disabled={busy}
+                          onBlur={(event) => {
+                            const monitorUrl = event.target.value.trim();
+                            if (monitorUrl !== (setting.uptime_kuma_monitor_url || "")) {
+                              saveObservabilitySetting(setting, { uptime_kuma_monitor_url: monitorUrl });
+                            }
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") event.currentTarget.blur();
+                          }}
+                          placeholder="https://status.aiwelink.cn/dashboard/4"
+                          type="url"
+                        />
+                        {uptimeMonitorHref && (
+                          <a
+                            className="uptime-monitor-link"
+                            href={uptimeMonitorHref}
+                            rel="noreferrer"
+                            target="_blank"
+                          >
+                            打开监控
+                          </a>
+                        )}
+                      </div>
+                    </td>
                     <td>{formatDateTime(setting.updated_at)}</td>
                   </tr>
                 );
               })}
               {!observabilitySettings.length && (
                 <tr>
-                  <td className="muted" colSpan={9}>
+                  <td className="muted" colSpan={10}>
                     暂无分组探测配置，请先同步 sub2api 分组。
                   </td>
                 </tr>
@@ -891,5 +956,7 @@ function siteToForm(site: Site): SiteForm {
     status: site.status || "active",
     refresh_interval_minutes: site.refresh_interval_minutes || 30,
     auto_remove_abnormal_accounts: site.auto_remove_abnormal_accounts === true,
+    uptime_kuma_url: site.uptime_kuma_url || "",
+    uptime_kuma_api_key: "",
   };
 }

@@ -952,6 +952,32 @@ legend {
   min-width: 72px;
 }
 
+.uptime-monitor-cell {
+  min-width: 260px;
+}
+
+.uptime-monitor-field {
+  display: grid;
+  gap: 5px;
+}
+
+.uptime-monitor-field input {
+  min-width: 240px;
+}
+
+.uptime-monitor-link {
+  width: max-content;
+  color: #276a99;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.uptime-monitor-link:hover {
+  color: #174d73;
+  text-decoration: underline;
+}
+
 .capacity-limit-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
