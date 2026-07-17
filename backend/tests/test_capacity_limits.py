@@ -113,6 +113,69 @@ class BugTeamCapacityTests(unittest.TestCase):
         self.assertAlmostEqual(usage["actual_used_usd"], 3)
         self.assertAlmostEqual(usage["actual_remaining_usd"], 12)
 
+    def test_equal_plus_pro_and_bug_team_limits_use_seven_day_usage_for_five_hour_capacity(self) -> None:
+        accounts = [
+            {
+                "plan_type": "plus",
+                "extra": {
+                    "codex_5h_used_percent": 90,
+                    "codex_5h_reset_after_seconds": 18_000,
+                    "codex_5h_window_minutes": 300,
+                    "codex_7d_used_percent": 25,
+                    "codex_7d_reset_after_seconds": 604_800,
+                    "codex_7d_window_minutes": 10_080,
+                },
+            },
+            {
+                "plan_type": "pro",
+                "extra": {
+                    "codex_5h_used_percent": 90,
+                    "codex_5h_reset_after_seconds": 18_000,
+                    "codex_5h_window_minutes": 300,
+                    "codex_7d_used_percent": 25,
+                    "codex_7d_reset_after_seconds": 604_800,
+                    "codex_7d_window_minutes": 10_080,
+                },
+            },
+            bug_team_account(used_percent=25),
+        ]
+
+        for account in accounts:
+            with self.subTest(account_type=cache._capacity_account_type(account)):
+                usage = cache._dynamic_five_hour_usage(
+                    account,
+                    five_hour_limit_usd=100,
+                    seven_day_limit_usd=100,
+                    five_hour_available=True,
+                )
+                self.assertAlmostEqual(usage["actual_used_usd"], 25)
+                self.assertAlmostEqual(usage["actual_remaining_usd"], 75)
+
+    def test_equal_team_limits_and_unequal_plus_limits_keep_five_hour_usage(self) -> None:
+        base_extra = {
+            "codex_5h_used_percent": 90,
+            "codex_5h_reset_after_seconds": 18_000,
+            "codex_5h_window_minutes": 300,
+            "codex_7d_used_percent": 25,
+            "codex_7d_reset_after_seconds": 604_800,
+            "codex_7d_window_minutes": 10_080,
+        }
+        cases = [
+            ({"plan_type": "team", "extra": base_extra}, 100, 100),
+            ({"plan_type": "plus", "extra": base_extra}, 100, 500),
+        ]
+
+        for account, five_hour_limit, seven_day_limit in cases:
+            with self.subTest(account_type=account["plan_type"], seven_day_limit=seven_day_limit):
+                usage = cache._dynamic_five_hour_usage(
+                    account,
+                    five_hour_limit_usd=five_hour_limit,
+                    seven_day_limit_usd=seven_day_limit,
+                    five_hour_available=True,
+                )
+                self.assertAlmostEqual(usage["actual_used_usd"], 90)
+                self.assertAlmostEqual(usage["actual_remaining_usd"], 10)
+
 
 class SiteCapacityLimitTests(unittest.IsolatedAsyncioTestCase):
     async def test_site_specific_limits_are_loaded_before_legacy_global_limits(self) -> None:
@@ -261,7 +324,7 @@ class FiveHourCapacityPercentageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["account_type"], "plus")
         self.assertEqual(summary["active_five_hour_capacity_usd"], 130)
         self.assertEqual(summary["active_seven_day_capacity_usd"], 210)
-        self.assertEqual(summary["five_hour_actual_remaining_usd"], 86)
+        self.assertEqual(summary["five_hour_actual_remaining_usd"], 102.5)
         self.assertEqual(summary["seven_day_actual_remaining_usd"], 182.5)
 
     async def test_dynamic_and_actual_available_percentages_use_dynamic_capacity(self) -> None:

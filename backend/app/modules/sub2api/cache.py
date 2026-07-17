@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import re
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
@@ -35,6 +36,7 @@ REFILL_ACCOUNT_TYPES_BY_POOL = {
     "plus": ("plus", "k12"),
     "pro": ("pro",),
 }
+SEVEN_DAY_PERCENT_FOR_EQUAL_LIMIT_TYPES = {"plus", "pro", "bug_team"}
 CAPACITY_HEALTH_THRESHOLDS = {
     "exhausted_available_accounts": 2,
     "exhausted_recent_day_peak_multiple": 0.2,
@@ -1346,18 +1348,22 @@ def _dynamic_five_hour_usage(account: dict[str, Any] | None, five_hour_limit_usd
             "seven_day_actual_remaining_usd": seven_day_limit_usd,
         }
 
-    bug_team = is_bug_team_account(account)
-    five_hour_prefix = "codex_7d" if bug_team else "codex_5h"
+    account_type = _capacity_account_type(account)
+    use_seven_day_percent = (
+        account_type in SEVEN_DAY_PERCENT_FOR_EQUAL_LIMIT_TYPES
+        and math.isclose(five_hour_limit_usd, seven_day_limit_usd, rel_tol=1e-9, abs_tol=1e-9)
+    )
+    five_hour_prefix = "codex_7d" if use_seven_day_percent else "codex_5h"
     used_percent = _usage_number(account, f"{five_hour_prefix}_used_percent")
     used_percent = _clamp_percent(used_percent if isinstance(used_percent, (int, float)) else 0)
     seven_day_used_percent = _usage_number(account, "codex_7d_used_percent")
     seven_day_used_percent = _clamp_percent(seven_day_used_percent if isinstance(seven_day_used_percent, (int, float)) else 0)
     reset_after_seconds = _usage_number(account, f"{five_hour_prefix}_reset_after_seconds")
     if not isinstance(reset_after_seconds, (int, float)):
-        reset_at = _parse_datetime(_first_present(account, account.get("extra") if isinstance(account.get("extra"), dict) else {}, f"{five_hour_prefix}_reset_at", "7d_reset_at" if bug_team else "5h_reset_at"))
-        reset_after_seconds = max(0, (reset_at - now_utc()).total_seconds()) if reset_at is not None else (SEVEN_DAY_WINDOW_SECONDS if bug_team else FIVE_HOUR_WINDOW_SECONDS)
+        reset_at = _parse_datetime(_first_present(account, account.get("extra") if isinstance(account.get("extra"), dict) else {}, f"{five_hour_prefix}_reset_at", "7d_reset_at" if use_seven_day_percent else "5h_reset_at"))
+        reset_after_seconds = max(0, (reset_at - now_utc()).total_seconds()) if reset_at is not None else (SEVEN_DAY_WINDOW_SECONDS if use_seven_day_percent else FIVE_HOUR_WINDOW_SECONDS)
     window_minutes = _usage_number(account, f"{five_hour_prefix}_window_minutes")
-    window_seconds = max(1.0, float(window_minutes) * 60) if isinstance(window_minutes, (int, float)) and window_minutes > 0 else (SEVEN_DAY_WINDOW_SECONDS if bug_team else FIVE_HOUR_WINDOW_SECONDS)
+    window_seconds = max(1.0, float(window_minutes) * 60) if isinstance(window_minutes, (int, float)) and window_minutes > 0 else (SEVEN_DAY_WINDOW_SECONDS if use_seven_day_percent else FIVE_HOUR_WINDOW_SECONDS)
     reset_factor = max(0.0, min(1.0, float(reset_after_seconds) / window_seconds))
     actual_used_usd = max(0.0, min(five_hour_limit_usd, five_hour_limit_usd * used_percent / 100))
     seven_day_actual_used_usd = max(0.0, min(seven_day_limit_usd, seven_day_limit_usd * seven_day_used_percent / 100))
