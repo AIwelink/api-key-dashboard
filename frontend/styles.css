@@ -14,6 +14,83 @@
   --shadow: 0 8px 24px rgba(89, 40, 58, 0.08);
 }
 
+.auto-refresh-value {
+  position: relative;
+  display: inline-block;
+  min-width: 0.5ch;
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+  isolation: isolate;
+}
+
+.auto-refresh-value-change {
+  animation: auto-refresh-value-flash 1.05s ease-out;
+}
+
+.auto-refresh-value-change::after {
+  position: absolute;
+  z-index: -1;
+  inset: -0.16em -0.3em;
+  border-radius: 4px;
+  background-position: 100% 50%;
+  background-size: 220% 100%;
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  animation: auto-refresh-value-gradient 1.05s ease-out;
+}
+
+.auto-refresh-value-change.up::after {
+  background-image: linear-gradient(100deg, transparent 5%, rgba(24, 160, 88, 0.12) 36%, rgba(24, 160, 88, 0.4) 54%, transparent 95%);
+}
+
+.auto-refresh-value-change.down::after {
+  background-image: linear-gradient(100deg, transparent 5%, rgba(218, 86, 72, 0.12) 36%, rgba(218, 86, 72, 0.38) 54%, transparent 95%);
+}
+
+.auto-refresh-value-change.changed::after {
+  background-image: linear-gradient(100deg, transparent 5%, rgba(43, 124, 190, 0.1) 36%, rgba(43, 124, 190, 0.34) 54%, transparent 95%);
+}
+
+@keyframes auto-refresh-value-flash {
+  0%, 100% {
+    filter: brightness(1);
+    transform: scale(1);
+  }
+  22% {
+    filter: brightness(1.22);
+    transform: scale(1.06);
+  }
+  48% {
+    filter: brightness(1.06);
+    transform: scale(1.02);
+  }
+}
+
+@keyframes auto-refresh-value-gradient {
+  0% {
+    background-position: 100% 50%;
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  72% {
+    opacity: 0.72;
+  }
+  100% {
+    background-position: -100% 50%;
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auto-refresh-value-change,
+  .auto-refresh-value-change::after {
+    animation: none;
+  }
+}
+
 .pool-status-page .metric-help {
   position: relative;
   z-index: auto;

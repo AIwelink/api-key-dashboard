@@ -1,5 +1,6 @@
 import { Fragment, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
+import { AnimatedValue, AutoRefreshAnimationContext } from "../components/AnimatedValue";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import { errorMessage, formatDateTime, parseDisplayDate, text } from "../utils/format";
@@ -383,6 +384,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [statusPreferences, setStatusPreferences] = useState<StatusPreferences>({});
   const [savingPreference, setSavingPreference] = useState<"site" | "group" | null>(null);
+  const [autoRefreshRevision, setAutoRefreshRevision] = useState(0);
 
   const selectedSite = sites.find((site) => site.id === selectedSiteId) || null;
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) || null;
@@ -490,7 +492,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     }
   };
 
-  const refreshStatusData = async () => {
+  const refreshStatusData = async (animateChanges = false) => {
     const refreshContextKey = currentAccountKeyRef.current;
     const [sitesData, preferences] = await Promise.all([
       api<SitesResponse>("/sub2api-sites?site_type=sub2api", token),
@@ -507,6 +509,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
       setAccounts([]);
       setAccountsTotal(0);
       setAccountsDataKey("");
+      if (animateChanges) setAutoRefreshRevision((current) => current + 1);
       return;
     }
 
@@ -523,6 +526,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
       setAccountsTotal(0);
       setAccountsDataKey("");
       setLastLoadedAt(groupsData.cache_meta?.last_refreshed_at || null);
+      if (animateChanges) setAutoRefreshRevision((current) => current + 1);
       return;
     }
 
@@ -549,6 +553,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     setAccountsTotal(accountsData.total);
     setAccountsDataKey(requestKey);
     setLastLoadedAt(snapshotLoadedAt);
+    if (animateChanges) setAutoRefreshRevision((current) => current + 1);
   };
 
   const hydrateAccountsFromCache = (siteId: string, groupId: number, page: number, pageSize: number, filter: string) => {
@@ -739,7 +744,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     );
   };
 
-  usePageAutoRefresh(refreshStatusData, {
+  usePageAutoRefresh(() => refreshStatusData(true), {
     enabled: Boolean(selectedSiteId && selectedGroupId !== null),
     paused: Boolean(refreshingRemote || refreshingFrontend || remoteActionBusyId !== null || confirmState || savingPreference),
   });
@@ -891,6 +896,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   };
 
   return (
+    <AutoRefreshAnimationContext.Provider value={autoRefreshRevision}>
     <section className="view pool-status-page">
       <section className="panel pool-compact-toolbar">
         <div className="pool-title">
@@ -1021,15 +1027,15 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
           <section className="pool-health-card">
             <div className="pool-health-main">
               <span><MetricHelp helpKey="账号池概览">账号池概览</MetricHelp></span>
-              <strong>{numberValue(selectedGroup?.capacity_summary?.pool_active_normal_accounts)}</strong>
-              <em><MetricHelp helpKey="active / 正常">active / 正常 {numberValue(selectedGroup?.capacity_summary?.pool_normal_accounts)}</MetricHelp></em>
+              <strong><AnimatedValue value={numberValue(selectedGroup?.capacity_summary?.pool_active_normal_accounts)} /></strong>
+              <em><MetricHelp helpKey="active / 正常">active / 正常 <AnimatedValue value={numberValue(selectedGroup?.capacity_summary?.pool_normal_accounts)} /></MetricHelp></em>
             </div>
             <div className="pool-health-grid">
               <MiniMetric label="5h 429" value={numberValue(selectedGroup?.capacity_summary?.pool_five_hour_rate_limited_accounts)} />
               <MiniMetric label="7d 429" value={numberValue(selectedGroup?.capacity_summary?.pool_seven_day_rate_limited_accounts)} />
               <MiniMetric label="异常数量" value={numberValue(selectedGroup?.capacity_summary?.pool_abnormal_accounts)} />
             </div>
-            <p>已排除 Bug Team {numberValue(selectedGroup?.capacity_summary?.pool_excluded_bug_team_accounts)} 个，不参与概览与容量计算。</p>
+            <p>已排除 Bug Team <AnimatedValue value={numberValue(selectedGroup?.capacity_summary?.pool_excluded_bug_team_accounts)} /> 个，不参与概览与容量计算。</p>
           </section>
 
           <ConcurrencyCapacitySummary summary={selectedGroup?.capacity_summary} loading={capacitySummaryLoading} />
@@ -1144,6 +1150,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
         tone={confirmState?.tone}
       />
     </section>
+    </AutoRefreshAnimationContext.Provider>
   );
 }
 
@@ -1196,10 +1203,10 @@ function RemoteAccountRow({
         </div>
       </td>
       <td className="capacity-cell">
-        <span>{numberValue(account.current_concurrency)}</span>
+        <span><AnimatedValue value={numberValue(account.current_concurrency)} /></span>
         <span className="capacity-separator">/</span>
-        <strong>{numberValue(account.concurrency)}</strong>
-        <div className="cell-sub">load {numberValue(account.load_factor)}</div>
+        <strong><AnimatedValue value={numberValue(account.concurrency)} /></strong>
+        <div className="cell-sub">load <AnimatedValue value={numberValue(account.load_factor)} /></div>
       </td>
       <td>
         <StatusPill value={statusView.label} tone={statusView.tone} />
@@ -1269,7 +1276,7 @@ function UsageWindow({ account, label, windowKey }: { account: RemoteAccount; la
     <div className="usage-window">
       <div className="usage-window-top">
         <span>{label}</span>
-        <strong>{usedPercent}%</strong>
+        <strong><AnimatedValue value={`${usedPercent}%`} /></strong>
         <em>{formatDuration(resetAfter)}</em>
       </div>
       <div className="usage-track" aria-label={`${label} used ${usedPercent}%`}>
@@ -1307,25 +1314,25 @@ function ConcurrencyCapacitySummary({ summary, loading }: { summary?: CapacitySu
           <em>当前使用组</em>
         </div>
         <small>
-          安全账号 {numberValue(summary?.concurrency_safe_accounts)} 个 · 临界账号 {numberValue(summary?.concurrency_near_limit_accounts)} 个 · 5h限流 {numberValue(summary?.concurrency_five_hour_limited_accounts)} 个 · 短期7d {numberValue(summary?.concurrency_short_seven_day_limited_accounts)} 个 · 长期7d排除 {numberValue(summary?.concurrency_long_seven_day_limited_accounts)} 个
+          安全账号 <AnimatedValue value={numberValue(summary?.concurrency_safe_accounts)} /> 个 · 临界账号 <AnimatedValue value={numberValue(summary?.concurrency_near_limit_accounts)} /> 个 · 5h限流 <AnimatedValue value={numberValue(summary?.concurrency_five_hour_limited_accounts)} /> 个 · 短期7d <AnimatedValue value={numberValue(summary?.concurrency_short_seven_day_limited_accounts)} /> 个 · 长期7d排除 <AnimatedValue value={numberValue(summary?.concurrency_long_seven_day_limited_accounts)} /> 个
         </small>
       </div>
       <div className="concurrency-capacity-values">
         <div>
           <span><MetricHelp helpKey="当前并发">当前并发</MetricHelp></span>
-          <strong>{loading ? "-" : actual}</strong>
+          <strong><AnimatedValue value={loading ? "-" : actual} /></strong>
         </div>
         <div>
           <span><MetricHelp helpKey="安全可用并发">安全可用并发</MetricHelp></span>
-          <strong>{loading ? "-" : safeAvailable}</strong>
+          <strong><AnimatedValue value={loading ? "-" : safeAvailable} /></strong>
         </div>
         <div>
           <span><MetricHelp helpKey="即时可用并发">即时可用并发</MetricHelp></span>
-          <strong>{loading ? "-" : immediateAvailable}</strong>
+          <strong><AnimatedValue value={loading ? "-" : immediateAvailable} /></strong>
         </div>
         <div>
           <span><MetricHelp helpKey="可恢复总并发容量">可恢复总并发容量</MetricHelp></span>
-          <strong>{loading ? "-" : total}</strong>
+          <strong><AnimatedValue value={loading ? "-" : total} /></strong>
         </div>
       </div>
       <div className="concurrency-capacity-meter" aria-label={`当前并发 ${actual}，安全可用并发 ${safeAvailable}，即时可用并发 ${immediateAvailable}，可恢复总并发容量 ${total}`}>
@@ -1335,10 +1342,10 @@ function ConcurrencyCapacitySummary({ summary, loading }: { summary?: CapacitySu
         <span className="unavailable" style={{ width: `${unavailablePercent}%` }} />
       </div>
       <div className="concurrency-capacity-legend">
-        <span><i className="used" /><MetricHelp helpKey="当前并发">使用中 {actual} 并发</MetricHelp></span>
-        <span><i className="safe" /><MetricHelp helpKey="安全可用并发">安全可用 {safeAvailable} 并发</MetricHelp></span>
-        <span><i className="near-limit" /><MetricHelp helpKey="临界可用并发">临界可用 {nearLimitAvailable} 并发</MetricHelp></span>
-        <span><i className="unavailable" /><MetricHelp helpKey="暂时不可用并发">暂时不可用 {unavailable} 并发 · {unavailableAccounts} 个账号</MetricHelp></span>
+        <span><i className="used" /><MetricHelp helpKey="当前并发">使用中 <AnimatedValue value={actual} /> 并发</MetricHelp></span>
+        <span><i className="safe" /><MetricHelp helpKey="安全可用并发">安全可用 <AnimatedValue value={safeAvailable} /> 并发</MetricHelp></span>
+        <span><i className="near-limit" /><MetricHelp helpKey="临界可用并发">临界可用 <AnimatedValue value={nearLimitAvailable} /> 并发</MetricHelp></span>
+        <span><i className="unavailable" /><MetricHelp helpKey="暂时不可用并发">暂时不可用 <AnimatedValue value={unavailable} /> 并发 · <AnimatedValue value={unavailableAccounts} /> 个账号</MetricHelp></span>
       </div>
     </section>
   );
@@ -1665,7 +1672,7 @@ function CapacityMoneyLine({ label, values }: { label: string; values: Array<[st
             <span className={`capacity-money-item ${itemClass}`}>
               {index > 0 ? <span className="capacity-money-separator">，</span> : null}
               <span><MetricHelp helpKey={itemLabel}>{itemLabel}</MetricHelp> </span>
-              <strong>{itemValue}</strong>
+              <strong><AnimatedValue value={itemValue} /></strong>
             </span>
           </Fragment>
         );
@@ -1676,18 +1683,22 @@ function CapacityMoneyLine({ label, values }: { label: string; values: Array<[st
 
 function CapacitySubText({ value }: { value: ReactNode }) {
   if (typeof value !== "string") return <>{value}</>;
-  const parts = value.split(/(\$[\d,]+(?:\.\d+)?)/g);
+  const parts = value.split(/(\$[\d,]+(?:\.\d+)?|[-+]?\d[\d,]*(?:\.\d+)?(?:%|x)?)/g);
   return (
     <>
-      {parts.map((part, index) =>
-        part.startsWith("$") ? (
-          <strong className="capacity-money-strong" key={`${part}-${index}`}>
-            {part}
-          </strong>
-        ) : (
-          part
-        ),
-      )}
+      {parts.map((part, index) => {
+        if (part.startsWith("$")) {
+          return (
+            <strong className="capacity-money-strong" key={`${part}-${index}`}>
+              <AnimatedValue value={part} />
+            </strong>
+          );
+        }
+        if (/^[-+]?\d[\d,]*(?:\.\d+)?(?:%|x)?$/.test(part)) {
+          return <AnimatedValue key={`${part}-${index}`} value={part} />;
+        }
+        return part;
+      })}
     </>
   );
 }
@@ -1790,9 +1801,9 @@ function CapacityMetric({
           {showInlineSub ? (
             <>
               <span>含备用</span>
-              {value}
+              <AnimatedValue value={value} />
             </>
-          ) : value}
+          ) : <AnimatedValue value={value} />}
         </strong>
         {showInlineSub && (
           <small className="capacity-metric-inline-sub">
@@ -1804,7 +1815,7 @@ function CapacityMetric({
             {visibleSideValues.map((item) => (
               <span className="capacity-metric-side-value" key={item.label}>
                 <em><MetricHelp helpKey={item.label}>{item.label}</MetricHelp></em>
-                <b>{item.value}</b>
+                <b><AnimatedValue value={item.value} /></b>
               </span>
             ))}
           </span>
@@ -1820,7 +1831,7 @@ function CapacityMetric({
           {(showMeterHead || meterLabel) && (
             <div className="capacity-secondary-head">
               <span>{meterLabel || sub}</span>
-              <strong className={`capacity-secondary-value ${tone}`}>{meterValue || value}</strong>
+              <strong className={`capacity-secondary-value ${tone}`}><AnimatedValue value={meterValue || value} /></strong>
             </div>
           )}
           {overlay && <CapacityMeterLegend overlay={overlay} baseLabel={meterLegendLabel} baseValue={meterValue || value} baseTone={tone} />}
@@ -1831,7 +1842,7 @@ function CapacityMetric({
         <div className="capacity-secondary">
           <div className="capacity-secondary-head">
             <span>{secondary.label}</span>
-            <strong className={`capacity-secondary-value ${secondary.tone || "muted"}`}>{secondary.value}</strong>
+            <strong className={`capacity-secondary-value ${secondary.tone || "muted"}`}><AnimatedValue value={secondary.value} /></strong>
           </div>
           {secondary.percent !== undefined && secondary.percent !== null && (
             <>
@@ -1858,8 +1869,8 @@ function CapacityMeterLegend({
 }) {
   return (
     <div className="capacity-meter-legend">
-      <span className={`capacity-meter-legend-value ${overlay.tone || "muted"}`}><MetricHelp helpKey={overlay.label}>{overlay.label}</MetricHelp> {overlay.value}</span>
-      <span className={`capacity-meter-legend-value ${baseTone}`}><MetricHelp helpKey={baseLabel}>{baseLabel}</MetricHelp> {baseValue}</span>
+      <span className={`capacity-meter-legend-value ${overlay.tone || "muted"}`}><MetricHelp helpKey={overlay.label}>{overlay.label}</MetricHelp> <AnimatedValue value={overlay.value} /></span>
+      <span className={`capacity-meter-legend-value ${baseTone}`}><MetricHelp helpKey={baseLabel}>{baseLabel}</MetricHelp> <AnimatedValue value={baseValue} /></span>
     </div>
   );
 }
@@ -1893,7 +1904,7 @@ function CompactStats({ items }: { items: Array<[string, string | number]> }) {
       {items.map(([label, value]) => (
         <div className="compact-stat" key={label}>
           <span>{label}</span>
-          <strong>{value}</strong>
+          <strong><AnimatedValue value={value} /></strong>
         </div>
       ))}
     </section>
@@ -1903,7 +1914,7 @@ function CompactStats({ items }: { items: Array<[string, string | number]> }) {
 function MiniMetric({ label, value }: { label: string; value: number }) {
   return (
     <div className="mini-metric">
-      <strong>{value}</strong>
+      <strong><AnimatedValue value={value} /></strong>
       <span><MetricHelp helpKey={label}>{label}</MetricHelp></span>
     </div>
   );
