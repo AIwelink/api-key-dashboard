@@ -1555,6 +1555,7 @@ async def _load_group_tpm_samples(
             "tpm": 1,
             "rpm": 1,
             "average_duration_ms": 1,
+            "current_concurrency": 1,
         },
     ).sort("sampled_at", 1).limit(400)
     return [doc async for doc in cursor]

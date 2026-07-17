@@ -17,7 +17,8 @@
 - TPM 动量：`EMA5 / EMA15`
 - TPM 中期需求倍率：`EMA15 / EMA60`
 - 压力 TPM：`max(EMA15, P90_2h, EMA5 * clamp(EMA5 / EMA15, 1, 1.5))`
-- 压力并发：`RPM_EMA5 * average_duration_ms / 60000`
+- 分钟并发：每分钟拉取一次站点账号列表，按分组汇总账号的 `current_concurrency`，与 TPM/RPM 写入同一条分钟样本
+- 压力并发：最近 1 小时分钟并发的 `max(EMA5, P90)`；没有正并发样本时不计算覆盖倍数
 
 分钟样本少于 15 个、最新样本超过 3 分钟，或无法得到单位 Token 成本时，实时风险状态为等待数据并回退现有历史容量公式。
 

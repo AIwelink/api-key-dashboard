@@ -8,8 +8,8 @@ from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.modules.sub2api.client import Sub2ApiClient
-from app.modules.sub2api.cache import get_site, list_sites
+from app.modules.sub2api.cache import _fetch_all_accounts, get_site, list_sites
+from app.modules.sub2api.client import Sub2ApiClient, account_in_group
 from app.modules.sub2api.dashboard import parse_remote_datetime
 from app.utils import now_utc
 
@@ -31,6 +31,7 @@ async def sample_group_tpm(
     group_id: int,
     client: Sub2ApiClient,
     sampled_at: datetime | None = None,
+    current_concurrency: float | None = None,
 ) -> dict[str, Any]:
     sampled_at = _as_utc(sampled_at or now_utc())
     bucket_at = sampled_at.replace(second=0, microsecond=0)
@@ -74,6 +75,7 @@ async def sample_group_tpm(
         "calculated_tpm": calculated_tpm,
         "rpm": _nonnegative_number(stats.get("rpm")),
         "average_duration_ms": _nonnegative_number(stats.get("average_duration_ms")),
+        "current_concurrency": _nonnegative_number(current_concurrency),
         "total_tokens": total_tokens,
         "input_tokens": _nonnegative_integer(stats.get("total_input_tokens")),
         "output_tokens": _nonnegative_integer(stats.get("total_output_tokens")),
@@ -105,10 +107,22 @@ async def sample_site_tpm(db: AsyncIOMotorDatabase, *, site_id: str) -> dict[str
             }
         )
         client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
+        try:
+            accounts = await _fetch_all_accounts(client)
+            concurrency_by_group = _group_current_concurrency(accounts, group_ids)
+        except Exception as exc:  # noqa: BLE001 - dashboard sampling can continue without concurrency.
+            logger.warning("sub2api_concurrency_sample_failed site_id=%s error=%s", site_id, exc)
+            concurrency_by_group = {group_id: None for group_id in group_ids}
 
         async def sample_one(group_id: int) -> dict[str, Any]:
             try:
-                return await sample_group_tpm(db, site_id=site_id, group_id=group_id, client=client)
+                return await sample_group_tpm(
+                    db,
+                    site_id=site_id,
+                    group_id=group_id,
+                    client=client,
+                    current_concurrency=concurrency_by_group.get(group_id),
+                )
             except Exception as exc:  # noqa: BLE001 - one group must not block other samples.
                 logger.warning("sub2api_tpm_group_sample_failed site_id=%s group_id=%s error=%s", site_id, group_id, exc)
                 return {"ok": False, "site_id": site_id, "group_id": group_id, "message": str(exc)}
@@ -179,6 +193,21 @@ def _nonnegative_number(value: Any) -> float | None:
 def _nonnegative_integer(value: Any) -> int | None:
     number = _nonnegative_number(value)
     return int(number) if number is not None else None
+
+
+def _group_current_concurrency(
+    accounts: list[dict[str, Any]],
+    group_ids: list[int],
+) -> dict[int, float]:
+    totals = {group_id: 0.0 for group_id in group_ids}
+    for account in accounts:
+        current = _nonnegative_number(account.get("current_concurrency"))
+        if current is None:
+            continue
+        for group_id in group_ids:
+            if account_in_group(account, group_id):
+                totals[group_id] += current
+    return totals
 
 
 def _calculate_tpm_from_previous(

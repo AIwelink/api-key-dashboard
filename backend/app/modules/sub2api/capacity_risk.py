@@ -61,9 +61,7 @@ def calculate_capacity_risk(
     concurrency_sample_count = sum(
         1
         for item in recent_samples
-        if item["rpm"] is not None
-        and item["average_duration_ms"] is not None
-        and item["average_duration_ms"] > 0
+        if item["current_concurrency"] is not None
     )
     ready = (
         len(normalized) >= MIN_SAMPLE_COUNT
@@ -74,11 +72,20 @@ def calculate_capacity_risk(
         and _positive(cost_per_token) is not None
     )
     if not ready:
-        return _pending_summary(sample_count=len(normalized), latest_sampled_at=latest_at)
+        return _pending_summary(
+            sample_count=len(normalized),
+            concurrency_sample_count=concurrency_sample_count,
+            latest_sampled_at=latest_at,
+        )
 
     tpm_values = [item["tpm"] for item in normalized]
     rpm_values = [item["rpm"] for item in normalized if item["rpm"] is not None]
     duration_values = [item["average_duration_ms"] for item in normalized[-15:] if item["average_duration_ms"] is not None]
+    concurrency_values = [
+        item["current_concurrency"]
+        for item in normalized[-60:]
+        if item["current_concurrency"] is not None
+    ]
     tpm_ema_5 = _ema(tpm_values, 5)
     tpm_ema_15 = _ema(tpm_values, 15)
     tpm_ema_60 = _ema(tpm_values, 60)
@@ -87,6 +94,8 @@ def calculate_capacity_risk(
     rpm_ema_15 = _ema(rpm_values, 15) if rpm_values else 0.0
     rpm_ema_60 = _ema(rpm_values, 60) if rpm_values else 0.0
     average_duration_ms = sum(duration_values) / len(duration_values) if duration_values else 0.0
+    concurrency_ema_5 = _ema(concurrency_values, 5) if concurrency_values else 0.0
+    concurrency_p90_1h = _percentile(concurrency_values, 0.90) if concurrency_values else 0.0
 
     tpm_momentum = _ratio(tpm_ema_5, tpm_ema_15)
     tpm_medium_ratio = _ratio(tpm_ema_15, tpm_ema_60)
@@ -100,7 +109,9 @@ def calculate_capacity_risk(
     else:
         pressure_tpm = max(tpm_ema_15, tpm_p90_2h, tpm_ema_5 * trend_multiplier)
     pressure_rpm = rpm_ema_5
-    estimated_concurrency = pressure_rpm * average_duration_ms / 60_000
+    estimated_concurrency = max(concurrency_ema_5, concurrency_p90_1h)
+    if 0 < estimated_concurrency < 1:
+        estimated_concurrency = 1.0
     concurrency_coverage = _coverage(safe_concurrency_available, estimated_concurrency)
 
     burn_usd_per_hour = pressure_tpm * 60 * float(cost_per_token)
@@ -170,6 +181,7 @@ def calculate_capacity_risk(
     return {
         "ready": True,
         "sample_count": len(normalized),
+        "concurrency_sample_count": len(concurrency_values),
         "latest_sampled_at": latest_at,
         "tpm_ema_5": _rounded(tpm_ema_5),
         "tpm_ema_15": _rounded(tpm_ema_15),
@@ -177,6 +189,8 @@ def calculate_capacity_risk(
         "tpm_p90_2h": _rounded(tpm_p90_2h),
         "rpm_ema_5": _rounded(rpm_ema_5),
         "average_duration_ms": _rounded(average_duration_ms),
+        "concurrency_ema_5": _rounded(concurrency_ema_5),
+        "concurrency_p90_1h": _rounded(concurrency_p90_1h),
         "tpm_momentum": _rounded(tpm_momentum),
         "demand_ratio": _rounded(demand_ratio),
         "pressure_tpm": _rounded(pressure_tpm),
@@ -204,11 +218,17 @@ def calculate_capacity_risk(
     }
 
 
-def _pending_summary(*, sample_count: int, latest_sampled_at: datetime | None) -> dict[str, Any]:
+def _pending_summary(
+    *,
+    sample_count: int,
+    concurrency_sample_count: int,
+    latest_sampled_at: datetime | None,
+) -> dict[str, Any]:
     label, tone = HEALTH_META["pending"]
     return {
         "ready": False,
         "sample_count": sample_count,
+        "concurrency_sample_count": concurrency_sample_count,
         "latest_sampled_at": latest_sampled_at,
         "pressure_stage": "waiting_data",
         "pressure_stage_label": PRESSURE_STAGE_LABELS["waiting_data"],
@@ -361,6 +381,7 @@ def _normalized_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "tpm": tpm,
                 "rpm": _nonnegative(sample.get("rpm")),
                 "average_duration_ms": _nonnegative(sample.get("average_duration_ms")),
+                "current_concurrency": _nonnegative(sample.get("current_concurrency")),
             }
         )
     return sorted(normalized, key=lambda item: item["sampled_at"])

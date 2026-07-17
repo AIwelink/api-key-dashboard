@@ -51,6 +51,7 @@ class TpmSampleTests(unittest.IsolatedAsyncioTestCase):
             group_id=5,
             client=client,
             sampled_at=sampled_at,
+            current_concurrency=17,
         )
 
         client.get_dashboard_snapshot.assert_awaited_once_with(
@@ -81,6 +82,7 @@ class TpmSampleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(document["calculated_tpm"])
         self.assertEqual(document["rpm"], 45.0)
         self.assertEqual(document["average_duration_ms"], 19419.18)
+        self.assertEqual(document["current_concurrency"], 17.0)
         self.assertEqual(document["source"], "reported")
         self.assertEqual(document["group_id"], 5)
         self.assertEqual(document["input_tokens"], 17355853370)
@@ -178,6 +180,7 @@ class TpmSiteSamplingTests(unittest.IsolatedAsyncioTestCase):
                 "get_site",
                 AsyncMock(return_value={"id": "api-5001", "base_url": "http://127.0.0.1:5001", "token": "secret"}),
             ),
+            patch.object(tpm_sampler, "_fetch_all_accounts", AsyncMock(return_value=[])),
             patch.object(tpm_sampler, "sample_group_tpm", AsyncMock(side_effect=sample_group)),
         ):
             result = await asyncio.wait_for(tpm_sampler.sample_site_tpm(db, site_id="api-5001"), timeout=1)
@@ -187,6 +190,37 @@ class TpmSiteSamplingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["sampled"], 2)
         self.assertEqual(result["failed"], 1)
         self.assertEqual(result["groups"], 3)
+
+    async def test_accounts_are_fetched_once_and_group_concurrency_is_forwarded(self) -> None:
+        groups = SimpleNamespace(find=lambda *_args, **_kwargs: AsyncCursor([{"group_id": 3}, {"group_id": 5}]))
+        db = SimpleNamespace(sub2api_groups_cache=groups)
+        accounts = [
+            {"id": 1, "group_ids": [3], "current_concurrency": 2},
+            {"id": 2, "groups": [{"id": 3}, {"id": 5}], "current_concurrency": "4"},
+            {"id": 3, "account_groups": [{"group_id": 5}], "current_concurrency": 1},
+            {"id": 4, "group_ids": [3], "current_concurrency": -5},
+        ]
+        fetch_accounts = AsyncMock(return_value=accounts)
+        sample_group = AsyncMock(side_effect=lambda *_args, group_id, **_kwargs: {"ok": True, "group_id": group_id})
+
+        with (
+            patch.object(
+                tpm_sampler,
+                "get_site",
+                AsyncMock(return_value={"id": "api-5001", "base_url": "http://127.0.0.1:5001", "token": "secret"}),
+            ),
+            patch.object(tpm_sampler, "_fetch_all_accounts", fetch_accounts),
+            patch.object(tpm_sampler, "sample_group_tpm", sample_group),
+        ):
+            result = await tpm_sampler.sample_site_tpm(db, site_id="api-5001")
+
+        fetch_accounts.assert_awaited_once()
+        concurrency_by_group = {
+            call_item.kwargs["group_id"]: call_item.kwargs["current_concurrency"]
+            for call_item in sample_group.await_args_list
+        }
+        self.assertEqual(concurrency_by_group, {3: 6.0, 5: 5.0})
+        self.assertEqual(result["sampled"], 2)
 
     async def test_same_site_overlap_is_skipped(self) -> None:
         groups = SimpleNamespace(find=lambda *_args, **_kwargs: AsyncCursor([{"group_id": 3}]))
@@ -206,6 +240,7 @@ class TpmSiteSamplingTests(unittest.IsolatedAsyncioTestCase):
                 "get_site",
                 AsyncMock(return_value={"id": "api-5001", "base_url": "http://127.0.0.1:5001", "token": "secret"}),
             ),
+            patch.object(tpm_sampler, "_fetch_all_accounts", AsyncMock(return_value=[])),
             patch.object(tpm_sampler, "sample_group_tpm", sample_mock),
         ):
             first = asyncio.create_task(tpm_sampler.sample_site_tpm(db, site_id="api-5001"))

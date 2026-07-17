@@ -14,6 +14,7 @@ def samples(
     *,
     rpm: float = 60,
     duration_ms: float = 1000,
+    current_concurrency: float | None = 1,
     latest_at: datetime = NOW,
 ) -> list[dict[str, object]]:
     start = latest_at - timedelta(minutes=len(values) - 1)
@@ -23,6 +24,7 @@ def samples(
             "tpm": value,
             "rpm": rpm,
             "average_duration_ms": duration_ms,
+            "current_concurrency": current_concurrency,
         }
         for index, value in enumerate(values)
     ]
@@ -79,15 +81,36 @@ class CapacityRiskTests(unittest.TestCase):
 
         self.assertFalse(result["ready"])
 
-    def test_missing_request_duration_waits_instead_of_skipping_concurrency(self) -> None:
+    def test_request_duration_is_not_used_for_concurrency_pressure(self) -> None:
         incomplete = samples([1000] * 20)
         for item in incomplete:
             item["average_duration_ms"] = None
 
         result = calculate(incomplete)
 
-        self.assertFalse(result["ready"])
-        self.assertEqual(result["pressure_stage"], "waiting_data")
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["estimated_concurrency"], 1.0)
+        self.assertEqual(result["concurrency_coverage"], 2.0)
+
+    def test_recorded_concurrency_replaces_rpm_duration_estimate(self) -> None:
+        result = calculate(
+            samples([1000] * 20, rpm=45, duration_ms=0.001, current_concurrency=5),
+            safe_concurrency_available=100,
+        )
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["estimated_concurrency"], 5.0)
+        self.assertEqual(result["concurrency_coverage"], 20.0)
+
+    def test_zero_recorded_concurrency_has_no_coverage_multiplier(self) -> None:
+        result = calculate(
+            samples([1000] * 20, current_concurrency=0),
+            safe_concurrency_available=100,
+        )
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["estimated_concurrency"], 0.0)
+        self.assertIsNone(result["concurrency_coverage"])
 
     def test_healthy_when_runway_and_concurrency_targets_are_met(self) -> None:
         result = calculate(samples([1000] * 20))

@@ -159,6 +159,7 @@ type CapacitySummary = {
   pressure_tpm?: number;
   pressure_rpm?: number;
   sample_count?: number;
+  concurrency_sample_count?: number;
   actual_runway_hours?: number | null;
   dynamic_runway_hours?: number | null;
   target_runway_hours?: number;
@@ -1386,7 +1387,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
         <CapacityMetric
           label="安全并发覆盖"
           value={formatMultiple(summary?.concurrency_coverage)}
-          sub={`压力并发 ${formatRate(summary?.estimated_concurrency)} · 安全可用 ${formatRate(summary?.concurrency_safe_available)}${refillRecommendationText(summary, true) ? ` · ${refillRecommendationText(summary, true)}` : ""}`}
+          sub={`压力并发 ${formatRate(summary?.estimated_concurrency)} · 并发样本 ${summary?.concurrency_sample_count || 0} · 安全可用 ${formatRate(summary?.concurrency_safe_available)}${refillRecommendationText(summary, true) ? ` · ${refillRecommendationText(summary, true)}` : ""}`}
           percent={runwayScalePercent(summary?.concurrency_coverage, summary?.concurrency_target_coverage ?? 1.2)}
           tone={concurrencyCoverageTone(summary?.concurrency_coverage, summary?.realtime_risk_ready)}
           meterLegendLabel="目标"

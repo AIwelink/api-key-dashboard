@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.modules.api_pools.capacity_limits import normalize_capacity_limits
@@ -39,6 +40,7 @@ def minute_samples() -> list[dict[str, object]]:
             "tpm": 1000,
             "rpm": 60,
             "average_duration_ms": 1000,
+            "current_concurrency": 1,
         }
         for index in range(20)
     ]
@@ -76,6 +78,33 @@ def cost_summary(*, historical_peak: float = 0.0) -> dict[str, object]:
 
 
 class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_group_sample_loader_includes_recorded_concurrency(self) -> None:
+        class Cursor:
+            def __init__(self) -> None:
+                self.items = [{"sampled_at": NOW, "tpm": 1000, "current_concurrency": 7}]
+
+            def sort(self, *_args):
+                return self
+
+            def limit(self, *_args):
+                return self
+
+            def __aiter__(self):
+                return self._iterate()
+
+            async def _iterate(self):
+                for item in self.items:
+                    yield item
+
+        collection = SimpleNamespace(find=lambda query, projection: (setattr(collection, "query", query), setattr(collection, "projection", projection), Cursor())[-1])
+        db = SimpleNamespace(sub2api_tpm_samples=collection)
+
+        with patch.object(cache, "now_utc", return_value=NOW):
+            result = await cache._load_group_tpm_samples(db, site_id="api-5001", group_id=3)
+
+        self.assertEqual(result[0]["current_concurrency"], 7)
+        self.assertEqual(collection.projection["current_concurrency"], 1)
+
     async def test_reserve_pool_is_not_queried_or_included(self) -> None:
         limits = normalize_capacity_limits({"plus": {"five_hour_usd": 2, "seven_day_usd": 10}})
         reserve = AsyncMock()
