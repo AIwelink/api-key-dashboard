@@ -38,7 +38,7 @@ const poolNavItems: Array<[ViewName, string]> = [
   ["api-pools", "API 账号池状态"],
   ["event-records", "事件记录"],
   ["alert-center", "异常告警"],
-  ["pool-lifecycle", "账号池管理"],
+  ["pool-lifecycle", "站点配置"],
 ];
 
 const adminNavItems: Array<[ViewName, string]> = [
@@ -59,7 +59,7 @@ const navShortLabels: Record<ViewName, string> = {
   "api-pools": "池",
   "event-records": "事",
   "alert-center": "警",
-  "pool-lifecycle": "逻",
+  "pool-lifecycle": "站",
   "agent-analysis": "析",
   "agent-workbench": "台",
   "api-tokens": "管",
@@ -77,7 +77,7 @@ const viewPaths: Record<ViewName, string> = {
   "api-pools": "/api-pool-status",
   "event-records": "/event-records",
   "alert-center": "/alert-center",
-  "pool-lifecycle": "/pool-lifecycle",
+  "pool-lifecycle": "/site-configuration",
   "agent-analysis": "/agent-analysis",
   "agent-workbench": "/agent-workbench",
   "api-tokens": "/system-management",
@@ -91,6 +91,7 @@ const pathAliases: Record<string, ViewName> = {
   "/push-error-todos": "push-error-todos",
   "/api-pools": "api-pools",
   "/api-tokens": "api-tokens",
+  "/pool-lifecycle": "pool-lifecycle",
 };
 
 function isMobileMenuLayout() {
@@ -179,7 +180,7 @@ function App() {
           <img className="brand-logo" src={logoUrl} alt="AIwelink" />
           <div className="brand-copy">
             <h1>AIwelink</h1>
-            <p>sub2api 账号管理</p>
+            <p>API 客户端管理</p>
           </div>
         </div>
         <button className="sidebar-toggle" onClick={toggleSidebar} title={sidebarCollapsed ? "展开菜单" : "收起菜单"} type="button">

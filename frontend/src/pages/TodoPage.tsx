@@ -230,7 +230,7 @@ export function TodoPage({ token, showToast }: Props) {
   const loadResurrectionAccounts = async () => {
     const [pools, sites] = await Promise.all([
       api<ApiPoolResponse>("/api-pools", token),
-      api<Sub2ApiSitesResponse>("/sub2api-sites", token),
+      api<Sub2ApiSitesResponse>("/sub2api-sites?site_type=sub2api", token),
     ]);
     const activeSiteIds = new Set(sites.items.filter((site) => site.status !== "deleted" && site.status !== "disabled").map((site) => site.id));
     const fallbackSiteId = activeSiteIds.size === 1 ? Array.from(activeSiteIds)[0] : "";

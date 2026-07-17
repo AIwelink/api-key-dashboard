@@ -122,7 +122,17 @@ async def dashboard_group_refresh_needed(db: AsyncIOMotorDatabase, *, site_id: s
 async def refresh_due_dashboard_snapshots_for_all_sites(db: AsyncIOMotorDatabase, *, force: bool = False) -> dict[str, Any]:
     sites = [
         site
-        async for site in db.sub2api_sites.find({"status": "active"})
+        async for site in db.sub2api_sites.find(
+            {
+                "status": "active",
+                "$or": [
+                    {"site_type": "sub2api"},
+                    {"site_type": {"$exists": False}},
+                    {"site_type": None},
+                    {"site_type": ""},
+                ],
+            }
+        )
     ]
     results = []
     for site in sites:

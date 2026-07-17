@@ -800,6 +800,50 @@ legend {
   align-items: end;
 }
 
+.site-type-segment {
+  min-height: 42px;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--accent-soft);
+}
+
+.site-type-segment legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.site-type-segment label {
+  position: relative;
+  flex: 1;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 12px;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.site-type-segment label + label {
+  border-left: 1px solid var(--line);
+}
+
+.site-type-segment label:has(input:checked) {
+  color: var(--accent-strong);
+  background: var(--panel);
+  font-weight: 700;
+}
+
+.site-type-segment input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .capacity-limit-config-panel {
   box-shadow: none;
 }

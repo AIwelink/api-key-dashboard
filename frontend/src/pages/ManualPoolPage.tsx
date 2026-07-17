@@ -210,7 +210,7 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
   };
 
   const loadSites = async () => {
-    const data = await api<SitesResponse>("/sub2api-sites", token);
+    const data = await api<SitesResponse>("/sub2api-sites?site_type=sub2api", token);
     setSites(data.items);
     if (!selectedSiteId && data.items[0]) {
       setSelectedSiteId(data.items[0].id);

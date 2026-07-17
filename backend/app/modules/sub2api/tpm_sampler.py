@@ -8,7 +8,7 @@ from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.modules.sub2api.cache import _fetch_all_accounts, get_site, list_sites
+from app.modules.sub2api.cache import _fetch_all_accounts, get_site, is_sub2api_site, list_sites
 from app.modules.sub2api.client import Sub2ApiClient, account_in_group
 from app.modules.sub2api.dashboard import parse_remote_datetime
 from app.utils import now_utc
@@ -99,6 +99,8 @@ async def sample_site_tpm(db: AsyncIOMotorDatabase, *, site_id: str) -> dict[str
         site = await get_site(db, site_id, include_token=True)
         if not site:
             return {"ok": False, "site_id": site_id, "message": "sub2api site not found"}
+        if not is_sub2api_site(site):
+            return {"ok": False, "site_id": site_id, "message": "site is not a sub2api client"}
         group_ids = sorted(
             {
                 int(doc["group_id"])
@@ -140,7 +142,11 @@ async def sample_site_tpm(db: AsyncIOMotorDatabase, *, site_id: str) -> dict[str
 
 
 async def sample_all_sites_tpm(db: AsyncIOMotorDatabase) -> dict[str, Any]:
-    sites = [site for site in (await list_sites(db)).get("items", []) if site and site.get("status") == "active"]
+    sites = [
+        site
+        for site in (await list_sites(db, site_type="sub2api")).get("items", [])
+        if site and site.get("status") == "active" and is_sub2api_site(site)
+    ]
 
     async def sample_one(site: dict[str, Any]) -> dict[str, Any]:
         site_id = str(site.get("id"))

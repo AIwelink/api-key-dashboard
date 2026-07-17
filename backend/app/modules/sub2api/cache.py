@@ -18,6 +18,8 @@ from app.utils import now_utc, serialize_doc
 logger = logging.getLogger("app.sub2api_cache")
 
 DEFAULT_SITE_ID = "default"
+DEFAULT_SITE_TYPE = "sub2api"
+SITE_TYPES = {"sub2api", "newapi"}
 DEFAULT_REFRESH_INTERVAL_MINUTES = 30
 MIN_REFRESH_INTERVAL_MINUTES = 1
 REFRESH_DEBOUNCE_SECONDS = 3
@@ -77,6 +79,7 @@ _site_locks: dict[str, asyncio.Lock] = {}
 
 def public_site(site: dict[str, Any]) -> dict[str, Any]:
     result = dict(site)
+    result["site_type"] = site_type(result)
     result.setdefault("refresh_interval_minutes", DEFAULT_REFRESH_INTERVAL_MINUTES)
     result.setdefault("auto_remove_abnormal_accounts", False)
     result.setdefault("status", "active")
@@ -91,6 +94,7 @@ async def get_site(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SITE_ID, *, 
     if doc is None:
         return None
     site = dict(doc)
+    site["site_type"] = site_type(site)
     site.setdefault("refresh_interval_minutes", DEFAULT_REFRESH_INTERVAL_MINUTES)
     site.setdefault("auto_remove_abnormal_accounts", False)
     site.setdefault("status", "active")
@@ -101,8 +105,12 @@ async def get_site(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SITE_ID, *, 
     return serialize_doc(site)
 
 
-async def list_sites(db: AsyncIOMotorDatabase) -> dict[str, Any]:
-    cursor = db.sub2api_sites.find({"status": {"$ne": "deleted"}}).sort([("created_at", 1), ("_id", 1)])
+async def list_sites(db: AsyncIOMotorDatabase, *, site_type: str | None = None) -> dict[str, Any]:
+    query: dict[str, Any] = {"status": {"$ne": "deleted"}}
+    if site_type is not None:
+        normalized_type = normalize_site_type(site_type)
+        query = sub2api_site_query(status={"$ne": "deleted"}) if normalized_type == "sub2api" else query | {"site_type": "newapi"}
+    cursor = db.sub2api_sites.find(query).sort([("created_at", 1), ("_id", 1)])
     items = [public_site(doc | {"id": doc["_id"]}) async for doc in cursor]
     return {"items": items, "total": len(items)}
 
@@ -112,6 +120,12 @@ async def update_site_config(db: AsyncIOMotorDatabase, site_id: str, payload: di
     if current is None:
         return {}
     updates: dict[str, Any] = {"updated_at": now_utc()}
+    normalized_type = normalize_site_type(payload.get("site_type", current.get("site_type")))
+    admin_user_id = str(payload.get("admin_user_id", current.get("admin_user_id")) or "").strip()
+    if normalized_type == "newapi" and not admin_user_id:
+        raise ValueError("admin_user_id is required for newapi sites")
+    updates["site_type"] = normalized_type
+    updates["admin_user_id"] = admin_user_id if normalized_type == "newapi" else ""
     if "name" in payload:
         updates["name"] = str(payload["name"] or site_id).strip() or site_id
     if "base_url" in payload:
@@ -133,11 +147,17 @@ async def create_site_config(db: AsyncIOMotorDatabase, payload: dict[str, Any]) 
     base_url = str(payload.get("base_url") or "").strip().rstrip("/")
     if not site_id or not base_url:
         return {}
+    normalized_type = normalize_site_type(payload.get("site_type"))
+    admin_user_id = str(payload.get("admin_user_id") or "").strip()
+    if normalized_type == "newapi" and not admin_user_id:
+        raise ValueError("admin_user_id is required for newapi sites")
     now = now_utc()
     doc = {
         "_id": site_id,
         "name": str(payload.get("name") or site_id).strip() or site_id,
         "base_url": base_url,
+        "site_type": normalized_type,
+        "admin_user_id": admin_user_id if normalized_type == "newapi" else "",
         "token": str(payload.get("token") or "").strip(),
         "status": str(payload.get("status") or "active"),
         "refresh_interval_minutes": _site_refresh_interval_minutes(payload),
@@ -156,6 +176,37 @@ async def delete_site_config(db: AsyncIOMotorDatabase, site_id: str) -> bool:
         {"$set": {"status": "deleted", "deleted_at": now_utc(), "updated_at": now_utc()}},
     )
     return result.modified_count > 0
+
+
+def normalize_site_type(value: Any) -> str:
+    normalized = str(value or DEFAULT_SITE_TYPE).strip().lower()
+    if normalized not in SITE_TYPES:
+        raise ValueError(f"unsupported site_type: {normalized}")
+    return normalized
+
+
+def site_type(site: dict[str, Any]) -> str:
+    try:
+        return normalize_site_type(site.get("site_type"))
+    except ValueError:
+        return DEFAULT_SITE_TYPE
+
+
+def is_sub2api_site(site: dict[str, Any] | None) -> bool:
+    return bool(site) and site_type(site) == "sub2api"
+
+
+def sub2api_site_query(*, status: Any = None) -> dict[str, Any]:
+    query: dict[str, Any] = {}
+    if status is not None:
+        query["status"] = status
+    query["$or"] = [
+        {"site_type": "sub2api"},
+        {"site_type": {"$exists": False}},
+        {"site_type": None},
+        {"site_type": ""},
+    ]
+    return query
 
 
 async def get_cache_meta(db: AsyncIOMotorDatabase, site_id: str) -> dict[str, Any]:
@@ -433,7 +484,7 @@ async def request_debounced_refresh(db: AsyncIOMotorDatabase, site_id: str = DEF
 
 
 async def refresh_account_caches_for_all_sites(db: AsyncIOMotorDatabase) -> dict[str, Any]:
-    sites = (await list_sites(db)).get("items", [])
+    sites = (await list_sites(db, site_type="sub2api")).get("items", [])
     results = []
     for site in sites:
         if not site or site.get("status") != "active":
@@ -456,7 +507,7 @@ async def refresh_account_caches_for_all_sites(db: AsyncIOMotorDatabase) -> dict
 async def refresh_scheduler_loop(db: AsyncIOMotorDatabase) -> None:
     while True:
         try:
-            for site in (await list_sites(db)).get("items", []):
+            for site in (await list_sites(db, site_type="sub2api")).get("items", []):
                 if not site or site.get("status") != "active":
                     continue
                 site_id = str(site.get("id"))

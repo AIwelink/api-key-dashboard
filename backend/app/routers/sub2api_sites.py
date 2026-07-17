@@ -24,6 +24,7 @@ from app.modules.sub2api.cache import (
     create_site_config,
     delete_site_config,
     get_site,
+    is_sub2api_site,
     list_cached_group_accounts,
     list_cached_groups,
     list_sites as list_cached_sites,
@@ -259,15 +260,21 @@ async def _client_for_site(db: AsyncIOMotorDatabase, site_id: str) -> Sub2ApiCli
     site = await get_site(db, site_id, include_token=True)
     if not site:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
+    if not is_sub2api_site(site):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="site is not a sub2api client")
     return Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
 
 
 @router.get("")
 async def list_sites(
+    site_type: str | None = Query(default=None),
     _: dict = Depends(require_roles("owner", "admin", "maintainer")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
-    return await list_cached_sites(db)
+    try:
+        return await list_cached_sites(db, site_type=site_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -276,7 +283,10 @@ async def create_site(
     actor: dict = Depends(require_roles("owner", "admin")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
-    created = await create_site_config(db, payload)
+    try:
+        created = await create_site_config(db, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if not created:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="site id and base_url are required")
     await write_audit_log(
@@ -297,7 +307,10 @@ async def update_site(
     actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
-    updated = await update_site_config(db, site_id, payload)
+    try:
+        updated = await update_site_config(db, site_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
     await write_audit_log(
@@ -308,7 +321,7 @@ async def update_site(
         resource_id=site_id,
         after={key: value for key, value in updated.items() if key != "token"},
     )
-    if payload.get("auto_remove_abnormal_accounts") is True:
+    if payload.get("auto_remove_abnormal_accounts") is True and is_sub2api_site(updated):
         try:
             updated["auto_remove_refresh"] = await request_debounced_refresh(db, site_id)
         except Exception as exc:  # noqa: BLE001 - keep the saved switch visible, but report the scan failure.
@@ -352,8 +365,11 @@ async def refresh_site(
     _: dict = Depends(require_roles("owner", "admin", "maintainer")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
-    if not await get_site(db, site_id):
+    site = await get_site(db, site_id)
+    if not site:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
+    if not is_sub2api_site(site):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="site is not a sub2api client")
     return await request_debounced_refresh(db, site_id)
 
 

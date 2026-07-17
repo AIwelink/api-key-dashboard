@@ -14,7 +14,7 @@ from pymongo import UpdateOne
 
 from app.modules.notifications.service import send_notification_event
 from app.modules.sub2api.client import Sub2ApiClient
-from app.modules.sub2api.cache import _get_or_update_group_capacity_summary, get_site, is_bug_team_account, list_sites
+from app.modules.sub2api.cache import _get_or_update_group_capacity_summary, get_site, is_bug_team_account, is_sub2api_site, list_sites
 from app.utils import now_utc, serialize_doc
 
 
@@ -310,7 +310,7 @@ async def probe_scheduler_loop(db: AsyncIOMotorDatabase) -> None:
 
 
 async def probe_due_sites(db: AsyncIOMotorDatabase) -> dict[str, Any]:
-    sites = (await list_sites(db)).get("items", [])
+    sites = (await list_sites(db, site_type="sub2api")).get("items", [])
     results: list[dict[str, Any]] = []
     for site in sites:
         if not site or site.get("status") != "active":
@@ -346,6 +346,8 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
     site = await get_site(db, site_id, include_token=True)
     if not site:
         return {"ok": False, "site_id": site_id, "message": "sub2api site not found"}
+    if not is_sub2api_site(site):
+        return {"ok": False, "site_id": site_id, "message": "site is not a sub2api client"}
     run_id = secrets.token_hex(12)
     started_at = now_utc()
     await db.remote_account_probe_runs.insert_one(

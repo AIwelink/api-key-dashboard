@@ -246,7 +246,7 @@ export function EventRecordsPage({ token, showToast }: Props) {
 
   const loadSites = async () => {
     try {
-      const data = await api<{ items: Site[] }>("/sub2api-sites", token);
+      const data = await api<{ items: Site[] }>("/sub2api-sites?site_type=sub2api", token);
       const nextSites = data.items || [];
       setSites(nextSites);
       updateEventRecordsDataCache({ sites: nextSites });

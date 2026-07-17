@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.modules.sub2api.cache import sub2api_site_query
 from app.utils import now_utc, object_id, serialize_doc
 
 
@@ -147,7 +148,7 @@ async def sync_api_pools_from_sub2api_groups(db: AsyncIOMotorDatabase, site_id: 
 async def _active_site_ids(db: AsyncIOMotorDatabase) -> set[str]:
     return {
         str(site["_id"])
-        async for site in db.sub2api_sites.find({"status": {"$ne": "deleted"}}, {"_id": 1})
+        async for site in db.sub2api_sites.find(sub2api_site_query(status={"$ne": "deleted"}), {"_id": 1})
         if site.get("_id")
     }
 

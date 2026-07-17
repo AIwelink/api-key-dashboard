@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 from app.modules.sub2api import cache
 
@@ -10,6 +12,7 @@ class Sub2ApiSiteRefreshIntervalTests(unittest.TestCase):
         site = cache.public_site({"_id": "api-5001", "token": "secret"})
 
         self.assertEqual(site["refresh_interval_minutes"], 30)
+        self.assertEqual(site["site_type"], "sub2api")
         self.assertTrue(site["token_configured"])
         self.assertNotIn("token", site)
 
@@ -20,6 +23,110 @@ class Sub2ApiSiteRefreshIntervalTests(unittest.TestCase):
         self.assertEqual(cache._site_refresh_interval_minutes({"refresh_interval_minutes": -5}), 1)
         self.assertEqual(cache._site_refresh_interval_minutes({"refresh_interval_minutes": 3000}), 1440)
         self.assertEqual(cache._site_refresh_interval_minutes({"refresh_interval_minutes": "invalid"}), 30)
+
+
+class AsyncCursor:
+    def __init__(self, items: list[dict[str, object]]) -> None:
+        self.items = items
+
+    def sort(self, *_args):
+        return self
+
+    def __aiter__(self):
+        return self._iterate()
+
+    async def _iterate(self):
+        for item in self.items:
+            yield item
+
+
+class ClientSiteTypeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_newapi_requires_admin_user_id(self) -> None:
+        sites = SimpleNamespace(replace_one=AsyncMock(), find_one=AsyncMock())
+        db = SimpleNamespace(sub2api_sites=sites)
+
+        with self.assertRaisesRegex(ValueError, "admin_user_id"):
+            await cache.create_site_config(
+                db,
+                {
+                    "id": "newapi-us01",
+                    "name": "NewAPI US01",
+                    "base_url": "https://newapi.example.com",
+                    "site_type": "newapi",
+                    "token": "secret",
+                },
+            )
+
+        sites.replace_one.assert_not_awaited()
+
+    async def test_newapi_create_persists_type_and_admin_user_id(self) -> None:
+        stored = {
+            "_id": "newapi-us01",
+            "name": "NewAPI US01",
+            "base_url": "https://newapi.example.com",
+            "site_type": "newapi",
+            "admin_user_id": "42",
+            "token": "secret",
+            "status": "active",
+        }
+        sites = SimpleNamespace(replace_one=AsyncMock(), find_one=AsyncMock(return_value=stored))
+        db = SimpleNamespace(sub2api_sites=sites)
+
+        result = await cache.create_site_config(db, stored | {"id": stored["_id"]})
+
+        saved = sites.replace_one.await_args.args[1]
+        self.assertEqual(saved["site_type"], "newapi")
+        self.assertEqual(saved["admin_user_id"], "42")
+        self.assertEqual(result["site_type"], "newapi")
+        self.assertEqual(result["admin_user_id"], "42")
+        self.assertTrue(result["token_configured"])
+        self.assertNotIn("token", result)
+
+    async def test_newapi_update_persists_admin_user_id(self) -> None:
+        current = {
+            "_id": "newapi-us01",
+            "site_type": "newapi",
+            "admin_user_id": "42",
+            "base_url": "https://newapi.example.com",
+            "token": "secret",
+            "status": "active",
+        }
+        updated = current | {"admin_user_id": "84"}
+        sites = SimpleNamespace(
+            find_one=AsyncMock(side_effect=[current, updated]),
+            update_one=AsyncMock(),
+        )
+        db = SimpleNamespace(sub2api_sites=sites)
+
+        result = await cache.update_site_config(db, "newapi-us01", {"admin_user_id": "84"})
+
+        updates = sites.update_one.await_args.args[1]["$set"]
+        self.assertEqual(updates["site_type"], "newapi")
+        self.assertEqual(updates["admin_user_id"], "84")
+        self.assertEqual(result["admin_user_id"], "84")
+
+    async def test_list_sites_can_filter_sub2api_and_include_legacy_records(self) -> None:
+        cursor = AsyncCursor([])
+        sites = SimpleNamespace(find=MagicMock(return_value=cursor))
+        db = SimpleNamespace(sub2api_sites=sites)
+
+        await cache.list_sites(db, site_type="sub2api")
+
+        self.assertEqual(sites.find.call_args.args[0], cache.sub2api_site_query(status={"$ne": "deleted"}))
+
+    def test_sub2api_query_accepts_explicit_and_legacy_site_types(self) -> None:
+        self.assertEqual(
+            cache.sub2api_site_query(status="active"),
+            {
+                "status": "active",
+                "$or": [
+                    {"site_type": "sub2api"},
+                    {"site_type": {"$exists": False}},
+                    {"site_type": None},
+                    {"site_type": ""},
+                ],
+            },
+        )
 
 
 if __name__ == "__main__":

@@ -419,7 +419,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   }, [visibleAccounts]);
 
   const loadSites = async () => {
-    const data = await api<SitesResponse>("/sub2api-sites", token);
+    const data = await api<SitesResponse>("/sub2api-sites?site_type=sub2api", token);
     setSites(data.items);
     const nextSiteId = chooseSiteId(data.items, selectedSiteId, statusPreferences.pinned_site_id);
     if (nextSiteId && nextSiteId !== selectedSiteId) {
@@ -697,7 +697,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     }
     loadStatusPreferences()
       .then((preferences) =>
-        api<SitesResponse>("/sub2api-sites", token).then((data) => {
+        api<SitesResponse>("/sub2api-sites?site_type=sub2api", token).then((data) => {
           setSites(data.items);
           const nextSiteId = chooseSiteId(data.items, selectedSiteId, preferences.pinned_site_id);
           if (nextSiteId) setSelectedSiteId(nextSiteId);

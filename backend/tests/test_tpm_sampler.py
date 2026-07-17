@@ -266,28 +266,32 @@ class TpmAllSitesSamplingTests(unittest.IsolatedAsyncioTestCase):
             await all_started.wait()
             return {"ok": True, "site_id": site_id, "sampled": 2, "failed": 0}
 
+        list_sites_mock = AsyncMock(
+            return_value={
+                "items": [
+                    {"id": "api-5001", "status": "active"},
+                    {"id": "api-disabled", "status": "disabled"},
+                    {"id": "api-5002", "status": "active", "site_type": "sub2api"},
+                    {"id": "newapi-us01", "status": "active", "site_type": "newapi"},
+                ]
+            }
+        )
+        db = object()
         with (
             patch.object(
                 tpm_sampler,
                 "list_sites",
-                AsyncMock(
-                    return_value={
-                        "items": [
-                            {"id": "api-5001", "status": "active"},
-                            {"id": "api-disabled", "status": "disabled"},
-                            {"id": "api-5002", "status": "active"},
-                        ]
-                    }
-                ),
+                list_sites_mock,
             ),
             patch.object(tpm_sampler, "sample_site_tpm", AsyncMock(side_effect=sample_site)),
         ):
-            result = await asyncio.wait_for(tpm_sampler.sample_all_sites_tpm(object()), timeout=1)
+            result = await asyncio.wait_for(tpm_sampler.sample_all_sites_tpm(db), timeout=1)
 
         self.assertEqual(started, {"api-5001", "api-5002"})
         self.assertEqual(result["sites"], 2)
         self.assertEqual(result["sampled"], 4)
         self.assertEqual(result["failed"], 0)
+        list_sites_mock.assert_awaited_once_with(db, site_type="sub2api")
 
     async def test_one_site_failure_does_not_cancel_other_sites(self) -> None:
         completed: list[str] = []
