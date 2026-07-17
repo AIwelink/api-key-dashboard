@@ -28,3 +28,11 @@ describe("animated value typography", () => {
     expect(styles).toContain(".pool-health-main > span,");
   });
 });
+
+describe("percentage bar motion", () => {
+  it("animates capacity, concurrency, and usage widths", () => {
+    expect(styles).toMatch(/\.capacity-meter-fill\s*\{[^}]*transition: width/s);
+    expect(styles).toMatch(/\.overall-fill,\s*\.usage-fill\s*\{[^}]*transition: width/s);
+    expect(styles).toMatch(/\.pool-status-page \.concurrency-capacity-meter span\s*\{[^}]*transition: width/s);
+  });
+});

@@ -1612,6 +1612,7 @@ legend {
   height: 100%;
   min-width: 3px;
   border-radius: inherit;
+  transition: width 720ms cubic-bezier(0.22, 1, 0.36, 1), background-color 240ms ease;
 }
 
 .capacity-meter-fill.excellent {
@@ -1682,6 +1683,7 @@ legend {
   height: 100%;
   min-width: 3px;
   border-radius: inherit;
+  transition: width 720ms cubic-bezier(0.22, 1, 0.36, 1), background-color 240ms ease;
 }
 
 .usage-loading {
@@ -5454,6 +5456,7 @@ code {
 .pool-status-page .concurrency-capacity-meter span {
   display: block;
   height: 100%;
+  transition: width 720ms cubic-bezier(0.22, 1, 0.36, 1), background-color 240ms ease;
 }
 
 .pool-status-page .concurrency-capacity-meter .used,
@@ -6010,5 +6013,14 @@ code {
 
   .pool-status-page .capacity-metric strong {
     font-size: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .capacity-meter-fill,
+  .overall-fill,
+  .usage-fill,
+  .pool-status-page .concurrency-capacity-meter span {
+    transition: none;
   }
 }
