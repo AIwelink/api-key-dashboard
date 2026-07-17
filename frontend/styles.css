@@ -1138,7 +1138,7 @@ legend {
   font-size: 17px;
 }
 
-.mini-metric span {
+.mini-metric > span {
   color: var(--muted);
   font-size: 11px;
 }
@@ -1213,7 +1213,7 @@ legend {
   gap: 10px;
 }
 
-.pool-health-main span,
+.pool-health-main > span,
 .pool-health-card p {
   color: var(--muted);
   font-size: 12px;
@@ -1439,7 +1439,7 @@ legend {
   font-weight: 850;
 }
 
-.capacity-metric-value span {
+.capacity-metric-value > span:not(.auto-refresh-value) {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
@@ -1868,7 +1868,7 @@ legend {
   line-height: 1.25;
 }
 
-.usage-window-top span {
+.usage-window-top > span {
   color: var(--text);
   font-weight: 700;
 }
@@ -1937,7 +1937,7 @@ legend {
   padding: 5px 10px;
 }
 
-.compact-stat span {
+.compact-stat > span {
   color: var(--muted);
   font-size: 12px;
 }
@@ -5398,7 +5398,7 @@ code {
   gap: 8px;
 }
 
-.pool-status-page .concurrency-capacity-head span {
+.pool-status-page .concurrency-capacity-head > div > span {
   color: var(--text);
   font-size: 15px;
   font-weight: 850;
@@ -5432,7 +5432,7 @@ code {
   border-right: 0;
 }
 
-.pool-status-page .concurrency-capacity-values span {
+.pool-status-page .concurrency-capacity-values > div > span {
   color: var(--muted);
   font-size: 12px;
 }
@@ -5649,7 +5649,7 @@ code {
     font-size: 20px;
   }
 
-  .pool-status-page .concurrency-capacity-values span {
+  .pool-status-page .concurrency-capacity-values > div > span {
     min-height: 30px;
     line-height: 1.25;
   }
@@ -5810,7 +5810,7 @@ code {
   .pool-status-page .capacity-metric-label b,
   .pool-status-page .capacity-metric-label em,
   .pool-status-page .capacity-metric-value,
-  .pool-status-page .capacity-metric-value span,
+  .pool-status-page .capacity-metric-value > span:not(.auto-refresh-value),
   .pool-status-page .capacity-metric-inline-sub,
   .pool-status-page .capacity-metric-side-values,
   .pool-status-page .capacity-metric-side-value,
@@ -5943,8 +5943,8 @@ code {
     font-size: 16px;
   }
 
-  .pool-status-page .pool-mini-metrics .mini-metric span,
-  .pool-status-page .pool-health-grid .mini-metric span {
+  .pool-status-page .pool-mini-metrics .mini-metric > span,
+  .pool-status-page .pool-health-grid .mini-metric > span {
     display: block;
     max-width: 100%;
     overflow: hidden;
