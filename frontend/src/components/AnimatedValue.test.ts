@@ -34,5 +34,7 @@ describe("percentage bar motion", () => {
     expect(styles).toMatch(/\.capacity-meter-fill\s*\{[^}]*transition: width/s);
     expect(styles).toMatch(/\.overall-fill,\s*\.usage-fill\s*\{[^}]*transition: width/s);
     expect(styles).toMatch(/\.pool-status-page \.concurrency-capacity-meter span\s*\{[^}]*transition: width/s);
+    expect(styles).toContain(".capacity-meter.tiered::after {");
+    expect(styles).toContain("calc(100% / 6)");
   });
 });

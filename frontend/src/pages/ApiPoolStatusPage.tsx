@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import { AnimatedValue, AutoRefreshAnimationContext } from "../components/AnimatedValue";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
+import { concurrencyCoverageScalePercent, runwayScalePercent } from "../utils/capacityScale";
 import { errorMessage, formatDateTime, parseDisplayDate, text } from "../utils/format";
 
 type Props = {
@@ -1429,6 +1430,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           tone={runwayTone(summary?.dynamic_runway_hours, summary?.realtime_risk_ready)}
           meterLegendLabel="动态覆盖"
           meterValue={formatRunwayHours(summary?.dynamic_runway_hours)}
+          meterTiered
         />
         <CapacityMetric
           label="压力阶段"
@@ -1440,10 +1442,11 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           label="安全并发覆盖"
           value={formatMultiple(summary?.concurrency_coverage)}
           sub={`压力并发 ${formatRate(summary?.estimated_concurrency)} · 并发样本 ${summary?.concurrency_sample_count || 0} · 安全可用 ${formatRate(summary?.concurrency_safe_available)}${refillRecommendationText(summary, true) ? ` · ${refillRecommendationText(summary, true)}` : ""}`}
-          percent={runwayScalePercent(summary?.concurrency_coverage, summary?.concurrency_target_coverage ?? 1.2)}
+          percent={concurrencyCoverageScalePercent(summary?.concurrency_coverage, summary?.concurrency_target_coverage ?? 1.2)}
           tone={concurrencyCoverageTone(summary?.concurrency_coverage, summary?.realtime_risk_ready)}
           meterLegendLabel="目标"
           meterValue={formatMultiple(summary?.concurrency_target_coverage ?? 1.2)}
+          meterTiered
         />
         <CapacityMetric
           label="突发趋势：最近1h"
@@ -1756,6 +1759,7 @@ function CapacityMetric({
   meterLabel,
   meterLegendLabel,
   meterValue,
+  meterTiered = false,
   reverse = false,
   showMeterHead = false,
   secondary,
@@ -1773,6 +1777,7 @@ function CapacityMetric({
   meterLabel?: string;
   meterLegendLabel?: string;
   meterValue?: string;
+  meterTiered?: boolean;
   reverse?: boolean;
   showMeterHead?: boolean;
   secondary?: {
@@ -1835,7 +1840,7 @@ function CapacityMetric({
             </div>
           )}
           {overlay && <CapacityMeterLegend overlay={overlay} baseLabel={meterLegendLabel} baseValue={meterValue || value} baseTone={tone} />}
-          <CapacityMeter label={label} percent={percent} tone={tone} overlay={overlay} reverse={reverse} />
+          <CapacityMeter label={label} percent={percent} tone={tone} overlay={overlay} reverse={reverse} tiered={meterTiered} />
         </div>
       )}
       {secondary && (
@@ -1881,15 +1886,17 @@ function CapacityMeter({
   tone,
   overlay,
   reverse = false,
+  tiered = false,
 }: {
   label: string;
   percent: number;
   tone: CapacityMetricTone;
   overlay?: CapacityMeterOverlay;
   reverse?: boolean;
+  tiered?: boolean;
 }) {
   return (
-    <div className={`capacity-meter ${overlay ? "layered" : ""} ${reverse ? "reverse" : ""}`} aria-label={`${label} ${percent}%`}>
+    <div className={`capacity-meter ${overlay ? "layered" : ""} ${reverse ? "reverse" : ""} ${tiered ? "tiered" : ""}`} aria-label={`${label} ${percent}%`}>
       <div className={`capacity-meter-fill reserve ${tone}`} style={{ width: `${clampPercent(percent)}%` }} />
       {overlay?.percent !== undefined && overlay.percent !== null && (
         <div className={`capacity-meter-fill active ${overlay.tone || "muted"}`} style={{ width: `${clampPercent(overlay.percent)}%` }} />
@@ -2192,13 +2199,6 @@ function formatRate(value: unknown): string {
   const number = optionalNumberValue(value);
   if (number === null) return "-";
   return Math.round(number).toLocaleString("zh-CN");
-}
-
-function runwayScalePercent(value: unknown, target: unknown): number | null {
-  const number = optionalNumberValue(value);
-  const targetNumber = optionalNumberValue(target);
-  if (number === null || targetNumber === null || targetNumber <= 0) return null;
-  return Math.max(0, Math.min(100, number / targetNumber * 100));
 }
 
 function runwayTone(value: unknown, ready: unknown): CapacityMetricTone {
