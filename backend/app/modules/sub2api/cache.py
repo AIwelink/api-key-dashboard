@@ -36,7 +36,6 @@ REFILL_ACCOUNT_TYPES_BY_POOL = {
     "plus": ("plus", "k12"),
     "pro": ("pro",),
 }
-SEVEN_DAY_PERCENT_FOR_EQUAL_LIMIT_TYPES = {"plus", "pro", "bug_team"}
 CAPACITY_HEALTH_THRESHOLDS = {
     "exhausted_available_accounts": 2,
     "exhausted_recent_day_peak_multiple": 0.2,
@@ -1348,11 +1347,7 @@ def _dynamic_five_hour_usage(account: dict[str, Any] | None, five_hour_limit_usd
             "seven_day_actual_remaining_usd": seven_day_limit_usd,
         }
 
-    account_type = _capacity_account_type(account)
-    use_seven_day_percent = (
-        account_type in SEVEN_DAY_PERCENT_FOR_EQUAL_LIMIT_TYPES
-        and math.isclose(five_hour_limit_usd, seven_day_limit_usd, rel_tol=1e-9, abs_tol=1e-9)
-    )
+    use_seven_day_percent = math.isclose(five_hour_limit_usd, seven_day_limit_usd, rel_tol=1e-9, abs_tol=1e-9)
     five_hour_prefix = "codex_7d" if use_seven_day_percent else "codex_5h"
     used_percent = _usage_number(account, f"{five_hour_prefix}_used_percent")
     used_percent = _clamp_percent(used_percent if isinstance(used_percent, (int, float)) else 0)

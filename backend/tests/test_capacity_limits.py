@@ -113,10 +113,10 @@ class BugTeamCapacityTests(unittest.TestCase):
         self.assertAlmostEqual(usage["actual_used_usd"], 3)
         self.assertAlmostEqual(usage["actual_remaining_usd"], 12)
 
-    def test_equal_plus_pro_and_bug_team_limits_use_seven_day_usage_for_five_hour_capacity(self) -> None:
+    def test_equal_limits_use_seven_day_usage_for_five_hour_capacity(self) -> None:
         accounts = [
             {
-                "plan_type": "plus",
+                "plan_type": account_type,
                 "extra": {
                     "codex_5h_used_percent": 90,
                     "codex_5h_reset_after_seconds": 18_000,
@@ -125,18 +125,9 @@ class BugTeamCapacityTests(unittest.TestCase):
                     "codex_7d_reset_after_seconds": 604_800,
                     "codex_7d_window_minutes": 10_080,
                 },
-            },
-            {
-                "plan_type": "pro",
-                "extra": {
-                    "codex_5h_used_percent": 90,
-                    "codex_5h_reset_after_seconds": 18_000,
-                    "codex_5h_window_minutes": 300,
-                    "codex_7d_used_percent": 25,
-                    "codex_7d_reset_after_seconds": 604_800,
-                    "codex_7d_window_minutes": 10_080,
-                },
-            },
+            }
+            for account_type in ("free", "plus", "team", "k12", "pro")
+        ] + [
             bug_team_account(used_percent=25),
         ]
 
@@ -151,7 +142,7 @@ class BugTeamCapacityTests(unittest.TestCase):
                 self.assertAlmostEqual(usage["actual_used_usd"], 25)
                 self.assertAlmostEqual(usage["actual_remaining_usd"], 75)
 
-    def test_equal_team_limits_and_unequal_plus_limits_keep_five_hour_usage(self) -> None:
+    def test_unequal_limits_keep_five_hour_usage(self) -> None:
         base_extra = {
             "codex_5h_used_percent": 90,
             "codex_5h_reset_after_seconds": 18_000,
@@ -161,8 +152,8 @@ class BugTeamCapacityTests(unittest.TestCase):
             "codex_7d_window_minutes": 10_080,
         }
         cases = [
-            ({"plan_type": "team", "extra": base_extra}, 100, 100),
-            ({"plan_type": "plus", "extra": base_extra}, 100, 500),
+            ({"plan_type": account_type, "extra": base_extra}, 100, 500)
+            for account_type in ("free", "plus", "team", "k12", "pro")
         ]
 
         for account, five_hour_limit, seven_day_limit in cases:
