@@ -423,11 +423,7 @@ backend/app/modules/*
 
 是新的业务代码目录。
 
-```text
-backend/app/services/*
-```
-
-只保留兼容转发层。新功能不应继续往 `app.services` 添加业务实现。
+早期设计中的 `backend/app/services/*` 已不是当前业务目录。新功能不应新增 `app.services` 依赖。
 
 阶段一新增 Agent 配置和 LLM 调用代码应放在：
 

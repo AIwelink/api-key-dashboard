@@ -1,8 +1,10 @@
 # Single-Pool Capacity Risk Implementation Plan
 
+> **Status: archived after implementation.** Do not execute this checklist against the current branch. The authoritative runtime contract is [../../design/30-api-pool-realtime-capacity-and-presence.md](../../design/30-api-pool-realtime-capacity-and-presence.md). The `1.2x` value below is the internal spare-concurrency target; the public total coverage is `1 + spare coverage`, so the matching public target is `2.2x`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace reserve-inclusive, day-scale capacity alerts with a single-pool, minute-rate risk model targeting three hours of dynamic capacity, one hour of immediately usable quota, and 1.2x safe concurrency coverage.
+**Goal:** Replace reserve-inclusive, day-scale capacity alerts with a single-pool, minute-rate risk model targeting three hours of dynamic capacity, one hour of immediately usable quota, and 1.2x spare concurrency coverage (2.2x public total coverage).
 
 **Architecture:** Add a focused `capacity_risk.py` module for minute-series statistics and pure risk decisions. The existing cache module supplies actual account quota and concurrency data, loads the group risk summary, and falls back to historical health until minute data is ready. The React status page renders the new operational metrics without removing legacy pool screens.
 
@@ -55,7 +57,7 @@
 - [ ] Update notification formatting and verify focused tests pass.
 - [ ] Add TypeScript fields and render compact cards for real-time runway, pressure stage, and concurrency coverage.
 - [ ] Remove reserve values and reserve overlays from capacity cards while leaving pool navigation untouched.
-- [ ] Replace the capacity help text with the new 30-minute/1-hour/3-hour/1.2x rules.
+- [ ] Replace the capacity help text with the new 30-minute/1-hour/3-hour/1.2x spare-coverage rules.
 
 ### Task 5: Verify
 

@@ -1,5 +1,7 @@
 # Data Model
 
+> **文档状态：基础模型。** 本文前半部分的 `account_json + metadata` 仍是当前核心结构；后续新增集合只记录主要字段，不保证覆盖全部运行时索引。sub2api 缓存、容量采样和前台在线集合以 [15-api-pool-status-cache.md](./15-api-pool-status-cache.md) 与 [30-api-pool-realtime-capacity-and-presence.md](./30-api-pool-realtime-capacity-and-presence.md) 为准。
+
 当前采用简化存储结构：MongoDB 中一个账号对应一个文档，一个账号保存一个 JSON，不再拆分独立密钥表，也不做加密字段表。
 
 ## Core Rule
@@ -240,22 +242,27 @@ MVP 阶段账号内容明文存储，但审计日志仍建议只记录字段变�
 
 ## sub2api_sites
 
-当前只有一个默认站点，配置来自 `.env`，后续多站点会迁移到数据库配置。
+sub2api 站点当前由数据库管理，支持多个站点。生产 URL、站点 ID 和密钥不是固定常量。
 
 ```js
 {
-  _id: "default",
-  id: "default",
-  name: "sub2api 5002",
+  _id: "<site_id>",
+  name,
   base_url,
-  status: "active" | "disabled",
-  token_configured,
-  source: "env",
+  site_type: "sub2api",
+  token,
+  status: "active" | "disabled" | "deleted",
   refresh_interval_minutes,
+  auto_remove_abnormal_accounts,
+  uptime_kuma_url,
+  uptime_kuma_api_key,
+  source: "database",
   created_at,
   updated_at
 }
 ```
+
+公开 API 会移除 `token` 和 `uptime_kuma_api_key`，改为返回 `token_configured` 与 `uptime_kuma_api_key_configured`。`newapi` 等客户站点保存在独立的 `client_sites` 集合，并通过 `/api/client-sites` 管理。
 
 ## sub2api_groups_cache
 

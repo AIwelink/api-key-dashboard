@@ -1,14 +1,16 @@
 # Sub2API Admin API Integration Notes
 
-本文记录 2026-05-25 对测试 sub2api 站点的实测结果，用于后续开发多站点配置、账号池同步和自动补位功能。
+> **文档状态：接口实测记录。** 本文保留 2026-05-25 起对 sub2api Admin API 的请求/响应观察；测试主机和早期本地目录不代表当前配置。当前封装入口、缓存刷新和容量契约分别以 `backend/app/modules/sub2api/client.py`、[15-api-pool-status-cache.md](./15-api-pool-status-cache.md) 和 [30-api-pool-realtime-capacity-and-presence.md](./30-api-pool-realtime-capacity-and-presence.md) 为准。
+
+本文用于后续开发多站点配置、账号池同步和远端账号操作。
 
 ## Test Instance
 
 ```text
-base_url: http://216.167.70.204:5002
-admin_page_groups:   http://216.167.70.204:5002/admin/groups
-admin_page_accounts: http://216.167.70.204:5002/admin/accounts
-api_prefix: http://216.167.70.204:5002/api/v1/admin
+base_url: https://<sub2api-host>:<port>
+admin_page_groups:   <base_url>/admin/groups
+admin_page_accounts: <base_url>/admin/accounts
+api_prefix:          <base_url>/api/v1/admin
 ```
 
 认证方式：
@@ -17,10 +19,10 @@ api_prefix: http://216.167.70.204:5002/api/v1/admin
 x-api-key: <sub2api-admin-api-key>
 ```
 
-本项目 `.env` 中暂时使用：
+早期通过 `.env` 注入单站点；当前站点由管理页面写入 MongoDB，以下变量只用于兼容或初始迁移，不应作为多站点运行时来源：
 
 ```text
-SUB2API_BASE_URL=http://216.167.70.204:5002
+SUB2API_BASE_URL=https://<sub2api-host>:<port>
 SUB2API_TOKEN=<sub2api-admin-api-key>
 ```
 
@@ -390,8 +392,8 @@ Admin API 使用 x-api-key。
 当前项目已经基于上述实测完成 API 账号池状态功能：
 
 ```text
-backend/app/services/sub2api.py        sub2api Admin API 封装，使用 x-api-key
-backend/app/services/sub2api_cache.py  groups/accounts MongoDB 缓存、刷新防抖锁、后台刷新
+backend/app/modules/sub2api/client.py  sub2api Admin API 封装，使用 x-api-key
+backend/app/modules/sub2api/cache.py   groups/accounts MongoDB 缓存、刷新防抖锁、后台刷新
 backend/app/routers/sub2api_sites.py   前端读取站点、groups、accounts 和触发刷新
 frontend/src/pages/ApiPoolStatusPage.tsx API 账号池状态页面
 ```
@@ -407,7 +409,7 @@ frontend/src/pages/ApiPoolStatusPage.tsx API 账号池状态页面
 缓存刷新：
 
 ```text
-默认 5 分钟后台刷新
+新站点默认 30 分钟后台刷新
 站点级 refresh_interval_minutes 可配置
 同站点刷新请求有 3 秒防抖锁
 当前不使用 Redis

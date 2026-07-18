@@ -1,5 +1,7 @@
 # 账号池最终简化设计思路
 
+> **文档状态：生命周期字段参考。** `pool_status`、条件更新、推送锁和问题退回仍有参考价值；备用池参与容量、固定补号阈值和早期页面流程已被后续实现替代。当前运维与通知见 [29-agent-ops-observability-and-notifications.md](./29-agent-ops-observability-and-notifications.md)，当前容量公式见 [30-api-pool-realtime-capacity-and-presence.md](./30-api-pool-realtime-capacity-and-presence.md)。
+
 本文档合并 `17-account-pool-lifecycle-simple.md` 和 `18-account-pool-simple-logic-analysis.md`，作为近期实现账号池后端逻辑的主参考。
 
 目标：保持系统足够简单，同时修掉已发现的主要逻辑风险。

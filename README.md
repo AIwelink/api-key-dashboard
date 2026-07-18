@@ -1,19 +1,23 @@
-# API Key Backend Admin Panel
+# API Key Dashboard
 
-Git repository:
+团队内部的 API/OAuth 账号、sub2api 账号池、容量风险、通知、事件和 Agent 运维管理系统。
 
-- SSH: `git@github.com:AIwelink/api-key-dashboard.git`
-- HTTPS: `https://github.com/AIwelink/api-key-dashboard.git`
+仓库：
 
-当前版本：`0.2.0`。
+- SSH：`git@github.com:AIwelink/api-key-dashboard.git`
+- HTTPS：`https://github.com/AIwelink/api-key-dashboard.git`
+- 当前协作分支：`achernar/dev`
 
-当前仓库包含：
+## 项目结构
 
-- `docs/design`: 设计文档。
-- `backend`: Python/FastAPI 后端初版。
-- `frontend`: Vite + React + TypeScript 前端。
+```text
+backend/     FastAPI + MongoDB 后端
+frontend/    React + TypeScript + Vite 管理端
+docs/design/ 现行设计、接口约定和历史方案
+docs/agent/  Agent 分阶段设计
+```
 
-后端采用 MongoDB，账号数据结构为：
+账号核心结构：
 
 ```js
 {
@@ -22,67 +26,74 @@ Git repository:
 }
 ```
 
-项目使用根目录 `.env` 统一配置前后端端口、MongoDB、初始用户和 sub2api：
+`account_json` 保留 sub2api 外部结构，`metadata` 保存本系统的上传、生命周期、操作、站点和分析信息。
+
+## 本地启动
+
+从模板创建根目录配置，并填写 MongoDB、初始 Owner 和需要的站点参数：
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-后端使用 `uv` 管理依赖：
+后端：
 
 ```powershell
 cd backend
-python3 -m uv sync
-python3 -m uv run python3 -m app.run
+python -m uv sync
+python -m uv run python -m app.run
 ```
 
-详见 [backend/README.md](./backend/README.md)。
-
-前端使用 Vite 启动，构建后默认通过同源 `/api` 连接后端：
+前端：
 
 ```powershell
-npm.cmd --prefix frontend install
-npm.cmd --prefix frontend run dev
+cd frontend
+npm install
+npm run dev
 ```
 
-默认访问地址为 `http://127.0.0.1:5173`。
+默认前端地址为 `http://127.0.0.1:5173`。前端通过 `VITE_API_BASE_URL` 或同源 `/api` 调用后端。
 
-端口和 API 地址统一写在根目录 `.env`：
+## 验证
 
-- `BACKEND_HOST`、`BACKEND_PORT`、`FRONTEND_ORIGIN`
-- `VITE_FRONTEND_HOST`、`VITE_FRONTEND_PORT`、`VITE_API_BASE_URL`
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
 
-账号上传页同时承担添加和导入功能，支持标准 sub2api export JSON、账号数组、单个账号对象，以及 `{...} {...}` 这种连续 JSON 对象；账号列表页提供导出。
+```powershell
+cd frontend
+npm test
+npm run build
+```
 
-## 当前已完成能力
+## 当前主要能力
 
-- 登录、后台用户管理、角色权限。
-- 账号上传、导入预览、保存、列表、编辑和 sub2api JSON 导出。
-- 审计日志和同步中心初版。
-- sub2api Admin API 接入，使用 `x-api-key`。
-- API 账号池状态页面，可查看 sub2api groups、账号调度状态、5h/7d 用量窗口和总体容量。
-- MongoDB 持久缓存 sub2api groups/accounts，默认 5 分钟后台刷新。
-- `数据库手动刷新` 会从远程 sub2api 同步到 MongoDB；`前端数据刷新` 只读取 MongoDB 缓存。
-- 前端账号池缓存已处理切换闪烁，标题、总体容量和账号表始终对应同一个账号池查询。
-- 可用池和使用备选池支持纯手动状态流转。
-- 使用备选池支持手动推送账号到指定 sub2api 分组，并可立即执行账号测试。
-- API 账号池状态支持远端账号测试、手动删除并回退到本地可用池或总库。
+- 登录、角色权限、后台用户和系统 Token。
+- 账号上传、批量导入、账号列表、字段修正、凭证 JSON 更新和审计。
+- 多 sub2api 站点配置、groups/accounts/usage 缓存、探测和手动同步。
+- API 账号池概览、5h/7d 容量、TPM/RPM、实时可用时间、并发覆盖和 5 分钟回测样本。
+- 远端账号推送、测试、删除退回、问题处理和 OAuth 复活流程。
+- 分组额度、探测、通知、Uptime Kuma 和容量告警配置。
+- 钉钉、Telegram、飞书通知通道及测试。
+- newapi/sub2api 客户站点配置。
+- 事件记录、异常告警、前台在线和 Agent 运维工作台。
+- 页面级 60 秒静默刷新；移动端根路径优先进入 API 账号池状态页。
 
-详见 [API 账号池状态与缓存设计](./docs/design/15-api-pool-status-cache.md)。
+## 关键约定
 
-## 初版上线部署
+- 账号唯一匹配依据是规范化邮箱或已保存的远端 ID，不使用展示 `name`。
+- `status` 表示远端账号状态，`schedulable` 只是调度开关。
+- 页面读取 MongoDB 缓存；只有明确的同步动作和后台任务访问远端 sub2api。
+- 容量、并发和补号建议只计算当前 sub2api group，不再叠加本地备选池。
+- 敏感凭证不得进入日志、审计详情或文档。
 
-当前初版准备部署到服务器时，建议先阅读：
+## 文档入口
 
-- [初版上线部署汇总](./docs/design/23-initial-release-deployment.md)
+- [设计文档索引](./docs/design/README.md)
 - [开发与架构约定](./docs/design/14-development-guide.md)
-- [菜单与页面职责](./docs/design/菜单.md)
+- [API 账号池缓存设计](./docs/design/15-api-pool-status-cache.md)
+- [实时容量与前台在线契约](./docs/design/30-api-pool-realtime-capacity-and-presence.md)
+- [服务器更新命令](./docs/server-update-command.md)
 
-服务器运行建议：
-
-- 后端使用 `APP_ENV=production`、`LOG_PROFILE=production`。
-- 前端执行 `npm run build` 后用 Nginx 托管 `frontend/dist`。
-- Nginx 将 `/api` 反向代理到 FastAPI 后端。
-- 如果 1Panel/Nginx 配置根路径冲突，也可以让 Nginx 整站反代到 FastAPI；后端会在存在 `frontend/dist/index.html` 时托管前端页面。
-- MongoDB 上线前先做备份。
-- 当前不会自动调度账号进入 sub2api；推送、测试、删除和回退均为人工触发。
+生产环境更新前先确认当前分支和工作区状态；不要用 `git pull --ff-only` 覆盖存在本地提交且远端发生过强制更新的分支。

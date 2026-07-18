@@ -10,4 +10,12 @@ describe("API pool metric help", () => {
     expect(source).toContain("48小时及以上为紫色顶级");
     expect(source).toContain("10x及以上为紫色顶级");
   });
+
+  it("documents pressure stage inputs and every operational stage", () => {
+    expect(source).toContain('"压力阶段": {');
+    expect(source).toContain("TPM/RPM的EMA5、EMA15、EMA60");
+    for (const label of ["等待数据", "稳定", "压力传导", "加速上涨", "峰值保底", "回落观察", "库存风险"]) {
+      expect(source).toContain(label);
+    }
+  });
 });

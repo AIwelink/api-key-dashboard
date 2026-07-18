@@ -1,62 +1,99 @@
-# Development Guide
+# 开发与架构约定
 
-本文档面向后续新功能开发，说明当前项目的代码组织、设计约定和常见改动路径。
+本文面向后续功能开发，记录当前仓库的代码分层、关键不变量、常用改动路径和验证命令。本文描述的是现行结构；早期文档中的 `backend/app/services/*` 已不是主要业务目录。
 
-## 基本原则
+## 1. 技术栈与启动入口
 
-1. 后端负责权限、数据规范化、审计和数据库写入。
-2. 前端负责页面交互、表单状态、展示格式化和调用 API。
-3. `account_json` 是外部契约，尽量保持 sub2api 账号对象结构。
-4. `metadata` 是内部管理层，所有筛选、排序、状态、人工标注优先查它。
-5. 用户填写的账号管理字段要同时写入 `metadata` 和 `account_json.extra`。
-6. 上传人、修改人、创建时间、更新时间不由前端填写，由后端根据登录用户生成。
-7. 不开放注册；用户管理只能通过后台页面和对应 API。
+- 后端：Python 3.12+、FastAPI、Motor/MongoDB、httpx、Pydantic。
+- 前端：React 19、TypeScript、Vite、Vitest。
+- 后端应用入口：`backend/app/main.py`。
+- 后端本地启动入口：`backend/app/run.py`。
+- 前端入口：`frontend/src/App.tsx`。
+- 根目录 `.env` 同时为前后端提供本地配置；密钥和生产站点信息不得写入文档或提交到 Git。
 
-## 后端开发约定
+```powershell
+cd backend
+python -m uv sync
+python -m uv run python -m app.run
+```
 
-### 新增接口
+```powershell
+cd frontend
+npm install
+npm run dev
+```
 
-新增接口通常按这个顺序改：
-
-1. 在 `backend/app/schemas.py` 定义请求模型。
-2. 在 `backend/app/routers/` 增加或修改 router。
-3. 在 `backend/app/services/` 增加业务函数。
-4. 在 `backend/app/main.py` 注册新 router。
-5. 需要审计时调用 `write_audit_log(...)`。
-
-示例结构：
+## 2. 后端分层
 
 ```text
-routers/accounts.py
-  接收 HTTP 请求
-  做 Depends 权限控制
-  调用 service
-
-services/accounts.py
-  做业务规则
-  做 MongoDB 查询/更新
-  返回 serialize_doc 后的数据
+backend/app/
+  main.py                 FastAPI 生命周期、router 注册、后台任务启动
+  routers/                HTTP 参数、权限、状态码和响应边界
+  modules/                按领域组织的业务逻辑与数据访问
+    accounts/             账号、导入、生命周期、操作记录
+    api_pools/            账号池配置、额度配置、状态偏好
+    sub2api/               远端客户端、缓存、探测、容量、推送与退回
+    notifications/        钉钉、Telegram、飞书等通知通道
+    system/               Token、用户在线、审计、客户端站点、启动迁移
+    events/               事件记录与查询
+    todo/                 待办流程
+    agent/                Agent 决策、任务、记忆、巡检与评测
+  schemas.py              跨 router 的 Pydantic 请求/响应模型
+  security.py             登录用户、API Token actor 和角色权限
+  database.py             MongoDB 连接与依赖
 ```
 
-### 权限
+### 2.1 Router 与领域模块
 
-读接口通常使用：
+Router 只负责：
 
-```py
-Depends(get_current_user)
-```
+- 解析 HTTP 参数和 Pydantic payload。
+- 调用 `Depends(...)` 做认证和角色检查。
+- 把领域异常转换为明确的 HTTP 状态码。
+- 调用领域模块，并在需要时写审计日志。
 
-写接口根据风险使用：
+领域模块负责：
 
-```py
-Depends(require_roles("owner", "admin", "maintainer"))
-```
+- 业务规则、状态转换和幂等性。
+- MongoDB 查询、更新、索引依赖和事务边界。
+- 调用远端服务客户端。
+- 返回可序列化的领域结果。
 
-用户管理、删除等高风险操作只给 `owner` / `admin`。
+不要在页面对应的 router 中重新实现 sub2api URL、容量公式、通知签名或账号身份匹配。
 
-### MongoDB 文档
+### 2.2 领域目录选择
 
-账号文档核心结构固定：
+| 改动 | 首选目录 |
+| --- | --- |
+| 账号 CRUD、JSON 更新、上传批次 | `modules/accounts` |
+| 本地账号池状态流转 | `modules/accounts/pool_lifecycle.py` |
+| sub2api Admin API | `modules/sub2api/client.py` |
+| 远端 groups/accounts 缓存 | `modules/sub2api/cache.py` |
+| TPM/RPM、容量采样与风险计算 | `modules/sub2api/tpm_sampler.py`、`capacity_sampler.py`、`capacity_risk.py` |
+| 账号探测与分组告警 | `modules/sub2api/account_probe.py`、`capacity_notifications.py` |
+| 推送、删除、退回、复活 | `modules/sub2api/push.py`、`return_flow.py`、相关 router |
+| 额度配置、池配置 | `modules/api_pools` |
+| 通知通道 | `modules/notifications` |
+| 系统 Token、在线探测、客户端站点 | `modules/system` |
+| Agent 能力 | `modules/agent` |
+
+### 2.3 后台任务
+
+`backend/app/main.py` 当前启动：
+
+- dashboard 快照刷新。
+- sub2api 账号缓存启动刷新和定时刷新。
+- 账号探测。
+- TPM/RPM 分钟采样。
+- 账号池容量采样。
+- Agent scheduler。
+- 日志清理。
+
+新增后台任务必须具备取消处理、异常日志和重复启动保护。多实例部署前，不得假设进程内锁可以提供分布式互斥。
+
+## 3. 核心数据不变量
+
+### 3.1 本地账号
 
 ```js
 {
@@ -65,261 +102,148 @@ Depends(require_roles("owner", "admin", "maintainer"))
 }
 ```
 
-新增账号管理字段时，通常要改：
+- `account_json` 保留 sub2api 外部结构；导出和推送不能由 `metadata` 重组凭证。
+- `metadata` 保存本系统的上传人、生命周期、站点归属、操作人、备注和分析字段。
+- 列表接口返回轻量投影；需要完整凭证时使用账号详情接口。
+- 用户填写的管理字段需要按 [12-account-fields.md](./12-account-fields.md) 的映射同步到 `metadata` 和 `account_json.extra`。
 
-- `backend/app/services/accounts.py` 的 `EXTRA_METADATA_KEYS`
-- `normalize_metadata(...)`
-- 前端上传和编辑表单
-- `docs/design/12-account-fields.md`
+### 3.2 账号身份
 
-### JSON 处理
+- 远端账号与本地账号匹配只允许使用 `credentials.email` 的规范化邮箱或明确的远端 ID 绑定。
+- `name` 是展示命名，不是唯一标识；同一批账号可以同名。
+- 账号已绑定远端时，更新字段不能因为同名覆盖其他邮箱账号。
+- `plan_type` 暂时缺失时应优先保留缓存中最近一次有效类型；没有历史值时才使用业务约定的回退类型。
 
-前端和后端都支持容错 JSON：
+### 3.3 编辑人与操作人
 
-- 标准 JSON
-- 顶层 `{ accounts: [...] }`
-- 账号数组
-- 单个账号对象
-- 连续对象：`{} {}`
+- 修改账号内容字段才更新编辑人和编辑时间。
+- 推送、删除远端、池移动、调度、测试等操作记录操作人，不应伪造为账号内容编辑。
+- 自动任务的 actor 应明确标记为系统或 Agent，不能写成未知用户。
 
-导入时只接受能解析到 `credentials` 的账号对象。
+## 4. sub2api 缓存与容量边界
 
-### sub2api
+- 站点配置来自 MongoDB，支持多个 sub2api 站点；不要在代码或文档中固定 `default`、端口或生产域名。
+- `POST /api/sub2api-sites/{site_id}/refresh` 才会从远端同步 groups/accounts。
+- groups/accounts 查询默认只读 MongoDB 缓存。
+- 页面级 60 秒静默刷新只重新读取后端数据，不等同于远端同步。
+- 分组统计和 `capacity_summary` 必须基于完整 group 缓存，不受当前页、每页数量或前端筛选影响。
+- 账号列表数据库排序必须在 `skip/limit` 前执行；当前远端账号列表按 `created_at DESC, sub2api_account_id DESC`。
+- 容量、实时可用时间、并发覆盖和前端阈值以 [30-api-pool-realtime-capacity-and-presence.md](./30-api-pool-realtime-capacity-and-presence.md) 为唯一现行说明。
 
-sub2api 相关调用统一放在：
+## 5. 权限与审计
+
+读接口通常使用：
+
+```py
+Depends(require_roles("owner", "admin", "maintainer"))
+```
+
+写接口按风险限制：
+
+- 普通运维操作：`owner` / `admin` / `maintainer`。
+- 用户、站点删除、通知通道和高风险系统配置：通常仅 `owner` / `admin`。
+- 前台在线列表和历史：仅 `owner`。
+- Presence 心跳只接受登录用户；API Token actor 不代表浏览器用户。
+
+所有敏感操作应调用审计或账号操作记录函数。审计内容只记录必要摘要，不复制 access token、refresh token、邮箱授权 token、Webhook 密钥或完整账号 JSON。
+
+## 6. 前端结构与路由
 
 ```text
-backend/app/services/sub2api.py
+frontend/src/
+  App.tsx                 登录状态、菜单分组、英文路径和页面装配
+  api/client.ts           同源 API、Bearer Token 和错误解析
+  pages/                  页面与页面级测试
+  components/             可复用控件
+  hooks/                  自动刷新、前台在线等生命周期逻辑
+  utils/                  纯计算、格式化和对应测试
+  types.ts                跨页面共享类型
 ```
 
-业务层不要直接拼 URL 或 token。后续要新增 sub2api 接口时，先在 `sub2api.py` 增加方法，再由 `sync.py` 或其他 service 调用。
+`App.tsx` 的 `viewPaths` 是当前英文路径来源。新增页面时同步修改：
 
-API 账号池状态相关缓存放在：
+1. `frontend/src/types.ts` 的 `ViewName`。
+2. `App.tsx` 的菜单、短标签、`viewPaths` 和页面渲染。
+3. 新建 `frontend/src/pages/XxxPage.tsx`。
+4. 必要的页面级权限与移动端默认行为。
 
-```text
-backend/app/services/sub2api_cache.py
-backend/app/routers/sub2api_sites.py
-```
+移动端根路径默认进入 `/api-pool-status`，桌面端默认进入上传页。页面数据请求统一通过 `frontend/src/api/client.ts`，不能在页面中复制 token 和错误解析逻辑。
 
-约定：
+### 6.1 自动刷新
 
-- 页面读 groups/accounts 时只读 MongoDB 缓存。
-- 只有 `POST /api/sub2api-sites/{site_id}/refresh` 和后台 scheduler 访问远程 sub2api。
-- 当前不使用 Redis；单实例刷新防抖锁在进程内实现。
-- 后续推送账号、自动补位等写操作，执行前后都应调用刷新流程，但要复用现有防抖锁。
+- 通用页面使用 `usePageAutoRefresh`，默认周期 60 秒。
+- 只有页面可见且窗口有焦点时执行。
+- 静默刷新保留现有内容，不显示全页 loading，也不为正常轮询弹成功提示。
+- 请求完成时必须确认查询 key 仍匹配当前站点、group、分页和筛选条件，防止旧响应覆盖新选择。
+- 数字变化动画只用于值确实变化时；不得让布局尺寸随数字闪动。
 
-## 前端开发约定
+### 6.2 容量展示
 
-### 页面分配
+- 后端返回公式结果，前端只做格式化、分级和说明。
+- 实时可用时间与安全并发覆盖使用独立比例函数，不能复用峰值倍数进度条。
+- 修改阈值时同步更新 hover/focus 帮助、纯函数测试和页面测试。
+- 紫色顶级进度条的性能和无障碍约束见文档 `30`。
 
-主页面入口是：
+## 7. 常见开发路径
 
-```text
-frontend/src/App.tsx
-```
+### 新增 API
 
-导航顺序当前为：
+1. 在现有领域模块中实现纯业务函数；只有形成新领域时才新建模块。
+2. 在 `schemas.py` 定义需要验证的请求/响应模型。
+3. 在 `routers/` 暴露接口和权限。
+4. 在 `main.py` 注册新 router，仅当新增 router 文件时需要。
+5. 添加领域测试、router 集成测试和审计断言。
+6. 更新对应现行设计文档中的接口契约。
 
-1. 上传账号
-2. 账号列表
-3. API 账号池状态
-4. 同步
-5. 用户
-6. 审计
+### 新增账号字段
 
-新增页面时：
+1. 明确字段属于外部 JSON、`account_json.extra` 还是本地 `metadata`。
+2. 更新后端规范化、轻量投影和详情返回。
+3. 更新上传/编辑表单及共享类型。
+4. 检查是否应更新编辑人，还是只写操作人。
+5. 更新 [12-account-fields.md](./12-account-fields.md) 和导入测试。
 
-1. 新建 `frontend/src/pages/XxxPage.tsx`
-2. 在 `frontend/src/types.ts` 扩展 `ViewName`
-3. 在 `App.tsx` 的 `navItems` 添加入口
-4. 在 `App.tsx` 中分配渲染
+### 修改容量或告警
 
-### API 调用
+1. 先修改纯计算模块及边界测试。
+2. 明确使用实际额度、动态额度、总并发覆盖还是内部余量覆盖。
+3. 保持“等待数据”不产生假危险告警。
+4. 更新通知文本、补号建议和前端帮助。
+5. 同步更新文档 `30`，不要只改历史规格。
 
-统一使用：
+## 8. 验证命令
 
-```text
-frontend/src/api/client.ts
-```
-
-它负责：
-
-- 拼接 `VITE_API_BASE_URL`
-- 设置 `Content-Type: application/json`
-- 自动附加 Bearer Token
-- 解析后端错误信息
-
-页面里不要重复写 fetch 封装。
-
-### 类型
-
-共享类型放在：
-
-```text
-frontend/src/types.ts
-```
-
-当前核心类型：
-
-```ts
-AccountDocument = {
-  id: string;
-  account_json: Record<string, unknown>;
-  metadata: Record<string, unknown>;
-}
-```
-
-账号字段目前保持较宽松的 `Record<string, unknown>`，因为 sub2api JSON 的字段可能继续变化。
-
-### 样式
-
-样式集中在：
-
-```text
-frontend/styles.css
-```
-
-当前 UI 方向：
-
-- 管理后台风格
-- 紧凑、可扫描
-- 侧边栏导航
-- 表格和筛选优先
-- 不做营销页，不做大 hero
-- 字段标签中字段名加粗，必填用浅色辅助文本
-
-## 账号字段写入规则
-
-用户填写字段：
-
-```js
-email_session
-account_type
-payment_type
-"2FA"
-self_produced
-purchase_source
-purchase_account_type
-phone_bound
-phone_number
-remark
-manual_status_label
-```
-
-保存时写入：
-
-```js
-metadata[field] = value
-account_json.extra[field] = value
-```
-
-`phone_bound` 必须是布尔值：
-
-```js
-true | false
-```
-
-前端表单里可用字符串 `"true"` / `"false"` 做 select 状态，但提交给后端时要转换成 boolean。
-
-`self_produced` 也必须是布尔值：
-
-```js
-true | false
-```
-
-当 `self_produced = false` 时，`purchase_source` 和 `purchase_account_type` 必填。购买账号金幺模板默认填入 `purchase_source = 金幺`、`purchase_account_type = free`。
-
-`purchase_source` 是历史来源字段，编辑账号时即使 `self_produced` 后续改为 `true`，也应该继续保留，除非用户明确清空。`purchase_account_type` 用于记录购买时账号类型，常见场景是购买时为 `free`，后续升级后当前 `account_type` 改为 `plus`。
-
-解析模板通过 `source_template` 标识：
-
-```text
-sub2api
-purchased_jinyao
-```
-
-新增导入模板时，前后端都要更新：
-
-1. `frontend/src/types.ts` 的 `UploadTemplate`。
-2. `frontend/src/utils/jsonParser.ts` 的模板转换逻辑。
-3. `backend/app/schemas.py` 的 `UploadSourceTemplate`。
-4. `backend/app/services/json_parser.py` 的模板转换逻辑。
-5. `docs/design/12-account-fields.md` 的字段映射。
-
-## 常见新功能路径
-
-### 增加一个账号筛选条件
-
-1. 后端 `routers/accounts.py` 增加 Query 参数。
-2. 后端 `services/accounts.py` 的 `list_accounts(...)` 增加 MongoDB query 条件。
-3. 前端 `AccountsPage.tsx` 的 `Filters` 增加字段。
-4. 筛选表单增加 input/select。
-5. 确认 URLSearchParams 会传入新字段。
-
-### 增加一个账号填写字段
-
-1. 更新字段文档。
-2. 后端 `EXTRA_METADATA_KEYS` 增加字段。
-3. 后端 metadata 规范化时处理类型。
-4. 前端 `UploadFields` 增加字段。
-5. 上传页和编辑页同时增加控件。
-6. 导入解析模式需要补充缺失信息时也显示该字段。
-
-### 增加一个后台页面
-
-1. 新建 page 组件。
-2. 增加 `ViewName`。
-3. `App.tsx` 加导航和渲染。
-4. 需要后端数据时先补 API，再接 `api/client.ts`。
-
-### 增加同步能力
-
-1. 在 `services/sub2api.py` 封装 sub2api API。
-2. 在 `services` 中写业务 reconciliation。
-3. 在 `routers/sync.py` 暴露预览和执行接口。
-4. 同步结果写回 `metadata.account_status`、`metadata.used_quota`、`metadata.last_request_at`、`metadata.last_checked_at`。
-5. 前端 `SyncPage` 展示预览结果和执行结果。
-
-### 增加 API 账号池状态能力
-
-1. 远程 sub2api 接口先封装到 `services/sub2api.py`。
-2. 需要缓存的远程观测状态写入 `services/sub2api_cache.py`。
-3. 前端读取接口放在 `routers/sub2api_sites.py`，默认只读 MongoDB 缓存。
-4. 前端页面在 `ApiPoolStatusPage.tsx` 中维护 `siteId:groupId:page:pageSize:statusFilter` 数据 key。
-5. 表格和当前页统计只能渲染与当前 key 匹配的数据；总体容量读取当前 group 的后端 `capacity_summary`。
-6. 账号池数据同步完成后清理该站点前端账号页缓存，再重新读取当前账号池。
-
-## 列表性能约定
-
-账号列表、可用池、使用备选池、待办与处理等列表接口默认返回轻量字段，不直接返回完整 `account_json.credentials`。列表只保留表格、筛选、处理面板需要的字段，例如 `metadata`、`account_json.name`、`credentials.email`、`credentials.plan_type`、`extra.email_session`、`extra["2FA"]`、`extra.password`。
-
-需要编辑账号时，前端必须先通过 `GET /api/accounts/{account_id}` 获取完整账号，再打开编辑抽屉。这样可以避免每页列表携带大量 access token、refresh token、id token，减少加载时间。
-
-## 验证命令
-
-每次改后端：
+后端完整测试：
 
 ```powershell
-python3 -m compileall backend\app
+cd backend
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-每次改前端：
+后端语法检查：
 
 ```powershell
-npm.cmd --prefix frontend run build
+cd backend
+python -m compileall app
 ```
 
-本地运行：
+前端测试与生产构建：
 
 ```powershell
-python3 -m uv run python3 -m app.run
-npm.cmd --prefix frontend run dev
+cd frontend
+npm test
+npm run build
 ```
 
-## 当前边界
+文档和差异检查：
 
-- 没有引入 Redis。
-- 没有公开注册。
-- 没有加密账号凭据。
-- 没有把 sub2api JSON 拆成复杂关系表。
-- 导出 sub2api 时以 `account_json` 为准，不用 `metadata` 重新拼账号结构。
+```powershell
+git diff --check
+```
+
+## 9. 当前边界
+
+- MongoDB 是当前持久层；尚未引入 Redis 分布式锁或任务队列。
+- 账号凭证仍可能明文存储，日志、审计和异常文本必须主动脱敏。
+- 前端生产构建由 FastAPI 或反向代理提供，部署方式以当前服务器配置为准。
+- 可用池和使用备选池入口暂时保留，但现行容量、并发和补号建议只计算当前 sub2api group。

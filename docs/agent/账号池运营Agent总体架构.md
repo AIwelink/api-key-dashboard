@@ -215,11 +215,7 @@ backend/app/modules/*
 
 用于承载新的业务实现。
 
-```text
-backend/app/services/*
-```
-
-只保留兼容转发层，历史 imports 可以继续工作，但新功能不应继续把业务逻辑写入 `app.services`。
+早期文档或历史提交中可能出现 `backend/app/services/*`，当前仓库不把它作为业务目录；新功能不得新增 `app.services` 依赖。
 
 Agent 后续新增代码应优先放在：
 
