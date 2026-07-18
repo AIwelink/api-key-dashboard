@@ -1,5 +1,5 @@
 export const API_BASE =
-  localStorage.getItem("apiBase") || import.meta.env.VITE_API_BASE_URL || "/api";
+  (typeof localStorage !== "undefined" ? localStorage.getItem("apiBase") : null) || import.meta.env.VITE_API_BASE_URL || "/api";
 
 function notifyAuthExpired() {
   window.dispatchEvent(new CustomEvent("auth-expired"));

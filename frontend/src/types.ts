@@ -13,6 +13,7 @@ export type ViewName =
   | "agent-analysis"
   | "agent-workbench"
   | "api-tokens"
+  | "presence"
   | "users"
   | "logs";
 

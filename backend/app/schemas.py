@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -17,6 +18,20 @@ class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: dict[str, Any]
+
+
+class FrontendPresenceHeartbeat(BaseModel):
+    client_id: str = Field(min_length=8, max_length=100, pattern=r"^[A-Za-z0-9._:-]+$")
+    session_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._:-]+$")
+    client_label: str = Field(default="Unknown client", max_length=100)
+    device_type: Literal["desktop", "mobile", "tablet", "unknown"] = "unknown"
+    view: str = Field(default="", max_length=64)
+    path: str = Field(default="", max_length=200)
+    foreground_since_at: datetime | None = None
+
+
+class FrontendPresenceLeave(BaseModel):
+    client_id: str = Field(min_length=8, max_length=100, pattern=r"^[A-Za-z0-9._:-]+$")
 
 
 class ChangePasswordRequest(BaseModel):

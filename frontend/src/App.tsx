@@ -14,8 +14,10 @@ import { IntroPage } from "./pages/IntroPage";
 import { AvailablePoolPage, ReservePoolPage } from "./pages/ManualPoolPage";
 import { PushErrorTodoPage, TodoPage } from "./pages/TodoPage";
 import { LoginPage } from "./pages/LoginPage";
+import { PresencePage } from "./pages/PresencePage";
 import { UploadPage } from "./pages/UploadPage";
 import { UsersPage } from "./pages/UsersPage";
+import { useForegroundPresence } from "./hooks/useForegroundPresence";
 import type { User, ViewName } from "./types";
 
 type ToastState = {
@@ -47,6 +49,7 @@ const adminNavItems: Array<[ViewName, string]> = [
   ["agent-analysis", "Agent分析"],
   ["agent-workbench", "Agent工作台"],
   ["api-tokens", "系统管理"],
+  ["presence", "前台在线"],
   ["users", "用户管理"],
   ["logs", "日志"],
 ];
@@ -66,6 +69,7 @@ const navShortLabels: Record<ViewName, string> = {
   "agent-analysis": "析",
   "agent-workbench": "台",
   "api-tokens": "管",
+  presence: "在",
   users: "用",
   logs: "志",
 };
@@ -85,6 +89,7 @@ const viewPaths: Record<ViewName, string> = {
   "agent-analysis": "/agent-analysis",
   "agent-workbench": "/agent-workbench",
   "api-tokens": "/system-management",
+  presence: "/user-presence",
   users: "/users",
   logs: "/logs",
 };
@@ -123,6 +128,7 @@ function App() {
   const [view, setView] = useState<ViewName>(() => viewFromPath(window.location.pathname));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "true");
   const [toast, setToast] = useState<ToastState>(null);
+  useForegroundPresence(token, view);
 
   const showToast = (message: string, isError = false) => {
     setToast({ message, isError });
@@ -165,6 +171,12 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (token && user && view === "presence" && user.role !== "owner") {
+      navigateToView(defaultViewForLayout());
+    }
+  }, [token, user, view]);
+
+  useEffect(() => {
     const handleAuthExpired = () => {
       setToken("");
       setUser(null);
@@ -193,7 +205,7 @@ function App() {
         </button>
 
         <nav className="nav">
-          {[navItems, accountNavItems, poolNavItems, adminNavItems].map((group, index) => (
+          {[navItems, accountNavItems, poolNavItems, adminNavItems.filter(([key]) => key !== "presence" || user?.role === "owner")].map((group, index) => (
             <div className="nav-group" key={index}>
               {group.map(([key, label]) => (
                 <button
@@ -252,6 +264,7 @@ function App() {
             {view === "agent-analysis" && <AgentAnalysisPage token={token} showToast={showToast} />}
             {view === "agent-workbench" && <AgentWorkbenchPage token={token} showToast={showToast} />}
             {view === "api-tokens" && <ApiTokensPage token={token} showToast={showToast} />}
+            {view === "presence" && user?.role === "owner" && <PresencePage token={token} showToast={showToast} />}
             {view === "users" && <UsersPage token={token} showToast={showToast} />}
             {view === "logs" && <AuditPage token={token} showToast={showToast} />}
           </>

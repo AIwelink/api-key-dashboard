@@ -3797,6 +3797,47 @@ button.ghost.success-button:hover {
   box-shadow: 0 1px 6px rgba(17, 24, 39, 0.06);
 }
 
+.presence-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+  max-width: 384px;
+  margin: 4px 0 18px;
+}
+
+.presence-summary > div {
+  display: grid;
+  gap: 2px;
+}
+
+.presence-summary strong {
+  font-size: 28px;
+  line-height: 1.1;
+}
+
+.presence-summary span {
+  color: var(--muted);
+}
+
+.presence-table {
+  min-width: 920px;
+}
+
+.presence-user-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.presence-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: #1f9d64;
+  box-shadow: 0 0 0 3px rgba(31, 157, 100, 0.13);
+}
+
 .token-list-item {
   display: flex;
   align-items: flex-start;

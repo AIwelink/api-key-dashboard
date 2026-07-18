@@ -280,7 +280,7 @@ async def list_cached_group_accounts(
     total = await db.sub2api_accounts_cache.count_documents(query)
     cursor = (
         db.sub2api_accounts_cache.find(query)
-        .sort([("status", 1), ("sub2api_account_id", 1)])
+        .sort([("created_at", -1), ("sub2api_account_id", -1)])
         .skip((page - 1) * page_size)
         .limit(page_size)
     )
