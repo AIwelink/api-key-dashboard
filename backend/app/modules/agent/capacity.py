@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.modules.api_pools.status_preferences import get_api_pool_status_preferences
-from app.modules.sub2api.cache import get_cache_meta, list_cached_groups
-from app.utils import serialize_doc
+from app.modules.sub2api.cache import get_cache_meta
+from app.modules.sub2api.capacity_risk import MAX_SAMPLE_AGE
+from app.utils import now_utc, serialize_doc
 
 AGENT_POOL_DEFAULTS = {
     "status": "active",
@@ -17,38 +19,88 @@ AGENT_POOL_DEFAULTS = {
 async def list_agent_pools(db: AsyncIOMotorDatabase) -> dict[str, Any]:
     """Return live sub2api groups as Agent analyzable pools.
 
-    Agent mirrors the API account pool status page by reading cached sub2api
-    groups for the pinned/current site. This does not sync api_pools and does
-    not refresh sub2api.
+    Agent reads cached sub2api groups inside the active client-site scope. This
+    does not sync api_pools and does not refresh sub2api.
     """
     site_id = await _agent_default_site_id(db)
+    site_scope = await list_agent_site_scope(db)
+    analyzable_sites = {
+        str(item.get("site_id")): item
+        for item in site_scope.get("patrol_sites", [])
+        if isinstance(item, dict) and item.get("site_id")
+    }
     items = []
     seen: set[str] = set()
-    cache_meta = {}
-    if site_id:
-        groups_response = await list_cached_groups(db, site_id, page=1, page_size=500)
-        cache_meta = groups_response.get("cache_meta") if isinstance(groups_response.get("cache_meta"), dict) else {}
-        for group in groups_response.get("items", []):
-            pool = _pool_from_cached_group(site_id, group)
-            if not pool:
-                continue
-            key = str(pool["id"])
-            if key in seen:
-                continue
-            seen.add(key)
-            items.append(pool)
-    else:
-        cursor = db.sub2api_groups_cache.find({}).sort([("site_id", 1), ("group_id", 1)])
-        async for group_doc in cursor:
-            pool = _pool_from_group_doc(group_doc)
-            if not pool:
-                continue
-            key = str(pool["id"])
-            if key in seen:
-                continue
-            seen.add(key)
-            items.append(pool)
-    return {"items": [serialize_doc(item) for item in items], "total": len(items), "site_id": site_id, "cache_meta": cache_meta}
+    query: dict[str, Any] = {}
+    if site_scope.get("sites"):
+        query["site_id"] = {"$in": sorted(analyzable_sites)}
+    cursor = db.sub2api_groups_cache.find(query).sort([("site_id", 1), ("group_id", 1)])
+    async for group_doc in cursor:
+        pool = _pool_from_group_doc(group_doc)
+        if not pool:
+            continue
+        pool_site = analyzable_sites.get(str(pool.get("site_id")))
+        if pool_site:
+            pool["client_site"] = pool_site
+        key = str(pool["id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(pool)
+    cache_meta = await get_cache_meta(db, site_id) if site_id else {}
+    return {
+        "items": [serialize_doc(item) for item in items],
+        "total": len(items),
+        "site_id": site_id,
+        "cache_meta": cache_meta,
+        "site_scope": serialize_doc(site_scope),
+    }
+
+
+async def list_agent_site_scope(db: AsyncIOMotorDatabase) -> dict[str, Any]:
+    """Merge client_sites and operational sub2api sites into one read-only Agent scope."""
+
+    sites: dict[str, dict[str, Any]] = {}
+    async for item in db.client_sites.find({"status": "active"}).sort([("created_at", 1), ("_id", 1)]):
+        if str(item.get("status") or "active").strip().lower() != "active":
+            continue
+        site_id = str(item.get("_id") or item.get("id") or "").strip()
+        if not site_id:
+            continue
+        sites[site_id] = {
+            "site_id": site_id,
+            "name": str(item.get("name") or site_id),
+            "client_type": str(item.get("client_type") or "sub2api").strip().lower(),
+            "status": "active",
+            "source": "client_sites",
+            "patrol_eligible": str(item.get("client_type") or "sub2api").strip().lower() == "sub2api",
+            "usage_attribution_eligible": True,
+        }
+    async for item in db.sub2api_sites.find({"status": {"$ne": "deleted"}}).sort([("created_at", 1), ("_id", 1)]):
+        site_id = str(item.get("_id") or item.get("id") or "").strip()
+        if not site_id or str(item.get("status") or "active").strip().lower() == "disabled":
+            continue
+        site_type = str(item.get("site_type") or "sub2api").strip().lower()
+        if site_type != "sub2api":
+            continue
+        current = sites.get(site_id, {})
+        sites[site_id] = {
+            "site_id": site_id,
+            "name": str(current.get("name") or item.get("name") or site_id),
+            "client_type": "sub2api",
+            "status": "active",
+            "source": "client_sites+sub2api_sites" if current else "sub2api_sites",
+            "patrol_eligible": True,
+            "usage_attribution_eligible": True,
+        }
+    ordered = sorted(sites.values(), key=lambda item: (str(item.get("name") or ""), str(item.get("site_id") or "")))
+    return {
+        "schema_version": "agent_site_scope.v1",
+        "sites": ordered,
+        "patrol_sites": [item for item in ordered if item.get("patrol_eligible") is True],
+        "usage_attribution_sites": [item for item in ordered if item.get("usage_attribution_eligible") is True],
+        "source": "client_sites+sub2api_sites",
+    }
 
 
 async def read_pool_capacity(db: AsyncIOMotorDatabase, pool_id: str) -> dict[str, Any]:
@@ -152,8 +204,9 @@ def build_agent_capacity_status(capacity: dict[str, Any]) -> dict[str, Any]:
     configured_account_limits = configured_limits.get(account_type) if isinstance(configured_limits.get(account_type), dict) else {}
     limits_source = "capacity_summary.capacity_limits" if configured_account_limits else "legacy_capacity_fields" if limits_available else None
 
+    sample_freshness = _realtime_sample_freshness(summary)
     return {
-        "schema_version": "agent_capacity_status.v1",
+        "schema_version": "agent_capacity_status.v2",
         "site_id": capacity.get("site_id") or pool.get("site_id"),
         "group_id": capacity.get("group_id") or pool.get("active_group_id"),
         "account_type": account_type,
@@ -218,10 +271,27 @@ def build_agent_capacity_status(capacity: dict[str, Any]) -> dict[str, Any]:
             "label": capacity.get("health_label") or summary.get("health_label"),
             "reason": summary.get("health_reason"),
         },
+        "realtime_risk": {
+            "ready": summary.get("realtime_risk_ready") is True,
+            "pressure_stage": summary.get("pressure_stage"),
+            "pressure_stage_label": summary.get("pressure_stage_label"),
+            "inventory_risk": summary.get("inventory_risk") is True,
+            "demand_ratio": _number_or_none(summary.get("demand_ratio")),
+            "tpm_momentum": _number_or_none(summary.get("tpm_momentum")),
+            "pressure_tpm": _number_or_none(summary.get("pressure_tpm")),
+            "pressure_rpm": _number_or_none(summary.get("pressure_rpm")),
+            "burn_usd_per_hour": _number_or_none(summary.get("burn_usd_per_hour")),
+            "actual_runway_hours": _number_or_none(summary.get("actual_runway_hours")),
+            "dynamic_runway_hours": _number_or_none(summary.get("dynamic_runway_hours")),
+            "target_runway_hours": _number_or_none(summary.get("target_runway_hours")),
+            "actual_target_hours": _number_or_none(summary.get("actual_target_hours")),
+            "sample": sample_freshness,
+        },
         "freshness": {
             "cache_fresh": capacity.get("cache_fresh"),
             "last_refreshed_at": capacity.get("last_refreshed_at"),
             "capacity_calculated_at": capacity.get("capacity_calculated_at") or summary.get("calculated_at"),
+            "realtime_sample": sample_freshness,
         },
     }
 
@@ -252,11 +322,79 @@ def build_agent_concurrency_status(capacity: dict[str, Any]) -> dict[str, Any]:
         "long_seven_day_limited": _summary_number(capacity, "concurrency_long_seven_day_limited_accounts"),
         "other_unavailable": _summary_number(capacity, "concurrency_other_unavailable_accounts"),
     }
+    realtime = {
+        "estimated": _summary_number(capacity, "estimated_concurrency"),
+        "ema_5": _summary_number(capacity, "concurrency_ema_5"),
+        "p90_1h": _summary_number(capacity, "concurrency_p90_1h"),
+        "coverage": _summary_number(capacity, "concurrency_coverage"),
+        "target_coverage": _summary_number(capacity, "concurrency_target_coverage"),
+    }
     return {
-        "schema_version": "agent_concurrency_status.v1",
-        "available": any(value is not None for value in (*values.values(), *accounts.values())),
+        "schema_version": "agent_concurrency_status.v2",
+        "available": any(value is not None for value in (*values.values(), *accounts.values(), *realtime.values())),
         **values,
+        **realtime,
+        "sample": _realtime_sample_freshness(_capacity_summary(capacity)),
         "accounts": accounts,
+    }
+
+
+def build_system_capacity_assessment(capacity: dict[str, Any]) -> dict[str, Any]:
+    """Expose the main-system refill calculation as advisory evidence only."""
+
+    if not isinstance(capacity, dict) or not capacity:
+        return {}
+    summary = _capacity_summary(capacity)
+    configured_limits = summary.get("capacity_limits") if isinstance(summary.get("capacity_limits"), dict) else {}
+    raw_options = summary.get("recommended_refill_options")
+    options: dict[str, dict[str, Any]] = {}
+    if isinstance(raw_options, dict):
+        for raw_account_type, raw_option in list(raw_options.items())[:12]:
+            if not isinstance(raw_option, dict):
+                continue
+            account_type = str(raw_option.get("account_type") or raw_account_type or "").strip().lower()
+            if not account_type:
+                continue
+            raw_limits = configured_limits.get(account_type) if isinstance(configured_limits.get(account_type), dict) else {}
+            five_hour_limit = _number_or_none(raw_limits.get("five_hour_usd"))
+            seven_day_limit = _number_or_none(raw_limits.get("seven_day_usd"))
+            options[account_type] = {
+                "account_type": account_type,
+                "quota_refill_accounts": _int_or_none(raw_option.get("quota_refill_accounts")),
+                "concurrency_refill_accounts": _int_or_none(raw_option.get("concurrency_refill_accounts")),
+                "recommended_refill_accounts": _int_or_none(raw_option.get("recommended_refill_accounts")),
+                "limits_usd": {
+                    "five_hour": five_hour_limit,
+                    "seven_day": seven_day_limit,
+                    "source": "capacity_summary.capacity_limits",
+                },
+                "quota_profile": _quota_profile(
+                    five_hour_limit=five_hour_limit,
+                    seven_day_limit=seven_day_limit,
+                ),
+            }
+    return {
+        "schema_version": "system_capacity_assessment.v1",
+        "source": "main_system_single_pool_realtime",
+        "advisory_only": True,
+        "ready": summary.get("realtime_risk_ready") is True,
+        "replenishment_required": summary.get("replenishment_required") is True,
+        "primary_account_type": _capacity_account_type(capacity),
+        "recommended_refill_accounts": _int_or_none(summary.get("recommended_refill_accounts")),
+        "calculation_components": {
+            "quota_refill_accounts": _int_or_none(summary.get("quota_refill_accounts")),
+            "concurrency_refill_accounts": _int_or_none(summary.get("concurrency_refill_accounts")),
+        },
+        "account_type_options": options,
+        "evidence": {
+            "pressure_stage": summary.get("pressure_stage"),
+            "inventory_risk": summary.get("inventory_risk") is True,
+            "actual_runway_hours": _number_or_none(summary.get("actual_runway_hours")),
+            "dynamic_runway_hours": _number_or_none(summary.get("dynamic_runway_hours")),
+            "concurrency_coverage": _number_or_none(summary.get("concurrency_coverage")),
+            "latest_sampled_at": summary.get("latest_sampled_at"),
+        },
+        "decision_boundary": "evidence_only_llm_keeps_final_decision",
     }
 
 
@@ -274,6 +412,7 @@ def compact_agent_pool_capacity(capacity: dict[str, Any]) -> dict[str, Any]:
         },
         "capacity_status": build_agent_capacity_status(capacity),
         "concurrency_status": build_agent_concurrency_status(capacity),
+        "system_capacity_assessment": build_system_capacity_assessment(capacity),
         "data_quality": {
             "data_source": capacity.get("data_source"),
             "refresh_behavior": capacity.get("refresh_behavior"),
@@ -504,6 +643,43 @@ def _first_number(*values: Any) -> float | None:
         if parsed is not None:
             return parsed
     return None
+
+
+def _realtime_sample_freshness(summary: dict[str, Any]) -> dict[str, Any]:
+    latest_sampled_at = summary.get("latest_sampled_at")
+    sampled_at = _datetime_or_none(latest_sampled_at)
+    age_minutes = None
+    if sampled_at is not None:
+        age_minutes = round(max(0.0, (now_utc() - sampled_at).total_seconds() / 60), 2)
+    stale_after_minutes = int(MAX_SAMPLE_AGE.total_seconds() / 60)
+    return {
+        "sample_count": _int_or_none(summary.get("sample_count")) or 0,
+        "concurrency_sample_count": _int_or_none(summary.get("concurrency_sample_count")) or 0,
+        "latest_sampled_at": latest_sampled_at,
+        "age_minutes": age_minutes,
+        "fresh": age_minutes is not None and age_minutes <= stale_after_minutes,
+        "stale_after_minutes": stale_after_minutes,
+    }
+
+
+def _datetime_or_none(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _quota_profile(*, five_hour_limit: float | None, seven_day_limit: float | None) -> str:
+    if five_hour_limit is None and seven_day_limit is None:
+        return "unknown"
+    if seven_day_limit is not None and (five_hour_limit is None or five_hour_limit >= seven_day_limit):
+        return "seven_day_only_or_shared_quota"
+    return "five_hour_and_seven_day"
 
 
 def _int_or_none(value: Any) -> int | None:

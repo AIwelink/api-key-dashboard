@@ -18,6 +18,9 @@ type AgentDecision = {
   severity: string;
   headline: string;
   suggested_add_count: number;
+  suggested_account_type?: string | null;
+  suggested_refill_options?: AgentRefillOption[];
+  refill_plan_summary?: string;
   suggested_push_from_reserve_count?: number;
   suggested_make_new_count?: number;
   should_add_accounts?: boolean;
@@ -37,6 +40,19 @@ type AgentDecision = {
   event_assessment?: AgentEventAssessment;
   memory_used?: AgentMemoryReference[];
   inputs?: Record<string, unknown>;
+};
+
+type AgentRefillOption = {
+  account_type?: string;
+  suggested_add_count?: number;
+  selected?: boolean;
+  reason?: string;
+  system_recommended_count?: number | null;
+  quota_profile?: string | null;
+  limits_usd?: {
+    five_hour?: number | null;
+    seven_day?: number | null;
+  };
 };
 
 type AgentEvidenceSummary = {
@@ -544,7 +560,7 @@ function AgentReport({ report }: { report: AgentAnalysisResponse }) {
         </div>
         <div className="agent-result-count">
           <span>建议补号</span>
-          <strong>{decision.suggested_add_count}</strong>
+          <strong>{primaryRefillText(decision)}</strong>
         </div>
       </section>
 
@@ -580,9 +596,22 @@ function AgentReport({ report }: { report: AgentAnalysisResponse }) {
           <div className="compact-stats agent-action-stats">
             <Metric label="置信度" value={confidenceLabel(decision.confidence)} />
             <Metric label="需要补号" value={(decision.should_add_accounts ?? decision.suggested_add_count > 0) ? "是" : "否"} />
+            <Metric label="主补号类型" value={refillAccountTypeLabel(decision.suggested_account_type)} />
             <Metric label="需要告警" value={decision.should_alert ? "是" : "否"} />
             <Metric label="人工复核" value={decision.manual_review_required ? "需要" : "不需要"} />
           </div>
+          {Boolean(decision.suggested_refill_options?.length) && (
+            <div className="list">
+              {decision.suggested_refill_options?.map((option) => (
+                <div className="list-item" key={`${option.account_type}-${option.selected ? "primary" : "alternative"}`}>
+                  <strong>{option.selected ? "主方案" : "替代方案"}</strong>
+                  {`：${refillAccountTypeLabel(option.account_type)} ${option.suggested_add_count || 0} 个`}
+                  {refillQuotaText(option)}
+                  {option.reason ? `。${displayText(option.reason)}` : ""}
+                </div>
+              ))}
+            </div>
+          )}
           <div className="list">
             {decisionReasons(report).map((reason) => (
               <div className="list-item" key={reason}>
@@ -1005,6 +1034,9 @@ function normalizeDecision(decisionDoc: AgentPersistedDecision): AgentDecision {
     severity: textOr(raw.severity, decisionDoc.severity || "healthy"),
     headline: textOr(raw.headline, decisionDoc.headline || decisionDoc.summary || "Agent 最近一次分析"),
     suggested_add_count: numberOr(raw.suggested_add_count, 0),
+    suggested_account_type: textOr(raw.suggested_account_type, "") || null,
+    suggested_refill_options: normalizeRefillOptions(raw.suggested_refill_options),
+    refill_plan_summary: textOr(raw.refill_plan_summary, ""),
     suggested_push_from_reserve_count: numberOr(raw.suggested_push_from_reserve_count, 0),
     suggested_make_new_count: numberOr(raw.suggested_make_new_count, 0),
     should_add_accounts: booleanOr(raw.should_add_accounts, numberOr(raw.suggested_add_count, 0) > 0),
@@ -1031,6 +1063,56 @@ function normalizeDecision(decisionDoc: AgentPersistedDecision): AgentDecision {
     memory_used: normalizeMemoryUsed(raw.memory_used),
     inputs: asRecord(raw.inputs),
   };
+}
+
+function normalizeRefillOptions(value: unknown): AgentRefillOption[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      const raw = asRecord(item);
+      const limits = asRecord(raw.limits_usd);
+      return {
+        account_type: textOr(raw.account_type, ""),
+        suggested_add_count: numberOr(raw.suggested_add_count, 0),
+        selected: booleanOr(raw.selected, false),
+        reason: textOr(raw.reason, ""),
+        system_recommended_count:
+          raw.system_recommended_count === null || raw.system_recommended_count === undefined
+            ? null
+            : numberOr(raw.system_recommended_count, 0),
+        quota_profile: textOr(raw.quota_profile, "") || null,
+        limits_usd: {
+          five_hour: limits.five_hour === null || limits.five_hour === undefined ? null : numberOr(limits.five_hour, 0),
+          seven_day: limits.seven_day === null || limits.seven_day === undefined ? null : numberOr(limits.seven_day, 0),
+        },
+      };
+    })
+    .filter((item) => item.account_type && Number(item.suggested_add_count) > 0);
+}
+
+function primaryRefillText(decision: AgentDecision): string {
+  if (decision.suggested_add_count <= 0) return "0";
+  return `${refillAccountTypeLabel(decision.suggested_account_type)} ${decision.suggested_add_count} 个`;
+}
+
+function refillAccountTypeLabel(value?: string | null): string {
+  const normalized = String(value || "").trim().toLowerCase();
+  const labels: Record<string, string> = { k12: "K12", plus: "Plus", pro: "Pro", team: "Team", free: "Free" };
+  return labels[normalized] || (normalized ? normalized.toUpperCase() : "待指定");
+}
+
+function refillQuotaText(option: AgentRefillOption): string {
+  const fiveHour = option.limits_usd?.five_hour;
+  const sevenDay = option.limits_usd?.seven_day;
+  const limits = fiveHour != null || sevenDay != null
+    ? `，额度 5h ${fiveHour ?? "-"} / 7d ${sevenDay ?? "-"} 美元`
+    : "";
+  const profile = option.quota_profile === "seven_day_only_or_shared_quota"
+    ? "，仅 7d / 共享额度"
+    : option.quota_profile === "five_hour_and_seven_day"
+      ? "，含 5h 与 7d"
+      : "";
+  return `${limits}${profile}`;
 }
 
 function normalizeEvidenceSummary(value: unknown): AgentEvidenceSummary {

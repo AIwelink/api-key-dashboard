@@ -44,6 +44,7 @@ def build_operational_facts(
     capacity: dict[str, Any],
     capacity_status: dict[str, Any] | None = None,
     concurrency_status: dict[str, Any] | None = None,
+    system_capacity_assessment: dict[str, Any] | None = None,
     probe: dict[str, Any],
     event_windows: dict[str, Any],
     recent_decisions: list[dict[str, Any]],
@@ -58,6 +59,7 @@ def build_operational_facts(
     return {
         "capacity_facts": _capacity_facts(capacity) + _normalized_capacity_facts(capacity_status or {}),
         "concurrency_facts": _concurrency_facts(concurrency_status or {}),
+        "system_capacity_assessment_facts": _system_capacity_assessment_facts(system_capacity_assessment or {}),
         "usage_facts": _usage_facts(capacity),
         "burst_facts": _burst_facts(capacity),
         "event_facts": _event_facts(event_windows),
@@ -145,6 +147,29 @@ def _concurrency_facts(concurrency_status: dict[str, Any]) -> list[str]:
             f"暂时不可用并发涉及 {accounts.get('temporarily_unavailable')} 个账号，其中 5h 限流 {accounts.get('five_hour_limited') or 0} 个，"
             f"短期 7d 限流 {accounts.get('short_seven_day_limited') or 0} 个。"
         )
+    return facts
+
+
+def _system_capacity_assessment_facts(assessment: dict[str, Any]) -> list[str]:
+    if not assessment or assessment.get("ready") is not True:
+        return []
+    facts = [
+        "主系统实时容量模型给出的结果只作为证据，Agent 仍需结合事件、人工反馈和长期记忆独立决策。"
+    ]
+    recommended = assessment.get("recommended_refill_accounts")
+    if recommended is not None:
+        facts.append(
+            f"主系统实时容量测算建议补充 {recommended} 个账号，replenishment_required="
+            f"{bool(assessment.get('replenishment_required'))}。"
+        )
+    options = assessment.get("account_type_options") if isinstance(assessment.get("account_type_options"), dict) else {}
+    if options:
+        compact = {
+            account_type: item.get("recommended_refill_accounts")
+            for account_type, item in options.items()
+            if isinstance(item, dict)
+        }
+        facts.append(f"按账号类型拆分的主系统补号参考为 {compact}。")
     return facts
 
 

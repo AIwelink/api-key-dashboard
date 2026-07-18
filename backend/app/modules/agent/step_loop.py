@@ -766,6 +766,7 @@ def _context_pack_view(context_pack: dict[str, Any] | None) -> dict[str, Any]:
         "target_pool": context_pack.get("target_pool"),
         "capacity_status": context_pack.get("capacity_status"),
         "concurrency_status": context_pack.get("concurrency_status"),
+        "system_capacity_assessment": context_pack.get("system_capacity_assessment"),
         "capacity": context_pack.get("capacity"),
         "operational_facts": context_pack.get("operational_facts"),
         "event_windows_summary": {

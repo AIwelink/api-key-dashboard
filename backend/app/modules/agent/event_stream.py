@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.modules.events.records import list_event_records
 from app.modules.sub2api.account_probe import CONFIRMED_401_RECOVERY_COUNT
-from app.utils import serialize_doc
+from app.utils import now_utc, serialize_doc
 
 
 EVENT_WINDOW_RANGES = ("1h", "6h", "24h", "7d")
@@ -30,7 +30,7 @@ async def read_agent_event_windows(
     module. It does not refresh sub2api or run account probes.
     """
 
-    del now
+    current_time = _coerce_datetime(now) or now_utc()
     group_id = group_id if group_id is not None else _group_id_from_pool_id(pool_id)
     if not site_id or group_id is None:
         return _empty_event_windows(site_id=site_id, group_id=group_id, pool_id=pool_id, reason="site_id_or_group_id_missing")
@@ -47,6 +47,12 @@ async def read_agent_event_windows(
     )
     detail_items = [item for item in detail_response.get("items", []) if isinstance(item, dict)]
     resolved_pool_id = pool_id or _pool_id(site_id=site_id, group_id=group_id)
+    capacity_consensus = await _read_capacity_notification_consensus(
+        db,
+        site_id=site_id,
+        group_id=group_id,
+        now=current_time,
+    )
 
     summaries: dict[str, dict[str, Any]] = {}
     for range_value in EVENT_WINDOW_RANGES:
@@ -67,6 +73,11 @@ async def read_agent_event_windows(
             site_id=site_id,
             group_id=group_id,
             pool_id=resolved_pool_id,
+        )
+        summaries[range_value]["capacity_consensus"] = _capacity_consensus_for_window(
+            capacity_consensus,
+            range_value=range_value,
+            now=current_time,
         )
 
     notable_patterns = _merge_notable_patterns(summaries)
@@ -91,14 +102,105 @@ async def read_agent_event_windows(
             "summary_24h": summaries["24h"],
             "summary_7d": summaries["7d"],
             "notable_patterns": notable_patterns,
+            "consensus_evidence": {
+                "capacity_notifications": capacity_consensus,
+            },
             "data_quality": {
                 "available": True,
                 "detail_24h_limited_to": 80,
                 "summary_windows": list(EVENT_WINDOW_RANGES),
-                "source": "event_records",
+                "source": "event_records+notification_events",
             },
         }
     )
+
+
+async def _read_capacity_notification_consensus(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    group_id: int,
+    now: datetime,
+) -> dict[str, Any]:
+    query = {
+        "event_type": {"$in": ["sub2api.capacity.low", "sub2api.capacity.recovered"]},
+        "source": "sub2api_capacity",
+        "resource_id": f"{site_id}:{group_id}",
+        "created_at": {"$gte": now - timedelta(days=7)},
+    }
+    warnings: list[str] = []
+    try:
+        events = [
+            _compact_capacity_notification_event(item)
+            async for item in db.notification_events.find(query).sort("created_at", -1).limit(100)
+        ]
+    except Exception as exc:  # noqa: BLE001 - notification evidence must not hide account events.
+        events = []
+        warnings.append(f"notification_events_unavailable:{exc}")
+    try:
+        meta = await db.sub2api_capacity_notification_meta.find_one({"_id": f"{site_id}:{group_id}"}) or {}
+    except Exception as exc:  # noqa: BLE001 - notification evidence is optional context.
+        meta = {}
+        warnings.append(f"capacity_notification_meta_unavailable:{exc}")
+    latest = events[0] if events else None
+    if meta.get("active_alert") is True:
+        current_state = "active_low_capacity_alert"
+    elif latest and latest.get("event_type") == "sub2api.capacity.recovered":
+        current_state = "recovered"
+    elif latest and latest.get("event_type") == "sub2api.capacity.low":
+        current_state = "low_capacity_alert_recorded"
+    else:
+        current_state = "no_capacity_notification_evidence"
+    return {
+        "source": "notification_events+sub2api_capacity_notification_meta",
+        "site_id": site_id,
+        "group_id": group_id,
+        "current_state": current_state,
+        "active_alert": meta.get("active_alert") is True,
+        "last_observed_status": meta.get("last_observed_status"),
+        "last_observed_at": meta.get("last_observed_at"),
+        "last_notified_status": meta.get("last_notified_status"),
+        "last_recovered_at": meta.get("last_recovered_at"),
+        "last_delivery_status": meta.get("last_delivery_status"),
+        "latest_event": latest,
+        "events_7d": events,
+        "event_count_7d": len(events),
+        "warnings": warnings,
+    }
+
+
+def _compact_capacity_notification_event(item: dict[str, Any]) -> dict[str, Any]:
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    return {
+        "notification_event_id": str(item.get("_id") or item.get("id") or "") or None,
+        "event_type": item.get("event_type"),
+        "notification_type": payload.get("notification_type"),
+        "severity": item.get("severity"),
+        "delivery_status": item.get("status"),
+        "success_count": _int_or_none(item.get("success_count")) or 0,
+        "failed_count": _int_or_none(item.get("failed_count")) or 0,
+        "health_status": payload.get("health_status"),
+        "trigger_reason": payload.get("trigger_reason"),
+        "created_at": item.get("created_at"),
+        "finished_at": item.get("finished_at"),
+    }
+
+
+def _capacity_consensus_for_window(consensus: dict[str, Any], *, range_value: str, now: datetime) -> dict[str, Any]:
+    hours = {"1h": 1, "6h": 6, "24h": 24, "7d": 24 * 7}.get(range_value, 24)
+    cutoff = now - timedelta(hours=hours)
+    events = [
+        item
+        for item in consensus.get("events_7d", [])
+        if isinstance(item, dict) and (_coerce_datetime(item.get("created_at")) or datetime.min.replace(tzinfo=UTC)) >= cutoff
+    ]
+    return {
+        "current_state": consensus.get("current_state"),
+        "active_alert": consensus.get("active_alert") is True,
+        "alert_count": sum(1 for item in events if item.get("event_type") == "sub2api.capacity.low"),
+        "recovery_count": sum(1 for item in events if item.get("event_type") == "sub2api.capacity.recovered"),
+        "latest_event": events[0] if events else None,
+    }
 
 
 async def read_agent_event_stream_summary(
@@ -637,6 +739,18 @@ def _parse_datetime_text(value: str | None) -> datetime | None:
         return None
 
 
+def _coerce_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
 def _minutes_between(start: str, end: str) -> int:
     try:
         start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
@@ -769,6 +883,15 @@ def _empty_event_windows(*, site_id: str | None, group_id: int | None, pool_id: 
             "summary_24h": _empty_window_summary("24h", site_id=site_id, group_id=group_id, pool_id=resolved_pool_id),
             "summary_7d": _empty_window_summary("7d", site_id=site_id, group_id=group_id, pool_id=resolved_pool_id),
             "notable_patterns": [],
+            "consensus_evidence": {
+                "capacity_notifications": {
+                    "source": "notification_events+sub2api_capacity_notification_meta",
+                    "current_state": "unavailable",
+                    "active_alert": False,
+                    "events_7d": [],
+                    "event_count_7d": 0,
+                }
+            },
             "data_quality": {
                 "available": False,
                 "detail_24h_limited_to": 80,

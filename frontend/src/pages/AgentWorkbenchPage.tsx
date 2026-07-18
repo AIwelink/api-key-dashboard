@@ -41,6 +41,9 @@ type AgentTask = {
   severity?: string | null;
   title?: string | null;
   summary?: string | null;
+  suggested_account_type?: string | null;
+  suggested_add_count?: number | null;
+  refill_plan_summary?: string | null;
   requires_human_confirm?: boolean;
   alert_status?: string | null;
   next_check_at?: string | null;
@@ -1824,6 +1827,7 @@ function TaskCard({
       <div className="agent-task-meta-grid">
         <TaskMeta label="pool_id" value={task.pool_id || "-"} />
         <TaskMeta label="severity" value={task.severity || "-"} />
+        <TaskMeta label="补号方案" value={task.refill_plan_summary || typedTaskRefillPlan(task)} />
         <TaskMeta label="next_check" value={formatOptionalDate(task.next_check_at)} />
         <TaskMeta label="updated" value={formatOptionalDate(task.updated_at)} />
       </div>
@@ -2015,6 +2019,14 @@ function formatJson(value: unknown): string {
 function shortId(value?: string | null): string {
   const text = String(value || "");
   return text.length > 14 ? `${text.slice(0, 7)}...${text.slice(-4)}` : text || "-";
+}
+
+function typedTaskRefillPlan(task: AgentTask): string {
+  const count = Number(task.suggested_add_count || 0);
+  if (count <= 0) return "-";
+  const accountType = String(task.suggested_account_type || "").trim().toLowerCase();
+  const labels: Record<string, string> = { k12: "K12", plus: "Plus", pro: "Pro", team: "Team", free: "Free" };
+  return `${labels[accountType] || accountType.toUpperCase() || "待指定"} ${count} 个`;
 }
 
 function taskLatestReason(task: AgentTask): string {

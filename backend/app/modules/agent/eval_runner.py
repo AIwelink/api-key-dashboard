@@ -418,6 +418,8 @@ def _output_summary(output: dict[str, Any]) -> dict[str, Any]:
         "severity": decision.get("severity"),
         "should_add_accounts": decision.get("should_add_accounts"),
         "suggested_add_count": decision.get("suggested_add_count"),
+        "suggested_account_type": decision.get("suggested_account_type"),
+        "refill_plan_summary": decision.get("refill_plan_summary"),
         "should_alert": decision.get("should_alert"),
         "requires_human_confirm": decision.get("requires_human_confirm"),
         "selected_pool_ids": selection.get("selected_pool_ids"),

@@ -488,12 +488,15 @@ def _disabled_result(reason: str) -> dict[str, Any]:
 
 
 def _candidate_from_pool(pool: dict[str, Any]) -> dict[str, Any]:
+    client_site = pool.get("client_site") if isinstance(pool.get("client_site"), dict) else {}
     return {
         "pool_id": _clean_optional_string(pool.get("id") or pool.get("pool_id")),
         "site_id": _clean_optional_string(pool.get("site_id")),
         "name": _clean_optional_string(pool.get("name")),
         "account_type": _clean_optional_string(pool.get("account_type")),
         "source": _clean_optional_string(pool.get("source")),
+        "client_type": _clean_optional_string(client_site.get("client_type")) or "sub2api",
+        "client_site_name": _clean_optional_string(client_site.get("name")),
         "pool": {
             "id": pool.get("id") or pool.get("pool_id"),
             "name": pool.get("name"),
@@ -504,6 +507,7 @@ def _candidate_from_pool(pool: dict[str, Any]) -> dict[str, Any]:
             "remote_account_count": pool.get("remote_account_count"),
             "remote_active_account_count": pool.get("remote_active_account_count"),
             "remote_rate_limited_account_count": pool.get("remote_rate_limited_account_count"),
+            "client_site": client_site,
         },
     }
 

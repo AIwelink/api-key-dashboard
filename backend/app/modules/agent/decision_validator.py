@@ -6,6 +6,7 @@ from typing import Any
 DECISION_SCHEMA_VERSION = "agent_decision.v1"
 DECISION_TYPE = "pool_operation_decision"
 MAX_SUGGESTED_ADD_COUNT = 200
+ALLOWED_REFILL_ACCOUNT_TYPES = {"free", "plus", "team", "k12", "pro"}
 
 ALLOWED_SEVERITIES = {"healthy", "watch", "warning", "danger", "critical"}
 ALLOWED_CONFIDENCE = {"low", "medium", "high"}
@@ -66,6 +67,13 @@ def validate_agent_decision(raw: dict[str, Any], *, context_pack: dict[str, Any]
         guardrail=guardrail,
         field="suggested_add_count",
     )
+    suggested_account_type, suggested_refill_options = _normalize_refill_plan(
+        raw=raw,
+        context_pack=context_pack,
+        suggested_add_count=suggested_add_count,
+        warnings=warnings,
+        adjustments=adjustments,
+    )
     should_add_accounts = _bool(raw.get("should_add_accounts"), default=suggested_add_count > 0)
     should_alert = _bool(raw.get("should_alert"), default=severity in {"danger", "critical"})
     requires_human_confirm = _bool(
@@ -79,7 +87,16 @@ def validate_agent_decision(raw: dict[str, Any], *, context_pack: dict[str, Any]
 
     recommended_actions = _normalize_actions(raw.get("recommended_actions"), warnings=warnings, adjustments=adjustments, guardrail=guardrail)
     if not recommended_actions:
-        recommended_actions = [_default_action(should_add_accounts=should_add_accounts, suggested_add_count=suggested_add_count)]
+        recommended_actions = [
+            _default_action(
+                should_add_accounts=should_add_accounts,
+                suggested_add_count=suggested_add_count,
+            )
+        ]
+        if should_add_accounts and suggested_add_count > 0 and suggested_account_type:
+            recommended_actions[0]["title"] = (
+                f"准备 {suggested_add_count} 个{_account_type_label(suggested_account_type)}账号"
+            )
     if guardrail["blocked_actions"] and not requires_human_confirm:
         requires_human_confirm = True
         warnings.append("Blocked high-risk actions forced requires_human_confirm=true.")
@@ -92,7 +109,15 @@ def validate_agent_decision(raw: dict[str, Any], *, context_pack: dict[str, Any]
     if data_quality.get("probe_available") is False and "账号探测数据不可用" not in data_gaps:
         data_gaps.append("账号探测数据不可用")
 
-    summary = _string_or_default(raw.get("summary"), _default_summary(severity, suggested_add_count))
+    refill_plan_summary = _refill_plan_summary(
+        suggested_account_type=suggested_account_type,
+        suggested_add_count=suggested_add_count,
+        options=suggested_refill_options,
+    )
+    summary = _string_or_default(
+        raw.get("summary"),
+        _default_summary(severity, suggested_add_count, suggested_account_type=suggested_account_type),
+    )
     operator_message = _string_or_default(raw.get("operator_message"), summary)
     main_reasons = _string_list(raw.get("main_reasons"))
     risk_factors = _string_list(raw.get("risk_factors"))
@@ -110,10 +135,18 @@ def validate_agent_decision(raw: dict[str, Any], *, context_pack: dict[str, Any]
         "schema_version": DECISION_SCHEMA_VERSION,
         "severity": severity,
         "summary": summary,
-        "headline": _headline_from_raw(raw, severity=severity, suggested_add_count=suggested_add_count),
+        "headline": _headline_from_raw(
+            raw,
+            severity=severity,
+            suggested_add_count=suggested_add_count,
+            suggested_account_type=suggested_account_type,
+        ),
         "operator_message": operator_message,
         "should_add_accounts": should_add_accounts,
         "suggested_add_count": suggested_add_count,
+        "suggested_account_type": suggested_account_type,
+        "suggested_refill_options": suggested_refill_options,
+        "refill_plan_summary": refill_plan_summary,
         "suggested_push_from_reserve_count": 0,
         "suggested_make_new_count": suggested_add_count,
         "confidence": confidence,
@@ -142,6 +175,148 @@ def validate_agent_decision(raw: dict[str, Any], *, context_pack: dict[str, Any]
         },
     }
     return decision
+
+
+def _normalize_refill_plan(
+    *,
+    raw: dict[str, Any],
+    context_pack: dict[str, Any],
+    suggested_add_count: int,
+    warnings: list[str],
+    adjustments: list[str],
+) -> tuple[str | None, list[dict[str, Any]]]:
+    if suggested_add_count <= 0:
+        return None, []
+
+    assessment = (
+        context_pack.get("system_capacity_assessment")
+        if isinstance(context_pack.get("system_capacity_assessment"), dict)
+        else {}
+    )
+    system_options = (
+        assessment.get("account_type_options")
+        if isinstance(assessment.get("account_type_options"), dict)
+        else {}
+    )
+    allowed_types = {
+        str(account_type).strip().lower()
+        for account_type, option in system_options.items()
+        if str(account_type).strip().lower() in ALLOWED_REFILL_ACCOUNT_TYPES and isinstance(option, dict)
+    }
+    raw_options = raw.get("suggested_refill_options")
+    raw_options_by_type: dict[str, dict[str, Any]] = {}
+    if isinstance(raw_options, list):
+        for item in raw_options[:10]:
+            if not isinstance(item, dict):
+                continue
+            account_type = _optional_string(item.get("account_type"))
+            normalized_type = str(account_type or "").strip().lower()
+            if normalized_type in ALLOWED_REFILL_ACCOUNT_TYPES:
+                raw_options_by_type[normalized_type] = item
+
+    requested_type = str(raw.get("suggested_account_type") or "").strip().lower()
+    if requested_type and allowed_types and requested_type not in allowed_types:
+        warnings.append(
+            f"suggested_account_type={requested_type} is not available for the current pool; using a configured refill type."
+        )
+        adjustments.append("suggested_account_type_restricted_to_pool_options")
+        requested_type = ""
+    if requested_type and requested_type not in ALLOWED_REFILL_ACCOUNT_TYPES:
+        warnings.append(f"suggested_account_type={requested_type} is invalid; using a supported refill type.")
+        adjustments.append("suggested_account_type_normalized")
+        requested_type = ""
+
+    selected_from_options = next(
+        (
+            account_type
+            for account_type, item in raw_options_by_type.items()
+            if item.get("selected") is True and (not allowed_types or account_type in allowed_types)
+        ),
+        None,
+    )
+    primary_type = str(assessment.get("primary_account_type") or "").strip().lower()
+    suggested_account_type = requested_type or selected_from_options
+    if not suggested_account_type and primary_type in allowed_types:
+        suggested_account_type = primary_type
+        adjustments.append("suggested_account_type_defaulted_to_primary_pool_type")
+    if not suggested_account_type and allowed_types:
+        suggested_account_type = sorted(allowed_types)[0]
+        adjustments.append("suggested_account_type_defaulted_to_available_option")
+    if not suggested_account_type:
+        target_pool = context_pack.get("target_pool") if isinstance(context_pack.get("target_pool"), dict) else {}
+        target_type = str(target_pool.get("account_type") or "").strip().lower()
+        if target_type in ALLOWED_REFILL_ACCOUNT_TYPES:
+            suggested_account_type = target_type
+            warnings.append("System refill options were unavailable; account type was inferred from target_pool.")
+            adjustments.append("suggested_account_type_inferred_from_target_pool")
+    if not suggested_account_type:
+        warnings.append("No valid refill account type was available for a positive refill recommendation.")
+        return None, []
+
+    option_types = sorted(allowed_types or {suggested_account_type})
+    normalized_options: list[dict[str, Any]] = []
+    for account_type in option_types:
+        system_option = system_options.get(account_type) if isinstance(system_options.get(account_type), dict) else {}
+        raw_option = raw_options_by_type.get(account_type, {})
+        selected = account_type == suggested_account_type
+        raw_count = _strict_int_or_none(raw_option.get("suggested_add_count") or raw_option.get("count"))
+        system_count = _strict_int_or_none(system_option.get("recommended_refill_accounts"))
+        count = suggested_add_count if selected else raw_count if raw_count is not None else system_count
+        if count is None or count <= 0:
+            continue
+        normalized_options.append(
+            {
+                "account_type": account_type,
+                "suggested_add_count": max(0, min(count, MAX_SUGGESTED_ADD_COUNT)),
+                "selected": selected,
+                "reason": _optional_string(raw_option.get("reason")) or "",
+                "system_recommended_count": system_count,
+                "quota_refill_accounts": _strict_int_or_none(system_option.get("quota_refill_accounts")),
+                "concurrency_refill_accounts": _strict_int_or_none(system_option.get("concurrency_refill_accounts")),
+                "quota_profile": system_option.get("quota_profile"),
+                "limits_usd": system_option.get("limits_usd") if isinstance(system_option.get("limits_usd"), dict) else {},
+            }
+        )
+    if not any(item.get("selected") for item in normalized_options):
+        normalized_options.insert(
+            0,
+            {
+                "account_type": suggested_account_type,
+                "suggested_add_count": suggested_add_count,
+                "selected": True,
+                "reason": "",
+                "system_recommended_count": None,
+                "quota_refill_accounts": None,
+                "concurrency_refill_accounts": None,
+                "quota_profile": None,
+                "limits_usd": {},
+            },
+        )
+    normalized_options.sort(key=lambda item: (not bool(item.get("selected")), str(item.get("account_type") or "")))
+    return suggested_account_type, normalized_options
+
+
+def _refill_plan_summary(
+    *,
+    suggested_account_type: str | None,
+    suggested_add_count: int,
+    options: list[dict[str, Any]],
+) -> str:
+    if suggested_add_count <= 0:
+        return "暂不建议补号。"
+    primary = f"主方案：{_account_type_label(suggested_account_type)} {suggested_add_count} 个"
+    alternatives = [
+        f"{_account_type_label(str(item.get('account_type') or ''))} {item.get('suggested_add_count')} 个"
+        for item in options
+        if item.get("selected") is not True and item.get("suggested_add_count")
+    ]
+    return f"{primary}；替代方案：{' / '.join(alternatives)}" if alternatives else primary
+
+
+def _account_type_label(account_type: str | None) -> str:
+    labels = {"k12": "K12", "plus": "Plus", "pro": "Pro", "team": "Team", "free": "Free"}
+    normalized = str(account_type or "").strip().lower()
+    return labels.get(normalized, normalized.upper() if normalized else "指定类型")
 
 
 def _normalize_evidence_summary(value: Any) -> dict[str, list[str]]:
@@ -266,15 +441,26 @@ def _action_texts(actions: list[dict[str, Any]]) -> list[str]:
     return texts
 
 
-def _headline_from_raw(raw: dict[str, Any], *, severity: str, suggested_add_count: int) -> str:
+def _headline_from_raw(
+    raw: dict[str, Any],
+    *,
+    severity: str,
+    suggested_add_count: int,
+    suggested_account_type: str | None = None,
+) -> str:
     for key in ("headline", "summary"):
         value = raw.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
-    return _default_summary(severity, suggested_add_count)
+    return _default_summary(severity, suggested_add_count, suggested_account_type=suggested_account_type)
 
 
-def _default_summary(severity: str, suggested_add_count: int) -> str:
+def _default_summary(severity: str, suggested_add_count: int, *, suggested_account_type: str | None = None) -> str:
+    if suggested_add_count > 0 and suggested_account_type:
+        return (
+            f"当前风险等级为 {severity}，建议准备 {suggested_add_count} 个"
+            f"{_account_type_label(suggested_account_type)}账号。"
+        )
     if suggested_add_count > 0:
         return f"当前风险等级为 {severity}，建议准备 {suggested_add_count} 个账号。"
     return f"当前风险等级为 {severity}，暂不建议立即补号。"

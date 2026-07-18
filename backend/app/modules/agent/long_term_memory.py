@@ -3,6 +3,7 @@ from __future__ import annotations
 import secrets
 from collections import Counter
 from datetime import UTC, datetime, timedelta
+from math import ceil
 from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -199,6 +200,9 @@ async def generate_daily_memory_summary(
     messages = await _load_messages(db, site_id=site_id, pool_id=pool_id, start=period_start, end=period_end, limit=120)
     tasks = await _load_tasks(db, site_id=site_id, pool_id=pool_id, start=period_start, end=period_end, limit=120)
     event_windows = await _safe_event_windows(db, site_id=site_id, pool_id=pool_id, decisions=decisions)
+    operational_samples = await _load_operational_sample_summary(
+        db, site_id=site_id, pool_id=pool_id, start=period_start, end=period_end
+    )
 
     facts = [
         *_run_and_decision_facts(runs=runs, decisions=decisions),
@@ -206,12 +210,14 @@ async def generate_daily_memory_summary(
         *_event_memory_facts(event_windows),
         *_feedback_memory_facts(messages),
         *_task_memory_facts(tasks),
+        *_operational_sample_facts(operational_samples),
     ]
     patterns = [
         *_risk_patterns(decisions),
         *_event_patterns(event_windows),
         *_feedback_patterns(messages),
         *_task_patterns(tasks),
+        *_operational_sample_patterns(operational_samples),
     ]
     lessons = _daily_lessons(decisions=decisions, messages=messages, event_windows=event_windows)
     payload = {
@@ -231,15 +237,19 @@ async def generate_daily_memory_summary(
         "facts": facts,
         "patterns": patterns,
         "lessons": lessons,
-        "risk_baselines": _risk_baselines(decisions=decisions, event_windows=event_windows),
+        "risk_baselines": {
+            **_risk_baselines(decisions=decisions, event_windows=event_windows),
+            "operational_samples": operational_samples,
+        },
         "created_by": "agent",
         "source_run_ids": [item.get("run_id") or item.get("_id") for item in runs],
         "source_decision_ids": [item.get("decision_id") or item.get("_id") for item in decisions],
         "metadata": {
-            "generator": "daily_memory_summary.v3",
+            "generator": "daily_memory_summary.v4",
             "event_windows_included": bool(event_windows),
             "message_count": len(messages),
             "task_count": len(tasks),
+            "operational_samples_included": operational_samples.get("available") is True,
         },
     }
     payload = await _refine_memory_payload_with_llm(db, payload=payload)
@@ -311,6 +321,9 @@ async def _generate_weekly_memory_summary_for_period(
     messages = await _load_messages(db, site_id=site_id, pool_id=pool_id, start=period_start, end=period_end, limit=300)
     tasks = await _load_tasks(db, site_id=site_id, pool_id=pool_id, start=period_start, end=period_end, limit=300)
     event_windows = await _safe_event_windows(db, site_id=site_id, pool_id=pool_id, decisions=decisions)
+    operational_samples = await _load_operational_sample_summary(
+        db, site_id=site_id, pool_id=pool_id, start=period_start, end=period_end
+    )
 
     facts = [
         f"最近 7 天 Agent 运行 {len(runs)} 次，形成 {len(decisions)} 条决策。",
@@ -318,6 +331,7 @@ async def _generate_weekly_memory_summary_for_period(
         *_event_memory_facts(event_windows),
         *_survival_facts_from_decisions(decisions),
         *_task_memory_facts(tasks),
+        *_operational_sample_facts(operational_samples),
     ]
     patterns = [
         *_risk_patterns(decisions),
@@ -325,6 +339,7 @@ async def _generate_weekly_memory_summary_for_period(
         *_decision_bias_patterns(decisions),
         *_feedback_patterns(messages),
         *_task_patterns(tasks),
+        *_operational_sample_patterns(operational_samples),
     ]
     lessons = [
         *_weekly_lessons(decisions=decisions, event_windows=event_windows),
@@ -347,14 +362,18 @@ async def _generate_weekly_memory_summary_for_period(
         "facts": facts,
         "patterns": patterns,
         "lessons": lessons,
-        "risk_baselines": _risk_baselines(decisions=decisions, event_windows=event_windows),
+        "risk_baselines": {
+            **_risk_baselines(decisions=decisions, event_windows=event_windows),
+            "operational_samples": operational_samples,
+        },
         "created_by": "agent",
         "source_run_ids": [item.get("run_id") or item.get("_id") for item in runs],
         "source_decision_ids": [item.get("decision_id") or item.get("_id") for item in decisions],
         "metadata": {
-            "generator": "weekly_memory_summary.v2",
+            "generator": "weekly_memory_summary.v3",
             "message_count": len(messages),
             "task_count": len(tasks),
+            "operational_samples_included": operational_samples.get("available") is True,
         },
     }
     payload = await _refine_memory_payload_with_llm(db, payload=payload)
@@ -815,7 +834,12 @@ async def _refine_memory_payload_with_llm(db: AsyncIOMotorDatabase, *, payload: 
             refined["lessons"] = lessons[:20]
         risk_baselines = data.get("risk_baselines")
         if isinstance(risk_baselines, dict):
-            refined["risk_baselines"] = risk_baselines
+            deterministic_baselines = payload.get("risk_baselines") if isinstance(payload.get("risk_baselines"), dict) else {}
+            refined["risk_baselines"] = {
+                **deterministic_baselines,
+                **risk_baselines,
+                "operational_samples": deterministic_baselines.get("operational_samples", {}),
+            }
         refined["metadata"] = {
             **metadata,
             "llm_refined": True,
@@ -933,6 +957,197 @@ async def _load_tasks(
     elif site_id:
         query["site_id"] = site_id
     return [item async for item in _tasks(db).find(query).sort("updated_at", -1).limit(limit)]
+
+
+async def _load_operational_sample_summary(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str | None,
+    pool_id: str | None,
+    start: datetime,
+    end: datetime,
+) -> dict[str, Any]:
+    resolved_site_id = _clean_optional_string(site_id) or _site_id_from_pool_id(pool_id)
+    group_id = _group_id_from_pool_id(pool_id)
+    if not resolved_site_id or group_id is None:
+        return {
+            "schema_version": "agent_operational_sample_summary.v1",
+            "available": False,
+            "data_gaps": ["site_id_or_group_id_missing"],
+        }
+    query = {
+        "site_id": resolved_site_id,
+        "group_id": group_id,
+        "sampled_at": {"$gte": start, "$lt": end},
+    }
+    data_gaps: list[str] = []
+    try:
+        capacity_samples = [
+            item
+            async for item in db.sub2api_capacity_samples.find(query).sort("sampled_at", 1).limit(2200)
+        ]
+    except Exception as exc:  # noqa: BLE001 - memory generation keeps a deterministic fallback.
+        capacity_samples = []
+        data_gaps.append(f"capacity_samples_unavailable:{exc}")
+    try:
+        tpm_samples = [
+            item
+            async for item in db.sub2api_tpm_samples.find(query).sort("sampled_at", 1).limit(12000)
+        ]
+    except Exception as exc:  # noqa: BLE001 - memory generation keeps a deterministic fallback.
+        tpm_samples = []
+        data_gaps.append(f"tpm_samples_unavailable:{exc}")
+    if not capacity_samples:
+        data_gaps.append("capacity_samples_empty")
+    if not tpm_samples:
+        data_gaps.append("tpm_samples_empty")
+    return {
+        "schema_version": "agent_operational_sample_summary.v1",
+        "available": bool(capacity_samples or tpm_samples),
+        "site_id": resolved_site_id,
+        "group_id": group_id,
+        "period_start": start,
+        "period_end": end,
+        "capacity": _aggregate_capacity_samples(capacity_samples),
+        "usage_pressure": _aggregate_tpm_samples(tpm_samples),
+        "data_gaps": data_gaps,
+        "source": "sub2api_capacity_samples+sub2api_tpm_samples",
+    }
+
+
+def _aggregate_capacity_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    rows = [item.get("capacity_summary") for item in samples if isinstance(item.get("capacity_summary"), dict)]
+    available_accounts = _sample_numbers(rows, "available_accounts")
+    actual_runway = _sample_numbers(rows, "actual_runway_hours")
+    dynamic_runway = _sample_numbers(rows, "dynamic_runway_hours")
+    concurrency_coverage = _sample_numbers(rows, "concurrency_coverage")
+    burn_rates = _sample_numbers(rows, "burn_usd_per_hour")
+    refill_counts = _sample_numbers(rows, "recommended_refill_accounts")
+    health_counts = Counter(str(row.get("health_status") or "unknown") for row in rows)
+    pressure_counts = Counter(str(row.get("pressure_stage") or "unknown") for row in rows)
+    return {
+        "sample_count": len(rows),
+        "first_sampled_at": samples[0].get("sampled_at") if samples else None,
+        "latest_sampled_at": samples[-1].get("sampled_at") if samples else None,
+        "health_status_counts": dict(health_counts.most_common()),
+        "pressure_stage_counts": dict(pressure_counts.most_common()),
+        "available_accounts": _series_change(available_accounts),
+        "actual_runway_hours": _series_stats(actual_runway),
+        "dynamic_runway_hours": _series_stats(dynamic_runway),
+        "concurrency_coverage": _series_stats(concurrency_coverage),
+        "burn_usd_per_hour": _series_stats(burn_rates),
+        "replenishment_required_samples": sum(1 for row in rows if row.get("replenishment_required") is True),
+        "recommended_refill_accounts_max": int(max(refill_counts)) if refill_counts else None,
+        "recommended_refill_by_account_type_max": _max_refill_options(rows),
+    }
+
+
+def _aggregate_tpm_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    tpm = _sample_numbers(samples, "tpm")
+    rpm = _sample_numbers(samples, "rpm")
+    concurrency = _sample_numbers(samples, "current_concurrency")
+    source_counts = Counter(str(item.get("source") or "unknown") for item in samples)
+    return {
+        "sample_count": len(samples),
+        "first_sampled_at": samples[0].get("sampled_at") if samples else None,
+        "latest_sampled_at": samples[-1].get("sampled_at") if samples else None,
+        "tpm": _series_stats(tpm),
+        "rpm": _series_stats(rpm),
+        "concurrency": _series_stats(concurrency),
+        "source_counts": dict(source_counts.most_common()),
+        "missing_tpm_samples": max(0, len(samples) - len(tpm)),
+    }
+
+
+def _sample_numbers(items: list[dict[str, Any]], key: str) -> list[float]:
+    values: list[float] = []
+    for item in items:
+        value = _number_or_none(item.get(key))
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def _series_stats(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {"count": 0, "min": None, "max": None, "avg": None, "p90": None, "latest": None}
+    ordered = sorted(values)
+    p90_index = min(len(ordered) - 1, max(0, ceil(len(ordered) * 0.9) - 1))
+    return {
+        "count": len(values),
+        "min": round(min(values), 4),
+        "max": round(max(values), 4),
+        "avg": round(sum(values) / len(values), 4),
+        "p90": round(ordered[p90_index], 4),
+        "latest": round(values[-1], 4),
+    }
+
+
+def _series_change(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {"count": 0, "start": None, "end": None, "change": None, "min": None, "max": None}
+    return {
+        "count": len(values),
+        "start": round(values[0], 4),
+        "end": round(values[-1], 4),
+        "change": round(values[-1] - values[0], 4),
+        "min": round(min(values), 4),
+        "max": round(max(values), 4),
+    }
+
+
+def _max_refill_options(rows: list[dict[str, Any]]) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for row in rows:
+        options = row.get("recommended_refill_options") if isinstance(row.get("recommended_refill_options"), dict) else {}
+        for raw_type, option in options.items():
+            if not isinstance(option, dict):
+                continue
+            count = _int_or_none(option.get("recommended_refill_accounts"))
+            if count is not None:
+                account_type = str(option.get("account_type") or raw_type)
+                result[account_type] = max(result.get(account_type, 0), count)
+    return result
+
+
+def _operational_sample_facts(summary: dict[str, Any]) -> list[str]:
+    if summary.get("available") is not True:
+        return []
+    capacity = summary.get("capacity") if isinstance(summary.get("capacity"), dict) else {}
+    pressure = summary.get("usage_pressure") if isinstance(summary.get("usage_pressure"), dict) else {}
+    facts = [
+        f"历史采样包含 {capacity.get('sample_count', 0)} 个容量快照和 {pressure.get('sample_count', 0)} 个 TPM/RPM 样本。"
+    ]
+    accounts = capacity.get("available_accounts") if isinstance(capacity.get("available_accounts"), dict) else {}
+    if accounts.get("change") is not None:
+        facts.append(
+            f"采样窗口内可用账号从 {accounts.get('start')} 变为 {accounts.get('end')}，变化 {accounts.get('change')}。"
+        )
+    tpm = pressure.get("tpm") if isinstance(pressure.get("tpm"), dict) else {}
+    if tpm.get("max") is not None:
+        facts.append(f"采样窗口 TPM 平均 {tpm.get('avg')}，P90 {tpm.get('p90')}，峰值 {tpm.get('max')}。")
+    coverage = capacity.get("concurrency_coverage") if isinstance(capacity.get("concurrency_coverage"), dict) else {}
+    if coverage.get("min") is not None:
+        facts.append(f"采样窗口并发覆盖率最低 {coverage.get('min')}，平均 {coverage.get('avg')}。")
+    return facts
+
+
+def _operational_sample_patterns(summary: dict[str, Any]) -> list[str]:
+    if summary.get("available") is not True:
+        return []
+    capacity = summary.get("capacity") if isinstance(summary.get("capacity"), dict) else {}
+    patterns: list[str] = []
+    health_counts = capacity.get("health_status_counts") if isinstance(capacity.get("health_status_counts"), dict) else {}
+    if health_counts:
+        patterns.append(f"容量采样健康状态分布为 {health_counts}。")
+    if int(capacity.get("replenishment_required_samples") or 0) > 0:
+        patterns.append(
+            f"主系统在 {capacity.get('replenishment_required_samples')} 个容量采样点标记需要补充容量。"
+        )
+    refill_options = capacity.get("recommended_refill_by_account_type_max")
+    if isinstance(refill_options, dict) and refill_options:
+        patterns.append(f"按账号类型统计的窗口内最大补号参考为 {refill_options}，仅作历史证据。")
+    return patterns
 
 
 async def _safe_event_windows(
@@ -1082,6 +1297,12 @@ def _risk_distribution_facts(decisions: list[dict[str, Any]]) -> list[str]:
 def _capacity_memory_facts(decisions: list[dict[str, Any]]) -> list[str]:
     facts: list[str] = []
     latest = decisions[0] if decisions else {}
+    latest_decision = _decision_payload(latest)
+    if _int_or_none(latest_decision.get("suggested_add_count")):
+        facts.append(
+            f"最近一次补号建议为 {latest_decision.get('suggested_account_type') or '未指定类型'} "
+            f"{latest_decision.get('suggested_add_count')} 个。"
+        )
     capacity = latest.get("capacity_snapshot") if isinstance(latest.get("capacity_snapshot"), dict) else {}
     if capacity.get("current_speed_days") is not None:
         facts.append(f"最近一次决策记录的可支撑时间为 {capacity.get('current_speed_days')} 天。")
@@ -1105,6 +1326,15 @@ def _event_memory_facts(event_windows: dict[str, Any]) -> list[str]:
             facts.append(f"{label} 检测到 {inner.get('detected_401')} 个 401 账号。")
         if inner.get("recovered_401"):
             facts.append(f"{label} 恢复 {inner.get('recovered_401')} 个 401 账号。")
+    consensus = event_windows.get("consensus_evidence") if isinstance(event_windows.get("consensus_evidence"), dict) else {}
+    capacity_consensus = consensus.get("capacity_notifications") if isinstance(consensus.get("capacity_notifications"), dict) else {}
+    if capacity_consensus.get("event_count_7d"):
+        facts.append(
+            f"主系统容量通知当前状态为 {capacity_consensus.get('current_state')}，"
+            f"最近 7d 有 {capacity_consensus.get('event_count_7d')} 条容量告警或恢复证据。"
+        )
+    if capacity_consensus.get("last_recovered_at"):
+        facts.append(f"主系统最近一次容量恢复确认时间为 {capacity_consensus.get('last_recovered_at')}。")
     return facts[:12]
 
 
@@ -1349,6 +1579,13 @@ def _group_id_from_pool_id(pool_id: str | None) -> int | None:
     parts = str(pool_id or "").split(":")
     if len(parts) == 3 and parts[0] == "sub2api":
         return _int_or_none(parts[2])
+    return None
+
+
+def _site_id_from_pool_id(pool_id: str | None) -> str | None:
+    parts = str(pool_id or "").split(":")
+    if len(parts) == 3 and parts[0] == "sub2api":
+        return _clean_optional_string(parts[1])
     return None
 
 

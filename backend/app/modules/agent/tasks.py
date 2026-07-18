@@ -164,6 +164,14 @@ async def create_or_update_agent_task(
     summary = _task_summary(decision=decision, step_result=step_result)
     reason = _task_change_reason(decision=decision, step_result=step_result, fallback=summary)
     title = _clean_optional_string(decision.get("headline") or step_result.get("title")) or DEFAULT_TASK_TITLE
+    refill_plan_fields = {
+        "suggested_account_type": _clean_optional_string(decision.get("suggested_account_type")),
+        "suggested_add_count": _int_or_none(decision.get("suggested_add_count")),
+        "suggested_refill_options": decision.get("suggested_refill_options")
+        if isinstance(decision.get("suggested_refill_options"), list)
+        else [],
+        "refill_plan_summary": _clean_optional_string(decision.get("refill_plan_summary")),
+    }
     status_fields = _status_fields(
         status=next_status,
         decision=decision,
@@ -205,6 +213,7 @@ async def create_or_update_agent_task(
             "conversation_id": normalized_conversation_id or task.get("conversation_id"),
             "task_update_warnings": task_update_warnings,
             "updated_at": now,
+            **refill_plan_fields,
         }
         updates.update(status_fields)
 
@@ -264,6 +273,7 @@ async def create_or_update_agent_task(
         "alert_draft": None,
         "close_reason": None,
         "task_update_warnings": task_update_warnings,
+        **refill_plan_fields,
         "linked_run_ids": [normalized_run_id] if normalized_run_id else [],
         "linked_decision_ids": [decision_id] if decision_id else [],
         "linked_conversation_ids": [normalized_conversation_id] if normalized_conversation_id else [],
@@ -1472,6 +1482,9 @@ def _alert_draft(
     requires_human_confirm = _requires_human_confirm(decision=decision, step_result=step_result)
     title = _clean_optional_string(decision.get("headline")) or _alert_title(severity=severity, pool=pool)
     content = _clean_optional_string(decision.get("operator_message") or decision.get("summary")) or reason
+    refill_plan_summary = _clean_optional_string(decision.get("refill_plan_summary"))
+    if refill_plan_summary and refill_plan_summary not in content:
+        content = f"{content}\n补号方案：{refill_plan_summary}"
     draft.setdefault("channel", "dingtalk")
     draft.setdefault("status", "drafted")
     draft.setdefault("send_behavior", "draft_only")

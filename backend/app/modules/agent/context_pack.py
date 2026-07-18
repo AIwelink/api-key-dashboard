@@ -8,6 +8,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.modules.agent.capacity import (
     build_agent_capacity_status,
     build_agent_concurrency_status,
+    build_system_capacity_assessment,
     capacity_account_limit_usd,
     list_agent_pools,
     read_pool_capacity,
@@ -64,7 +65,7 @@ async def build_agent_context_pack(
         warnings.append(f"capacity_unavailable: {exc}")
 
     pool_from_capacity = capacity.get("pool") if isinstance(capacity.get("pool"), dict) else {}
-    target_pool = pool_from_capacity or target_pool
+    target_pool = {**target_pool, **pool_from_capacity} if pool_from_capacity else target_pool
     target_pool_info = _build_target_pool_info(target_pool, capacity)
 
     site_id = _clean_optional_string(target_pool_info.get("site_id"))
@@ -113,6 +114,7 @@ async def build_agent_context_pack(
     capacity_summary = _summarize_capacity(capacity)
     capacity_status = build_agent_capacity_status(capacity)
     concurrency_status = build_agent_concurrency_status(capacity)
+    system_capacity_assessment = build_system_capacity_assessment(capacity)
     probe_summary = _summarize_probe(probe)
     event_stream_summary = _summarize_event_stream(event_stream)
     event_windows_summary = _summarize_event_windows(event_windows, event_stream_summary)
@@ -122,6 +124,7 @@ async def build_agent_context_pack(
         capacity=capacity_summary,
         capacity_status=capacity_status,
         concurrency_status=concurrency_status,
+        system_capacity_assessment=system_capacity_assessment,
         probe=probe_summary,
         event_windows=event_windows_summary,
         recent_decisions=recent_decisions,
@@ -139,9 +142,11 @@ async def build_agent_context_pack(
             "created_by_role": _actor_role(actor),
         },
         "target_pool": target_pool_info,
+        "site_scope": pools_response.get("site_scope") if isinstance(pools_response.get("site_scope"), dict) else {},
         "api_pool_status": _summarize_api_pool_status(target_pool, capacity),
         "capacity_status": capacity_status,
         "concurrency_status": concurrency_status,
+        "system_capacity_assessment": system_capacity_assessment,
         "capacity": capacity_summary,
         "capacity_dictionary": capacity_dictionary,
         "operational_facts": operational_facts,
@@ -172,6 +177,7 @@ async def build_agent_context_pack(
                 "decisions": AGENT_DECISIONS_COLLECTION,
                 "messages": AGENT_MESSAGES_COLLECTION,
                 "long_term_memory": "agent_memory_summaries",
+                "site_scope": "client_sites+sub2api_sites",
             },
             "refresh_behavior": "read_existing_cache_only",
         },
@@ -202,6 +208,7 @@ def _resolve_target_pool(
 def _build_target_pool_info(pool: dict[str, Any], capacity: dict[str, Any]) -> dict[str, Any]:
     site_id = pool.get("site_id") or capacity.get("site_id")
     group_id = pool.get("active_group_id") or capacity.get("group_id")
+    client_site = pool.get("client_site") if isinstance(pool.get("client_site"), dict) else {}
     return {
         "pool_id": _clean_optional_string(pool.get("id")),
         "site_id": _clean_optional_string(site_id),
@@ -209,6 +216,12 @@ def _build_target_pool_info(pool: dict[str, Any], capacity: dict[str, Any]) -> d
         "name": _clean_optional_string(pool.get("name")),
         "account_type": _clean_optional_string(pool.get("account_type")),
         "source": _clean_optional_string(pool.get("source")),
+        "client_site": {
+            "site_id": client_site.get("site_id") or site_id,
+            "name": client_site.get("name"),
+            "client_type": client_site.get("client_type") or "sub2api",
+            "scope_source": client_site.get("source"),
+        },
         "remote_status": pool.get("remote_status"),
         "updated_at": pool.get("updated_at"),
     }
