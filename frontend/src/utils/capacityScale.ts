@@ -22,16 +22,16 @@ export function runwayScalePercent(value: unknown, target: unknown): number | nu
 export function concurrencyCoverageScalePercent(value: unknown, target: unknown): number | null {
   const number = optionalNumber(value);
   const targetNumber = optionalNumber(target);
-  if (number === null || targetNumber === null || targetNumber <= 1) return null;
+  if (number === null || targetNumber === null || targetNumber <= 0) return null;
   const tier = 100 / 6;
   return tieredPercent(number, [
     [0, 0],
-    [0.8, tier],
-    [1, tier * 2],
-    [targetNumber, tier * 3],
-    [targetNumber * 1.25, tier * 4],
-    [targetNumber * (5 / 3), tier * 5],
-    [5, 100],
+    [1, tier],
+    [1.5, tier * 2],
+    [3, tier * 3],
+    [5, tier * 4],
+    [7.5, tier * 5],
+    [10, 100],
   ]);
 }
 
@@ -50,10 +50,10 @@ export function concurrencyCoverageTone(value: unknown, ready: unknown): Capacit
   if (ready !== true) return "muted";
   const number = optionalNumber(value);
   if (number === null) return "muted";
-  if (number < 1) return "danger";
-  if (number < 1.2) return "warning";
-  if (number >= 5) return "excellent";
-  if (number >= 2) return "info";
+  if (number < 1.5) return "danger";
+  if (number < 3) return "warning";
+  if (number >= 10) return "excellent";
+  if (number >= 5) return "info";
   return "success";
 }
 

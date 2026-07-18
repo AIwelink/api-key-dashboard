@@ -381,6 +381,35 @@ class LegacyMigrationSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["deleted_documents"], 4_500)
         self.assertEqual(result["stage"], "completed")
 
+    async def test_completed_deletion_reconciles_unrecorded_deleted_batch(self) -> None:
+        now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
+        source = InMemorySourceCollection([])
+        ledger = {
+            "_id": "migration-1",
+            "stage": "completed",
+            "source_max_sampled_at": now - timedelta(minutes=30),
+            "source_documents_expected": 10_000,
+            "site_id": None,
+            "deleted_documents": 4_000,
+        }
+        migrations = SimpleNamespace(find_one=AsyncMock(return_value=ledger), update_one=AsyncMock())
+        db = SimpleNamespace(
+            remote_account_history_migrations=migrations,
+            remote_account_probe_samples=source,
+        )
+
+        result = await delete_verified_legacy_samples(
+            db,
+            "migration-1",
+            batch_size=2_000,
+            idle_minutes=10,
+            now=now,
+        )
+
+        self.assertEqual(result["deleted_documents"], 10_000)
+        final_update = migrations.update_one.await_args.args[1]["$set"]
+        self.assertEqual(final_update["deleted_documents"], 10_000)
+
 
 class InMemorySourceCollection:
     def __init__(self, items: list[dict[str, object]]) -> None:

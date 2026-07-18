@@ -8,6 +8,6 @@ describe("API pool metric help", () => {
     expect(source).toContain('"实时可用时间": {');
     expect(source).toContain('"安全并发覆盖": {');
     expect(source).toContain("48小时及以上为紫色顶级");
-    expect(source).toContain("5x及以上为紫色顶级");
+    expect(source).toContain("10x及以上为紫色顶级");
   });
 });

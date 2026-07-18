@@ -12,6 +12,7 @@ DYNAMIC_RUNWAY_TARGET_HOURS = 3.0
 EXHAUSTED_RUNWAY_HOURS = 0.5
 INVENTORY_RISK_RUNWAY_HOURS = 6.0
 SAFE_CONCURRENCY_TARGET = 1.2
+TOTAL_CONCURRENCY_TARGET = 1 + SAFE_CONCURRENCY_TARGET
 
 PRESSURE_STAGE_LABELS = {
     "waiting_data": "等待数据",
@@ -112,7 +113,8 @@ def calculate_capacity_risk(
     estimated_concurrency = max(concurrency_ema_5, concurrency_p90_1h)
     if 0 < estimated_concurrency < 1:
         estimated_concurrency = 1.0
-    concurrency_coverage = _coverage(safe_concurrency_available, estimated_concurrency)
+    concurrency_spare_coverage = _coverage(safe_concurrency_available, estimated_concurrency)
+    concurrency_coverage = None if concurrency_spare_coverage is None else 1 + concurrency_spare_coverage
 
     burn_usd_per_hour = pressure_tpm * 60 * float(cost_per_token)
     actual_remaining_usd = min(
@@ -130,7 +132,7 @@ def calculate_capacity_risk(
         available_accounts=available_accounts,
         actual_runway_hours=actual_runway_hours,
         dynamic_runway_hours=dynamic_runway_hours,
-        concurrency_coverage=concurrency_coverage,
+        concurrency_spare_coverage=concurrency_spare_coverage,
     )
     inventory_risk = falling and dynamic_runway_hours is not None and dynamic_runway_hours > INVENTORY_RISK_RUNWAY_HOURS
     pressure_stage = _pressure_stage(
@@ -202,7 +204,7 @@ def calculate_capacity_risk(
         "dynamic_runway_hours": _rounded(dynamic_runway_hours),
         "target_runway_hours": DYNAMIC_RUNWAY_TARGET_HOURS,
         "actual_target_hours": ACTUAL_RUNWAY_TARGET_HOURS,
-        "concurrency_target_coverage": SAFE_CONCURRENCY_TARGET,
+        "concurrency_target_coverage": TOTAL_CONCURRENCY_TARGET,
         "pressure_stage": pressure_stage,
         "pressure_stage_label": PRESSURE_STAGE_LABELS[pressure_stage],
         "inventory_risk": inventory_risk,
@@ -244,7 +246,7 @@ def _pending_summary(
         "recommended_refill_options": {},
         "target_runway_hours": DYNAMIC_RUNWAY_TARGET_HOURS,
         "actual_target_hours": ACTUAL_RUNWAY_TARGET_HOURS,
-        "concurrency_target_coverage": SAFE_CONCURRENCY_TARGET,
+        "concurrency_target_coverage": TOTAL_CONCURRENCY_TARGET,
     }
 
 
@@ -253,7 +255,7 @@ def _health_status(
     available_accounts: int,
     actual_runway_hours: float | None,
     dynamic_runway_hours: float | None,
-    concurrency_coverage: float | None,
+    concurrency_spare_coverage: float | None,
 ) -> tuple[str, str]:
     if available_accounts <= 2:
         return "exhausted", "可用账号不超过 2 个"
@@ -262,12 +264,12 @@ def _health_status(
     if (
         (actual_runway_hours is not None and actual_runway_hours < ACTUAL_RUNWAY_TARGET_HOURS)
         or (dynamic_runway_hours is not None and dynamic_runway_hours < ACTUAL_RUNWAY_TARGET_HOURS)
-        or (concurrency_coverage is not None and concurrency_coverage < 1.0)
+        or (concurrency_spare_coverage is not None and concurrency_spare_coverage < 1.0)
     ):
         return "danger", "实际额度不足 1 小时，或并发已经低于当前压力需求"
     if (
         (dynamic_runway_hours is not None and dynamic_runway_hours < DYNAMIC_RUNWAY_TARGET_HOURS)
-        or (concurrency_coverage is not None and concurrency_coverage < SAFE_CONCURRENCY_TARGET)
+        or (concurrency_spare_coverage is not None and concurrency_spare_coverage < SAFE_CONCURRENCY_TARGET)
     ):
         return "tight", "动态容量不足 3 小时，或安全并发余量不足 1.2 倍"
     if dynamic_runway_hours is not None and dynamic_runway_hours >= INVENTORY_RISK_RUNWAY_HOURS:

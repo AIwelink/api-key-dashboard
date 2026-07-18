@@ -90,7 +90,7 @@ class CapacityRiskTests(unittest.TestCase):
 
         self.assertTrue(result["ready"])
         self.assertEqual(result["estimated_concurrency"], 1.0)
-        self.assertEqual(result["concurrency_coverage"], 2.0)
+        self.assertEqual(result["concurrency_coverage"], 3.0)
 
     def test_recorded_concurrency_replaces_rpm_duration_estimate(self) -> None:
         result = calculate(
@@ -100,7 +100,7 @@ class CapacityRiskTests(unittest.TestCase):
 
         self.assertTrue(result["ready"])
         self.assertEqual(result["estimated_concurrency"], 5.0)
-        self.assertEqual(result["concurrency_coverage"], 20.0)
+        self.assertEqual(result["concurrency_coverage"], 21.0)
 
     def test_zero_recorded_concurrency_has_no_coverage_multiplier(self) -> None:
         result = calculate(
@@ -112,6 +112,15 @@ class CapacityRiskTests(unittest.TestCase):
         self.assertEqual(result["estimated_concurrency"], 0.0)
         self.assertIsNone(result["concurrency_coverage"])
 
+    def test_zero_safe_spare_still_has_one_times_total_coverage(self) -> None:
+        result = calculate(
+            samples([1000] * 20, current_concurrency=5),
+            safe_concurrency_available=0,
+        )
+
+        self.assertEqual(result["estimated_concurrency"], 5.0)
+        self.assertEqual(result["concurrency_coverage"], 1.0)
+
     def test_healthy_when_runway_and_concurrency_targets_are_met(self) -> None:
         result = calculate(samples([1000] * 20))
 
@@ -121,7 +130,8 @@ class CapacityRiskTests(unittest.TestCase):
         self.assertAlmostEqual(result["actual_runway_hours"], 1.5)
         self.assertAlmostEqual(result["dynamic_runway_hours"], 4.0)
         self.assertAlmostEqual(result["estimated_concurrency"], 1.0)
-        self.assertAlmostEqual(result["concurrency_coverage"], 2.0)
+        self.assertAlmostEqual(result["concurrency_coverage"], 3.0)
+        self.assertAlmostEqual(result["concurrency_target_coverage"], 2.2)
         self.assertEqual(result["health_status"], "healthy")
         self.assertEqual(result["pressure_stage"], "stable")
         self.assertFalse(result["replenishment_required"])

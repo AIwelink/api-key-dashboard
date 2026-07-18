@@ -774,7 +774,7 @@ async def delete_verified_legacy_samples(
     ledger = await db.remote_account_history_migrations.find_one({"_id": migration_id})
     if not ledger:
         raise RuntimeError(f"account history migration not found: {migration_id}")
-    if ledger.get("stage") not in {"verified", "deleting"}:
+    if ledger.get("stage") not in {"verified", "deleting", "completed"}:
         raise RuntimeError(f"migration must be verified before deletion: {ledger.get('stage')}")
     boundary = ledger.get("source_max_sampled_at")
     if not isinstance(boundary, datetime):
@@ -786,14 +786,40 @@ async def delete_verified_legacy_samples(
     )
     batch_size = clamp_migration_batch_size(batch_size)
     deleted_documents = int(ledger.get("deleted_documents") or 0)
+    query: dict[str, Any] = {"sampled_at": {"$lte": boundary}}
+    if ledger.get("site_id"):
+        query["site_id"] = ledger["site_id"]
+    if ledger.get("stage") == "completed":
+        remaining = await db.remote_account_probe_samples.count_documents(query)
+        if remaining:
+            raise RuntimeError(f"completed migration still has legacy samples: remaining={remaining}")
+        expected = int(ledger.get("source_documents_expected") or 0)
+        deleted_documents = max(deleted_documents, expected)
+        reconciled_at = datetime.now(UTC)
+        await db.remote_account_history_migrations.update_one(
+            {"_id": migration_id},
+            {
+                "$set": {
+                    "deleted_documents": deleted_documents,
+                    "remaining_documents": 0,
+                    "stage": "completed",
+                    "updated_at": reconciled_at,
+                }
+            },
+        )
+        return {
+            "ok": True,
+            "stage": "completed",
+            "migration_id": migration_id,
+            "deleted_documents": deleted_documents,
+            "remaining_documents": 0,
+            "source_idle": idle_state,
+        }
     started_at = datetime.now(UTC)
     await db.remote_account_history_migrations.update_one(
         {"_id": migration_id},
         {"$set": {"stage": "deleting", "deletion_started_at": started_at, "updated_at": started_at}},
     )
-    query: dict[str, Any] = {"sampled_at": {"$lte": boundary}}
-    if ledger.get("site_id"):
-        query["site_id"] = ledger["site_id"]
     while True:
         cursor = (
             db.remote_account_probe_samples.find(query, {"_id": 1})
@@ -816,6 +842,8 @@ async def delete_verified_legacy_samples(
     remaining = await db.remote_account_probe_samples.count_documents(query)
     if remaining:
         raise RuntimeError(f"legacy sample deletion incomplete: remaining={remaining}")
+    expected = int(ledger.get("source_documents_expected") or 0)
+    deleted_documents = max(deleted_documents, expected)
     completed_at = datetime.now(UTC)
     await db.remote_account_history_migrations.update_one(
         {"_id": migration_id},
