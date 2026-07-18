@@ -3,7 +3,7 @@ import { api } from "../api/client";
 import { AnimatedValue, AutoRefreshAnimationContext } from "../components/AnimatedValue";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
-import { concurrencyCoverageScalePercent, runwayScalePercent } from "../utils/capacityScale";
+import { concurrencyCoverageScalePercent, concurrencyCoverageTone, runwayScalePercent, runwayTone } from "../utils/capacityScale";
 import { errorMessage, formatDateTime, parseDisplayDate, text } from "../utils/format";
 
 type Props = {
@@ -1576,6 +1576,16 @@ const METRIC_HELP_DETAILS: Record<string, MetricHelpDetail> = {
     formula: "压力速度取 EMA15、最近2小时P90和趋势调整EMA5中的最大值；只计算远端实际账号，不计算可用池或备选池。",
     note: "耗尽：账号 <=2或动态不足30分钟；危险：实际不足1小时、动态不足1小时或并发<1x；需要补号：动态不足3小时或并发<1.2x。分钟数据不足15条时暂用历史公式。",
   },
+  "实时可用时间": {
+    purpose: "按当前压力速度估算账号池现有额度还能持续运行多久，用于判断未来几小时是否需要补号。",
+    formula: "每小时消耗 = 压力TPM × 60 × 单Token成本；可用时间 = min(5h剩余额度, 7d剩余额度) / 每小时消耗。主值使用动态剩余额度，说明行同时展示不计算未来刷新的实际可用时间。",
+    note: "压力TPM综合EMA15、最近2小时P90和趋势调整EMA5。少于1小时为红色，1-3小时为黄色，3-24小时为绿色，24-48小时为蓝色，48小时及以上为紫色顶级。",
+  },
+  "安全并发覆盖": {
+    purpose: "判断低额度风险账号之外的安全并发，能覆盖当前压力并发多少倍。",
+    formula: "安全并发覆盖 = 安全可用并发 / 压力并发；压力并发取最近5分钟EMA与最近1小时P90中的较大值。安全可用并发只统计正常、可调度且5h和7d使用率都低于80%的余量。",
+    note: "低于1x为红色，1-1.2x为黄色，1.2-2x为绿色，2-5x为蓝色，5x及以上为紫色顶级。分钟数据尚未就绪时显示灰色。",
+  },
   "动态5h总容量": {
     purpose: "显示当前分组在5h窗口下用于动态评估的总额度。",
     formula: "Σ远端当前分组中对应账号类型的5h额度；排除Bug Team、异常账号和7d已耗尽账号。",
@@ -2199,25 +2209,6 @@ function formatRate(value: unknown): string {
   const number = optionalNumberValue(value);
   if (number === null) return "-";
   return Math.round(number).toLocaleString("zh-CN");
-}
-
-function runwayTone(value: unknown, ready: unknown): CapacityMetricTone {
-  if (ready !== true) return "muted";
-  const number = optionalNumberValue(value);
-  if (number === null) return "muted";
-  if (number < 1) return "danger";
-  if (number < 3) return "warning";
-  if (number >= 6) return "info";
-  return "success";
-}
-
-function concurrencyCoverageTone(value: unknown, ready: unknown): CapacityMetricTone {
-  if (ready !== true) return "muted";
-  const number = optionalNumberValue(value);
-  if (number === null) return "success";
-  if (number < 1) return "danger";
-  if (number < 1.2) return "warning";
-  return "success";
 }
 
 function pressureStageTone(value?: string): CapacityMetricTone {

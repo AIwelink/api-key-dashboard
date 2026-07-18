@@ -1,5 +1,7 @@
 type ScalePoint = readonly [value: number, percent: number];
 
+export type CapacityScaleTone = "excellent" | "info" | "success" | "warning" | "danger" | "muted";
+
 export function runwayScalePercent(value: unknown, target: unknown): number | null {
   const number = optionalNumber(value);
   const targetNumber = optionalNumber(target);
@@ -31,6 +33,28 @@ export function concurrencyCoverageScalePercent(value: unknown, target: unknown)
     [targetNumber * (5 / 3), tier * 5],
     [5, 100],
   ]);
+}
+
+export function runwayTone(value: unknown, ready: unknown): CapacityScaleTone {
+  if (ready !== true) return "muted";
+  const number = optionalNumber(value);
+  if (number === null) return "muted";
+  if (number < 1) return "danger";
+  if (number < 3) return "warning";
+  if (number >= 48) return "excellent";
+  if (number >= 24) return "info";
+  return "success";
+}
+
+export function concurrencyCoverageTone(value: unknown, ready: unknown): CapacityScaleTone {
+  if (ready !== true) return "muted";
+  const number = optionalNumber(value);
+  if (number === null) return "muted";
+  if (number < 1) return "danger";
+  if (number < 1.2) return "warning";
+  if (number >= 5) return "excellent";
+  if (number >= 2) return "info";
+  return "success";
 }
 
 function tieredPercent(value: number, points: ScalePoint[]): number {

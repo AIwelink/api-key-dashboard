@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { concurrencyCoverageScalePercent, runwayScalePercent } from "./capacityScale";
+import {
+  concurrencyCoverageScalePercent,
+  concurrencyCoverageTone,
+  runwayScalePercent,
+  runwayTone,
+} from "./capacityScale";
 
 describe("runwayScalePercent", () => {
   it("uses tiered hour thresholds and fills at 48 hours", () => {
@@ -20,5 +25,28 @@ describe("concurrencyCoverageScalePercent", () => {
     expect(concurrencyCoverageScalePercent(1.5, 1.2)).toBeCloseTo(400 / 6);
     expect(concurrencyCoverageScalePercent(2, 1.2)).toBeCloseTo(500 / 6);
     expect(concurrencyCoverageScalePercent(5, 1.2)).toBe(100);
+  });
+});
+
+describe("capacity scale tones", () => {
+  it("uses purple only when realtime runway reaches its 48 hour ceiling", () => {
+    expect(runwayTone(0.9, true)).toBe("danger");
+    expect(runwayTone(2.9, true)).toBe("warning");
+    expect(runwayTone(23.9, true)).toBe("success");
+    expect(runwayTone(24, true)).toBe("info");
+    expect(runwayTone(48, true)).toBe("excellent");
+  });
+
+  it("uses the same hierarchy with 5x as the top concurrency tier", () => {
+    expect(concurrencyCoverageTone(0.9, true)).toBe("danger");
+    expect(concurrencyCoverageTone(1.1, true)).toBe("warning");
+    expect(concurrencyCoverageTone(1.99, true)).toBe("success");
+    expect(concurrencyCoverageTone(2, true)).toBe("info");
+    expect(concurrencyCoverageTone(5, true)).toBe("excellent");
+  });
+
+  it("keeps both metrics muted until realtime samples are ready", () => {
+    expect(runwayTone(48, false)).toBe("muted");
+    expect(concurrencyCoverageTone(5, false)).toBe("muted");
   });
 });
