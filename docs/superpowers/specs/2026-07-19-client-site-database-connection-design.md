@@ -8,7 +8,7 @@
 
 客户站点同时保留 API 连接和数据库连接。API 继续采集 RPM/TPM 等只能通过 NewAPI URL 获取的数据；数据库连接用于后续读取历史模型、用户和用量数据，并为将来的受控写操作保留完整驱动能力。
 
-账号池后端站点不参与本设计。所有配置继续保存在独立的 `client_sites` 集合中。
+客户站点配置保存在独立的 `client_sites` 集合中；账号池后端 Sub2API 使用相同的 PostgreSQL 探测器，但配置仍保存在 `sub2api_sites`，两者不合并。
 
 ## 连接模型
 
@@ -24,7 +24,7 @@ admin_user_id
 新增数据库字段：
 
 ```text
-database_dsn
+sql_dsn
 data_retention_days
 last_database_test_at
 last_database_test_ok
@@ -36,23 +36,23 @@ last_database_version
 协议固定：
 
 ```text
-client_type=newapi  -> mysql://
-client_type=sub2api -> postgresql://
+client_type=newapi  -> MySQL SQL_DSN
+client_type=sub2api -> PostgreSQL SQL_DSN
 ```
 
 标准输入格式：
 
 ```text
-mysql://user:password@host:3306/database
-postgresql://user:password@host:5432/database
+user:password@tcp(host:3306)/database
+host=host port=5432 user=user password=password dbname=database sslmode=disable
 ```
 
-`data_retention_days` 按站点配置，默认 90 天。本阶段只保存该配置，不启动业务数据清理。
+`data_retention_days` 按站点配置，默认 90 天，表示本系统 MongoDB 中采集数据的保留周期，不会修改远端 MySQL 或 PostgreSQL。本阶段只保存该配置，不启动业务数据清理。
 
 ## 安全边界
 
-- `database_dsn` 只在后端保存，不通过 API 返回。
-- 公共站点响应只返回 `database_dsn_configured` 和不含用户名、密码、查询参数的 `database_endpoint`。
+- `sql_dsn` 只在后端保存，不通过 API 返回。
+- 公共站点响应只返回 `sql_dsn_configured` 和不含用户名、密码、查询参数的 `database_endpoint`。
 - API Key 与 Admin User ID 的现有保存和掩码语义不变。
 - 空数据库连接串更新表示保留原值，不会意外清空已配置密钥。
 - 审计日志只能记录脱敏后的公共站点对象。
@@ -67,7 +67,7 @@ MySQL      aiomysql
 PostgreSQL asyncpg
 ```
 
-保存标准 DSN，建立连接时转换为：
+保存原站点使用的原生 `SQL_DSN`。建立连接时由后端解析账号、密码、主机、端口和数据库，再转换为：
 
 ```text
 mysql+aiomysql://
@@ -82,6 +82,7 @@ postgresql+asyncpg://
 
 ```http
 POST /api/client-sites/{site_id}/database/test
+POST /api/sub2api-sites/{site_id}/database/test
 ```
 
 权限与客户站点读取一致，允许 `owner`、`admin`、`maintainer` 执行。

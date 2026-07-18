@@ -12,6 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReplaceOne, UpdateOne
 
 from app.modules.api_pools.capacity_limits import DEFAULT_CAPACITY_ACCOUNT_LIMITS, get_capacity_account_limits
+from app.modules.system.sql_dsn import sql_dsn_endpoint, validate_optional_sql_dsn
 from app.modules.sub2api.capacity_risk import calculate_capacity_risk
 from app.modules.sub2api.client import Sub2ApiClient
 from app.utils import now_utc, serialize_doc
@@ -88,8 +89,14 @@ def public_site(site: dict[str, Any]) -> dict[str, Any]:
     result.setdefault("source", "database")
     result["token_configured"] = bool(result.get("token"))
     result["uptime_kuma_api_key_configured"] = bool(result.get("uptime_kuma_api_key"))
+    sql_dsn = str(result.get("sql_dsn") or "")
+    result["sql_dsn_configured"] = bool(sql_dsn)
+    result["database_type"] = "postgresql"
+    if sql_dsn:
+        result["database_endpoint"] = sql_dsn_endpoint(sql_dsn, "postgresql")
     result.pop("token", None)
     result.pop("uptime_kuma_api_key", None)
+    result.pop("sql_dsn", None)
     return result
 
 
@@ -148,6 +155,11 @@ async def update_site_config(db: AsyncIOMotorDatabase, site_id: str, payload: di
         updates["uptime_kuma_url"] = _optional_http_url(payload.get("uptime_kuma_url"), "uptime_kuma_url")
     if str(payload.get("uptime_kuma_api_key") or "").strip():
         updates["uptime_kuma_api_key"] = str(payload["uptime_kuma_api_key"]).strip()
+    incoming_sql_dsn = str(payload.get("sql_dsn") or "").strip()
+    current_sql_dsn = str(current.get("sql_dsn") or "").strip()
+    selected_sql_dsn = validate_optional_sql_dsn(incoming_sql_dsn or current_sql_dsn, "postgresql")
+    if incoming_sql_dsn:
+        updates["sql_dsn"] = selected_sql_dsn
     await db.sub2api_sites.update_one(site_query, {"$set": updates})
     return await get_site(db, site_id) or {}
 
@@ -161,6 +173,7 @@ async def create_site_config(db: AsyncIOMotorDatabase, payload: dict[str, Any]) 
     if normalized_type != "sub2api":
         raise ValueError("customer sites must be configured through /api/client-sites")
     now = now_utc()
+    sql_dsn = validate_optional_sql_dsn(payload.get("sql_dsn"), "postgresql")
     doc = {
         "_id": site_id,
         "name": str(payload.get("name") or site_id).strip() or site_id,
@@ -177,6 +190,8 @@ async def create_site_config(db: AsyncIOMotorDatabase, payload: dict[str, Any]) 
         "created_at": now,
         "updated_at": now,
     }
+    if sql_dsn:
+        doc["sql_dsn"] = sql_dsn
     await db.sub2api_sites.replace_one({"_id": site_id}, doc, upsert=True)
     return await get_site(db, site_id) or {}
 

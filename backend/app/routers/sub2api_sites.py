@@ -34,6 +34,7 @@ from app.modules.sub2api.cache import (
 )
 from app.modules.sub2api.dashboard import get_stored_dashboard_snapshots, refresh_dashboard_snapshots
 from app.modules.sub2api.return_flow import manual_delete_sub2api_account, remote_cumulative_usage_snapshot, remote_usage_snapshot
+from app.modules.sub2api.site_database import run_sub2api_site_database_test
 from app.modules.sub2api.verify import test_remote_sub2api_account
 from app.utils import credentials_email, now_utc, serialize_doc
 
@@ -357,6 +358,29 @@ async def test_site(
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await (await _client_for_site(db, site_id)).test_connection()
+
+
+@router.post("/{site_id}/database/test")
+async def test_site_database(
+    site_id: str,
+    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    try:
+        result = await run_sub2api_site_database_test(db, site_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="sub2api.site.database_test",
+        resource_type="sub2api_site",
+        resource_id=site_id,
+        after=result,
+    )
+    return result
 
 
 @router.post("/{site_id}/refresh")

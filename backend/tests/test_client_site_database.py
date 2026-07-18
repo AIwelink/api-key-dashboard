@@ -45,11 +45,14 @@ class FakeEngine:
 class ClientSiteDatabaseTests(unittest.IsolatedAsyncioTestCase):
     def test_driver_database_url_uses_fixed_async_driver(self) -> None:
         self.assertEqual(
-            driver_database_url("mysql://reader:secret@mysql.internal/newapi", "newapi"),
+            driver_database_url("reader:secret@tcp(mysql.internal:3306)/newapi", "newapi"),
             "mysql+aiomysql://reader:secret@mysql.internal/newapi",
         )
         self.assertEqual(
-            driver_database_url("postgresql://reader:secret@postgres.internal/sub2api", "sub2api"),
+            driver_database_url(
+                "host=postgres.internal port=5432 user=reader password=secret dbname=sub2api sslmode=disable",
+                "sub2api",
+            ),
             "postgresql+asyncpg://reader:secret@postgres.internal/sub2api",
         )
 
@@ -61,7 +64,7 @@ class ClientSiteDatabaseTests(unittest.IsolatedAsyncioTestCase):
         site = {
             "id": "customer-newapi-us01",
             "client_type": "newapi",
-            "database_dsn": "mysql://reader:secret@mysql.internal:3307/newapi",
+            "sql_dsn": "reader:secret@tcp(mysql.internal:3307)/newapi",
         }
 
         result = await probe_database_connection(site, engine_factory=engine_factory)
@@ -77,13 +80,13 @@ class ClientSiteDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(driver_url.startswith("mysql+aiomysql://"))
 
     async def test_database_connection_redacts_credentials_on_failure(self) -> None:
-        dsn = "postgresql://reader:topsecret@postgres.internal/sub2api"
+        dsn = "host=postgres.internal port=5432 user=reader password=topsecret dbname=sub2api sslmode=disable"
         engine = FakeEngine(FakeConnectionContext(error=RuntimeError(f"failed to connect using {dsn}")))
         engine_factory = MagicMock(return_value=engine)
         site = {
             "id": "customer-sub2api-us01",
             "client_type": "sub2api",
-            "database_dsn": dsn,
+            "sql_dsn": dsn,
         }
 
         result = await probe_database_connection(site, engine_factory=engine_factory)
@@ -96,11 +99,11 @@ class ClientSiteDatabaseTests(unittest.IsolatedAsyncioTestCase):
         engine.dispose.assert_awaited_once()
 
     async def test_database_connection_handles_driver_initialization_failure(self) -> None:
-        dsn = "mysql://reader:topsecret@mysql.internal/newapi"
+        dsn = "reader:topsecret@tcp(mysql.internal:3306)/newapi"
         engine_factory = MagicMock(side_effect=RuntimeError(f"driver failed for {dsn}"))
 
         result = await probe_database_connection(
-            {"id": "customer-newapi-us01", "client_type": "newapi", "database_dsn": dsn},
+            {"id": "customer-newapi-us01", "client_type": "newapi", "sql_dsn": dsn},
             engine_factory=engine_factory,
         )
 
@@ -113,7 +116,7 @@ class ClientSiteDatabaseTests(unittest.IsolatedAsyncioTestCase):
         site = {
             "_id": "customer-newapi-us01",
             "client_type": "newapi",
-            "database_dsn": "mysql://reader:secret@mysql.internal/newapi",
+            "sql_dsn": "reader:secret@tcp(mysql.internal:3306)/newapi",
             "status": "active",
         }
         collection = MagicMock()
@@ -134,13 +137,13 @@ class ClientSiteDatabaseTests(unittest.IsolatedAsyncioTestCase):
         updates = collection.update_one.await_args.args[1]["$set"]
         self.assertTrue(updates["last_database_test_ok"])
         self.assertEqual(updates["last_database_version"], "MySQL 8.4")
-        self.assertNotIn("database_dsn", result)
+        self.assertNotIn("sql_dsn", result)
 
     async def test_run_database_test_persists_failure_result(self) -> None:
         site = {
             "_id": "customer-sub2api-us01",
             "client_type": "sub2api",
-            "database_dsn": "postgresql://reader:secret@postgres.internal/sub2api",
+            "sql_dsn": "host=postgres.internal port=5432 user=reader password=secret dbname=sub2api sslmode=disable",
             "status": "active",
         }
         collection = MagicMock()
@@ -205,7 +208,7 @@ class ClientSiteDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response, result)
         run_mock.assert_awaited_once()
         audit_payload = audit_mock.await_args.kwargs["after"]
-        self.assertNotIn("database_dsn", audit_payload)
+        self.assertNotIn("sql_dsn", audit_payload)
 
 
 if __name__ == "__main__":

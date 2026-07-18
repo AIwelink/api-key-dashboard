@@ -19,6 +19,8 @@ NewAPI 站点当前需要保存：
 base_url
 api_key
 admin_user_id
+sql_dsn
+data_retention_days
 status
 ```
 
@@ -43,23 +45,26 @@ API 连接       RPM/TPM 及只能通过 URL 获取的数据
 固定协议：
 
 ```text
-NewAPI 客户站点  MySQL       mysql://user:password@host:3306/database
-Sub2API 客户站点 PostgreSQL  postgresql://user:password@host:5432/database
+NewAPI 客户站点  MySQL       user:password@tcp(host:3306)/database
+Sub2API 客户站点 PostgreSQL  host=host port=5432 user=user password=password dbname=database sslmode=disable
+账号池 Sub2API   PostgreSQL  host=host port=5432 user=user password=password dbname=database sslmode=disable
 ```
 
-后端使用 SQLAlchemy AsyncEngine；MySQL 使用 `aiomysql`，PostgreSQL 使用 `asyncpg`。标准 DSN 只在建立连接时转换为驱动 DSN，数据库密码不返回前端、不写入审计日志。
+后端使用 SQLAlchemy AsyncEngine；MySQL 使用 `aiomysql`，PostgreSQL 使用 `asyncpg`。原生 `SQL_DSN` 只在建立连接时解析并转换为驱动 URL，数据库密码不返回前端、不写入审计日志。
 
 数据库配置与测试接口：
 
 ```http
 PATCH /api/client-sites/{site_id}
 POST  /api/client-sites/{site_id}/database/test
+PATCH /api/sub2api-sites/{site_id}
+POST  /api/sub2api-sites/{site_id}/database/test
 ```
 
 站点响应只公开：
 
 ```text
-database_dsn_configured
+sql_dsn_configured
 database_type
 database_endpoint
 data_retention_days
@@ -70,7 +75,11 @@ last_database_latency_ms
 last_database_version
 ```
 
-`database_endpoint` 只包含 `host:port/database`。连接测试使用完整驱动执行 `SELECT 1` 和版本查询，成功或失败都会保存脱敏后的最近测试结果。`data_retention_days` 按客户站点配置，默认 90 天；业务数据采集与 TTL 清理将在采样阶段实现。
+`database_endpoint` 只包含 `host:port/database`。连接测试使用完整驱动执行 `SELECT 1` 和版本查询，成功或失败都会保存脱敏后的最近测试结果。
+
+`data_retention_days` 按客户站点配置，默认 90 天，表示本系统 MongoDB 中采集数据的保留时间，不会修改远端 MySQL 或 PostgreSQL 的数据。业务数据采集与 MongoDB TTL 清理将在采样阶段实现。
+
+客户站点配置存入 `client_sites`，账号池后端配置存入 `sub2api_sites`；即使两者都是 Sub2API，也不得合并集合或页面。
 
 ## Common Rules
 

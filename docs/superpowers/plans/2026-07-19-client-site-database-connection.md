@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add masked per-client-site MySQL/PostgreSQL DSN configuration, retention settings, and a full-driver database connection test without changing existing API connection fields.
+**Goal:** Add masked native MySQL/PostgreSQL SQL_DSN configuration, retention settings, and a full-driver database connection test without changing existing API connection fields, then expose PostgreSQL SQL_DSN testing for account-pool Sub2API backends.
 
 **Architecture:** Extend the independent `client_sites` persistence model with protocol-validated secrets and public masking. Add a focused SQLAlchemy async connection tester used by one client-site router endpoint, then expose the configuration and latest result in the existing customer-site page.
 
@@ -16,9 +16,9 @@
 - Modify: `backend/tests/test_client_sites.py`
 - Modify: `backend/app/modules/system/client_sites.py`
 
-- [ ] **Step 1: Write failing tests** for NewAPI MySQL acceptance, customer Sub2API PostgreSQL acceptance, protocol mismatch rejection, DSN masking, default 90-day retention, and blank-update secret preservation.
+- [ ] **Step 1: Write failing tests** for native NewAPI MySQL SQL_DSN acceptance, customer Sub2API PostgreSQL keyword SQL_DSN acceptance, format mismatch rejection, SQL_DSN masking, default 90-day retention, and blank-update secret preservation.
 - [ ] **Step 2: Run** `backend/.venv/Scripts/python.exe -B -m unittest tests.test_client_sites` and verify failures are caused by missing DSN behavior.
-- [ ] **Step 3: Implement** `_database_dsn`, `_database_endpoint`, `_retention_days`, persistence fields, and public masking.
+- [ ] **Step 3: Implement** shared native SQL_DSN parsing, safe endpoint extraction, `_retention_days`, persistence fields, and public masking.
 - [ ] **Step 4: Re-run** the focused tests and verify all pass.
 
 ### Task 2: Full-Driver Connection Test
@@ -52,7 +52,7 @@
 - Modify: `frontend/src/pages/ClientSitesPage.tsx`
 - Modify: `frontend/styles.css`
 
-- [ ] **Step 1: Extend frontend types and form state** with `database_dsn`, configured status, safe endpoint, retention, and latest test fields.
+- [ ] **Step 1: Extend frontend types and form state** with `sql_dsn`, configured status, safe endpoint, retention, and latest test fields.
 - [ ] **Step 2: Add a separate database connection section** that keeps the API connection controls intact, shows the fixed database type, masks saved DSNs, accepts retention days, and provides a test button.
 - [ ] **Step 3: Add test-result rendering** for success/failure, latency, version, and timestamp without exposing credentials.
 - [ ] **Step 4: Run** `npm.cmd run build` and fix all TypeScript or layout errors.

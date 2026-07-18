@@ -19,7 +19,7 @@ type ClientSite = {
   status: "active" | "disabled";
   note?: string;
   updated_at?: string;
-  database_dsn_configured?: boolean;
+  sql_dsn_configured?: boolean;
   database_type?: "mysql" | "postgresql";
   database_endpoint?: string;
   data_retention_days?: number;
@@ -39,7 +39,7 @@ type ClientSiteForm = {
   admin_user_id: string;
   status: "active" | "disabled";
   note: string;
-  database_dsn: string;
+  sql_dsn: string;
   data_retention_days: number;
 };
 
@@ -68,7 +68,7 @@ const emptyForm: ClientSiteForm = {
   admin_user_id: "",
   status: "active",
   note: "",
-  database_dsn: "",
+  sql_dsn: "",
   data_retention_days: 90,
 };
 
@@ -116,7 +116,7 @@ export function ClientSitesPage({ token, showToast }: Props) {
       note: form.note.trim(),
       data_retention_days: form.data_retention_days,
       ...(form.api_key.trim() ? { api_key: form.api_key.trim() } : {}),
-      ...(form.database_dsn.trim() ? { database_dsn: form.database_dsn.trim() } : {}),
+      ...(form.sql_dsn.trim() ? { sql_dsn: form.sql_dsn.trim() } : {}),
     };
     if (!payload.id || !payload.base_url) {
       showToast("客户站点 ID 和 Base URL 必填", true);
@@ -337,7 +337,7 @@ export function ClientSitesPage({ token, showToast }: Props) {
           </label>
         </div>
 
-        <div className="client-site-database-section">
+        <div className="site-database-section">
           <div className="panel-header client-site-database-header">
             <div>
               <h3>数据库连接</h3>
@@ -347,7 +347,7 @@ export function ClientSitesPage({ token, showToast }: Props) {
               className="ghost compact-button"
               type="button"
               onClick={testDatabase}
-              disabled={!editingId || !selectedSite?.database_dsn_configured || saving || testingDatabase}
+              disabled={!editingId || !selectedSite?.sql_dsn_configured || saving || testingDatabase}
             >
               {testingDatabase ? "测试中..." : "测试数据库连接"}
             </button>
@@ -360,21 +360,21 @@ export function ClientSitesPage({ token, showToast }: Props) {
             </label>
 
             <label className="span-2">
-              <span className="field-label"><strong>数据库连接串</strong></span>
+              <span className="field-label"><strong>SQL_DSN</strong></span>
               <input
-                value={form.database_dsn}
-                onChange={(event) => setForm((current) => ({ ...current, database_dsn: event.target.value }))}
-                placeholder={selectedSite?.database_dsn_configured ? "已配置，留空不修改" : databaseDsnPlaceholder(form.client_type)}
+                value={form.sql_dsn}
+                onChange={(event) => setForm((current) => ({ ...current, sql_dsn: event.target.value }))}
+                placeholder={selectedSite?.sql_dsn_configured ? "已配置，留空不修改" : sqlDsnPlaceholder(form.client_type)}
                 type="password"
                 autoComplete="new-password"
               />
-              {selectedSite?.database_dsn_configured && (
+              {selectedSite?.sql_dsn_configured && (
                 <span className="cell-sub">已配置 · {selectedSite.database_endpoint || "连接信息已隐藏"}</span>
               )}
             </label>
 
             <label>
-              <span className="field-label"><strong>数据保留</strong><span>（天）</span></span>
+              <span className="field-label"><strong>本地 MongoDB 数据保留</strong><span>（天）</span></span>
               <input
                 min={1}
                 max={3650}
@@ -429,14 +429,14 @@ function siteToForm(site: ClientSite): ClientSiteForm {
     admin_user_id: site.admin_user_id || "",
     status: site.status || "active",
     note: site.note || "",
-    database_dsn: "",
+    sql_dsn: "",
     data_retention_days: site.data_retention_days || 90,
   };
 }
 
 
-function databaseDsnPlaceholder(clientType: ClientSiteForm["client_type"]) {
+function sqlDsnPlaceholder(clientType: ClientSiteForm["client_type"]) {
   return clientType === "newapi"
-    ? "mysql://user:password@host:3306/database"
-    : "postgresql://user:password@host:5432/database";
+    ? "user:password@tcp(host:3306)/database"
+    : "host=host port=5432 user=user password=password dbname=database sslmode=disable";
 }

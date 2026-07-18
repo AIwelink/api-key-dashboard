@@ -90,6 +90,76 @@ class UptimeKumaSiteSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["uptime_kuma_api_key_configured"])
 
 
+class Sub2ApiSqlDsnTests(unittest.IsolatedAsyncioTestCase):
+    def test_public_site_masks_postgresql_sql_dsn(self) -> None:
+        site = cache.public_site(
+            {
+                "_id": "api-5001",
+                "site_type": "sub2api",
+                "sql_dsn": "host=postgres.internal port=5433 user=reader password=secret dbname=sub2api sslmode=disable",
+            }
+        )
+
+        self.assertTrue(site["sql_dsn_configured"])
+        self.assertEqual(site["database_type"], "postgresql")
+        self.assertEqual(site["database_endpoint"], "postgres.internal:5433/sub2api")
+        self.assertNotIn("sql_dsn", site)
+        self.assertNotIn("reader", str(site))
+        self.assertNotIn("secret", str(site))
+
+    async def test_create_persists_postgresql_sql_dsn(self) -> None:
+        stored = {
+            "_id": "api-5001",
+            "name": "Sub2API US06",
+            "base_url": "https://sub2api.example.com",
+            "site_type": "sub2api",
+            "sql_dsn": "host=postgres.internal port=5432 user=reader password=secret dbname=sub2api sslmode=disable",
+            "status": "active",
+        }
+        sites = SimpleNamespace(replace_one=AsyncMock(), find_one=AsyncMock(return_value=stored))
+        db = SimpleNamespace(sub2api_sites=sites)
+
+        result = await cache.create_site_config(db, stored | {"id": stored["_id"]})
+
+        self.assertEqual(sites.replace_one.await_args.args[1]["sql_dsn"], stored["sql_dsn"])
+        self.assertTrue(result["sql_dsn_configured"])
+
+    async def test_create_rejects_mysql_sql_dsn(self) -> None:
+        sites = SimpleNamespace(replace_one=AsyncMock(), find_one=AsyncMock(return_value=None))
+        db = SimpleNamespace(sub2api_sites=sites)
+
+        with self.assertRaisesRegex(ValueError, "PostgreSQL"):
+            await cache.create_site_config(
+                db,
+                {
+                    "id": "api-5001",
+                    "base_url": "https://sub2api.example.com",
+                    "sql_dsn": "reader:secret@tcp(mysql.internal:3306)/sub2api",
+                },
+            )
+
+        sites.replace_one.assert_not_awaited()
+
+    async def test_blank_sql_dsn_update_preserves_secret(self) -> None:
+        current = {
+            "_id": "api-5001",
+            "site_type": "sub2api",
+            "base_url": "https://sub2api.example.com",
+            "sql_dsn": "host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
+            "status": "active",
+        }
+        sites = SimpleNamespace(
+            find_one=AsyncMock(side_effect=[current, current]),
+            update_one=AsyncMock(),
+        )
+        db = SimpleNamespace(sub2api_sites=sites)
+
+        result = await cache.update_site_config(db, "api-5001", {"sql_dsn": ""})
+
+        self.assertNotIn("sql_dsn", sites.update_one.await_args.args[1]["$set"])
+        self.assertTrue(result["sql_dsn_configured"])
+
+
 class AsyncCursor:
     def __init__(self, items: list[dict[str, object]]) -> None:
         self.items = items

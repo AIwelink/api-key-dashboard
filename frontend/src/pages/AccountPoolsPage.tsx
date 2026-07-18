@@ -20,6 +20,13 @@ type Site = {
   auto_remove_abnormal_accounts?: boolean;
   uptime_kuma_url?: string;
   uptime_kuma_api_key_configured?: boolean;
+  sql_dsn_configured?: boolean;
+  database_endpoint?: string;
+  last_database_test_at?: string;
+  last_database_test_ok?: boolean;
+  last_database_test_error?: string;
+  last_database_latency_ms?: number;
+  last_database_version?: string;
 };
 
 type SitesResponse = {
@@ -92,6 +99,16 @@ type SiteForm = {
   auto_remove_abnormal_accounts: boolean;
   uptime_kuma_url: string;
   uptime_kuma_api_key: string;
+  sql_dsn: string;
+};
+
+type DatabaseTestResult = {
+  ok: boolean;
+  database_type: "postgresql";
+  database_endpoint: string;
+  latency_ms: number;
+  server_version?: string;
+  error?: string;
 };
 
 type ConfirmState = {
@@ -113,6 +130,7 @@ const emptySiteForm: SiteForm = {
   auto_remove_abnormal_accounts: false,
   uptime_kuma_url: "",
   uptime_kuma_api_key: "",
+  sql_dsn: "",
 };
 
 const capacityLimitLabels: Record<CapacityLimitKey, string> = {
@@ -140,6 +158,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   const [editingSiteId, setEditingSiteId] = useState<string | null>(null);
   const [siteForm, setSiteForm] = useState<SiteForm>(emptySiteForm);
   const [savingSite, setSavingSite] = useState(false);
+  const [testingDatabase, setTestingDatabase] = useState(false);
   const [capacityLimits, setCapacityLimits] = useState<CapacityLimitForm>(defaultCapacityLimitForm);
   const [capacityLimitsMeta, setCapacityLimitsMeta] = useState<{ updated_at?: string | null; updated_by_name?: string | null; inherited_from_global?: boolean }>({});
   const [loadingCapacityLimits, setLoadingCapacityLimits] = useState(false);
@@ -177,6 +196,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       uptime_kuma_url: siteForm.uptime_kuma_url.trim(),
       ...(siteForm.token.trim() ? { token: siteForm.token.trim() } : {}),
       ...(siteForm.uptime_kuma_api_key.trim() ? { uptime_kuma_api_key: siteForm.uptime_kuma_api_key.trim() } : {}),
+      ...(siteForm.sql_dsn.trim() ? { sql_dsn: siteForm.sql_dsn.trim() } : {}),
     };
     if (!payload.id || !payload.base_url) {
       showToast("站点 ID 和 Base URL 必填", true);
@@ -203,6 +223,29 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       showToast(errorMessage(error), true);
     } finally {
       setSavingSite(false);
+    }
+  };
+
+  const testDatabase = async () => {
+    if (!editingSiteId) {
+      showToast("请先保存账号池站点", true);
+      return;
+    }
+    setTestingDatabase(true);
+    try {
+      const result = await api<DatabaseTestResult>(`/sub2api-sites/${encodeURIComponent(editingSiteId)}/database/test`, token, {
+        method: "POST",
+      });
+      await loadSites();
+      if (result.ok) {
+        showToast(`PostgreSQL 连接成功，延迟 ${result.latency_ms.toFixed(0)} ms`);
+      } else {
+        showToast(`PostgreSQL 连接失败：${result.error || "未知错误"}`, true);
+      }
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setTestingDatabase(false);
     }
   };
 
@@ -532,6 +575,56 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                 {selectedSite?.uptime_kuma_api_key_configured && <span className="cell-sub">密钥已配置</span>}
               </label>
           </>
+        </div>
+
+        <div className="site-database-section">
+          <div className="panel-header client-site-database-header">
+            <div>
+              <h3>账号池数据库连接</h3>
+              <p>Sub2API 固定使用 PostgreSQL；Base URL 和 API Key 继续负责远程管理接口。</p>
+            </div>
+            <button
+              className="ghost compact-button"
+              type="button"
+              onClick={testDatabase}
+              disabled={!editingSiteId || !selectedSite?.sql_dsn_configured || savingSite || testingDatabase}
+            >
+              {testingDatabase ? "测试中..." : "测试 PostgreSQL 连接"}
+            </button>
+          </div>
+          <div className="site-config-grid">
+            <label>
+              <span className="field-label"><strong>数据库类型</strong><span>（固定）</span></span>
+              <input value="PostgreSQL" readOnly />
+            </label>
+            <label className="span-2">
+              <span className="field-label"><strong>SQL_DSN</strong></span>
+              <input
+                value={siteForm.sql_dsn}
+                onChange={(event) => setSiteForm((current) => ({ ...current, sql_dsn: event.target.value }))}
+                placeholder={selectedSite?.sql_dsn_configured ? "已配置，留空不修改" : "host=host port=5432 user=user password=password dbname=database sslmode=disable"}
+                type="password"
+                autoComplete="new-password"
+              />
+              {selectedSite?.sql_dsn_configured && (
+                <span className="cell-sub">已配置 · {selectedSite.database_endpoint || "连接信息已隐藏"}</span>
+              )}
+            </label>
+          </div>
+          {selectedSite?.last_database_test_at && (
+            <div className={`database-test-result ${selectedSite.last_database_test_ok ? "is-success" : "is-error"}`}>
+              <strong>{selectedSite.last_database_test_ok ? "连接正常" : "连接失败"}</strong>
+              <span>{formatDateTime(selectedSite.last_database_test_at)}</span>
+              {selectedSite.last_database_test_ok ? (
+                <span>
+                  {selectedSite.last_database_latency_ms?.toFixed(0) ?? "-"} ms
+                  {selectedSite.last_database_version ? ` · ${selectedSite.last_database_version}` : ""}
+                </span>
+              ) : (
+                <span>{selectedSite.last_database_test_error || "未返回错误信息"}</span>
+              )}
+            </div>
+          )}
         </div>
       </section>
 
@@ -882,5 +975,6 @@ function siteToForm(site: Site): SiteForm {
     auto_remove_abnormal_accounts: site.auto_remove_abnormal_accounts === true,
     uptime_kuma_url: site.uptime_kuma_url || "",
     uptime_kuma_api_key: "",
+    sql_dsn: "",
   };
 }
