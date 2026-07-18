@@ -52,7 +52,7 @@ describe("percentage bar motion", () => {
     const waveFrames = styles.match(/@keyframes capacity-excellent-wave\s*\{([\s\S]*?)\n\}/)?.[1] || "";
 
     expect(waveRule).toContain('content: ""');
-    expect(waveRule).toContain("animation: capacity-excellent-wave 6s");
+    expect(waveRule).toContain("animation: capacity-excellent-wave 3s");
     expect(waveFrames).toContain("translate3d");
     expect(waveFrames).not.toContain("background-position");
     expect(styles).not.toContain("repeating-linear-gradient(115deg");

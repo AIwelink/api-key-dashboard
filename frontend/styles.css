@@ -1677,7 +1677,7 @@ legend {
   background: radial-gradient(ellipse at center, rgb(255 255 255 / 34%) 0%, rgb(255 255 255 / 14%) 38%, transparent 72%);
   content: "";
   pointer-events: none;
-  animation: capacity-excellent-wave 6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  animation: capacity-excellent-wave 3s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
 .capacity-meter-fill.info {
