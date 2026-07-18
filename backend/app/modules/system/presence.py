@@ -20,8 +20,8 @@ PRESENCE_HISTORY_BUCKET_MINUTES = 5
 PRESENCE_DISPLAY_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
 
 
-def presence_document_id(user_id: Any, client_id: str) -> str:
-    identity = f"{user_id}:{client_id}".encode("utf-8")
+def presence_document_id(user_id: Any, client_id: str, session_id: str) -> str:
+    identity = f"{user_id}:{client_id}:{session_id}".encode("utf-8")
     return hashlib.sha256(identity).hexdigest()
 
 
@@ -37,19 +37,20 @@ async def record_frontend_presence(
 
     observed_at = observed_at or now_utc()
     client_id = str(payload.get("client_id") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
     user_id = str(actor.get("_id") or "").strip()
-    if not user_id or not client_id:
-        raise ValueError("user_id and client_id are required")
+    if not user_id or not client_id or not session_id:
+        raise ValueError("user_id, client_id and session_id are required")
 
     foreground_since_at = _bounded_foreground_since(payload.get("foreground_since_at"), observed_at)
-    document_id = presence_document_id(user_id, client_id)
+    document_id = presence_document_id(user_id, client_id, session_id)
     updates = {
         "user_id": user_id,
         "user_name": actor.get("name") or actor.get("email") or user_id,
         "user_email": actor.get("email"),
         "role": actor.get("role"),
         "client_id": client_id,
-        "session_id": str(payload.get("session_id") or "").strip(),
+        "session_id": session_id,
         "client_label": str(payload.get("client_label") or "Unknown client").strip(),
         "device_type": str(payload.get("device_type") or "unknown").strip(),
         "view": str(payload.get("view") or "").strip(),
@@ -101,10 +102,11 @@ async def remove_frontend_presence(
     *,
     actor: dict[str, Any],
     client_id: str,
+    session_id: str,
 ) -> bool:
     if actor.get("actor_type") == "api_token":
         return False
-    document_id = presence_document_id(actor.get("_id"), client_id)
+    document_id = presence_document_id(actor.get("_id"), client_id, session_id)
     result = await db.frontend_presence.delete_one({"_id": document_id})
     return bool(result.deleted_count)
 
@@ -144,7 +146,17 @@ async def get_frontend_presence_history(
     ).sort("bucket_at", 1)
     current_cursor = db.frontend_presence.find(
         {"last_seen_at": {"$gte": active_after}},
-        {"user_id": 1, "user_name": 1, "user_email": 1, "role": 1, "client_id": 1, "last_seen_at": 1},
+        {
+            "user_id": 1,
+            "user_name": 1,
+            "user_email": 1,
+            "role": 1,
+            "client_id": 1,
+            "session_id": 1,
+            "client_label": 1,
+            "device_type": 1,
+            "last_seen_at": 1,
+        },
     ).sort("last_seen_at", -1)
     users, minute_docs, current_docs = await asyncio.gather(
         _collect_cursor(users_cursor),
@@ -204,14 +216,29 @@ def build_presence_history(
             last_seen_by_user[user_id] = last_seen_at
         _ensure_presence_profile(profiles, user_id, document)
 
-    active_clients_by_user: dict[str, set[str]] = defaultdict(set)
+    active_clients_by_user: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     for document in current_docs:
         user_id = str(document.get("user_id") or "").strip()
         if not user_id:
             continue
         client_id = str(document.get("client_id") or "").strip()
         if client_id:
-            active_clients_by_user[user_id].add(client_id)
+            client = active_clients_by_user[user_id].setdefault(
+                client_id,
+                {
+                    "client_id": client_id,
+                    "client_label": document.get("client_label"),
+                    "device_type": document.get("device_type"),
+                    "session_ids": set(),
+                    "last_seen_at": None,
+                },
+            )
+            session_id = str(document.get("session_id") or "").strip()
+            if session_id:
+                client["session_ids"].add(session_id)
+            client_seen_at = _datetime_or_none(document.get("last_seen_at"))
+            if client_seen_at is not None and (client["last_seen_at"] is None or client_seen_at > client["last_seen_at"]):
+                client["last_seen_at"] = client_seen_at
         last_seen_at = _datetime_or_none(document.get("last_seen_at"))
         if last_seen_at is not None and (user_id not in last_seen_by_user or last_seen_at > last_seen_by_user[user_id]):
             last_seen_by_user[user_id] = last_seen_at
@@ -235,11 +262,23 @@ def build_presence_history(
             observed_local=observed_local,
         )
         online_minutes = min(elapsed_minutes, len(buckets_by_user.get(user_id, set())) * PRESENCE_HISTORY_BUCKET_MINUTES)
+        active_client_details = [
+            {
+                "client_id": client["client_id"],
+                "client_label": client.get("client_label"),
+                "device_type": client.get("device_type"),
+                "session_count": len(client["session_ids"]),
+                "last_seen_at": client.get("last_seen_at"),
+            }
+            for client in active_clients_by_user.get(user_id, {}).values()
+        ]
+        active_client_details.sort(key=lambda client: client.get("last_seen_at") or datetime.min.replace(tzinfo=UTC), reverse=True)
         items.append(
             {
                 **profile,
-                "is_online": bool(active_clients_by_user.get(user_id)),
-                "active_clients": len(active_clients_by_user.get(user_id, set())),
+                "is_online": bool(active_client_details),
+                "active_clients": len(active_client_details),
+                "active_client_details": active_client_details,
                 "last_seen_at": last_seen_by_user.get(user_id),
                 "online_minutes": online_minutes,
                 "online_ratio_percent": round(online_minutes / elapsed_minutes * 100, 1),

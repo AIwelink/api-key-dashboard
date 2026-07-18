@@ -4,9 +4,10 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from pymongo.errors import OperationFailure
 
-from app.modules.system import presence
-from app.schemas import FrontendPresenceHeartbeat
+from app.modules.system import bootstrap, presence
+from app.schemas import FrontendPresenceHeartbeat, FrontendPresenceLeave
 
 
 class PresenceCursor:
@@ -69,7 +70,7 @@ class FrontendPresenceTests(unittest.IsolatedAsyncioTestCase):
         second_filter = collection.update_one.await_args_list[1].args[0]
         self.assertNotEqual(first_filter["_id"], second_filter["_id"])
 
-    async def test_new_tab_reuses_the_user_and_client_presence_record(self) -> None:
+    async def test_tabs_have_independent_presence_records_on_the_same_client(self) -> None:
         collection = SimpleNamespace(update_one=AsyncMock())
         minute_collection = SimpleNamespace(update_one=AsyncMock())
         db = SimpleNamespace(frontend_presence=collection, frontend_presence_minutes=minute_collection)
@@ -84,8 +85,30 @@ class FrontendPresenceTests(unittest.IsolatedAsyncioTestCase):
 
         first_filter = collection.update_one.await_args_list[0].args[0]
         second_filter = collection.update_one.await_args_list[1].args[0]
-        self.assertEqual(first_filter["_id"], second_filter["_id"])
-        self.assertEqual(collection.update_one.await_args_list[1].args[1]["$set"]["session_id"], "tab-b")
+        self.assertNotEqual(first_filter["_id"], second_filter["_id"])
+
+    async def test_leaving_one_tab_removes_only_that_client_session(self) -> None:
+        collection = SimpleNamespace(delete_one=AsyncMock(return_value=SimpleNamespace(deleted_count=1)))
+        db = SimpleNamespace(frontend_presence=collection)
+        actor = {"_id": "user-1"}
+
+        removed = await presence.remove_frontend_presence(
+            db,
+            actor=actor,
+            client_id="client-a",
+            session_id="tab-a",
+        )
+
+        self.assertTrue(removed)
+        self.assertEqual(
+            collection.delete_one.await_args.args[0],
+            {"_id": presence.presence_document_id("user-1", "client-a", "tab-a")},
+        )
+
+    def test_leave_schema_requires_the_tab_session(self) -> None:
+        payload = FrontendPresenceLeave(client_id="client-a", session_id="tab-a")
+
+        self.assertEqual(payload.session_id, "tab-a")
 
     async def test_api_token_actor_cannot_be_reported_as_a_browser_user(self) -> None:
         db = SimpleNamespace(frontend_presence=SimpleNamespace(update_one=AsyncMock()))
@@ -177,6 +200,62 @@ class PresenceHistoryAggregationTests(unittest.TestCase):
         self.assertEqual(active["common_periods"][0]["end"], "09:30")
         self.assertEqual(quiet["online_minutes"], 0)
         self.assertEqual(quiet["online_ratio_percent"], 0)
+
+    def test_active_client_count_deduplicates_tabs_but_keeps_separate_clients(self) -> None:
+        now = datetime(2026, 7, 18, 10, 0, tzinfo=UTC)
+        result = presence.build_presence_history(
+            users=[{"_id": "user-1", "name": "Owner"}],
+            minute_docs=[],
+            current_docs=[
+                {"user_id": "user-1", "client_id": "client-a", "session_id": "tab-a", "client_label": "Windows · Chrome", "last_seen_at": now},
+                {"user_id": "user-1", "client_id": "client-a", "session_id": "tab-b", "client_label": "Windows · Chrome", "last_seen_at": now},
+                {"user_id": "user-1", "client_id": "client-b", "session_id": "tab-c", "client_label": "iOS · Safari", "last_seen_at": now},
+            ],
+            observed_at=now,
+        )
+
+        item = result["items"][0]
+        self.assertEqual(item["active_clients"], 2)
+        self.assertEqual(len(item["active_client_details"]), 2)
+        chrome = next(client for client in item["active_client_details"] if client["client_id"] == "client-a")
+        self.assertEqual(chrome["session_count"], 2)
+
+
+class FrontendPresenceIndexTests(unittest.IsolatedAsyncioTestCase):
+    async def test_replaces_legacy_client_unique_index_with_session_unique_index(self) -> None:
+        collection = SimpleNamespace(
+            index_information=AsyncMock(return_value={"user_id_1_client_id_1": {"key": [("user_id", 1), ("client_id", 1)], "unique": True}}),
+            drop_index=AsyncMock(),
+            delete_many=AsyncMock(),
+            create_index=AsyncMock(),
+        )
+        db = SimpleNamespace(frontend_presence=collection)
+
+        await bootstrap.ensure_frontend_presence_indexes(db)
+
+        collection.drop_index.assert_awaited_once_with("user_id_1_client_id_1")
+        collection.delete_many.assert_awaited_once_with({})
+        collection.create_index.assert_any_await(
+            [("user_id", 1), ("client_id", 1), ("session_id", 1)],
+            unique=True,
+        )
+
+    async def test_creates_presence_indexes_when_collection_does_not_exist_yet(self) -> None:
+        collection = SimpleNamespace(
+            index_information=AsyncMock(side_effect=OperationFailure("namespace not found", code=26)),
+            drop_index=AsyncMock(),
+            delete_many=AsyncMock(),
+            create_index=AsyncMock(),
+        )
+        db = SimpleNamespace(frontend_presence=collection)
+
+        await bootstrap.ensure_frontend_presence_indexes(db)
+
+        collection.drop_index.assert_not_awaited()
+        collection.create_index.assert_any_await(
+            [("user_id", 1), ("client_id", 1), ("session_id", 1)],
+            unique=True,
+        )
 
 
 if __name__ == "__main__":

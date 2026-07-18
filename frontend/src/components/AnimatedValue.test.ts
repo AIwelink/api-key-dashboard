@@ -37,4 +37,13 @@ describe("percentage bar motion", () => {
     expect(styles).toContain(".capacity-meter.tiered::after {");
     expect(styles).toContain("calc(100% / 6)");
   });
+
+  it("keeps the excellent capacity bar dynamic without a continuous paint animation", () => {
+    const rule = styles.match(/\.capacity-meter-fill\.excellent\s*\{([^}]*)\}/s)?.[1] || "";
+
+    expect(rule).toContain("background: #");
+    expect(rule).not.toContain("repeating-linear-gradient");
+    expect(rule).not.toContain("animation:");
+    expect(rule).not.toContain("box-shadow: 0 0");
+  });
 });

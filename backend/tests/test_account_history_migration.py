@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 from pymongo.errors import AutoReconnect
 
+from app.modules.sub2api.account_history import snapshot_hash
 from app.modules.sub2api.account_history_migration import (
     LegacyReplayState,
     compare_reconstructed_states,
@@ -23,6 +24,17 @@ from app.modules.sub2api.account_history_migration import (
 
 
 class LegacyReplayTests(unittest.TestCase):
+    def test_missing_change_entry_represents_an_empty_dynamic_state(self) -> None:
+        empty_hash = snapshot_hash({"usage": {}, "subscription": {}})
+
+        result = compare_reconstructed_states(
+            {"api-5001:empty@example.com": empty_hash},
+            {},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["mismatch_count"], 0)
+
     def test_migration_id_and_batch_size_are_deterministic_and_bounded(self) -> None:
         boundary = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
 
@@ -146,6 +158,23 @@ class AsyncCursor:
 
 
 class LegacyMigrationSafetyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_verification_failed_migration_reuses_completed_conversion(self) -> None:
+        ledger = {"_id": "migration-1", "stage": "verification_failed"}
+        source = SimpleNamespace(count_documents=AsyncMock())
+        db = SimpleNamespace(
+            remote_account_history_migrations=SimpleNamespace(find_one=AsyncMock(return_value=ledger)),
+            remote_account_probe_samples=source,
+        )
+
+        result = await convert_legacy_account_history(
+            db,
+            migration_id="migration-1",
+            source_max_sampled_at=datetime(2026, 7, 18, 8, 0, tzinfo=UTC),
+        )
+
+        self.assertEqual(result, ledger)
+        source.count_documents.assert_not_awaited()
+
     async def test_transient_mongo_disconnect_is_retried(self) -> None:
         operation = AsyncMock(side_effect=[AutoReconnect("connection closed"), "ok"])
 

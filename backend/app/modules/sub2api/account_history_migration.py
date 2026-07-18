@@ -181,7 +181,13 @@ async def convert_legacy_account_history(
 ) -> dict[str, Any]:
     boundary = _as_utc(source_max_sampled_at)
     existing = await db.remote_account_history_migrations.find_one({"_id": migration_id})
-    if existing and existing.get("stage") in {"verified", "deleting", "completed"}:
+    if existing and existing.get("stage") in {
+        "converted",
+        "verification_failed",
+        "verified",
+        "deleting",
+        "completed",
+    }:
         return existing
     source_query: dict[str, Any] = {"sampled_at": {"$lte": boundary}}
     if site_id:
@@ -509,14 +515,22 @@ def compare_reconstructed_states(
         identity_id: snapshot_hash(state)
         for identity_id, state in reconstructed_states.items()
     }
+    empty_state_hash = snapshot_hash({"usage": {}, "subscription": {}})
     mismatches = [
         {
             "identity_id": identity_id,
             "expected_hash": expected_hashes.get(identity_id),
-            "actual_hash": actual_hashes.get(identity_id),
+            "actual_hash": actual_hashes.get(
+                identity_id,
+                empty_state_hash if identity_id in expected_hashes else None,
+            ),
         }
         for identity_id in sorted(set(expected_hashes) | set(actual_hashes))
-        if expected_hashes.get(identity_id) != actual_hashes.get(identity_id)
+        if expected_hashes.get(identity_id)
+        != actual_hashes.get(
+            identity_id,
+            empty_state_hash if identity_id in expected_hashes else None,
+        )
     ]
     return {
         "ok": not mismatches,

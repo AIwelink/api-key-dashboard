@@ -29,7 +29,7 @@ async def post_presence_leave(
     actor: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, bool]:
-    removed = await remove_frontend_presence(db, actor=actor, client_id=payload.client_id)
+    removed = await remove_frontend_presence(db, actor=actor, client_id=payload.client_id, session_id=payload.session_id)
     return {"ok": True, "removed": removed}
 
 

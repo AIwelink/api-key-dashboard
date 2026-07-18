@@ -1,4 +1,5 @@
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.errors import OperationFailure
 
 from app.config import get_settings
 from app.security import hash_password
@@ -33,15 +34,28 @@ async def ensure_account_history_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.remote_account_history_migrations.create_index([("updated_at", -1)])
 
 
+async def ensure_frontend_presence_indexes(db: AsyncIOMotorDatabase) -> None:
+    try:
+        indexes = await db.frontend_presence.index_information()
+    except OperationFailure as exc:
+        if exc.code != 26:
+            raise
+        indexes = {}
+    if "user_id_1_client_id_1" in indexes:
+        await db.frontend_presence.drop_index("user_id_1_client_id_1")
+        await db.frontend_presence.delete_many({})
+    await db.frontend_presence.create_index([("user_id", 1), ("client_id", 1), ("session_id", 1)], unique=True)
+    await db.frontend_presence.create_index([("last_seen_at", -1)])
+    await db.frontend_presence.create_index("expires_at", expireAfterSeconds=0)
+
+
 async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.users.create_index("email", unique=True)
     await db.api_tokens.create_index("token_hash", unique=True)
     await db.api_tokens.create_index("token_prefix")
     await db.api_tokens.create_index("status")
     await db.api_tokens.create_index("created_at")
-    await db.frontend_presence.create_index([("user_id", 1), ("client_id", 1)], unique=True)
-    await db.frontend_presence.create_index([("last_seen_at", -1)])
-    await db.frontend_presence.create_index("expires_at", expireAfterSeconds=0)
+    await ensure_frontend_presence_indexes(db)
     await db.frontend_presence_minutes.create_index([("user_id", 1), ("bucket_at", 1)], unique=True)
     await db.frontend_presence_minutes.create_index([("bucket_at", -1)])
     await db.frontend_presence_minutes.create_index("expires_at", expireAfterSeconds=0)

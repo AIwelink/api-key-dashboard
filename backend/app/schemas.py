@@ -32,6 +32,7 @@ class FrontendPresenceHeartbeat(BaseModel):
 
 class FrontendPresenceLeave(BaseModel):
     client_id: str = Field(min_length=8, max_length=100, pattern=r"^[A-Za-z0-9._:-]+$")
+    session_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._:-]+$")
 
 
 class ChangePasswordRequest(BaseModel):

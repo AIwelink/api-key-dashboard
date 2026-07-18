@@ -97,7 +97,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         "migration_id": migration_id,
         "source": source,
         "ttl": ttl,
-        "conversion": converted,
+        "conversion": _conversion_summary(converted),
         "verification": verification,
         "next_command": (
             f"python scripts/migrate_account_history.py --migration-id {migration_id} --delete-source --batch-size {batch_size}"
@@ -122,6 +122,22 @@ async def main() -> None:
 
 def print_report(report: dict[str, Any]) -> None:
     print(json.dumps(serialize_doc(report), ensure_ascii=False, indent=2))
+
+
+def _conversion_summary(value: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "stage",
+        "source_max_sampled_at",
+        "source_documents_expected",
+        "source_documents_processed",
+        "probe_runs_processed",
+        "changed_accounts",
+        "changed_fields",
+        "change_batches",
+        "checkpoint_documents",
+        "converted_at",
+    )
+    return {key: value.get(key) for key in keys}
 
 
 if __name__ == "__main__":

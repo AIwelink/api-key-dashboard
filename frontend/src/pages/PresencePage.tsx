@@ -30,6 +30,13 @@ type PresenceUser = {
   status?: string;
   is_online: boolean;
   active_clients: number;
+  active_client_details?: Array<{
+    client_id: string;
+    client_label?: string;
+    device_type?: string;
+    session_count: number;
+    last_seen_at?: string;
+  }>;
   last_seen_at?: string | null;
   online_minutes: number;
   online_ratio_percent: number;
@@ -157,6 +164,16 @@ export function PresencePage({ token, showToast }: Props) {
                 <div className="presence-current-state">
                   <strong>{selectedUser.is_online ? "前台在线" : "当前离线"}</strong>
                   <span>{selectedUser.is_online ? `${selectedUser.active_clients} 个客户端` : `最后心跳 ${formatDateTime(selectedUser.last_seen_at || undefined)}`}</span>
+                  {selectedUser.is_online && Boolean(selectedUser.active_client_details?.length) && (
+                    <div className="presence-client-list">
+                      {selectedUser.active_client_details?.map((client) => (
+                        <span key={client.client_id} title={client.client_id}>
+                          {client.client_label || client.device_type || "未知客户端"} · {shortClientId(client.client_id)}
+                          {client.session_count > 1 ? ` · ${client.session_count} 标签页` : ""}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </header>
 
@@ -195,13 +212,14 @@ export function PresencePage({ token, showToast }: Props) {
                   <span>每格 30 分钟 · 5 分钟采样</span>
                 </div>
                 <div className="presence-day-bars">
+                  <div className="presence-day-axis-row">
+                    <span />
+                    <TimelineAxis />
+                    <span />
+                  </div>
                   {presenceDaysRecentFirst(selectedUser.daily_timeline).map((day) => (
                     <div className="presence-day-bar" key={day.date}>
-                      <div className="presence-day-bar-heading">
-                        <strong>{formatDayLabel(day.date)}</strong>
-                        <span>{formatOnlineMinutes(day.online_minutes)} · {day.online_ratio_percent}%</span>
-                      </div>
-                      <TimelineAxis />
+                      <strong className="presence-day-date">{formatDayLabel(day.date)}</strong>
                       <div className="presence-day-segments">
                         {day.segments.map((value, index) => (
                           <i
@@ -212,6 +230,7 @@ export function PresencePage({ token, showToast }: Props) {
                           />
                         ))}
                       </div>
+                      <span className="presence-day-summary">{formatOnlineMinutes(day.online_minutes)} · {day.online_ratio_percent}%</span>
                     </div>
                   ))}
                 </div>
@@ -243,4 +262,8 @@ function formatDayLabel(value: string) {
   const date = new Date(`${value}T00:00:00+08:00`);
   const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "short", timeZone: "Asia/Shanghai" }).format(date);
   return `${value.slice(5).replace("-", "/")} ${weekday}`;
+}
+
+function shortClientId(value: string) {
+  return value.length > 10 ? `${value.slice(0, 6)}…${value.slice(-3)}` : value;
 }

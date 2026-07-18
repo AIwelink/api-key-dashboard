@@ -130,7 +130,7 @@ export function useForegroundPresence(token: string, view: ViewName) {
       scheduler.stop();
       void api("/presence/leave", token, {
         method: "POST",
-        body: JSON.stringify({ client_id: identity.clientId }),
+        body: JSON.stringify({ client_id: identity.clientId, session_id: identity.sessionId }),
       }).catch(() => undefined);
     };
   }, [token]);
