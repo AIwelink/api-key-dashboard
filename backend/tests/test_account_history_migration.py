@@ -3,13 +3,14 @@ from __future__ import annotations
 import unittest
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from pymongo.errors import AutoReconnect
 
 from app.modules.sub2api.account_history import snapshot_hash
 from app.modules.sub2api.account_history_migration import (
     LegacyReplayState,
+    _persist_sampled_at_group,
     compare_reconstructed_states,
     clamp_migration_batch_size,
     convert_legacy_account_history,
@@ -158,6 +159,40 @@ class AsyncCursor:
 
 
 class LegacyMigrationSafetyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_conversion_progress_is_throttled_by_run_interval(self) -> None:
+        observed_at = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
+        replay = LegacyReplayState(migration_id="migration-1")
+        samples = [
+            {"_id": "sample-1", "probe_run_id": "run-1"},
+            {"_id": "sample-2", "probe_run_id": "run-2"},
+        ]
+
+        with (
+            patch(
+                "app.modules.sub2api.account_history_migration._persist_replayed_run",
+                AsyncMock(return_value=[]),
+            ) as persist_run,
+            patch(
+                "app.modules.sub2api.account_history_migration._update_conversion_progress",
+                AsyncMock(),
+            ) as update_progress,
+        ):
+            _, persisted = await _persist_sampled_at_group(
+                SimpleNamespace(),
+                replay=replay,
+                site_id="api-5001",
+                observed_at=observed_at,
+                samples=samples,
+                migration_id="migration-1",
+                run_count=98,
+                progress_interval_runs=100,
+            )
+
+        self.assertEqual(persisted, 2)
+        self.assertEqual(persist_run.await_count, 2)
+        update_progress.assert_awaited_once()
+        self.assertEqual(update_progress.await_args.args[3], 100)
+
     async def test_verification_failed_migration_reuses_completed_conversion(self) -> None:
         ledger = {"_id": "migration-1", "stage": "verification_failed"}
         source = SimpleNamespace(count_documents=AsyncMock())
@@ -381,6 +416,43 @@ class LegacyMigrationSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["deleted_documents"], 4_500)
         self.assertEqual(result["stage"], "completed")
 
+    async def test_global_deletion_uses_site_scoped_index_queries(self) -> None:
+        now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
+        source = InMemorySourceCollection(
+            [
+                {"_id": "sample-a", "sampled_at": now - timedelta(hours=1), "site_id": "api-5001"},
+                {"_id": "sample-b", "sampled_at": now - timedelta(hours=1), "site_id": "api-5002"},
+            ]
+        )
+        ledger = {
+            "_id": "migration-1",
+            "stage": "verified",
+            "source_max_sampled_at": now - timedelta(minutes=30),
+            "site_id": None,
+            "deleted_documents": 0,
+        }
+        db = SimpleNamespace(
+            remote_account_history_migrations=SimpleNamespace(
+                find_one=AsyncMock(return_value=ledger),
+                update_one=AsyncMock(),
+            ),
+            remote_account_probe_samples=source,
+        )
+
+        result = await delete_verified_legacy_samples(
+            db,
+            "migration-1",
+            batch_size=2_000,
+            idle_minutes=10,
+            now=now,
+        )
+
+        self.assertEqual(result["deleted_documents"], 2)
+        self.assertEqual(
+            {query.get("site_id") for query in source.find_queries},
+            {"api-5001", "api-5002"},
+        )
+
     async def test_completed_deletion_reconciles_unrecorded_deleted_batch(self) -> None:
         now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
         source = InMemorySourceCollection([])
@@ -415,14 +487,32 @@ class InMemorySourceCollection:
     def __init__(self, items: list[dict[str, object]]) -> None:
         self.items = items
         self.deleted_batch_sizes: list[int] = []
+        self.find_queries: list[dict[str, object]] = []
 
     async def find_one(self, *_args, **_kwargs):
         return max(self.items, key=lambda item: item["sampled_at"]) if self.items else None
 
     def find(self, query, *_args, **_kwargs):
+        self.find_queries.append(query)
         boundary = query.get("sampled_at", {}).get("$lte")
-        items = [item for item in self.items if boundary is None or item["sampled_at"] <= boundary]
+        site_id = query.get("site_id")
+        items = [
+            item
+            for item in self.items
+            if (boundary is None or item["sampled_at"] <= boundary)
+            and (site_id is None or item.get("site_id") == site_id)
+        ]
         return AsyncCursor(items)
+
+    async def distinct(self, field, query):
+        boundary = query.get("sampled_at", {}).get("$lte")
+        return sorted(
+            {
+                item[field]
+                for item in self.items
+                if item.get(field) and (boundary is None or item["sampled_at"] <= boundary)
+            }
+        )
 
     async def delete_many(self, query):
         ids = set(query["_id"]["$in"])
@@ -434,7 +524,13 @@ class InMemorySourceCollection:
 
     async def count_documents(self, query):
         boundary = query.get("sampled_at", {}).get("$lte")
-        return sum(1 for item in self.items if boundary is None or item["sampled_at"] <= boundary)
+        site_id = query.get("site_id")
+        return sum(
+            1
+            for item in self.items
+            if (boundary is None or item["sampled_at"] <= boundary)
+            and (site_id is None or item.get("site_id") == site_id)
+        )
 
 
 class MigrationSourceCollection:

@@ -24,6 +24,10 @@ def clamp_migration_batch_size(value: int) -> int:
     return max(100, min(10_000, int(value)))
 
 
+def clamp_migration_progress_interval(value: int) -> int:
+    return max(1, min(10_000, int(value)))
+
+
 def migration_id_for_boundary(boundary: datetime, *, site_id: str | None = None) -> str:
     source = f"remote_account_probe_samples:{site_id or 'all'}:{_as_utc(boundary).isoformat()}"
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:20]
@@ -178,6 +182,7 @@ async def convert_legacy_account_history(
     source_max_sampled_at: datetime,
     site_id: str | None = None,
     cursor_batch_size: int = 2_000,
+    progress_interval_runs: int = 100,
 ) -> dict[str, Any]:
     boundary = _as_utc(source_max_sampled_at)
     existing = await db.remote_account_history_migrations.find_one({"_id": migration_id})
@@ -214,6 +219,7 @@ async def convert_legacy_account_history(
         upsert=True,
     )
     replay = LegacyReplayState(migration_id=migration_id)
+    progress_interval_runs = clamp_migration_progress_interval(progress_interval_runs)
     resume_by_site: dict[str, datetime] = {}
     restored_checkpoints: list[dict[str, Any]] = []
     if existing and existing.get("stage") in {"converting", "conversion_failed"}:
@@ -294,6 +300,7 @@ async def convert_legacy_account_history(
                         samples=current_samples,
                         migration_id=migration_id,
                         run_count=run_count,
+                        progress_interval_runs=progress_interval_runs,
                     )
                     checkpoint_manifest_ids.update(manifests)
                     run_count += persisted_runs
@@ -309,6 +316,7 @@ async def convert_legacy_account_history(
                     samples=current_samples,
                     migration_id=migration_id,
                     run_count=run_count,
+                    progress_interval_runs=progress_interval_runs,
                 )
                 checkpoint_manifest_ids.update(manifests)
                 run_count += persisted_runs
@@ -330,6 +338,7 @@ async def convert_legacy_account_history(
             "changed_fields": replay.changed_fields,
             "change_batches": replay.change_batches,
             "checkpoint_documents": replay.checkpoint_documents,
+            "progress_interval_runs": progress_interval_runs,
             "checkpoint_manifest_ids": sorted(checkpoint_manifest_ids),
             "final_state_hashes": final_state_hashes,
             "converted_at": converted_at,
@@ -418,6 +427,7 @@ async def _persist_sampled_at_group(
     samples: list[dict[str, Any]],
     migration_id: str,
     run_count: int,
+    progress_interval_runs: int = 100,
 ) -> tuple[list[str], int]:
     by_run: dict[str, list[dict[str, Any]]] = {}
     for sample in samples:
@@ -434,7 +444,9 @@ async def _persist_sampled_at_group(
             samples=run_samples,
         )
         manifest_ids.extend(manifests)
-        await _update_conversion_progress(db, migration_id, replay, run_count + offset)
+        current_run_count = run_count + offset
+        if current_run_count % clamp_migration_progress_interval(progress_interval_runs) == 0:
+            await _update_conversion_progress(db, migration_id, replay, current_run_count)
     return manifest_ids, len(by_run)
 
 
@@ -820,25 +832,39 @@ async def delete_verified_legacy_samples(
         {"_id": migration_id},
         {"$set": {"stage": "deleting", "deletion_started_at": started_at, "updated_at": started_at}},
     )
-    while True:
-        cursor = (
-            db.remote_account_probe_samples.find(query, {"_id": 1})
-            .sort([("sampled_at", 1)])
-            .limit(batch_size)
+    if ledger.get("site_id"):
+        deletion_queries = [query]
+    else:
+        site_ids = sorted(
+            str(value)
+            for value in await db.remote_account_probe_samples.distinct("site_id", query)
+            if value
         )
-        ids = [item["_id"] async for item in cursor if item.get("_id") is not None]
-        if not ids:
-            break
-        result = await db.remote_account_probe_samples.delete_many({"_id": {"$in": ids}})
-        deleted = int(getattr(result, "deleted_count", 0) or 0)
-        if deleted != len(ids):
-            raise RuntimeError(f"legacy sample deletion mismatch: requested={len(ids)} deleted={deleted}")
-        deleted_documents += deleted
-        updated_at = datetime.now(UTC)
+        deletion_queries = [{**query, "site_id": current_site_id} for current_site_id in site_ids]
         await db.remote_account_history_migrations.update_one(
             {"_id": migration_id},
-            {"$set": {"deleted_documents": deleted_documents, "updated_at": updated_at}},
+            {"$set": {"deletion_site_ids": site_ids, "updated_at": datetime.now(UTC)}},
         )
+    for deletion_query in deletion_queries:
+        while True:
+            cursor = (
+                db.remote_account_probe_samples.find(deletion_query, {"_id": 1})
+                .sort([("sampled_at", 1)])
+                .limit(batch_size)
+            )
+            ids = [item["_id"] async for item in cursor if item.get("_id") is not None]
+            if not ids:
+                break
+            result = await db.remote_account_probe_samples.delete_many({"_id": {"$in": ids}})
+            deleted = int(getattr(result, "deleted_count", 0) or 0)
+            if deleted != len(ids):
+                raise RuntimeError(f"legacy sample deletion mismatch: requested={len(ids)} deleted={deleted}")
+            deleted_documents += deleted
+            updated_at = datetime.now(UTC)
+            await db.remote_account_history_migrations.update_one(
+                {"_id": migration_id},
+                {"$set": {"deleted_documents": deleted_documents, "updated_at": updated_at}},
+            )
     remaining = await db.remote_account_probe_samples.count_documents(query)
     if remaining:
         raise RuntimeError(f"legacy sample deletion incomplete: remaining={remaining}")

@@ -13,6 +13,7 @@ from app.database import close_mongo_connection, connect_to_mongo, get_db
 from app.modules.sub2api.account_history_migration import (
     assert_legacy_source_idle,
     clamp_migration_batch_size,
+    clamp_migration_progress_interval,
     convert_legacy_account_history,
     delete_verified_legacy_samples,
     inspect_legacy_source,
@@ -30,7 +31,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--migration-id", default="", help="existing migration ID for resume or deletion")
     parser.add_argument("--site-id", default="", help="optional site scope")
     parser.add_argument("--idle-minutes", type=int, default=10, help="required time since the latest legacy write")
-    parser.add_argument("--batch-size", type=int, default=2_000, help="source cursor and deletion batch size")
+    parser.add_argument("--batch-size", type=int, default=10_000, help="source cursor and deletion batch size")
+    parser.add_argument(
+        "--progress-every-runs",
+        type=int,
+        default=100,
+        help="persist conversion counters every N probe runs",
+    )
     parser.add_argument("--inspect", action="store_true", help="read source status without writing")
     parser.add_argument("--delete-source", action="store_true", help="delete source snapshots for an already verified migration")
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
@@ -42,6 +49,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     site_id = str(args.site_id or "").strip() or None
     idle_minutes = max(1, int(args.idle_minutes))
     batch_size = clamp_migration_batch_size(args.batch_size)
+    progress_interval_runs = clamp_migration_progress_interval(args.progress_every_runs)
     if args.inspect:
         return {
             "mode": "inspect",
@@ -85,6 +93,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         source_max_sampled_at=boundary,
         site_id=site_id,
         cursor_batch_size=batch_size,
+        progress_interval_runs=progress_interval_runs,
     )
     verification = await verify_migrated_account_history(db, migration_id)
     await db.remote_account_history_migrations.update_one(
