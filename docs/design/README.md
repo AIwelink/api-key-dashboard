@@ -35,6 +35,7 @@
 - [25-sub2api-account-return.md](./25-sub2api-account-return.md): 从 sub2api 手动删除远端账号、回退到本地可用池或总库、保留快照和审计的设计。
 - [26-remote-ui-and-verification-group.md](./26-remote-ui-and-verification-group.md): 远端 sub2api 测试控制台 UI、专用验证分组、手动/自动验证流程设计。
 - [27-release-0.2.0-project-check.md](./27-release-0.2.0-project-check.md): `0.2.0` 版本标记、整体项目检查结果、已知风险和上线前动作。
+- [30-api-pool-realtime-capacity-and-presence.md](./30-api-pool-realtime-capacity-and-presence.md): 当前 API 账号池实时容量、并发总覆盖、前端分级、悬浮说明和前台在线接口实现约定。
 - [菜单.md](./菜单.md): 左侧菜单、页面职责、当前功能和对应接口。
 - [账号上传界面.md](./账号上传界面.md): 上传账号页面模式、字段顺序和参数名。
 
