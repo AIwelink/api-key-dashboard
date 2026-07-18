@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Awaitable, Callable, TypeVar
 
 from pymongo import ReplaceOne
+from pymongo.errors import AutoReconnect
 
 from app.modules.sub2api.account_history import (
     CHECKPOINT_RETENTION_DAYS,
@@ -26,6 +28,26 @@ def migration_id_for_boundary(boundary: datetime, *, site_id: str | None = None)
     source = f"remote_account_probe_samples:{site_id or 'all'}:{_as_utc(boundary).isoformat()}"
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:20]
     return f"legacy-account-history-v1-{digest}"
+
+
+T = TypeVar("T")
+
+
+async def retry_mongo_operation(
+    operation: Callable[[], Awaitable[T]],
+    *,
+    attempts: int = 5,
+    base_delay_seconds: float = 1.0,
+) -> T:
+    attempts = max(1, int(attempts))
+    for attempt in range(attempts):
+        try:
+            return await operation()
+        except AutoReconnect:
+            if attempt + 1 >= attempts:
+                raise
+            await asyncio.sleep(max(0.0, base_delay_seconds) * (2**attempt))
+    raise RuntimeError("unreachable MongoDB retry state")
 
 
 class LegacyReplayState:
@@ -186,7 +208,39 @@ async def convert_legacy_account_history(
         upsert=True,
     )
     replay = LegacyReplayState(migration_id=migration_id)
-    checkpoint_manifest_ids: set[str] = set()
+    resume_by_site: dict[str, datetime] = {}
+    restored_checkpoints: list[dict[str, Any]] = []
+    if existing and existing.get("stage") in {"converting", "conversion_failed"}:
+        target_batches = [
+            item
+            async for item in db.remote_account_change_batches.find(
+                {"migration_id": migration_id},
+                {"site_id": 1, "observed_at": 1, "chunk_index": 1, "entries": 1},
+            ).sort([("observed_at", 1), ("chunk_index", 1)])
+        ]
+        restored_checkpoints = [
+            item
+            async for item in db.remote_account_daily_checkpoints.find(
+                {"migration_id": migration_id},
+                {
+                    "site_id": 1,
+                    "local_date": 1,
+                    "checkpoint_at": 1,
+                    "document_type": 1,
+                    "entries": 1,
+                },
+            )
+        ]
+        resume_by_site = restore_replay_from_targets(
+            replay,
+            target_batches,
+            checkpoint_documents=restored_checkpoints,
+        )
+    checkpoint_manifest_ids: set[str] = {
+        str(document["_id"])
+        for document in restored_checkpoints
+        if document.get("document_type") == "manifest" and document.get("_id")
+    }
     run_count = 0
     try:
         site_ids = [site_id] if site_id else sorted(
@@ -207,6 +261,15 @@ async def convert_legacy_account_history(
         }
         for current_site_id in site_ids:
             query = {**source_query, "site_id": current_site_id}
+            resume_at = resume_by_site.get(current_site_id)
+            if resume_at is not None:
+                replay.source_documents += await db.remote_account_probe_samples.count_documents(
+                    {
+                        "site_id": current_site_id,
+                        "sampled_at": {"$lt": resume_at},
+                    }
+                )
+                query["sampled_at"] = {"$gte": resume_at, "$lte": boundary}
             cursor = (
                 db.remote_account_probe_samples.find(query, projection)
                 .sort([("sampled_at", 1)])
@@ -266,23 +329,27 @@ async def convert_legacy_account_history(
             "converted_at": converted_at,
             "updated_at": converted_at,
         }
-        await db.remote_account_history_migrations.update_one(
-            {"_id": migration_id},
-            {"$set": {key: value for key, value in result.items() if key != "_id"}},
+        await retry_mongo_operation(
+            lambda: db.remote_account_history_migrations.update_one(
+                {"_id": migration_id},
+                {"$set": {key: value for key, value in result.items() if key != "_id"}},
+            )
         )
         return result
     except Exception as exc:
         failed_at = datetime.now(UTC)
-        await db.remote_account_history_migrations.update_one(
-            {"_id": migration_id},
-            {
-                "$set": {
-                    "stage": "conversion_failed",
-                    "error": str(exc) or exc.__class__.__name__,
-                    "source_documents_processed": replay.source_documents,
-                    "updated_at": failed_at,
-                }
-            },
+        await retry_mongo_operation(
+            lambda: db.remote_account_history_migrations.update_one(
+                {"_id": migration_id},
+                {
+                    "$set": {
+                        "stage": "conversion_failed",
+                        "error": str(exc) or exc.__class__.__name__,
+                        "source_documents_processed": replay.source_documents,
+                        "updated_at": failed_at,
+                    }
+                },
+            )
         )
         raise
 
@@ -304,9 +371,11 @@ async def _persist_replayed_run(
     )
     batches = result["change_batches"]
     if batches:
-        await db.remote_account_change_batches.bulk_write(
-            [ReplaceOne({"_id": batch["_id"]}, batch, upsert=True) for batch in batches],
-            ordered=False,
+        await retry_mongo_operation(
+            lambda: db.remote_account_change_batches.bulk_write(
+                [ReplaceOne({"_id": batch["_id"]}, batch, upsert=True) for batch in batches],
+                ordered=False,
+            )
         )
     checkpoint_documents = result["checkpoint_documents"]
     if not checkpoint_documents:
@@ -322,12 +391,14 @@ async def _persist_replayed_run(
     )
     if existing and existing.get("migration_id") != replay.migration_id:
         return [str(manifest["_id"])]
-    await db.remote_account_daily_checkpoints.bulk_write(
-        [
-            ReplaceOne({"_id": document["_id"]}, document, upsert=True)
-            for document in checkpoint_documents
-        ],
-        ordered=True,
+    await retry_mongo_operation(
+        lambda: db.remote_account_daily_checkpoints.bulk_write(
+            [
+                ReplaceOne({"_id": document["_id"]}, document, upsert=True)
+                for document in checkpoint_documents
+            ],
+            ordered=True,
+        )
     )
     return [str(manifest["_id"])]
 
@@ -367,20 +438,22 @@ async def _update_conversion_progress(
     replay: LegacyReplayState,
     run_count: int,
 ) -> None:
-    await db.remote_account_history_migrations.update_one(
-        {"_id": migration_id},
-        {
-            "$set": {
-                "stage": "converting",
-                "source_documents_processed": replay.source_documents,
-                "probe_runs_processed": run_count,
-                "changed_accounts": replay.changed_accounts,
-                "changed_fields": replay.changed_fields,
-                "change_batches": replay.change_batches,
-                "checkpoint_documents": replay.checkpoint_documents,
-                "updated_at": datetime.now(UTC),
-            }
-        },
+    await retry_mongo_operation(
+        lambda: db.remote_account_history_migrations.update_one(
+            {"_id": migration_id},
+            {
+                "$set": {
+                    "stage": "converting",
+                    "source_documents_processed": replay.source_documents,
+                    "probe_runs_processed": run_count,
+                    "changed_accounts": replay.changed_accounts,
+                    "changed_fields": replay.changed_fields,
+                    "change_batches": replay.change_batches,
+                    "checkpoint_documents": replay.checkpoint_documents,
+                    "updated_at": datetime.now(UTC),
+                }
+            },
+        )
     )
 
 
@@ -452,6 +525,73 @@ def compare_reconstructed_states(
         "mismatch_count": len(mismatches),
         "mismatches": mismatches[:100],
     }
+
+
+def restore_replay_from_targets(
+    replay: LegacyReplayState,
+    batches: list[dict[str, Any]],
+    *,
+    checkpoint_documents: list[dict[str, Any]],
+) -> dict[str, datetime]:
+    replay.dynamic_states = reconstruct_migrated_states(batches)
+    resume_by_site: dict[str, datetime] = {}
+    seen_event_ids: set[str] = set()
+    changed_fields = 0
+    for batch in batches:
+        site_id = str(batch.get("site_id") or "")
+        observed_at = batch.get("observed_at")
+        if site_id and isinstance(observed_at, datetime):
+            observed_at = _as_utc(observed_at)
+            if observed_at > resume_by_site.get(site_id, datetime.min.replace(tzinfo=UTC)):
+                resume_by_site[site_id] = observed_at
+        for entry in batch.get("entries") or []:
+            if not isinstance(entry, dict) or not entry.get("identity_id"):
+                continue
+            identity_id = str(entry["identity_id"])
+            if site_id:
+                replay.identity_sites[identity_id] = site_id
+            event_id = str(entry.get("event_id") or "")
+            if event_id and event_id in seen_event_ids:
+                continue
+            if event_id:
+                seen_event_ids.add(event_id)
+            changed_fields += len(entry.get("changes") or {}) + len(entry.get("unset") or [])
+    replay.changed_accounts = len(seen_event_ids)
+    replay.changed_fields = changed_fields
+    replay.change_batches = len(batches)
+    replay.checkpoint_documents = len(checkpoint_documents)
+    for document in checkpoint_documents:
+        site_id = str(document.get("site_id") or "")
+        local_date = str(document.get("local_date") or "")
+        checkpoint_at = document.get("checkpoint_at")
+        if site_id and local_date and document.get("document_type") == "manifest":
+            replay._checkpoint_dates.add((site_id, local_date))
+        if site_id and isinstance(checkpoint_at, datetime):
+            checkpoint_at = _as_utc(checkpoint_at)
+            if checkpoint_at > resume_by_site.get(site_id, datetime.min.replace(tzinfo=UTC)):
+                resume_by_site[site_id] = checkpoint_at
+        if document.get("document_type") == "chunk":
+            for entry in document.get("entries") or []:
+                if not isinstance(entry, dict) or not entry.get("identity_id"):
+                    continue
+                identity_id = str(entry["identity_id"])
+                replay.cumulative_states[identity_id] = dict(
+                    entry.get("cumulative_usage")
+                    if isinstance(entry.get("cumulative_usage"), dict)
+                    else {}
+                )
+                if identity_id not in replay.dynamic_states:
+                    replay.dynamic_states[identity_id] = {
+                        "usage": dict(entry.get("usage") if isinstance(entry.get("usage"), dict) else {}),
+                        "subscription": dict(
+                            entry.get("subscription")
+                            if isinstance(entry.get("subscription"), dict)
+                            else {}
+                        ),
+                    }
+                if site_id:
+                    replay.identity_sites[identity_id] = site_id
+    return resume_by_site
 
 
 def evaluate_source_idle(

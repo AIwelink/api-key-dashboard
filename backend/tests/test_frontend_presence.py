@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -47,7 +47,8 @@ class FrontendPresenceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_different_clients_are_stored_separately_for_the_same_user(self) -> None:
         collection = SimpleNamespace(update_one=AsyncMock())
-        db = SimpleNamespace(frontend_presence=collection)
+        minute_collection = SimpleNamespace(update_one=AsyncMock())
+        db = SimpleNamespace(frontend_presence=collection, frontend_presence_minutes=minute_collection)
         actor = {"_id": "user-1", "name": "Owner", "email": "owner@example.com", "role": "owner"}
         now = datetime(2026, 7, 18, 9, 0, tzinfo=UTC)
 
@@ -70,7 +71,8 @@ class FrontendPresenceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_new_tab_reuses_the_user_and_client_presence_record(self) -> None:
         collection = SimpleNamespace(update_one=AsyncMock())
-        db = SimpleNamespace(frontend_presence=collection)
+        minute_collection = SimpleNamespace(update_one=AsyncMock())
+        db = SimpleNamespace(frontend_presence=collection, frontend_presence_minutes=minute_collection)
         actor = {"_id": "user-1", "name": "Owner", "email": "owner@example.com", "role": "owner"}
 
         for session_id in ("tab-a", "tab-b"):
@@ -110,6 +112,71 @@ class FrontendPresenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cursor.sort_args, ("last_seen_at", -1))
         self.assertEqual(cursor.limit_value, 500)
         self.assertEqual(result["total"], 1)
+
+    async def test_heartbeats_share_one_five_minute_history_bucket_across_clients(self) -> None:
+        current = SimpleNamespace(update_one=AsyncMock())
+        minutes = SimpleNamespace(update_one=AsyncMock())
+        db = SimpleNamespace(frontend_presence=current, frontend_presence_minutes=minutes)
+        actor = {"_id": "user-1", "name": "Owner", "email": "owner@example.com", "role": "owner"}
+
+        await presence.record_frontend_presence(
+            db,
+            actor=actor,
+            payload={"client_id": "client-a", "session_id": "tab-a", "view": "api-pools", "path": "/api-pool-status"},
+            observed_at=datetime(2026, 7, 18, 9, 2, tzinfo=UTC),
+        )
+        await presence.record_frontend_presence(
+            db,
+            actor=actor,
+            payload={"client_id": "client-b", "session_id": "tab-b", "view": "accounts", "path": "/accounts"},
+            observed_at=datetime(2026, 7, 18, 9, 4, tzinfo=UTC),
+        )
+
+        first_filter = minutes.update_one.await_args_list[0].args[0]
+        second_filter = minutes.update_one.await_args_list[1].args[0]
+        self.assertEqual(first_filter, second_filter)
+        first_update = minutes.update_one.await_args_list[0].args[1]
+        self.assertEqual(first_update["$setOnInsert"]["bucket_at"], datetime(2026, 7, 18, 9, 0, tzinfo=UTC))
+
+
+class PresenceHistoryAggregationTests(unittest.TestCase):
+    def test_builds_thirty_day_timeline_and_keeps_users_without_history(self) -> None:
+        observed_at = datetime(2026, 7, 18, 10, 0, tzinfo=UTC)
+        users = [
+            {"_id": "user-1", "name": "Active", "email": "active@example.com", "role": "maintainer"},
+            {"_id": "user-2", "name": "Quiet", "email": "quiet@example.com", "role": "viewer"},
+        ]
+        minute_docs = []
+        for day_offset in range(30):
+            local_day = datetime(2026, 6, 19, 1, 0, tzinfo=UTC) + timedelta(days=day_offset)
+            minute_docs.extend(
+                [
+                    {"user_id": "user-1", "bucket_at": local_day, "last_seen_at": local_day.replace(minute=2)},
+                    {"user_id": "user-1", "bucket_at": local_day.replace(minute=5), "last_seen_at": local_day.replace(minute=7)},
+                ]
+            )
+
+        result = presence.build_presence_history(
+            users=users,
+            minute_docs=minute_docs,
+            current_docs=[],
+            observed_at=observed_at,
+            days=30,
+        )
+
+        self.assertEqual(result["days"], 30)
+        self.assertEqual(len(result["items"]), 2)
+        active = next(item for item in result["items"] if item["user_id"] == "user-1")
+        quiet = next(item for item in result["items"] if item["user_id"] == "user-2")
+        self.assertEqual(len(active["daily_timeline"]), 30)
+        self.assertEqual(len(active["daily_timeline"][0]["segments"]), 48)
+        self.assertGreater(active["online_minutes"], 0)
+        self.assertGreater(active["online_ratio_percent"], 0)
+        self.assertEqual(active["last_seen_at"], datetime(2026, 7, 18, 1, 7, tzinfo=UTC))
+        self.assertEqual(active["common_periods"][0]["start"], "09:00")
+        self.assertEqual(active["common_periods"][0]["end"], "09:30")
+        self.assertEqual(quiet["online_minutes"], 0)
+        self.assertEqual(quiet["online_ratio_percent"], 0)
 
 
 if __name__ == "__main__":

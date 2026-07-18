@@ -3799,9 +3799,9 @@ button.ghost.success-button:hover {
 
 .presence-summary {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 24px;
-  max-width: 384px;
+  max-width: 560px;
   margin: 4px 0 18px;
 }
 
@@ -3819,14 +3819,278 @@ button.ghost.success-button:hover {
   color: var(--muted);
 }
 
-.presence-table {
-  min-width: 920px;
+.presence-workspace {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  min-height: 640px;
+  border-top: 1px solid var(--line);
 }
 
-.presence-user-line {
+.presence-users {
+  min-width: 0;
+  border-right: 1px solid var(--line);
+  padding: 18px 18px 18px 0;
+}
+
+.presence-section-heading,
+.presence-detail-header,
+.presence-detail-name,
+.presence-current-state,
+.presence-user-heading,
+.presence-user-stats,
+.presence-legend,
+.presence-legend span {
   display: flex;
   align-items: center;
+}
+
+.presence-section-heading {
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.presence-section-heading h3,
+.presence-detail-header h3 {
+  margin: 0;
+}
+
+.presence-section-heading span,
+.presence-detail-header p,
+.presence-current-state span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.presence-user-list {
+  display: grid;
+}
+
+.presence-user-row {
+  display: grid;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+  padding: 13px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.presence-user-row:hover,
+.presence-user-row.selected {
+  background: #f1f7f3;
+}
+
+.presence-user-row.selected {
+  box-shadow: inset 3px 0 #2d7d50;
+}
+
+.presence-user-heading {
   gap: 8px;
+  min-width: 0;
+}
+
+.presence-user-heading strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.presence-user-heading em {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.presence-month-strip,
+.presence-day-segments,
+.presence-pattern-strip {
+  display: grid;
+  gap: 2px;
+}
+
+.presence-month-strip {
+  grid-template-columns: repeat(30, minmax(2px, 1fr));
+  height: 13px;
+}
+
+.presence-user-stats {
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.presence-detail {
+  min-width: 0;
+  padding: 18px 0 28px 24px;
+}
+
+.presence-detail-header {
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 54px;
+}
+
+.presence-detail-header p {
+  margin: 5px 0 0 16px;
+}
+
+.presence-detail-name {
+  gap: 8px;
+}
+
+.presence-role {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.presence-current-state {
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 3px;
+  text-align: right;
+}
+
+.presence-detail-metrics {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.8fr) minmax(120px, 0.7fr) minmax(220px, 1.5fr);
+  margin: 18px 0 26px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.presence-detail-metrics > div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 14px 18px 14px 0;
+}
+
+.presence-detail-metrics span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.presence-detail-metrics strong {
+  font-size: 18px;
+}
+
+.presence-period-text {
+  overflow-wrap: anywhere;
+}
+
+.presence-pattern-section,
+.presence-history-section {
+  margin-top: 26px;
+}
+
+.presence-pattern-strip {
+  grid-template-columns: repeat(48, minmax(4px, 1fr));
+  height: 26px;
+}
+
+.presence-time-axis {
+  margin-bottom: 6px;
+}
+
+.presence-time-axis.with-label,
+.presence-day-row {
+  display: grid;
+  grid-template-columns: 76px minmax(560px, 1fr) 82px;
+  gap: 10px;
+  align-items: center;
+}
+
+.presence-time-axis > div {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.presence-legend {
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.presence-legend span {
+  gap: 5px;
+}
+
+.presence-legend .presence-segment {
+  width: 12px;
+  height: 8px;
+}
+
+.presence-timeline-scroll {
+  overflow-x: auto;
+  padding-bottom: 6px;
+}
+
+.presence-timeline {
+  min-width: 760px;
+}
+
+.presence-day-row {
+  min-height: 24px;
+}
+
+.presence-day-segments {
+  grid-template-columns: repeat(48, minmax(4px, 1fr));
+  height: 16px;
+}
+
+.presence-day-label,
+.presence-day-total {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.presence-day-total {
+  text-align: right;
+}
+
+.presence-segment {
+  display: block;
+  min-width: 0;
+  height: 100%;
+  border-radius: 2px;
+  background: #d9ddda;
+}
+
+.presence-segment.future {
+  background: #f2f4f3;
+}
+
+.presence-segment.offline {
+  background: #d9ddda;
+}
+
+.presence-segment.low {
+  background: #c3dfcd;
+}
+
+.presence-segment.medium {
+  background: #73b38a;
+}
+
+.presence-segment.high {
+  background: #28784d;
+}
+
+.presence-empty,
+.presence-detail-empty {
+  padding: 24px 10px;
 }
 
 .presence-dot {
@@ -3834,8 +4098,62 @@ button.ghost.success-button:hover {
   height: 8px;
   flex: 0 0 8px;
   border-radius: 50%;
-  background: #1f9d64;
-  box-shadow: 0 0 0 3px rgba(31, 157, 100, 0.13);
+  background: #a7ada9;
+  box-shadow: 0 0 0 3px rgba(107, 114, 110, 0.1);
+}
+
+.presence-dot.online {
+  background: #218252;
+  box-shadow: 0 0 0 3px rgba(33, 130, 82, 0.13);
+}
+
+@media (max-width: 900px) {
+  .presence-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .presence-users {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 16px 0;
+  }
+
+  .presence-user-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .presence-detail {
+    padding-left: 0;
+  }
+}
+
+@media (max-width: 620px) {
+  .presence-summary {
+    gap: 12px;
+  }
+
+  .presence-summary strong {
+    font-size: 24px;
+  }
+
+  .presence-user-list,
+  .presence-detail-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .presence-detail-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .presence-current-state {
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .presence-detail-metrics > div {
+    border-bottom: 1px solid var(--line);
+  }
 }
 
 .token-list-item {

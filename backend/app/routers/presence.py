@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.modules.system.presence import list_active_frontend_presence, record_frontend_presence, remove_frontend_presence
+from app.modules.system.presence import get_frontend_presence_history, list_active_frontend_presence, record_frontend_presence, remove_frontend_presence
 from app.schemas import FrontendPresenceHeartbeat, FrontendPresenceLeave
 from app.security import get_current_user, require_roles
 
@@ -39,3 +39,11 @@ async def get_active_presence(
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_active_frontend_presence(db)
+
+
+@router.get("/history")
+async def get_presence_history(
+    _: dict = Depends(require_roles("owner")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    return await get_frontend_presence_history(db)

@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from pymongo.errors import AutoReconnect
+
 from app.modules.sub2api.account_history_migration import (
     LegacyReplayState,
     compare_reconstructed_states,
@@ -14,6 +16,8 @@ from app.modules.sub2api.account_history_migration import (
     evaluate_source_idle,
     migration_id_for_boundary,
     reconstruct_migrated_states,
+    restore_replay_from_targets,
+    retry_mongo_operation,
     verify_migrated_account_history,
 )
 
@@ -142,6 +146,48 @@ class AsyncCursor:
 
 
 class LegacyMigrationSafetyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_transient_mongo_disconnect_is_retried(self) -> None:
+        operation = AsyncMock(side_effect=[AutoReconnect("connection closed"), "ok"])
+
+        result = await retry_mongo_operation(operation, attempts=3, base_delay_seconds=0)
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(operation.await_count, 2)
+
+    def test_replay_can_resume_from_persisted_target_batches(self) -> None:
+        initial = LegacyReplayState(migration_id="migration-1")
+        first = initial.consume_run(
+            site_id="api-5001",
+            run_id="run-1",
+            observed_at=datetime(2026, 7, 16, 1, 0, tzinfo=UTC),
+            samples=[_sample("sample-1", 40, cumulative=100)],
+        )
+        changed = initial.consume_run(
+            site_id="api-5001",
+            run_id="run-2",
+            observed_at=datetime(2026, 7, 16, 1, 3, tzinfo=UTC),
+            samples=[_sample("sample-2", 42, cumulative=102)],
+        )
+        restored = LegacyReplayState(migration_id="migration-1")
+
+        resume = restore_replay_from_targets(
+            restored,
+            [*first["change_batches"], *changed["change_batches"]],
+            checkpoint_documents=first["checkpoint_documents"],
+        )
+        next_result = restored.consume_run(
+            site_id="api-5001",
+            run_id="run-3",
+            observed_at=datetime(2026, 7, 16, 1, 6, tzinfo=UTC),
+            samples=[_sample("sample-3", 44, cumulative=104)],
+        )
+
+        self.assertEqual(resume["api-5001"], datetime(2026, 7, 16, 1, 3, tzinfo=UTC))
+        self.assertEqual(
+            next_result["change_batches"][0]["entries"][0]["changes"],
+            {"usage.codex_5h_used_percent": 44},
+        )
+
     def test_recent_source_is_not_idle(self) -> None:
         now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
 
@@ -230,6 +276,49 @@ class LegacyMigrationSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final_update["stage"], "converted")
         self.assertEqual(len(final_update["final_state_hashes"]), 1)
 
+    async def test_failed_conversion_resumes_from_latest_target_time(self) -> None:
+        first_at = datetime(2026, 7, 16, 1, 0, tzinfo=UTC)
+        all_samples = [
+            {**_sample("sample-1", 40, cumulative=100), "site_id": "api-5001", "probe_run_id": "run-1", "sampled_at": first_at},
+            {**_sample("sample-2", 42, cumulative=102), "site_id": "api-5001", "probe_run_id": "run-2", "sampled_at": first_at + timedelta(minutes=3)},
+            {**_sample("sample-3", 44, cumulative=104), "site_id": "api-5001", "probe_run_id": "run-3", "sampled_at": first_at + timedelta(minutes=6)},
+        ]
+        initial = LegacyReplayState(migration_id="migration-1")
+        first = initial.consume_run(site_id="api-5001", run_id="run-1", observed_at=first_at, samples=[all_samples[0]])
+        second = initial.consume_run(site_id="api-5001", run_id="run-2", observed_at=first_at + timedelta(minutes=3), samples=[all_samples[1]])
+        source = MigrationSourceCollection(all_samples)
+        migrations = SimpleNamespace(
+            find_one=AsyncMock(return_value={"_id": "migration-1", "stage": "conversion_failed"}),
+            update_one=AsyncMock(),
+        )
+        existing_batches = [*first["change_batches"], *second["change_batches"]]
+        changes = SimpleNamespace(
+            find=lambda *_args, **_kwargs: AsyncCursor(existing_batches),
+            bulk_write=AsyncMock(),
+        )
+        checkpoints = SimpleNamespace(
+            find=lambda *_args, **_kwargs: AsyncCursor(first["checkpoint_documents"]),
+            find_one=AsyncMock(return_value={"migration_id": "migration-1", "complete": True}),
+            bulk_write=AsyncMock(),
+        )
+        db = SimpleNamespace(
+            remote_account_probe_samples=source,
+            remote_account_history_migrations=migrations,
+            remote_account_change_batches=changes,
+            remote_account_daily_checkpoints=checkpoints,
+        )
+
+        result = await convert_legacy_account_history(
+            db,
+            migration_id="migration-1",
+            source_max_sampled_at=first_at + timedelta(minutes=6),
+        )
+
+        resumed_queries = [query for query in source.find_queries if "$gte" in query.get("sampled_at", {})]
+        self.assertTrue(resumed_queries)
+        self.assertEqual(resumed_queries[0]["sampled_at"]["$gte"], first_at + timedelta(minutes=3))
+        self.assertEqual(result["source_documents_processed"], 3)
+
     async def test_verified_source_is_deleted_in_requested_batches(self) -> None:
         now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
         source = InMemorySourceCollection(
@@ -288,6 +377,34 @@ class InMemorySourceCollection:
     async def count_documents(self, query):
         boundary = query.get("sampled_at", {}).get("$lte")
         return sum(1 for item in self.items if boundary is None or item["sampled_at"] <= boundary)
+
+
+class MigrationSourceCollection:
+    def __init__(self, items: list[dict[str, object]]) -> None:
+        self.items = items
+        self.find_queries: list[dict[str, object]] = []
+
+    async def count_documents(self, query):
+        return len(self._filtered(query))
+
+    async def distinct(self, _field, _query):
+        return sorted({str(item["site_id"]) for item in self.items})
+
+    def find(self, query, *_args, **_kwargs):
+        self.find_queries.append(query)
+        return AsyncCursor(self._filtered(query))
+
+    def _filtered(self, query):
+        site_id = query.get("site_id")
+        bounds = query.get("sampled_at", {})
+        return [
+            item
+            for item in self.items
+            if (not site_id or item.get("site_id") == site_id)
+            and ("$lt" not in bounds or item["sampled_at"] < bounds["$lt"])
+            and ("$gte" not in bounds or item["sampled_at"] >= bounds["$gte"])
+            and ("$lte" not in bounds or item["sampled_at"] <= bounds["$lte"])
+        ]
 
 
 def _sample(sample_id: str, used_percent: int, *, cumulative: int) -> dict[str, object]:

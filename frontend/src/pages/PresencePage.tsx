@@ -2,65 +2,76 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import { errorMessage, formatDateTime } from "../utils/format";
-
+import { formatOnlineMinutes, halfHourLabel, presenceSegmentTone } from "./presenceTimeline";
 
 type Props = {
   token: string;
   showToast: (message: string, isError?: boolean) => void;
 };
 
-type PresenceItem = {
-  id: string;
+type CommonPeriod = {
+  start: string;
+  end: string;
+  frequency_percent: number;
+};
+
+type PresenceDay = {
+  date: string;
+  online_minutes: number;
+  online_ratio_percent: number;
+  segments: Array<number | null>;
+};
+
+type PresenceUser = {
   user_id: string;
   user_name?: string;
   user_email?: string;
   role?: string;
-  client_id: string;
-  client_label?: string;
-  device_type?: string;
-  view?: string;
-  path?: string;
-  foreground_since_at?: string;
-  last_seen_at?: string;
+  status?: string;
+  is_online: boolean;
+  active_clients: number;
+  last_seen_at?: string | null;
+  online_minutes: number;
+  online_ratio_percent: number;
+  common_pattern: number[];
+  common_periods: CommonPeriod[];
+  daily_timeline: PresenceDay[];
 };
 
-type PresenceResponse = {
-  items: PresenceItem[];
+type PresenceHistoryResponse = {
+  items: PresenceUser[];
   total: number;
-  active_window_seconds: number;
-  observed_at?: string;
+  online_users: number;
+  days: number;
+  bucket_minutes: number;
+  start_at?: string;
+  end_at?: string;
+  timezone?: string;
 };
 
-const VIEW_LABELS: Record<string, string> = {
-  upload: "上传账号",
-  todos: "代办与错误账号处理",
-  "push-error-todos": "疑问账号分配面板",
-  accounts: "账号列表",
-  "available-pool": "可用池",
-  "reserve-pool": "使用备选池",
-  "api-pools": "API 账号池状态",
-  "event-records": "事件记录",
-  "alert-center": "异常告警",
-  "pool-lifecycle": "账号池管理",
-  "client-sites": "客户站点",
-  "agent-analysis": "Agent分析",
-  "agent-workbench": "Agent工作台",
-  "api-tokens": "系统管理",
-  presence: "前台在线",
-  users: "用户管理",
-  logs: "日志",
+const EMPTY_HISTORY: PresenceHistoryResponse = {
+  items: [],
+  total: 0,
+  online_users: 0,
+  days: 30,
+  bucket_minutes: 5,
 };
 
 export function PresencePage({ token, showToast }: Props) {
-  const [data, setData] = useState<PresenceResponse>({ items: [], total: 0, active_window_seconds: 60 });
+  const [history, setHistory] = useState<PresenceHistoryResponse>(EMPTY_HISTORY);
+  const [selectedUserId, setSelectedUserId] = useState("");
   const [loading, setLoading] = useState(false);
-  const userCount = useMemo(() => new Set(data.items.map((item) => item.user_id)).size, [data.items]);
+  const selectedUser = useMemo(
+    () => history.items.find((item) => item.user_id === selectedUserId) || history.items[0] || null,
+    [history.items, selectedUserId],
+  );
 
-  const loadPresence = async (notify = false) => {
+  const loadHistory = async (notify = false) => {
     setLoading(true);
     try {
-      const next = await api<PresenceResponse>("/presence", token);
-      setData(next);
+      const next = await api<PresenceHistoryResponse>("/presence/history", token);
+      setHistory(next);
+      setSelectedUserId((current) => next.items.some((item) => item.user_id === current) ? current : next.items[0]?.user_id || "");
     } catch (error) {
       if (notify) showToast(errorMessage(error), true);
       throw error;
@@ -70,97 +81,168 @@ export function PresencePage({ token, showToast }: Props) {
   };
 
   useEffect(() => {
-    loadPresence(true).catch(() => undefined);
+    loadHistory(true).catch(() => undefined);
   }, []);
 
-  usePageAutoRefresh(() => loadPresence(false), { intervalMs: 15_000 });
+  usePageAutoRefresh(() => loadHistory(false), { intervalMs: 60_000 });
 
   return (
     <section className="view presence-page">
       <div className="topbar">
         <div>
           <h2>前台在线</h2>
-          <p>浏览器前台活跃用户与客户端</p>
+          <p>最近 30 天 · 上海时间</p>
         </div>
-        <button disabled={loading} onClick={() => loadPresence(true).catch(() => undefined)} type="button">
+        <button disabled={loading} onClick={() => loadHistory(true).catch(() => undefined)} type="button">
           {loading ? "刷新中" : "刷新"}
         </button>
       </div>
 
       <div className="presence-summary" aria-label="在线概览">
-        <div><strong>{userCount}</strong><span>在线用户</span></div>
-        <div><strong>{data.total}</strong><span>活跃客户端</span></div>
+        <div><strong>{history.online_users}</strong><span>当前在线</span></div>
+        <div><strong>{history.total}</strong><span>检测用户</span></div>
+        <div><strong>{history.days}</strong><span>统计天数</span></div>
       </div>
 
-      <section className="panel presence-list-panel">
-        <div className="panel-header">
-          <div>
-            <h3>当前前台</h3>
-            <p>判定窗口 {data.active_window_seconds} 秒</p>
+      <div className="presence-workspace">
+        <aside className="presence-users" aria-label="用户在线概览">
+          <div className="presence-section-heading">
+            <h3>用户</h3>
+            <span>{history.total}</span>
           </div>
-        </div>
-        <div className="table-wrap">
-          <table className="presence-table">
-            <thead>
-              <tr>
-                <th>用户</th>
-                <th>客户端</th>
-                <th>当前页面</th>
-                <th>前台停留</th>
-                <th>最后心跳</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.items.map((item) => (
-                <tr key={item.id}>
-                  <td>
-                    <div className="presence-user-line"><span className="presence-dot" /><strong>{item.user_name || item.user_email || item.user_id}</strong></div>
-                    <div className="cell-sub">{item.user_email || "-"} · {item.role || "-"}</div>
-                  </td>
-                  <td>
-                    <div>{item.client_label || item.device_type || "未知客户端"}</div>
-                    <div className="cell-sub" title={item.client_id}>ID {shortClientId(item.client_id)}</div>
-                  </td>
-                  <td>
-                    <div>{VIEW_LABELS[item.view || ""] || item.view || "未知页面"}</div>
-                    <div className="cell-sub">{item.path || "-"}</div>
-                  </td>
-                  <td>
-                    <div>{formatElapsed(item.foreground_since_at)}</div>
-                    <div className="cell-sub">开始 {formatDateTime(item.foreground_since_at)}</div>
-                  </td>
-                  <td>{formatHeartbeat(item.last_seen_at)}</td>
-                </tr>
-              ))}
-              {!data.items.length && (
-                <tr>
-                  <td className="muted" colSpan={5}>{loading ? "加载中..." : "当前没有前台活跃用户"}</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+          <div className="presence-user-list">
+            {history.items.map((item) => (
+              <button
+                className={`presence-user-row ${selectedUser?.user_id === item.user_id ? "selected" : ""}`}
+                key={item.user_id}
+                onClick={() => setSelectedUserId(item.user_id)}
+                type="button"
+              >
+                <span className="presence-user-heading">
+                  <span className={`presence-dot ${item.is_online ? "online" : "offline"}`} />
+                  <strong>{item.user_name || item.user_email || item.user_id}</strong>
+                  <em>{item.role || "-"}</em>
+                </span>
+                <span className="presence-month-strip" aria-label={`${item.user_name || item.user_id} 30日在线概览`}>
+                  {item.daily_timeline.map((day) => (
+                    <i
+                      className={`presence-segment ${presenceSegmentTone(day.online_ratio_percent)}`}
+                      key={day.date}
+                      title={`${day.date} · ${formatOnlineMinutes(day.online_minutes)} · ${day.online_ratio_percent}%`}
+                    />
+                  ))}
+                </span>
+                <span className="presence-user-stats">
+                  <span>{formatOnlineMinutes(item.online_minutes)}</span>
+                  <span>{item.online_ratio_percent}%</span>
+                </span>
+              </button>
+            ))}
+            {!history.items.length && <div className="muted presence-empty">{loading ? "加载中..." : "暂无用户"}</div>}
+          </div>
+        </aside>
+
+        <main className="presence-detail">
+          {selectedUser ? (
+            <>
+              <header className="presence-detail-header">
+                <div>
+                  <div className="presence-detail-name">
+                    <span className={`presence-dot ${selectedUser.is_online ? "online" : "offline"}`} />
+                    <h3>{selectedUser.user_name || selectedUser.user_email || selectedUser.user_id}</h3>
+                    <span className="presence-role">{selectedUser.role || "-"}</span>
+                  </div>
+                  <p>{selectedUser.user_email || selectedUser.user_id}</p>
+                </div>
+                <div className="presence-current-state">
+                  <strong>{selectedUser.is_online ? "前台在线" : "当前离线"}</strong>
+                  <span>{selectedUser.is_online ? `${selectedUser.active_clients} 个客户端` : `最后心跳 ${formatDateTime(selectedUser.last_seen_at || undefined)}`}</span>
+                </div>
+              </header>
+
+              <div className="presence-detail-metrics">
+                <div><span>在线总时长</span><strong>{formatOnlineMinutes(selectedUser.online_minutes)}</strong></div>
+                <div><span>30日在线占比</span><strong>{selectedUser.online_ratio_percent}%</strong></div>
+                <div><span>常见在线时段</span><strong className="presence-period-text">{formatCommonPeriods(selectedUser.common_periods)}</strong></div>
+              </div>
+
+              <section className="presence-pattern-section">
+                <div className="presence-section-heading">
+                  <h3>常见在线时段</h3>
+                  <span>30 日半小时分布</span>
+                </div>
+                <TimelineAxis />
+                <div className="presence-pattern-strip">
+                  {selectedUser.common_pattern.map((value, index) => (
+                    <i
+                      className={`presence-segment ${presenceSegmentTone(value)}`}
+                      key={index}
+                      title={`${halfHourLabel(index)}-${halfHourLabel(index + 1)} · 出现频率 ${value}%`}
+                    />
+                  ))}
+                </div>
+                <div className="presence-legend">
+                  <span><i className="presence-segment offline" />离线</span>
+                  <span><i className="presence-segment low" />偶尔在线</span>
+                  <span><i className="presence-segment medium" />经常在线</span>
+                  <span><i className="presence-segment high" />高频在线</span>
+                </div>
+              </section>
+
+              <section className="presence-history-section">
+                <div className="presence-section-heading">
+                  <h3>30 天在线时间段</h3>
+                  <span>每格 30 分钟 · 5 分钟采样</span>
+                </div>
+                <div className="presence-timeline-scroll">
+                  <div className="presence-timeline">
+                    <TimelineAxis withLabel />
+                    {selectedUser.daily_timeline.map((day) => (
+                      <div className="presence-day-row" key={day.date}>
+                        <span className="presence-day-label">{formatDayLabel(day.date)}</span>
+                        <div className="presence-day-segments">
+                          {day.segments.map((value, index) => (
+                            <i
+                              aria-label={`${day.date} ${halfHourLabel(index)} 到 ${halfHourLabel(index + 1)} ${value === null ? "尚未到达" : `在线 ${value}%`}`}
+                              className={`presence-segment ${presenceSegmentTone(value)}`}
+                              key={index}
+                              title={`${day.date} · ${halfHourLabel(index)}-${halfHourLabel(index + 1)} · ${value === null ? "尚未到达" : `在线约 ${Math.round(value * 0.3)} 分钟`}`}
+                            />
+                          ))}
+                        </div>
+                        <span className="presence-day-total">{formatOnlineMinutes(day.online_minutes)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </section>
+            </>
+          ) : (
+            <div className="presence-detail-empty">{loading ? "加载中..." : "暂无在线历史"}</div>
+          )}
+        </main>
+      </div>
     </section>
   );
 }
 
-function shortClientId(value: string) {
-  return value.length > 12 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value;
+function TimelineAxis({ withLabel = false }: { withLabel?: boolean }) {
+  return (
+    <div className={`presence-time-axis ${withLabel ? "with-label" : ""}`}>
+      {withLabel && <span />}
+      <div><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div>
+      {withLabel && <span />}
+    </div>
+  );
 }
 
-function formatElapsed(value?: string) {
-  const timestamp = value ? new Date(value).getTime() : Number.NaN;
-  if (!Number.isFinite(timestamp)) return "-";
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  if (seconds < 60) return `${seconds} 秒`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟`;
-  return `${Math.floor(seconds / 3600)} 小时 ${Math.floor((seconds % 3600) / 60)} 分钟`;
+function formatCommonPeriods(periods: CommonPeriod[]) {
+  if (!periods.length) return "暂无稳定时段";
+  return periods.slice(0, 3).map((period) => `${period.start}-${period.end}`).join(" · ");
 }
 
-function formatHeartbeat(value?: string) {
-  const timestamp = value ? new Date(value).getTime() : Number.NaN;
-  if (!Number.isFinite(timestamp)) return "-";
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  return seconds < 10 ? "刚刚" : `${seconds} 秒前`;
+function formatDayLabel(value: string) {
+  const date = new Date(`${value}T00:00:00+08:00`);
+  const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "short", timeZone: "Asia/Shanghai" }).format(date);
+  return `${value.slice(5).replace("-", "/")} ${weekday}`;
 }
