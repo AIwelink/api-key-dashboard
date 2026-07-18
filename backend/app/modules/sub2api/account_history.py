@@ -42,6 +42,7 @@ def build_history_change(
     remote_account_id: Any,
     previous: dict[str, Any],
     current: dict[str, Any],
+    occurrence_id: str | None = None,
 ) -> dict[str, Any] | None:
     previous = _normalized_dynamic_snapshot(previous)
     current = _normalized_dynamic_snapshot(current)
@@ -60,7 +61,7 @@ def build_history_change(
         return None
     previous_hash = snapshot_hash(previous)
     new_hash = snapshot_hash(current)
-    event_source = f"{identity_id}:{previous_hash}:{new_hash}"
+    event_source = f"{identity_id}:{previous_hash}:{new_hash}:{occurrence_id or ''}"
     return {
         "event_id": hashlib.sha256(event_source.encode("utf-8")).hexdigest(),
         "identity_id": identity_id,

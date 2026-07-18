@@ -449,6 +449,7 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
                 account=account,
                 identity=previous_identity,
                 setting=setting,
+                occurrence_id=run_id,
             )
             if history_change is not None:
                 history_changes.append(history_change)
@@ -930,6 +931,7 @@ def _prepare_history_change(
     account: dict[str, Any],
     identity: dict[str, Any] | None,
     setting: dict[str, Any],
+    occurrence_id: str | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     current = dynamic_snapshot(account)
     baseline = (identity or {}).get("history_baseline_snapshot")
@@ -945,6 +947,7 @@ def _prepare_history_change(
             remote_account_id=account.get("remote_account_id"),
             previous=baseline,
             current=current,
+            occurrence_id=occurrence_id,
         ),
         None,
     )

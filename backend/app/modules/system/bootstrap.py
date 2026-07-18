@@ -26,8 +26,11 @@ async def ensure_capacity_sample_indexes(db: AsyncIOMotorDatabase) -> None:
 async def ensure_account_history_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.remote_account_change_batches.create_index([("site_id", 1), ("observed_at", -1)])
     await db.remote_account_change_batches.create_index("expires_at", expireAfterSeconds=0)
+    await db.remote_account_change_batches.create_index([("migration_id", 1), ("observed_at", 1)])
     await db.remote_account_daily_checkpoints.create_index([("site_id", 1), ("local_date", -1)])
     await db.remote_account_daily_checkpoints.create_index("expires_at", expireAfterSeconds=0)
+    await db.remote_account_daily_checkpoints.create_index([("migration_id", 1), ("local_date", 1)])
+    await db.remote_account_history_migrations.create_index([("updated_at", -1)])
 
 
 async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:

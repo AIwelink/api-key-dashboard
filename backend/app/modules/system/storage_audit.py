@@ -145,6 +145,7 @@ def simulate_account_change_batches(
                 remote_account_id=sample.get("remote_account_id"),
                 previous=previous,
                 current=current,
+                occurrence_id=f"{run['site_id']}:{run['run_id']}",
             )
             if change is not None and (cutoff_utc is None or run["observed_at"] >= cutoff_utc):
                 changes.append(change)

@@ -71,6 +71,22 @@ class AccountHistoryChangeTests(unittest.TestCase):
         assert change is not None
         self.assertEqual(change["changes"], {"usage.codex_7d_used_percent": 0})
 
+    def test_repeated_transition_is_unique_across_runs_but_stable_within_run(self) -> None:
+        values = {
+            "identity_id": "api-5001:user@example.com",
+            "remote_account_id": 953,
+            "previous": {"usage": {"value": 40}, "subscription": {}},
+            "current": {"usage": {"value": 42}, "subscription": {}},
+        }
+
+        first = build_history_change(**values, occurrence_id="run-1")
+        first_retry = build_history_change(**values, occurrence_id="run-1")
+        repeated_later = build_history_change(**values, occurrence_id="run-2")
+
+        assert first is not None and first_retry is not None and repeated_later is not None
+        self.assertEqual(first["event_id"], first_retry["event_id"])
+        self.assertNotEqual(first["event_id"], repeated_later["event_id"])
+
 
 class AccountHistoryChunkTests(unittest.TestCase):
     def test_splits_after_five_hundred_entries(self) -> None:
@@ -314,9 +330,11 @@ class AccountHistoryIndexTests(unittest.IsolatedAsyncioTestCase):
     async def test_change_and_checkpoint_indexes_include_ttl_and_site_time(self) -> None:
         changes = SimpleNamespace(create_index=AsyncMock())
         checkpoints = SimpleNamespace(create_index=AsyncMock())
+        migrations = SimpleNamespace(create_index=AsyncMock())
         db = SimpleNamespace(
             remote_account_change_batches=changes,
             remote_account_daily_checkpoints=checkpoints,
+            remote_account_history_migrations=migrations,
         )
 
         await bootstrap.ensure_account_history_indexes(db)
@@ -325,14 +343,17 @@ class AccountHistoryIndexTests(unittest.IsolatedAsyncioTestCase):
             [
                 call([("site_id", 1), ("observed_at", -1)]),
                 call("expires_at", expireAfterSeconds=0),
+                call([("migration_id", 1), ("observed_at", 1)]),
             ]
         )
         checkpoints.create_index.assert_has_awaits(
             [
                 call([("site_id", 1), ("local_date", -1)]),
                 call("expires_at", expireAfterSeconds=0),
+                call([("migration_id", 1), ("local_date", 1)]),
             ]
         )
+        migrations.create_index.assert_awaited_once_with([("updated_at", -1)])
 
 
 if __name__ == "__main__":
