@@ -880,6 +880,64 @@ legend {
   border-top: 1px solid var(--line);
 }
 
+.client-metric-section {
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.client-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  border-block: 1px solid var(--line);
+}
+
+.client-metric-grid > div {
+  min-width: 0;
+  padding: 12px 14px;
+  border-left: 1px solid var(--line);
+}
+
+.client-metric-grid > div:first-child {
+  border-left: 0;
+}
+
+.client-metric-grid span {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.client-metric-grid strong {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.client-metric-grid.is-success strong {
+  color: var(--success);
+}
+
+.client-metric-grid.is-error strong {
+  color: var(--danger);
+}
+
+.client-metric-grid.is-muted strong {
+  color: var(--muted);
+}
+
+.client-metric-error {
+  margin-top: 10px;
+  padding-left: 10px;
+  border-left: 3px solid var(--danger);
+  color: var(--danger);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .client-site-database-header {
   margin-bottom: 14px;
 }
@@ -4544,6 +4602,23 @@ code {
 
   .accounts-page {
     padding-right: 0;
+  }
+
+  .client-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .client-metric-grid > div {
+    border-bottom: 1px solid var(--line);
+  }
+
+  .client-metric-grid > div:nth-child(odd) {
+    border-left: 0;
+  }
+
+  .client-metric-grid > div:last-child {
+    grid-column: 1 / -1;
+    border-bottom: 0;
   }
 
   .account-view-menu {

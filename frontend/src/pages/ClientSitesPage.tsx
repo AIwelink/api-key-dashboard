@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import { errorMessage, formatDateTime } from "../utils/format";
+import { clientMetricDisplay, type ClientMetricStatus } from "./clientMetricStatus";
 
 
 type Props = {
@@ -53,6 +55,15 @@ type DatabaseTestResult = {
   tested_at: string;
 };
 
+type MetricSampleResult = {
+  ok: boolean;
+  site_id: string;
+  quality: ClientMetricStatus["last_quality"];
+  rpm: number | null;
+  tpm: number | null;
+  error_code?: string | null;
+};
+
 type ConfirmState = {
   title: string;
   message: string;
@@ -79,6 +90,8 @@ export function ClientSitesPage({ token, showToast }: Props) {
   const [form, setForm] = useState<ClientSiteForm>(emptyForm);
   const [saving, setSaving] = useState(false);
   const [testingDatabase, setTestingDatabase] = useState(false);
+  const [metricStatus, setMetricStatus] = useState<ClientMetricStatus | null>(null);
+  const [samplingMetric, setSamplingMetric] = useState(false);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 
   const loadSites = async () => {
@@ -87,22 +100,37 @@ export function ClientSitesPage({ token, showToast }: Props) {
     setSelectedId((current) => current || data.items[0]?.id || "");
   };
 
+  const loadMetricStatus = async (siteId: string) => {
+    const status = await api<ClientMetricStatus>(`/client-sites/${encodeURIComponent(siteId)}/metrics/status`, token);
+    setMetricStatus(status);
+  };
+
   useEffect(() => {
     loadSites().catch((error) => showToast(errorMessage(error), true));
   }, []);
 
   useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedId) {
+      setMetricStatus(null);
+      return;
+    }
     const site = sites.find((item) => item.id === selectedId);
     if (!site) return;
     setEditingId(site.id);
     setForm(siteToForm(site));
+    loadMetricStatus(site.id).catch((error) => showToast(errorMessage(error), true));
   }, [selectedId, sites]);
+
+  usePageAutoRefresh(
+    () => selectedId ? loadMetricStatus(selectedId) : undefined,
+    { enabled: Boolean(selectedId), paused: samplingMetric },
+  );
 
   const startCreate = () => {
     setSelectedId("");
     setEditingId(null);
     setForm(emptyForm);
+    setMetricStatus(null);
   };
 
   const save = async () => {
@@ -173,6 +201,42 @@ export function ClientSitesPage({ token, showToast }: Props) {
     }
   };
 
+  const sampleMetric = async () => {
+    if (!editingId) {
+      showToast("请先保存客户站点", true);
+      return;
+    }
+    setSamplingMetric(true);
+    try {
+      const result = await api<MetricSampleResult>(`/client-sites/${encodeURIComponent(editingId)}/metrics/sample`, token, {
+        method: "POST",
+      });
+      await loadMetricStatus(editingId);
+      if (result.ok) {
+        const display = clientMetricDisplay({
+          site_id: editingId,
+          client_type: form.client_type,
+          last_attempt_at: null,
+          last_success_at: null,
+          last_bucket_at: null,
+          last_quality: result.quality,
+          last_rpm: result.rpm,
+          last_tpm: result.tpm,
+          consecutive_failures: 0,
+          last_error: null,
+          updated_at: null,
+        });
+        showToast(`采样完成：RPM ${display.rpm} · TPM ${display.tpm}`);
+      } else {
+        showToast(`当前分钟无数据：${result.error_code || result.quality || "采样失败"}`, true);
+      }
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setSamplingMetric(false);
+    }
+  };
+
   const confirmDelete = () => {
     if (!editingId) return;
     setConfirmState({
@@ -207,6 +271,7 @@ export function ClientSitesPage({ token, showToast }: Props) {
   };
 
   const selectedSite = sites.find((site) => site.id === selectedId) || null;
+  const metricDisplay = clientMetricDisplay(metricStatus);
 
   return (
     <section className="view accounts-page client-sites-page">
@@ -400,6 +465,49 @@ export function ClientSitesPage({ token, showToast }: Props) {
                 <span>{selectedSite.last_database_test_error || "未返回错误信息"}</span>
               )}
             </div>
+          )}
+        </div>
+
+        <div className="client-metric-section">
+          <div className="panel-header client-site-database-header">
+            <div>
+              <h3>分钟流量采样</h3>
+              <p>每分钟记录一次站点整体 RPM 和 TPM；缺失数据会明确标注，不进行补全。</p>
+            </div>
+            <button
+              className="ghost compact-button"
+              type="button"
+              onClick={sampleMetric}
+              disabled={!editingId || !selectedSite?.api_key_configured || selectedSite?.status !== "active" || saving || samplingMetric}
+            >
+              {samplingMetric ? "采样中..." : "立即采样"}
+            </button>
+          </div>
+
+          <div className={`client-metric-grid is-${metricDisplay.tone}`}>
+            <div>
+              <span>RPM</span>
+              <strong>{metricDisplay.rpm}</strong>
+            </div>
+            <div>
+              <span>TPM</span>
+              <strong>{metricDisplay.tpm}</strong>
+            </div>
+            <div>
+              <span>数据质量</span>
+              <strong>{metricDisplay.quality}</strong>
+            </div>
+            <div>
+              <span>连续失败</span>
+              <strong>{metricDisplay.failures}</strong>
+            </div>
+            <div>
+              <span>最近分钟</span>
+              <strong>{metricStatus?.last_bucket_at ? formatDateTime(metricStatus.last_bucket_at) : "-"}</strong>
+            </div>
+          </div>
+          {metricStatus?.last_error && metricStatus.last_quality !== "complete" && (
+            <div className="client-metric-error">{metricStatus.last_error}</div>
           )}
         </div>
 

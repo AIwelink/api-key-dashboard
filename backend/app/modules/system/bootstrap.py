@@ -15,6 +15,17 @@ async def ensure_tpm_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.sub2api_tpm_samples.create_index([("site_id", 1), ("group_id", 1), ("sampled_at", -1)])
 
 
+async def ensure_client_metric_indexes(db: AsyncIOMotorDatabase) -> None:
+    await db.client_minute_metrics.create_index(
+        [("site_id", 1), ("bucket_at", 1)],
+        unique=True,
+    )
+    await db.client_minute_metrics.create_index([("site_id", 1), ("bucket_at", -1)])
+    await db.client_minute_metrics.create_index([("site_id", 1), ("quality", 1), ("bucket_at", -1)])
+    await db.client_minute_metrics.create_index("expires_at", expireAfterSeconds=0)
+    await db.client_metric_sampler_state.create_index("updated_at")
+
+
 async def ensure_capacity_sample_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.sub2api_capacity_samples.create_index(
         [("site_id", 1), ("group_id", 1), ("bucket_at", 1)],
@@ -123,6 +134,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.client_sites.create_index("status")
     await db.client_sites.create_index("client_type")
     await db.client_sites.create_index("created_at")
+    await ensure_client_metric_indexes(db)
     await db.sub2api_groups_cache.create_index([("site_id", 1), ("group_id", 1)], unique=True)
     await db.sub2api_accounts_cache.create_index([("site_id", 1), ("group_ids", 1), ("status", 1)])
     await db.sub2api_accounts_cache.create_index([("site_id", 1), ("group_ids", 1), ("created_at", -1), ("sub2api_account_id", -1)])

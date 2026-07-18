@@ -10,7 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from app.config import PROJECT_ROOT, get_settings
 from app.database import close_mongo_connection, connect_to_mongo, get_db
 from app.logging_config import RequestLoggingMiddleware, cleanup_old_logs, log_cleanup_loop, setup_logging
-from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, client_sites, event_records, import_batches, imports, notifications, presence, settings, sub2api_sites, sync, todo_items, users
+from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, client_metrics, client_sites, event_records, import_batches, imports, notifications, presence, settings, sub2api_sites, sync, todo_items, users
+from app.modules.client_metrics.sampler import client_metric_sampler_loop
 from app.modules.system.bootstrap import ensure_bootstrap_data, ensure_indexes
 from app.modules.agent.scheduler import start_agent_scheduler, stop_agent_scheduler
 from app.modules.sub2api.account_probe import probe_scheduler_loop
@@ -42,6 +43,7 @@ async def lifespan(app_instance: FastAPI):
     account_probe_task = asyncio.create_task(probe_scheduler_loop(db))
     tpm_sampler_task = asyncio.create_task(tpm_sampler_loop(db))
     capacity_sampler_task = asyncio.create_task(capacity_sampler_loop(db))
+    client_metric_sampler_task = asyncio.create_task(client_metric_sampler_loop(db))
     cleanup_task = asyncio.create_task(log_cleanup_loop(settings_obj))
     await start_agent_scheduler(app_instance)
     try:
@@ -57,6 +59,7 @@ async def lifespan(app_instance: FastAPI):
             account_probe_task,
             tpm_sampler_task,
             capacity_sampler_task,
+            client_metric_sampler_task,
             cleanup_task,
         )
         for task in background_tasks:
@@ -90,6 +93,7 @@ app.include_router(imports.router, prefix="/api")
 app.include_router(api_pools.router, prefix="/api")
 app.include_router(api_tokens.router, prefix="/api")
 app.include_router(client_sites.router, prefix="/api")
+app.include_router(client_metrics.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")
 app.include_router(event_records.router, prefix="/api")
 app.include_router(sync.router, prefix="/api")
