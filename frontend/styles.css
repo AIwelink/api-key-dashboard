@@ -3852,6 +3852,12 @@ button.ghost.success-button:hover {
   font-size: 12px;
 }
 
+.presence-history-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .presence-user-list {
   display: grid;
 }
@@ -3911,6 +3917,7 @@ button.ghost.success-button:hover {
   height: 13px;
   overflow: hidden;
   border-radius: 3px;
+  background: #f4f6f5;
 }
 
 .presence-month-strip .presence-segment {
@@ -4006,6 +4013,7 @@ button.ghost.success-button:hover {
   height: 26px;
   overflow: hidden;
   border-radius: 3px;
+  background: #f4f6f5;
 }
 
 .presence-time-axis {
@@ -4036,9 +4044,13 @@ button.ghost.success-button:hover {
   height: 8px;
 }
 
+.presence-legend .presence-segment.offline {
+  background: #e1e5e2;
+}
+
 .presence-day-bars {
   display: grid;
-  gap: 5px;
+  gap: 9px;
 }
 
 .presence-day-axis-row,
@@ -4058,6 +4070,7 @@ button.ghost.success-button:hover {
 }
 
 .presence-day-date {
+  color: #505a54;
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
@@ -4073,10 +4086,11 @@ button.ghost.success-button:hover {
 .presence-day-segments {
   grid-template-columns: repeat(48, minmax(4px, 1fr));
   gap: 0;
-  height: 13px;
+  height: 11px;
   overflow: hidden;
   border-radius: 3px;
-  background: #d9ddda;
+  border: 1px solid #e6eae7;
+  background: #f6f8f7;
 }
 
 .presence-segment {
@@ -4088,23 +4102,23 @@ button.ghost.success-button:hover {
 }
 
 .presence-segment.future {
-  background: #f2f4f3;
+  background: #fafbfa;
 }
 
 .presence-segment.offline {
-  background: #d9ddda;
+  background: transparent;
 }
 
 .presence-segment.low {
-  background: #c3dfcd;
+  background: #d4e8db;
 }
 
 .presence-segment.medium {
-  background: #73b38a;
+  background: #80b792;
 }
 
 .presence-segment.high {
-  background: #28784d;
+  background: #2d7c4f;
 }
 
 .presence-empty,

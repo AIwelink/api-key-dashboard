@@ -26,3 +26,8 @@ export function halfHourLabel(slotIndex: number) {
 export function presenceDaysRecentFirst<T extends { date: string }>(days: readonly T[]): T[] {
   return [...days].sort((left, right) => right.date.localeCompare(left.date));
 }
+
+export function visiblePresenceDays<T extends { date: string }>(days: readonly T[], showAll: boolean, recentDays = 7): T[] {
+  const ordered = presenceDaysRecentFirst(days);
+  return showAll ? ordered : ordered.slice(0, recentDays);
+}

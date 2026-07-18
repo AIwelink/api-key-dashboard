@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import { errorMessage, formatDateTime } from "../utils/format";
-import { formatOnlineMinutes, halfHourLabel, presenceDaysRecentFirst, presenceSegmentTone } from "./presenceTimeline";
+import { formatOnlineMinutes, halfHourLabel, presenceDaysRecentFirst, presenceSegmentTone, visiblePresenceDays } from "./presenceTimeline";
 
 type Props = {
   token: string;
@@ -67,6 +67,7 @@ const EMPTY_HISTORY: PresenceHistoryResponse = {
 export function PresencePage({ token, showToast }: Props) {
   const [history, setHistory] = useState<PresenceHistoryResponse>(EMPTY_HISTORY);
   const [selectedUserId, setSelectedUserId] = useState("");
+  const [showAllDays, setShowAllDays] = useState(false);
   const [loading, setLoading] = useState(false);
   const selectedUser = useMemo(
     () => history.items.find((item) => item.user_id === selectedUserId) || history.items[0] || null,
@@ -90,6 +91,10 @@ export function PresencePage({ token, showToast }: Props) {
   useEffect(() => {
     loadHistory(true).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    setShowAllDays(false);
+  }, [selectedUserId]);
 
   usePageAutoRefresh(() => loadHistory(false), { intervalMs: 60_000 });
 
@@ -209,7 +214,14 @@ export function PresencePage({ token, showToast }: Props) {
               <section className="presence-history-section">
                 <div className="presence-section-heading">
                   <h3>在线时间段</h3>
-                  <span>最近日期优先 · 5 分钟采样</span>
+                  <div className="presence-history-heading-actions">
+                    <span>最近日期优先 · 5 分钟采样</span>
+                    {selectedUser.daily_timeline.length > 7 && (
+                      <button className="ghost compact-button" onClick={() => setShowAllDays((current) => !current)} type="button">
+                        {showAllDays ? "收起到最近7天" : `展开全部${selectedUser.daily_timeline.length}天`}
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div className="presence-day-bars">
                   <div className="presence-day-axis-row">
@@ -217,7 +229,7 @@ export function PresencePage({ token, showToast }: Props) {
                     <TimelineAxis />
                     <span />
                   </div>
-                  {presenceDaysRecentFirst(selectedUser.daily_timeline).map((day) => (
+                  {visiblePresenceDays(selectedUser.daily_timeline, showAllDays).map((day) => (
                     <div className="presence-day-bar" key={day.date}>
                       <strong className="presence-day-date">{formatDayLabel(day.date)}</strong>
                       <div className="presence-day-segments">
