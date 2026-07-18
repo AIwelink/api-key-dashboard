@@ -5357,9 +5357,55 @@ code {
 }
 
 .event-timeline,
-.event-session-list {
+.event-session-list,
+.event-change-list {
   display: grid;
   gap: 6px;
+}
+
+.event-change-item {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  padding: 7px 0;
+}
+
+.event-change-item time {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.event-change-item > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  min-width: 0;
+}
+
+.event-change-item span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.event-change-item b {
+  font-size: 12px;
+}
+
+.event-change-item code {
+  max-width: 360px;
+  overflow: hidden;
+  color: var(--text);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event-change-item code.removed {
+  color: var(--danger);
 }
 
 .event-timeline-item,
@@ -6041,7 +6087,8 @@ code {
   }
 
   .event-timeline-item,
-  .event-session-item {
+  .event-session-item,
+  .event-change-item {
     grid-template-columns: 1fr;
     gap: 2px;
   }

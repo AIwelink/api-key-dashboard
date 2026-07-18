@@ -26,6 +26,16 @@ def bug_team_account(*, used_percent: float = 54) -> dict:
 
 
 class BugTeamCapacityTests(unittest.TestCase):
+    def test_group_cache_stores_capacity_summary_only_at_document_root(self) -> None:
+        group = {"id": 3, "name": "plus", "capacity_summary": {"stale": True}}
+        summary = {"health_status": "healthy"}
+
+        stored = cache._group_cache_snapshot(group)
+        response = cache._group_with_capacity_summary(stored, summary)
+
+        self.assertNotIn("capacity_summary", stored)
+        self.assertEqual(response["capacity_summary"], summary)
+
     def test_refill_options_are_bound_to_primary_pool_type(self) -> None:
         limits = normalize_capacity_limits(None)
 

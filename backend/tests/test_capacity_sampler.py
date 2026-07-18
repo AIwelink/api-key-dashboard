@@ -23,7 +23,7 @@ class AsyncCursor:
 
 
 class CapacitySnapshotTests(unittest.IsolatedAsyncioTestCase):
-    async def test_group_snapshot_uses_five_minute_bucket_and_preserves_full_summary(self) -> None:
+    async def test_group_snapshot_uses_five_minute_bucket_and_compact_scalar_metrics(self) -> None:
         samples = SimpleNamespace(replace_one=AsyncMock())
         db = SimpleNamespace(sub2api_capacity_samples=samples)
         sampled_at = datetime(2026, 7, 18, 6, 53, 42, tzinfo=UTC)
@@ -43,7 +43,28 @@ class CapacitySnapshotTests(unittest.IsolatedAsyncioTestCase):
             "dynamic_runway_hours": 16,
             "concurrency_coverage": 3.4,
             "pool_active_normal_accounts": 6,
-            "type_summary": {"plus": {"available_accounts": 126}},
+            "account_type": "plus",
+            "type_summary": {
+                "plus": {
+                    "available_accounts": 126,
+                    "available_5h_accounts": 120,
+                    "five_hour_capacity_usd": 13860,
+                    "five_hour_dynamic_remaining_usd": 12000,
+                    "five_hour_actual_remaining_usd": 11000,
+                    "seven_day_capacity_usd": 13860,
+                    "seven_day_dynamic_remaining_usd": 10000,
+                    "seven_day_actual_remaining_usd": 9000,
+                },
+                "k12": {"available_accounts": 0},
+                "total": {"available_accounts": 126},
+            },
+            "capacity_limits": {
+                "plus": {"five_hour_usd": 110, "seven_day_usd": 110},
+                "k12": {"five_hour_usd": 20, "seven_day_usd": 100},
+            },
+            "recommended_refill_options": {
+                "plus": {"account_type": "plus", "recommended_refill_accounts": 4},
+            },
             "calculated_at": sampled_at,
         }
 
@@ -67,11 +88,45 @@ class CapacitySnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(document["bucket_at"], bucket_at)
         self.assertEqual(document["sampled_at"], sampled_at)
         self.assertEqual(document["account_cache_fetched_at"], fetched_at)
-        self.assertEqual(document["capacity_summary"], summary)
-        self.assertEqual(document["group"]["name"], "plus-pool-01")
-        self.assertNotIn("capacity_summary", document["group"])
-        self.assertEqual(document["schema_version"], 1)
-        self.assertEqual(document["expires_at"], sampled_at + timedelta(days=180))
+        self.assertEqual(
+            document["metrics"],
+            {
+                "health_status": "abundant",
+                "dynamic_runway_hours": 16,
+                "concurrency_coverage": 3.4,
+                "pool_active_normal_accounts": 6,
+                "account_type": "plus",
+                "calculated_at": sampled_at,
+            },
+        )
+        self.assertEqual(
+            document["dimensions"],
+            {
+                "account_types": [
+                    {
+                        "account_type": "plus",
+                        "available_accounts": 126,
+                        "available_5h_accounts": 120,
+                        "five_hour_capacity_usd": 13860,
+                        "five_hour_dynamic_remaining_usd": 12000,
+                        "five_hour_actual_remaining_usd": 11000,
+                        "seven_day_capacity_usd": 13860,
+                        "seven_day_dynamic_remaining_usd": 10000,
+                        "seven_day_actual_remaining_usd": 9000,
+                    }
+                ],
+                "capacity_limits": [
+                    {"account_type": "plus", "five_hour_usd": 110, "seven_day_usd": 110},
+                ],
+                "refill_options": [
+                    {"account_type": "plus", "recommended_refill_accounts": 4},
+                ],
+            },
+        )
+        self.assertNotIn("capacity_summary", document)
+        self.assertNotIn("group", document)
+        self.assertEqual(document["schema_version"], 2)
+        self.assertEqual(document["expires_at"], sampled_at + timedelta(days=30))
         self.assertEqual(result["sample"]["_id"], document["_id"])
 
 

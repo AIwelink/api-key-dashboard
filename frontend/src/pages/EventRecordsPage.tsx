@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import { errorMessage, formatDateTime, pretty, text } from "../utils/format";
+import { changeFieldLabel, formatChangeValue, type AccountHistoryChange } from "./eventRecordHistory";
 
 type Props = {
   token: string;
@@ -142,6 +143,7 @@ type AccountDetail = {
   sessions: Array<Record<string, unknown>>;
   events: EventRecord[];
   samples: Array<Record<string, unknown>>;
+  changes: AccountHistoryChange[];
   raw?: Record<string, unknown>;
 };
 
@@ -907,6 +909,35 @@ function AccountDetailDrawer({ detail, loading, onClose }: { detail: AccountDeta
                     <em>{displayStatus(event.current_status)} · {event.current_error_message || event.raw_excerpt || "-"}</em>
                   </div>
                 ))}
+              </div>
+            </section>
+            <section>
+              <h4>动态变化</h4>
+              <div className="event-change-list">
+                {(detail.changes || []).map((change) => {
+                  const changedValues = Object.entries(change.changes || {});
+                  const removedFields = change.unset || [];
+                  return (
+                    <div className="event-change-item" key={change.event_id || `${change.batch_id}:${change.observed_at}`}>
+                      <time>{formatDateTime(change.observed_at)}</time>
+                      <div>
+                        {changedValues.map(([path, value]) => (
+                          <span key={path} title={path}>
+                            <b>{changeFieldLabel(path)}</b>
+                            <code>{formatChangeValue(value)}</code>
+                          </span>
+                        ))}
+                        {removedFields.map((path) => (
+                          <span key={`unset:${path}`} title={path}>
+                            <b>{changeFieldLabel(path)}</b>
+                            <code className="removed">已移除</code>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+                {!detail.changes?.length && <div className="muted">暂无动态变化记录</div>}
               </div>
             </section>
             <section>

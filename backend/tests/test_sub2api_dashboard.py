@@ -39,5 +39,42 @@ class DashboardRefreshConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["trend_points"], 4)
 
 
+class DashboardStorageTests(unittest.IsolatedAsyncioTestCase):
+    async def test_normalized_dashboard_documents_do_not_repeat_raw_payloads(self) -> None:
+        trends = SimpleNamespace(bulk_write=AsyncMock())
+        models = SimpleNamespace(bulk_write=AsyncMock())
+        snapshots = SimpleNamespace(replace_one=AsyncMock())
+        db = SimpleNamespace(
+            sub2api_dashboard_trends=trends,
+            sub2api_dashboard_models=models,
+            sub2api_dashboard_snapshots=snapshots,
+        )
+        snapshot = {
+            "generated_at": "2026-07-18T06:53:00Z",
+            "granularity": "hour",
+            "start_date": "2026-07-17",
+            "end_date": "2026-07-18",
+            "trend": [{"date": "2026-07-18 06:00:00", "requests": 12, "cost": 3.5, "unknown": "large"}],
+            "models": [{"model": "gpt-5", "requests": 12, "cost": 3.5, "unknown": "large"}],
+            "stats": {"requests": 12, "large_nested_payload": ["unused"] * 20},
+        }
+
+        await dashboard.store_dashboard_snapshot(
+            db,
+            site_id="api-5001",
+            group_id=3,
+            range_type="recent_hours",
+            snapshot=snapshot,
+        )
+
+        trend_operation = trends.bulk_write.await_args.args[0][0]
+        model_operation = models.bulk_write.await_args.args[0][0]
+        self.assertNotIn("raw", trend_operation._doc)
+        self.assertNotIn("raw", model_operation._doc)
+        snapshot_document = snapshots.replace_one.await_args.args[1]
+        self.assertNotIn("raw", snapshot_document)
+        self.assertEqual(snapshot_document["trend_points"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

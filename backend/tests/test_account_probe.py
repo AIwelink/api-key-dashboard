@@ -232,5 +232,94 @@ class OfficialUsageRefreshTests(unittest.TestCase):
         self.assertEqual(result["confirmed_account_types"], ["pro"])
 
 
+class AccountProbeSubscriptionTests(unittest.TestCase):
+    def test_subscription_timestamps_are_normalized_before_comparison(self) -> None:
+        normalized = account_probe._normalize_probe_account(
+            {
+                "id": 953,
+                "email": "person@example.com",
+                "credentials": {"expires_at": "2026-08-01T00:00:00Z"},
+                "extra": {
+                    "chatgpt_subscription_active_until": "2026-08-01T08:00:00+08:00",
+                    "chatgpt_subscription_last_checked": "2026-07-18T06:30:00Z",
+                },
+            }
+        )
+
+        self.assertEqual(
+            normalized["subscription_snapshot"],
+            {
+                "chatgpt_subscription_active_until": datetime(2026, 8, 1, 0, 0, tzinfo=UTC),
+                "chatgpt_subscription_last_checked": datetime(2026, 7, 18, 6, 30, tzinfo=UTC),
+                "credential_expires_at": datetime(2026, 8, 1, 0, 0, tzinfo=UTC),
+            },
+        )
+
+    def test_first_observation_initializes_history_without_change_event(self) -> None:
+        account = {
+            "normalized_email": "person@example.com",
+            "remote_account_id": 953,
+            "usage_snapshot": {"codex_5h_used_percent": 42},
+            "subscription_snapshot": {},
+        }
+
+        change, baseline = account_probe._prepare_history_change(
+            site_id="api-5001",
+            account=account,
+            identity=None,
+            setting={"detailed_enabled": True, "record_usage_samples": True},
+        )
+
+        self.assertIsNone(change)
+        self.assertEqual(baseline, {"usage": {"codex_5h_used_percent": 42}, "subscription": {}})
+
+    def test_existing_baseline_produces_exact_usage_change(self) -> None:
+        account = {
+            "normalized_email": "person@example.com",
+            "remote_account_id": 953,
+            "usage_snapshot": {"codex_5h_used_percent": 0},
+            "subscription_snapshot": {},
+        }
+
+        change, baseline = account_probe._prepare_history_change(
+            site_id="api-5001",
+            account=account,
+            identity={
+                "history_baseline_snapshot": {
+                    "usage": {"codex_5h_used_percent": 80},
+                    "subscription": {},
+                }
+            },
+            setting={"detailed_enabled": True, "record_usage_samples": True},
+        )
+
+        assert change is not None
+        self.assertEqual(change["changes"], {"usage.codex_5h_used_percent": 0})
+        self.assertIsNone(baseline)
+
+    def test_disabled_history_tracks_baseline_without_writing_change(self) -> None:
+        account = {
+            "normalized_email": "person@example.com",
+            "remote_account_id": 953,
+            "usage_snapshot": {"codex_5h_used_percent": 50},
+            "subscription_snapshot": {},
+        }
+
+        change, baseline = account_probe._prepare_history_change(
+            site_id="api-5001",
+            account=account,
+            identity={
+                "history_baseline_snapshot": {
+                    "usage": {"codex_5h_used_percent": 40},
+                    "subscription": {},
+                }
+            },
+            setting={"detailed_enabled": True, "record_usage_samples": False},
+        )
+
+        self.assertIsNone(change)
+        self.assertEqual(baseline, {"usage": {"codex_5h_used_percent": 50}, "subscription": {}})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -20,10 +20,21 @@ from app.utils import now_utc
 logger = logging.getLogger("app.sub2api_capacity_sampler")
 
 CAPACITY_SAMPLE_INTERVAL_SECONDS = 5 * 60
-CAPACITY_SAMPLE_RETENTION_DAYS = 180
-CAPACITY_SAMPLE_SCHEMA_VERSION = 1
+CAPACITY_SAMPLE_RETENTION_DAYS = 30
+CAPACITY_SAMPLE_SCHEMA_VERSION = 2
 
 _site_sample_locks: dict[str, asyncio.Lock] = {}
+
+CAPACITY_TYPE_SAMPLE_FIELDS = (
+    "available_accounts",
+    "available_5h_accounts",
+    "five_hour_capacity_usd",
+    "five_hour_dynamic_remaining_usd",
+    "five_hour_actual_remaining_usd",
+    "seven_day_capacity_usd",
+    "seven_day_dynamic_remaining_usd",
+    "seven_day_actual_remaining_usd",
+)
 
 
 async def sample_group_capacity(
@@ -40,8 +51,6 @@ async def sample_group_capacity(
     sampled_at = _as_utc(sampled_at or now_utc())
     bucket_at = _five_minute_bucket(sampled_at)
     summary = await _get_or_update_group_capacity_summary(db, site_id, group_id)
-    group = group_doc.get("group") if isinstance(group_doc.get("group"), dict) else {}
-    group_snapshot = {key: value for key, value in group.items() if key != "capacity_summary"}
     sample_id = f"{site_id}:{group_id}:{bucket_at.isoformat().replace('+00:00', 'Z')}"
     document = {
         "_id": sample_id,
@@ -52,12 +61,80 @@ async def sample_group_capacity(
         "sampled_at": sampled_at,
         "account_cache_fetched_at": group_doc.get("fetched_at"),
         "capacity_calculated_at": summary.get("calculated_at"),
-        "group": group_snapshot,
-        "capacity_summary": summary,
+        "metrics": _scalar_capacity_metrics(summary),
+        "dimensions": _capacity_dimensions(summary),
         "expires_at": sampled_at + timedelta(days=CAPACITY_SAMPLE_RETENTION_DAYS),
     }
     await db.sub2api_capacity_samples.replace_one({"_id": sample_id}, document, upsert=True)
     return {"ok": True, "site_id": site_id, "group_id": group_id, "sample": document}
+
+
+def _scalar_capacity_metrics(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in summary.items()
+        if value is not None and isinstance(value, (str, bool, int, float, datetime))
+    }
+
+
+def _capacity_dimensions(summary: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    type_summary = summary.get("type_summary") if isinstance(summary.get("type_summary"), dict) else {}
+    account_types = []
+    selected_types: set[str] = set()
+    for account_type, values in type_summary.items():
+        if account_type == "total" or not isinstance(values, dict) or int(values.get("available_accounts") or 0) <= 0:
+            continue
+        selected_types.add(str(account_type))
+        account_types.append(
+            {
+                "account_type": str(account_type),
+                **{
+                    field: values[field]
+                    for field in CAPACITY_TYPE_SAMPLE_FIELDS
+                    if values.get(field) is not None
+                },
+            }
+        )
+
+    primary_type = str(summary.get("account_type") or "").strip()
+    if primary_type and primary_type != "total":
+        selected_types.add(primary_type)
+    refill_options_source = (
+        summary.get("recommended_refill_options")
+        if isinstance(summary.get("recommended_refill_options"), dict)
+        else {}
+    )
+    selected_types.update(str(key) for key in refill_options_source)
+    limits_source = summary.get("capacity_limits") if isinstance(summary.get("capacity_limits"), dict) else {}
+    capacity_limits = [
+        {
+            "account_type": str(account_type),
+            **{
+                key: value
+                for key, value in values.items()
+                if key in {"five_hour_usd", "seven_day_usd"} and isinstance(value, (int, float))
+            },
+        }
+        for account_type, values in limits_source.items()
+        if str(account_type) in selected_types and isinstance(values, dict)
+    ]
+    refill_options = [
+        {
+            "account_type": str(values.get("account_type") or account_type),
+            **{
+                key: value
+                for key, value in values.items()
+                if key != "account_type" and value is not None and isinstance(value, (str, bool, int, float, datetime))
+            },
+        }
+        for account_type, values in refill_options_source.items()
+        if isinstance(values, dict)
+    ]
+    return {
+        "account_types": account_types,
+        "capacity_limits": capacity_limits,
+        "refill_options": refill_options,
+    }
 
 
 async def sample_site_capacity(db: AsyncIOMotorDatabase, *, site_id: str) -> dict[str, Any]:

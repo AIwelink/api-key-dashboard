@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.modules.sub2api.account_history import load_identity_changes
 from app.utils import now_utc, serialize_doc
 
 
@@ -337,6 +338,11 @@ async def get_event_account_detail(db: AsyncIOMotorDatabase, identity_id: str) -
     sessions = [doc async for doc in db.remote_account_sessions.find({"identity_id": identity_id}).sort("session_index", -1).limit(30)]
     events = _dedupe_redundant_duplicate_email_events([doc async for doc in db.remote_account_status_events.find({"identity_id": identity_id}).sort("detected_at", -1).limit(120)])
     samples = [doc async for doc in db.remote_account_probe_samples.find({"identity_id": identity_id}).sort("sampled_at", -1).limit(40)]
+    changes = await load_identity_changes(
+        db,
+        site_id=str(identity.get("site_id") or ""),
+        identity_id=identity_id,
+    )
     context = await _event_context(db, events, identities=[identity], sessions=sessions)
     account_context = await _identity_context(db, [identity])
     return {
@@ -344,11 +350,13 @@ async def get_event_account_detail(db: AsyncIOMotorDatabase, identity_id: str) -
         "sessions": [serialize_doc(_session_item(item)) for item in sessions],
         "events": [_event_item(item, context) for item in events],
         "samples": [serialize_doc(item) for item in samples],
+        "changes": serialize_doc(changes),
         "raw": {
             "identity": serialize_doc(identity),
             "sessions": serialize_doc(sessions),
             "events": serialize_doc(events),
             "samples": serialize_doc(samples),
+            "changes": serialize_doc(changes),
         },
     }
 

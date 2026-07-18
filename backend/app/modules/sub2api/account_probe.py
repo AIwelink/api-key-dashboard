@@ -13,6 +13,13 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import UpdateOne
 
 from app.modules.notifications.service import send_notification_event
+from app.modules.sub2api.account_history import (
+    build_history_change,
+    dynamic_snapshot,
+    ensure_daily_checkpoint,
+    persist_history_changes,
+    snapshot_hash,
+)
 from app.modules.sub2api.client import Sub2ApiClient
 from app.modules.sub2api.cache import _get_or_update_group_capacity_summary, get_site, is_bug_team_account, is_sub2api_site, list_sites
 from app.utils import now_utc, serialize_doc
@@ -421,8 +428,7 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
         seen_remote_ids: set[Any] = set()
         official_refresh_accounts: list[dict[str, Any]] = []
         official_refresh_eligible_accounts: dict[str, int] = {}
-        resolved_plan_types: dict[str, tuple[str, str]] = {}
-        sample_ops = []
+        history_changes: list[dict[str, Any]] = []
         accounts_for_identity = _collapse_probe_accounts_by_email(filtered_accounts)
         for account in accounts_for_identity:
             remote_id = account.get("remote_account_id")
@@ -438,7 +444,14 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
                 account.get("plan_type"),
                 (previous_identity or {}).get("plan_type"),
             )
-            resolved_plan_types[normalized_email] = (account["plan_type"], account["plan_type_source"])
+            history_change, history_baseline_override = _prepare_history_change(
+                site_id=site_id,
+                account=account,
+                identity=previous_identity,
+                setting=setting,
+            )
+            if history_change is not None:
+                history_changes.append(history_change)
             official_refresh = _official_usage_refresh_state(
                 previous_snapshot=(previous_identity or {}).get("last_usage_snapshot"),
                 current_snapshot=account.get("usage_snapshot") or {},
@@ -457,6 +470,7 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
                 session=session,
                 setting=setting,
                 detected_at=fetched_at,
+                history_baseline_override=history_baseline_override,
             )
             if is_new:
                 counters["accounts_new"] += 1
@@ -466,6 +480,17 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
                 counters["accounts_401"] += 1
             if official_refresh["detected"]:
                 official_refresh_accounts.append(account | {"official_refresh": official_refresh})
+
+        history_summary = await persist_history_changes(
+            db,
+            site_id=site_id,
+            run_id=run_id,
+            observed_at=fetched_at,
+            changes=history_changes,
+        )
+        counters["history_changed_accounts"] = history_summary["changed_accounts"]
+        counters["history_change_fields"] = history_summary["changed_fields"]
+        counters["history_batches"] = history_summary["batches"]
 
         refresh_consensus = _official_refresh_consensus(
             official_refresh_accounts,
@@ -491,21 +516,6 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
             except Exception as exc:  # noqa: BLE001 - notification failures must not fail a probe run.
                 logger.warning("sub2api_official_usage_refresh_notification_failed site_id=%s error=%s", site_id, exc)
 
-        for account in filtered_accounts:
-            remote_id = account.get("remote_account_id")
-            normalized_email = account.get("normalized_email")
-            if not remote_id or not normalized_email:
-                continue
-            if normalized_email in resolved_plan_types:
-                account["plan_type"], account["plan_type_source"] = resolved_plan_types[normalized_email]
-            setting = _setting_for_account(settings, account)
-            session = await db.remote_account_sessions.find_one({"identity_id": _identity_id(site_id, normalized_email), "status": "open"})
-            if setting.get("detailed_enabled") is not False and setting.get("record_usage_samples") is not False:
-                sample_ops.append(_sample_update(site_id, run_id, account, session or {"_id": None}, setting, fetched_at))
-
-        if sample_ops:
-            await db.remote_account_probe_samples.bulk_write(sample_ops, ordered=False)
-
         missing_counts = await _mark_missing_identities(
             db,
             site_id=site_id,
@@ -514,6 +524,19 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
             detected_at=fetched_at,
         )
         counters.update(missing_counts)
+        try:
+            checkpoint_result = await ensure_daily_checkpoint(
+                db,
+                site_id=site_id,
+                checkpoint_at=fetched_at,
+            )
+            counters["daily_checkpoint_created"] = int(checkpoint_result.get("status") == "created")
+            counters["daily_checkpoint_accounts"] = int(checkpoint_result.get("accounts") or 0)
+        except Exception as exc:  # noqa: BLE001 - checkpoint history must not fail account probing.
+            counters["daily_checkpoint_created"] = 0
+            counters["daily_checkpoint_accounts"] = 0
+            counters["daily_checkpoint_error"] = str(exc) or exc.__class__.__name__
+            logger.warning("sub2api_account_checkpoint_failed site_id=%s error=%s", site_id, exc)
         finished_at = now_utc()
         group_ids_checked = sorted(enabled_group_ids)
         await db.remote_account_probe_runs.update_one(
@@ -625,9 +648,40 @@ def _normalize_probe_account(account: dict[str, Any]) -> dict[str, Any]:
         "last_used_at": _first_present(account, extra, "last_used_at"),
         "updated_at": _first_present(account, extra, "updated_at"),
         "usage_snapshot": _usage_snapshot(account, extra),
+        "subscription_snapshot": _subscription_snapshot(account, credentials, extra),
         "raw_hash": _stable_hash(_compact_raw(account)),
     }
     return normalized
+
+
+def _subscription_snapshot(
+    account: dict[str, Any],
+    credentials: dict[str, Any],
+    extra: dict[str, Any],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    date_fields = (
+        "subscription_expires_at",
+        "chatgpt_subscription_active_start",
+        "chatgpt_subscription_active_until",
+        "chatgpt_subscription_last_checked",
+    )
+    for field in date_fields:
+        parsed = _parse_datetime(_first_present(account, credentials, extra, field))
+        if parsed is not None:
+            result[field] = parsed.astimezone(UTC)
+    credential_expires_at = _parse_datetime(
+        _first_present(account, extra, "credential_expires_at")
+        or credentials.get("credential_expires_at")
+        or credentials.get("expires_at")
+    )
+    if credential_expires_at is not None:
+        result["credential_expires_at"] = credential_expires_at.astimezone(UTC)
+    for field in ("subscription_status", "chatgpt_subscription_status"):
+        value = _first_present(account, credentials, extra, field)
+        if value is not None and str(value).strip():
+            result[field] = str(value).strip()
+    return result
 
 
 def _collapse_probe_accounts_by_email(accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -870,6 +924,32 @@ def _setting_for_account(settings: dict[int, dict[str, Any]], account: dict[str,
     }
 
 
+def _prepare_history_change(
+    *,
+    site_id: str,
+    account: dict[str, Any],
+    identity: dict[str, Any] | None,
+    setting: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    current = dynamic_snapshot(account)
+    baseline = (identity or {}).get("history_baseline_snapshot")
+    history_enabled = (
+        setting.get("detailed_enabled") is not False
+        and setting.get("record_usage_samples") is not False
+    )
+    if not isinstance(baseline, dict) or not history_enabled:
+        return None, current
+    return (
+        build_history_change(
+            identity_id=_identity_id(site_id, account["normalized_email"]),
+            remote_account_id=account.get("remote_account_id"),
+            previous=baseline,
+            current=current,
+        ),
+        None,
+    )
+
+
 async def _ensure_session(
     db: AsyncIOMotorDatabase,
     *,
@@ -934,6 +1014,7 @@ async def _update_identity_and_events(
     session: dict[str, Any],
     setting: dict[str, Any],
     detected_at: datetime,
+    history_baseline_override: dict[str, Any] | None,
 ) -> bool:
     identity_id = _identity_id(site_id, account["normalized_email"])
     event_enabled = setting.get("record_status_events") is not False
@@ -1042,6 +1123,7 @@ async def _update_identity_and_events(
         "site_id": site_id,
         "normalized_email": account["normalized_email"],
         "email": account.get("email"),
+        "name": account.get("name"),
         "last_seen_at": detected_at,
         "last_present_at": detected_at,
         "current_presence": "present",
@@ -1059,6 +1141,7 @@ async def _update_identity_and_events(
         "plan_type": account.get("plan_type"),
         "plan_type_source": account.get("plan_type_source"),
         "last_usage_snapshot": account.get("usage_snapshot") or {},
+        "current_subscription_snapshot": account.get("subscription_snapshot") or {},
         "cumulative_usage_totals": identity_usage["totals"],
         "cumulative_usage_snapshot": identity_usage["snapshot"],
         "last_usage_rollover_at": detected_at if identity_usage["rollover_detected"] else (identity or {}).get("last_usage_rollover_at"),
@@ -1066,6 +1149,10 @@ async def _update_identity_and_events(
         "last_event_at": detected_at if changed else (identity or {}).get("last_event_at"),
         "updated_at": detected_at,
     }
+    if history_baseline_override is not None:
+        updates["history_baseline_snapshot"] = history_baseline_override
+        updates["history_baseline_hash"] = snapshot_hash(history_baseline_override)
+        updates["history_baseline_confirmed_at"] = detected_at
     if duplicate_changed:
         updates["duplicate_email_alert_read_at"] = None
         updates["duplicate_email_alert_read_signature"] = None
@@ -1880,38 +1967,6 @@ def _usage_value(usage: dict[str, Any], key: str, *, suffix: str = "") -> str:
     else:
         text = str(value)
     return f"{text}{suffix}"
-
-
-def _sample_update(site_id: str, run_id: str, account: dict[str, Any], session: dict[str, Any], setting: dict[str, Any], sampled_at: datetime) -> UpdateOne:
-    retention_days = int(setting.get("sample_retention_days") or DEFAULT_SAMPLE_RETENTION_DAYS)
-    sample_id = f"{run_id}:{account.get('remote_account_id')}"
-    current_snapshot = account.get("usage_snapshot") or {}
-    session_totals = session.get("cumulative_usage_totals") if isinstance(session, dict) else {}
-    cumulative_snapshot = _usage_rollover_state(previous_snapshot=current_snapshot, current_snapshot=current_snapshot, previous_totals=session_totals if isinstance(session_totals, dict) else {})["snapshot"]
-    doc = {
-        "_id": sample_id,
-        "site_id": site_id,
-        "probe_run_id": run_id,
-        "identity_id": _identity_id(site_id, account["normalized_email"]),
-        "session_id": session["_id"],
-        "normalized_email": account.get("normalized_email"),
-        "remote_account_id": account.get("remote_account_id"),
-        "sampled_at": sampled_at,
-        "status": account.get("status"),
-        "schedulable": account.get("schedulable"),
-        "error_message": account.get("error_message"),
-        "group_ids": account.get("group_ids") or [],
-        "plan_type": account.get("plan_type"),
-        "last_used_at": account.get("last_used_at"),
-        "updated_at": account.get("updated_at"),
-        **account.get("usage_snapshot", {}),
-        "usage_snapshot": account.get("usage_snapshot") or {},
-        "cumulative_usage_snapshot": cumulative_snapshot,
-        "raw_hash": account.get("raw_hash"),
-        "created_at": sampled_at,
-        "expires_at": sampled_at + timedelta(days=retention_days),
-    }
-    return UpdateOne({"_id": sample_id}, {"$set": doc}, upsert=True)
 
 
 def _identity_compare_value(field: str, account: dict[str, Any]) -> Any:

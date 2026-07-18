@@ -47,7 +47,6 @@ type GroupObservabilitySetting = {
   enabled: boolean;
   detailed_enabled: boolean;
   probe_interval_seconds?: number;
-  sample_retention_days?: number;
   record_usage_samples?: boolean;
   record_status_events?: boolean;
   record_duplicate_email_warning?: boolean;
@@ -624,7 +623,6 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                 <th>探测</th>
                 <th>间隔</th>
                 <th>详细记录</th>
-                <th>样本保留</th>
                 <th>记录内容</th>
                 <th>容量通知</th>
                 <th>Uptime Kuma</th>
@@ -686,21 +684,6 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                       </label>
                     </td>
                     <td>
-                      <input
-                        className="compact-number-input"
-                        disabled={busy || setting.detailed_enabled === false}
-                        min={1}
-                        max={90}
-                        type="number"
-                        defaultValue={setting.sample_retention_days || 14}
-                        onBlur={(event) => saveObservabilitySetting(setting, { sample_retention_days: clampInt(event.target.value, 1, 90, setting.sample_retention_days || 14) })}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") event.currentTarget.blur();
-                        }}
-                      />
-                      <span className="cell-sub">天</span>
-                    </td>
-                    <td>
                       <div className="inline-check-stack">
                         <label className="inline-check">
                           <input
@@ -718,7 +701,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                             type="checkbox"
                             onChange={(event) => saveObservabilitySetting(setting, { record_usage_samples: event.target.checked })}
                           />
-                          <span>样本</span>
+                          <span>记录动态变化</span>
                         </label>
                         <label className="inline-check">
                           <input

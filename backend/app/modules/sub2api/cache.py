@@ -248,7 +248,15 @@ async def list_cached_groups(
     cursor = db.sub2api_groups_cache.find(query).sort("group_id", 1).skip((page - 1) * page_size).limit(page_size)
     docs = [doc async for doc in cursor]
     return {
-        "items": [serialize_doc(doc.get("group", {})) for doc in docs],
+        "items": [
+            serialize_doc(
+                _group_with_capacity_summary(
+                    doc.get("group", {}),
+                    doc.get("capacity_summary") if isinstance(doc.get("capacity_summary"), dict) else None,
+                )
+            )
+            for doc in docs
+        ],
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -372,7 +380,7 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                             "_id": f"{site_id}:{group_id}",
                             "site_id": site_id,
                             "group_id": group_id,
-                            "group": _group_with_capacity_summary(group, capacity_summary),
+                            "group": _group_cache_snapshot(group),
                             "capacity_summary": capacity_summary,
                             "fetched_at": fetched_at,
                         },
@@ -806,7 +814,10 @@ async def _get_or_update_group_capacity_summary(db: AsyncIOMotorDatabase, site_i
     summary = await _capacity_summary_for_accounts(db, site_id, accounts, group_id=group_id)
     await db.sub2api_groups_cache.update_one(
         {"site_id": site_id, "group_id": group_id},
-        {"$set": {"capacity_summary": summary, "group.capacity_summary": summary, "capacity_calculated_at": now_utc()}},
+        {
+            "$set": {"capacity_summary": summary, "capacity_calculated_at": now_utc()},
+            "$unset": {"group.capacity_summary": ""},
+        },
     )
     return serialize_doc(summary)
 
@@ -827,9 +838,15 @@ async def _group_capacity_summaries(db: AsyncIOMotorDatabase, site_id: str, acco
 
 
 def _group_with_capacity_summary(group: dict[str, Any], capacity_summary: dict[str, Any] | None) -> dict[str, Any]:
-    snapshot = dict(group)
+    snapshot = _group_cache_snapshot(group)
     if capacity_summary is not None:
         snapshot["capacity_summary"] = capacity_summary
+    return snapshot
+
+
+def _group_cache_snapshot(group: dict[str, Any]) -> dict[str, Any]:
+    snapshot = dict(group)
+    snapshot.pop("capacity_summary", None)
     return snapshot
 
 

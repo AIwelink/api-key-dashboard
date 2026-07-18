@@ -247,7 +247,6 @@ async def store_dashboard_snapshot(
                 "total_tokens": number_value(item.get("total_tokens")),
                 "cost": float_value(item.get("cost")),
                 "actual_cost": float_value(item.get("actual_cost")),
-                "raw": item,
                 "generated_at": generated_at,
                 "fetched_at": now,
             },
@@ -277,7 +276,6 @@ async def store_dashboard_snapshot(
                 "cost": float_value(item.get("cost")),
                 "actual_cost": float_value(item.get("actual_cost")),
                 "account_cost": float_value(item.get("account_cost")),
-                "raw": item,
                 "generated_at": generated_at,
                 "fetched_at": now,
             },
@@ -304,7 +302,7 @@ async def store_dashboard_snapshot(
         "models": len(model_ops),
         "fetched_at": now,
     }
-    await db.sub2api_dashboard_snapshots.replace_one({"_id": meta["_id"]}, {**meta, "raw": snapshot}, upsert=True)
+    await db.sub2api_dashboard_snapshots.replace_one({"_id": meta["_id"]}, meta, upsert=True)
     return serialize_doc(meta)
 
 
