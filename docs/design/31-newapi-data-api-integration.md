@@ -50,6 +50,18 @@ Sub2API 客户站点 PostgreSQL  host=host port=5432 user=user password=password
 账号池 Sub2API   PostgreSQL  host=host port=5432 user=user password=password dbname=database sslmode=disable
 ```
 
+三类配置也都接受下列多行环境变量格式，并根据站点类型自动按 MySQL 或 PostgreSQL 解析；端口留空时分别使用 `3306` 或 `5432`：
+
+```text
+DATABASE_HOST=
+DATABASE_PORT=
+DATABASE_DBNAME=
+DATABASE_USER=
+DATABASE_PASSWORD=
+```
+
+PostgreSQL 可选增加 `DATABASE_SSLMODE=`，MySQL 可选增加 `DATABASE_CHARSET=`。
+
 后端使用 SQLAlchemy AsyncEngine；MySQL 使用 `aiomysql`，PostgreSQL 使用 `asyncpg`。原生 `SQL_DSN` 只在建立连接时解析并转换为驱动 URL，数据库密码不返回前端、不写入审计日志。
 
 数据库配置与测试接口：

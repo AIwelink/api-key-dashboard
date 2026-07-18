@@ -47,6 +47,8 @@ user:password@tcp(host:3306)/database
 host=host port=5432 user=user password=password dbname=database sslmode=disable
 ```
 
+同一个配置字段也接受多行 `DATABASE_HOST`、`DATABASE_PORT`、`DATABASE_DBNAME`、`DATABASE_USER`、`DATABASE_PASSWORD`。后端按站点固定数据库类型自动解析，空端口使用 MySQL/PostgreSQL 默认端口。
+
 `data_retention_days` 按站点配置，默认 90 天，表示本系统 MongoDB 中采集数据的保留周期，不会修改远端 MySQL 或 PostgreSQL。本阶段只保存该配置，不启动业务数据清理。
 
 ## 安全边界

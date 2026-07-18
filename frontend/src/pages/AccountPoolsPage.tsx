@@ -599,12 +599,14 @@ export function AccountPoolsPage({ token, showToast }: Props) {
             </label>
             <label className="span-2">
               <span className="field-label"><strong>SQL_DSN</strong></span>
-              <input
+              <textarea
                 value={siteForm.sql_dsn}
                 onChange={(event) => setSiteForm((current) => ({ ...current, sql_dsn: event.target.value }))}
-                placeholder={selectedSite?.sql_dsn_configured ? "已配置，留空不修改" : "host=host port=5432 user=user password=password dbname=database sslmode=disable"}
-                type="password"
+                placeholder={selectedSite?.sql_dsn_configured ? "已配置，留空不修改" : "DATABASE_HOST=\nDATABASE_PORT=\nDATABASE_DBNAME=\nDATABASE_USER=\nDATABASE_PASSWORD="}
                 autoComplete="new-password"
+                className="sql-dsn-input"
+                rows={5}
+                spellCheck={false}
               />
               {selectedSite?.sql_dsn_configured && (
                 <span className="cell-sub">已配置 · {selectedSite.database_endpoint || "连接信息已隐藏"}</span>

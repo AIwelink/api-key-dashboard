@@ -56,6 +56,34 @@ class ClientSiteDatabaseTests(unittest.IsolatedAsyncioTestCase):
             "postgresql+asyncpg://reader:secret@postgres.internal/sub2api",
         )
 
+    def test_driver_database_url_auto_detects_database_env_block(self) -> None:
+        mysql_env = """DATABASE_HOST=mysql.internal
+DATABASE_PORT=3307
+DATABASE_DBNAME=newapi
+DATABASE_USER=reader
+DATABASE_PASSWORD=secret@word"""
+        postgres_env = """DATABASE_HOST=postgres.internal
+DATABASE_PORT=
+DATABASE_DBNAME=sub2api
+DATABASE_USER=reader
+DATABASE_PASSWORD='secret word'"""
+
+        self.assertEqual(
+            driver_database_url(mysql_env, "newapi"),
+            "mysql+aiomysql://reader:secret%40word@mysql.internal:3307/newapi",
+        )
+        self.assertEqual(
+            driver_database_url(postgres_env, "sub2api"),
+            "postgresql+asyncpg://reader:secret word@postgres.internal/sub2api",
+        )
+
+    def test_database_env_block_requires_connection_fields(self) -> None:
+        with self.assertRaisesRegex(ValueError, "DATABASE_PASSWORD"):
+            driver_database_url(
+                "DATABASE_HOST=postgres.internal\nDATABASE_DBNAME=sub2api\nDATABASE_USER=reader",
+                "sub2api",
+            )
+
     async def test_database_connection_executes_queries_and_disposes_engine(self) -> None:
         connection = MagicMock()
         connection.execute = AsyncMock(side_effect=[FakeResult(1), FakeResult("MySQL 8.4")])

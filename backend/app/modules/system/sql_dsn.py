@@ -62,6 +62,8 @@ def parse_sql_dsn(value: Any, database_type: str) -> ParsedSqlDsn:
     if not sql_dsn:
         raise ValueError("SQL_DSN is not configured")
     normalized_type = str(database_type or "").strip().lower()
+    if _looks_like_database_env(sql_dsn):
+        return _parse_database_env(sql_dsn, normalized_type)
     if normalized_type == "mysql":
         return _parse_mysql_sql_dsn(sql_dsn)
     if normalized_type == "postgresql":
@@ -158,6 +160,68 @@ def _parse_postgresql_sql_dsn(sql_dsn: str) -> ParsedSqlDsn:
         database=database,
         options=options,
     )
+
+
+def _looks_like_database_env(value: str) -> bool:
+    return any(
+        line.strip().removeprefix("export ").startswith("DATABASE_")
+        for line in value.splitlines()
+    )
+
+
+def _parse_database_env(value: str, database_type: str) -> ParsedSqlDsn:
+    if database_type not in {"mysql", "postgresql"}:
+        raise ValueError(f"unsupported database type: {database_type}")
+    environment: dict[str, str] = {}
+    for raw_line in value.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        line = line.removeprefix("export ").strip()
+        if "=" not in line:
+            raise ValueError(f"invalid DATABASE_* line: {line}")
+        key, raw_value = line.split("=", 1)
+        key = key.strip().upper()
+        if not key.startswith("DATABASE_"):
+            continue
+        environment[key] = _unquote_env_value(raw_value.strip())
+    field_map = {
+        "host": "DATABASE_HOST",
+        "database": "DATABASE_DBNAME",
+        "username": "DATABASE_USER",
+        "password": "DATABASE_PASSWORD",
+    }
+    missing = [env_key for env_key in field_map.values() if not environment.get(env_key)]
+    if missing:
+        raise ValueError(f"database environment block is missing: {', '.join(missing)}")
+    default_port = 3306 if database_type == "mysql" else 5432
+    try:
+        port = int(environment.get("DATABASE_PORT") or default_port)
+    except ValueError as exc:
+        raise ValueError("DATABASE_PORT must be an integer") from exc
+    options: dict[str, str] = {}
+    if database_type == "mysql" and environment.get("DATABASE_CHARSET"):
+        options["charset"] = environment["DATABASE_CHARSET"]
+    if database_type == "postgresql":
+        sslmode = (environment.get("DATABASE_SSLMODE") or "prefer").lower()
+        if sslmode not in POSTGRES_SSL_MODES:
+            raise ValueError(f"unsupported PostgreSQL sslmode: {sslmode}")
+        options["sslmode"] = sslmode
+    return ParsedSqlDsn(
+        database_type=database_type,
+        username=environment[field_map["username"]],
+        password=environment[field_map["password"]],
+        host=environment[field_map["host"]],
+        port=_valid_port(port, "MySQL" if database_type == "mysql" else "PostgreSQL"),
+        database=environment[field_map["database"]],
+        options=options,
+    )
+
+
+def _unquote_env_value(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
 
 
 def _valid_port(port: int, database_name: str) -> int:

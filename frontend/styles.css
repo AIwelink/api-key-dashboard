@@ -904,6 +904,13 @@ legend {
   border-left-color: var(--danger);
 }
 
+.sql-dsn-input {
+  min-height: 116px;
+  resize: vertical;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  line-height: 1.45;
+}
+
 .site-config-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));

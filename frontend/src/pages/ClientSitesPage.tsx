@@ -361,12 +361,14 @@ export function ClientSitesPage({ token, showToast }: Props) {
 
             <label className="span-2">
               <span className="field-label"><strong>SQL_DSN</strong></span>
-              <input
+              <textarea
                 value={form.sql_dsn}
                 onChange={(event) => setForm((current) => ({ ...current, sql_dsn: event.target.value }))}
                 placeholder={selectedSite?.sql_dsn_configured ? "已配置，留空不修改" : sqlDsnPlaceholder(form.client_type)}
-                type="password"
                 autoComplete="new-password"
+                className="sql-dsn-input"
+                rows={5}
+                spellCheck={false}
               />
               {selectedSite?.sql_dsn_configured && (
                 <span className="cell-sub">已配置 · {selectedSite.database_endpoint || "连接信息已隐藏"}</span>
@@ -437,6 +439,6 @@ function siteToForm(site: ClientSite): ClientSiteForm {
 
 function sqlDsnPlaceholder(clientType: ClientSiteForm["client_type"]) {
   return clientType === "newapi"
-    ? "user:password@tcp(host:3306)/database"
-    : "host=host port=5432 user=user password=password dbname=database sslmode=disable";
+    ? "user:password@tcp(host:3306)/database\n或粘贴 DATABASE_HOST / PORT / DBNAME / USER / PASSWORD"
+    : "host=host port=5432 user=user password=password dbname=database sslmode=disable\n或粘贴 DATABASE_HOST / PORT / DBNAME / USER / PASSWORD";
 }
