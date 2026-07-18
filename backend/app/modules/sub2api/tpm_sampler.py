@@ -10,7 +10,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.modules.sub2api.cache import _fetch_all_accounts, get_site, is_sub2api_site, list_sites
 from app.modules.sub2api.client import Sub2ApiClient, account_in_group
-from app.modules.sub2api.dashboard import parse_remote_datetime
+from app.modules.sub2api.dashboard import parse_bucket_time, parse_remote_datetime
 from app.utils import now_utc
 
 
@@ -19,6 +19,7 @@ logger = logging.getLogger("app.sub2api_tpm_sampler")
 TPM_SAMPLE_RETENTION_DAYS = 14
 TPM_SAMPLE_INTERVAL_SECONDS = 60
 TPM_SAMPLE_TIMEZONE = "Asia/Shanghai"
+TPM_SAMPLE_SCHEMA_VERSION = 2
 SHANGHAI_TZ = timezone(timedelta(hours=8))
 
 _site_sample_locks: dict[str, asyncio.Lock] = {}
@@ -42,48 +43,58 @@ async def sample_group_tpm(
         granularity="hour",
         timezone=TPM_SAMPLE_TIMEZONE,
         include_stats=True,
-        include_trend=False,
+        include_trend=True,
         include_model_stats=False,
-        include_group_stats=False,
+        include_group_stats=True,
         include_users_trend=False,
         group_id=group_id,
     )
     stats = snapshot.get("stats") if isinstance(snapshot.get("stats"), dict) else {}
     previous = await db.sub2api_tpm_samples.find_one(
-        {"site_id": site_id, "group_id": group_id, "bucket_at": {"$lt": bucket_at}},
+        {
+            "site_id": site_id,
+            "group_id": group_id,
+            "schema_version": TPM_SAMPLE_SCHEMA_VERSION,
+            "bucket_at": {"$lt": bucket_at},
+        },
         sort=[("bucket_at", -1)],
     )
 
-    reported_tpm = _nonnegative_number(stats.get("tpm"))
-    total_tokens = _nonnegative_integer(stats.get("total_tokens"))
+    total_tokens, total_requests = _current_group_counters(snapshot, sampled_at=sampled_at)
     calculated_tpm, token_delta, elapsed_seconds = _calculate_tpm_from_previous(
         previous=previous,
         current_total_tokens=total_tokens,
         sampled_at=sampled_at,
     )
-    final_tpm = reported_tpm if reported_tpm is not None else calculated_tpm
+    calculated_rpm, request_delta, _ = _calculate_counter_rate(
+        previous=previous,
+        previous_field="total_requests",
+        current_value=total_requests,
+        sampled_at=sampled_at,
+    )
     sample_id = f"{site_id}:{group_id}:{bucket_at.isoformat().replace('+00:00', 'Z')}"
     document = {
         "_id": sample_id,
+        "schema_version": TPM_SAMPLE_SCHEMA_VERSION,
         "site_id": site_id,
         "group_id": group_id,
         "bucket_at": bucket_at,
         "sampled_at": sampled_at,
         "stats_updated_at": parse_remote_datetime(stats.get("stats_updated_at")),
-        "tpm": final_tpm,
-        "reported_tpm": reported_tpm,
+        "tpm": calculated_tpm,
+        "reported_tpm": None,
         "calculated_tpm": calculated_tpm,
-        "rpm": _nonnegative_number(stats.get("rpm")),
-        "average_duration_ms": _nonnegative_number(stats.get("average_duration_ms")),
+        "rpm": calculated_rpm,
+        "reported_rpm": None,
+        "calculated_rpm": calculated_rpm,
+        "average_duration_ms": None,
         "current_concurrency": _nonnegative_number(current_concurrency),
         "total_tokens": total_tokens,
-        "input_tokens": _nonnegative_integer(stats.get("total_input_tokens")),
-        "output_tokens": _nonnegative_integer(stats.get("total_output_tokens")),
-        "cache_creation_tokens": _nonnegative_integer(stats.get("total_cache_creation_tokens")),
-        "cache_read_tokens": _nonnegative_integer(stats.get("total_cache_read_tokens")),
+        "total_requests": total_requests,
         "token_delta": token_delta,
+        "request_delta": request_delta,
         "elapsed_seconds": elapsed_seconds,
-        "source": "reported" if reported_tpm is not None else "calculated" if calculated_tpm is not None else "unavailable",
+        "source": "group_trend_delta" if calculated_tpm is not None else "unavailable",
         "expires_at": sampled_at + timedelta(days=TPM_SAMPLE_RETENTION_DAYS),
     }
     await db.sub2api_tpm_samples.replace_one({"_id": sample_id}, document, upsert=True)
@@ -222,6 +233,21 @@ def _calculate_tpm_from_previous(
     current_total_tokens: int | None,
     sampled_at: datetime,
 ) -> tuple[float | None, int | None, float | None]:
+    return _calculate_counter_rate(
+        previous=previous,
+        previous_field="total_tokens",
+        current_value=current_total_tokens,
+        sampled_at=sampled_at,
+    )
+
+
+def _calculate_counter_rate(
+    *,
+    previous: dict[str, Any] | None,
+    previous_field: str,
+    current_value: int | None,
+    sampled_at: datetime,
+) -> tuple[float | None, int | None, float | None]:
     if not previous:
         return None, None, None
     previous_sampled_at = _datetime_value(previous.get("sampled_at"))
@@ -230,14 +256,29 @@ def _calculate_tpm_from_previous(
     elapsed_seconds = (sampled_at - previous_sampled_at).total_seconds()
     if elapsed_seconds <= 0:
         return None, None, elapsed_seconds
-    previous_total_tokens = _nonnegative_integer(previous.get("total_tokens"))
-    if previous_total_tokens is None or current_total_tokens is None:
+    previous_value = _nonnegative_integer(previous.get(previous_field))
+    if previous_value is None or current_value is None:
         return None, None, elapsed_seconds
-    token_delta = current_total_tokens - previous_total_tokens
-    if token_delta < 0:
+    delta = current_value - previous_value
+    if delta < 0:
         return None, None, elapsed_seconds
-    calculated_tpm = token_delta / (elapsed_seconds / 60)
-    return calculated_tpm, token_delta, elapsed_seconds
+    calculated_rate = delta / (elapsed_seconds / 60)
+    return calculated_rate, delta, elapsed_seconds
+
+
+def _current_group_counters(snapshot: dict[str, Any], *, sampled_at: datetime) -> tuple[int, int]:
+    current_hour = sampled_at.replace(minute=0, second=0, microsecond=0)
+    trend = snapshot.get("trend") if isinstance(snapshot.get("trend"), list) else []
+    for item in reversed(trend):
+        if not isinstance(item, dict):
+            continue
+        bucket_at = parse_bucket_time(item.get("date"), "hour")
+        if bucket_at == current_hour:
+            return (
+                _nonnegative_integer(item.get("total_tokens")) or 0,
+                _nonnegative_integer(item.get("requests")) or 0,
+            )
+    return 0, 0
 
 
 def _datetime_value(value: Any) -> datetime | None:

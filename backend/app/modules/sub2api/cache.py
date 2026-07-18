@@ -1578,14 +1578,21 @@ async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, gro
         async for doc in db.sub2api_dashboard_trends.find({**query, "granularity": "day"}).sort("bucket_at", -1).limit(14)
     ]
     hourly = list(reversed(hourly_docs))
-    five_hour_peak_cost = _five_hour_daily_peak_cost(hourly)
-    recent_day_five_hour_peak_cost = _rolling_peak_cost(hourly[-24:], 5)
-    burst_1h = _burst_1h_summary(hourly)
-    daily_costs = [_float_or_zero(doc.get("cost")) for doc in daily_docs[:7]]
-    seven_day_24h_peak_cost = round(max(daily_costs) if daily_costs else _rolling_peak_cost(hourly, 24), 6)
-    recent_24h_cost = round(sum(_float_or_zero(doc.get("cost")) for doc in hourly[-24:]), 6)
-    recent_5h_cost = round(sum(_float_or_zero(doc.get("cost")) for doc in hourly[-5:]), 6)
-    recent_6h_docs = hourly[-6:]
+    current_time = now_utc()
+    hourly_7d = _dashboard_docs_since(hourly, current_time - timedelta(days=7))
+    hourly_24h = _dashboard_docs_since(hourly, current_time - timedelta(hours=24))
+    hourly_8h = _dashboard_docs_since(hourly, current_time - timedelta(hours=8))
+    hourly_6h = _dashboard_docs_since(hourly, current_time - timedelta(hours=6))
+    hourly_5h = _dashboard_docs_since(hourly, current_time - timedelta(hours=5))
+    daily_7d = _dashboard_docs_since(daily_docs, current_time - timedelta(days=7))
+    five_hour_peak_cost = _five_hour_daily_peak_cost(hourly_7d)
+    recent_day_five_hour_peak_cost = _rolling_peak_cost(hourly_24h, 5)
+    burst_1h = _burst_1h_summary(hourly_8h)
+    daily_costs = [_float_or_zero(doc.get("cost")) for doc in daily_7d]
+    seven_day_24h_peak_cost = round(max(daily_costs) if daily_costs else _rolling_peak_cost(hourly_7d, 24), 6)
+    recent_24h_cost = round(sum(_float_or_zero(doc.get("cost")) for doc in hourly_24h), 6)
+    recent_5h_cost = round(sum(_float_or_zero(doc.get("cost")) for doc in hourly_5h), 6)
+    recent_6h_docs = hourly_6h
     recent_6h_cost = sum(_float_or_zero(doc.get("actual_cost") if doc.get("actual_cost") is not None else doc.get("cost")) for doc in recent_6h_docs)
     recent_6h_tokens = sum(_float_or_zero(doc.get("total_tokens")) for doc in recent_6h_docs)
     recent_6h_cost_per_token = recent_6h_cost / recent_6h_tokens if recent_6h_tokens > 0 else None
@@ -1620,7 +1627,12 @@ async def _load_group_tpm_samples(
         return []
     cutoff = now_utc() - timedelta(hours=6)
     cursor = collection.find(
-        {"site_id": site_id, "group_id": group_id, "sampled_at": {"$gte": cutoff}},
+        {
+            "site_id": site_id,
+            "group_id": group_id,
+            "schema_version": 2,
+            "sampled_at": {"$gte": cutoff},
+        },
         {
             "sampled_at": 1,
             "tpm": 1,
@@ -1630,6 +1642,15 @@ async def _load_group_tpm_samples(
         },
     ).sort("sampled_at", 1).limit(400)
     return [doc async for doc in cursor]
+
+
+def _dashboard_docs_since(items: list[dict[str, Any]], cutoff: datetime) -> list[dict[str, Any]]:
+    cutoff = cutoff.astimezone(UTC) if cutoff.tzinfo else cutoff.replace(tzinfo=UTC)
+    return [
+        item
+        for item in items
+        if (_parse_datetime(item.get("bucket_at")) or datetime.min.replace(tzinfo=UTC)) >= cutoff
+    ]
 
 
 def _five_hour_daily_peak_cost(hourly: list[dict[str, Any]]) -> float:

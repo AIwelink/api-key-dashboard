@@ -78,6 +78,46 @@ def cost_summary(*, historical_peak: float = 0.0) -> dict[str, object]:
 
 
 class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dashboard_cost_summary_excludes_stale_rows_from_recent_windows(self) -> None:
+        class Cursor:
+            def __init__(self, items: list[dict[str, object]]) -> None:
+                self.items = items
+
+            def sort(self, *_args):
+                return self
+
+            def limit(self, *_args):
+                return self
+
+            def __aiter__(self):
+                return self._iterate()
+
+            async def _iterate(self):
+                for item in self.items:
+                    yield item
+
+        stale = {
+            "bucket": "2026-07-14 11:00",
+            "bucket_at": NOW - timedelta(days=2),
+            "cost": 100,
+            "actual_cost": 100,
+            "total_tokens": 1_000,
+        }
+        trends = SimpleNamespace(
+            find=lambda query: Cursor([stale] if query.get("granularity") == "hour" else [])
+        )
+        db = SimpleNamespace(sub2api_dashboard_trends=trends)
+
+        with patch.object(cache, "now_utc", return_value=NOW):
+            summary = await cache._dashboard_cost_summary(db, "api-5001", group_id=3)
+
+        self.assertEqual(summary["recent_5h_cost"], 0)
+        self.assertEqual(summary["recent_24h_cost"], 0)
+        self.assertEqual(summary["recent_6h_cost"], 0)
+        self.assertEqual(summary["recent_6h_tokens"], 0)
+        self.assertIsNone(summary["recent_6h_cost_per_token"])
+        self.assertEqual(summary["burst_1h"]["window_count"], 0)
+
     async def test_group_sample_loader_includes_recorded_concurrency(self) -> None:
         class Cursor:
             def __init__(self) -> None:
@@ -103,6 +143,7 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
             result = await cache._load_group_tpm_samples(db, site_id="api-5001", group_id=3)
 
         self.assertEqual(result[0]["current_concurrency"], 7)
+        self.assertEqual(collection.query["schema_version"], 2)
         self.assertEqual(collection.projection["current_concurrency"], 1)
 
     async def test_reserve_pool_is_not_queried_or_included(self) -> None:

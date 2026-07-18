@@ -23,9 +23,16 @@ class AsyncCursor:
 
 
 class TpmSampleTests(unittest.IsolatedAsyncioTestCase):
-    async def test_reported_tpm_is_stored_for_the_target_group(self) -> None:
+    async def test_group_sample_uses_trend_deltas_instead_of_global_stats(self) -> None:
         samples = SimpleNamespace(
-            find_one=AsyncMock(return_value=None),
+            find_one=AsyncMock(
+                return_value={
+                    "schema_version": 2,
+                    "sampled_at": datetime(2026, 7, 16, 6, 52, 42, tzinfo=UTC),
+                    "total_tokens": 1_000,
+                    "total_requests": 10,
+                }
+            ),
             replace_one=AsyncMock(),
         )
         db = SimpleNamespace(sub2api_tpm_samples=samples)
@@ -41,7 +48,14 @@ class TpmSampleTests(unittest.IsolatedAsyncioTestCase):
                 "total_cache_creation_tokens": 22572283,
                 "total_cache_read_tokens": 113532556448,
                 "total_tokens": 132205730692,
-            }
+            },
+            "trend": [
+                {
+                    "date": "2026-07-16 14:00",
+                    "requests": 18,
+                    "total_tokens": 1_600,
+                }
+            ],
         }
         sampled_at = datetime(2026, 7, 16, 6, 53, 42, tzinfo=UTC)
 
@@ -60,9 +74,9 @@ class TpmSampleTests(unittest.IsolatedAsyncioTestCase):
             granularity="hour",
             timezone="Asia/Shanghai",
             include_stats=True,
-            include_trend=False,
+            include_trend=True,
             include_model_stats=False,
-            include_group_stats=False,
+            include_group_stats=True,
             include_users_trend=False,
             group_id=5,
         )
@@ -70,6 +84,7 @@ class TpmSampleTests(unittest.IsolatedAsyncioTestCase):
             {
                 "site_id": "api-5001",
                 "group_id": 5,
+                "schema_version": 2,
                 "bucket_at": {"$lt": datetime(2026, 7, 16, 6, 53, tzinfo=UTC)},
             },
             sort=[("bucket_at", -1)],
@@ -77,15 +92,18 @@ class TpmSampleTests(unittest.IsolatedAsyncioTestCase):
         samples.replace_one.assert_awaited_once()
         query, document = samples.replace_one.await_args.args
         self.assertEqual(query, {"_id": "api-5001:5:2026-07-16T06:53:00Z"})
-        self.assertEqual(document["tpm"], 497365.0)
-        self.assertEqual(document["reported_tpm"], 497365.0)
-        self.assertIsNone(document["calculated_tpm"])
-        self.assertEqual(document["rpm"], 45.0)
-        self.assertEqual(document["average_duration_ms"], 19419.18)
+        self.assertEqual(document["schema_version"], 2)
+        self.assertEqual(document["tpm"], 600.0)
+        self.assertIsNone(document["reported_tpm"])
+        self.assertEqual(document["calculated_tpm"], 600.0)
+        self.assertEqual(document["rpm"], 8.0)
+        self.assertEqual(document["calculated_rpm"], 8.0)
+        self.assertIsNone(document["average_duration_ms"])
         self.assertEqual(document["current_concurrency"], 17.0)
-        self.assertEqual(document["source"], "reported")
+        self.assertEqual(document["source"], "group_trend_delta")
         self.assertEqual(document["group_id"], 5)
-        self.assertEqual(document["input_tokens"], 17355853370)
+        self.assertEqual(document["total_tokens"], 1_600)
+        self.assertEqual(document["total_requests"], 18)
         self.assertEqual(document["expires_at"], sampled_at + timedelta(days=14))
         self.assertEqual(result["sample"]["_id"], document["_id"])
 
@@ -103,10 +121,8 @@ class TpmSampleTests(unittest.IsolatedAsyncioTestCase):
         db = SimpleNamespace(sub2api_tpm_samples=samples)
         client = AsyncMock()
         client.get_dashboard_snapshot.return_value = {
-            "stats": {
-                "rpm": 8,
-                "total_tokens": 1600,
-            }
+            "stats": {"tpm": 999_999, "rpm": 999},
+            "trend": [{"date": "2026-07-16 14:00", "requests": 18, "total_tokens": 1600}],
         }
 
         result = await tpm_sampler.sample_group_tpm(
@@ -123,7 +139,7 @@ class TpmSampleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sample["tpm"], 300.0)
         self.assertEqual(sample["token_delta"], 600)
         self.assertEqual(sample["elapsed_seconds"], 120.0)
-        self.assertEqual(sample["source"], "calculated")
+        self.assertEqual(sample["source"], "group_trend_delta")
 
     async def test_counter_reset_does_not_create_negative_tpm(self) -> None:
         samples = SimpleNamespace(
@@ -137,7 +153,10 @@ class TpmSampleTests(unittest.IsolatedAsyncioTestCase):
         )
         db = SimpleNamespace(sub2api_tpm_samples=samples)
         client = AsyncMock()
-        client.get_dashboard_snapshot.return_value = {"stats": {"total_tokens": 100}}
+        client.get_dashboard_snapshot.return_value = {
+            "stats": {"total_tokens": 999_999},
+            "trend": [{"date": "2026-07-16 14:00", "requests": 1, "total_tokens": 100}],
+        }
 
         result = await tpm_sampler.sample_group_tpm(
             db,
