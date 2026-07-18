@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import type { AccountDocument, PoolStatus } from "../types";
 import { errorMessage, formatDateTime, formatPayment, formatPhoneBound, text } from "../utils/format";
 
@@ -210,7 +211,7 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
   };
 
   const loadSites = async () => {
-    const data = await api<SitesResponse>("/sub2api-sites", token);
+    const data = await api<SitesResponse>("/sub2api-sites?site_type=sub2api", token);
     setSites(data.items);
     if (!selectedSiteId && data.items[0]) {
       setSelectedSiteId(data.items[0].id);
@@ -231,6 +232,17 @@ function ManualPoolPage({ token, showToast, mode }: Props & { mode: ManualPoolMo
     }
     return data.items;
   };
+
+  usePageAutoRefresh(
+    async () => {
+      await Promise.all([
+        loadAccounts(),
+        selectedSiteId ? loadGroups(selectedSiteId) : Promise.resolve([]),
+        mode === "reserve" ? loadRefillLogs() : Promise.resolve(),
+      ]);
+    },
+    { paused: Boolean(busyId || bulkBusy || confirmState) },
+  );
 
   useEffect(() => {
     if (!selectedSiteId) return;

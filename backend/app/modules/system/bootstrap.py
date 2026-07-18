@@ -5,6 +5,24 @@ from app.security import hash_password
 from app.utils import now_utc
 
 
+async def ensure_tpm_indexes(db: AsyncIOMotorDatabase) -> None:
+    await db.sub2api_tpm_samples.create_index(
+        [("site_id", 1), ("group_id", 1), ("bucket_at", 1)],
+        unique=True,
+    )
+    await db.sub2api_tpm_samples.create_index("expires_at", expireAfterSeconds=0)
+    await db.sub2api_tpm_samples.create_index([("site_id", 1), ("group_id", 1), ("sampled_at", -1)])
+
+
+async def ensure_capacity_sample_indexes(db: AsyncIOMotorDatabase) -> None:
+    await db.sub2api_capacity_samples.create_index(
+        [("site_id", 1), ("group_id", 1), ("bucket_at", 1)],
+        unique=True,
+    )
+    await db.sub2api_capacity_samples.create_index("expires_at", expireAfterSeconds=0)
+    await db.sub2api_capacity_samples.create_index([("site_id", 1), ("group_id", 1), ("sampled_at", -1)])
+
+
 async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.users.create_index("email", unique=True)
     await db.api_tokens.create_index("token_hash", unique=True)
@@ -72,6 +90,9 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.todo_items.create_index("pool_id")
     await db.todo_items.create_index("todo_type")
     await db.sub2api_sites.create_index("status")
+    await db.client_sites.create_index("status")
+    await db.client_sites.create_index("client_type")
+    await db.client_sites.create_index("created_at")
     await db.sub2api_groups_cache.create_index([("site_id", 1), ("group_id", 1)], unique=True)
     await db.sub2api_accounts_cache.create_index([("site_id", 1), ("group_ids", 1), ("status", 1)])
     await db.sub2api_accounts_cache.create_index([("site_id", 1), ("sub2api_account_id", 1)])
@@ -89,6 +110,8 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.sub2api_dashboard_snapshots.create_index([("site_id", 1), ("range_type", 1)])
     await db.sub2api_dashboard_snapshots.create_index([("site_id", 1), ("group_id", 1), ("range_type", 1)])
     await db.sub2api_dashboard_meta.create_index("updated_at")
+    await ensure_tpm_indexes(db)
+    await ensure_capacity_sample_indexes(db)
     await db.sub2api_auto_refill_meta.create_index("last_finished_at")
     await db.group_observability_settings.create_index([("site_id", 1), ("group_id", 1)], unique=True)
     await db.group_observability_settings.create_index("status")
@@ -111,6 +134,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.remote_account_probe_samples.create_index([("site_id", 1), ("sampled_at", -1)])
     await db.remote_account_probe_runs.create_index([("site_id", 1), ("started_at", -1)])
     await db.remote_account_probe_meta.create_index("last_probe_at")
+    await db.sub2api_capacity_notification_meta.create_index([("site_id", 1), ("group_id", 1)], unique=True)
     await db.agent_runs.create_index([("created_at", -1)])
     await db.agent_runs.create_index([("status", 1), ("created_at", -1)])
     await db.agent_runs.create_index([("pool_id", 1), ("created_at", -1)])
@@ -188,4 +212,7 @@ async def ensure_initial_owner(db: AsyncIOMotorDatabase) -> None:
 
 
 async def ensure_bootstrap_data(db: AsyncIOMotorDatabase) -> None:
+    from app.modules.system.client_sites import migrate_legacy_client_sites
+
     await ensure_initial_owner(db)
+    await migrate_legacy_client_sites(db)

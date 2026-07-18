@@ -1,6 +1,9 @@
 import { Fragment, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
+import { AnimatedValue, AutoRefreshAnimationContext } from "../components/AnimatedValue";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
+import { concurrencyCoverageScalePercent, runwayScalePercent } from "../utils/capacityScale";
 import { errorMessage, formatDateTime, parseDisplayDate, text } from "../utils/format";
 
 type Props = {
@@ -34,6 +37,7 @@ type Group = {
 };
 
 type CapacitySummary = {
+  capacity_model?: string;
   available_accounts?: number;
   available_5h_accounts?: number;
   pool_normal_accounts?: number;
@@ -152,6 +156,31 @@ type CapacitySummary = {
   health_tone?: "excellent" | "info" | "success" | "warning" | "danger" | "muted";
   health_reason?: string;
   auto_refill_required?: boolean;
+  realtime_risk_ready?: boolean;
+  pressure_stage?: string;
+  pressure_stage_label?: string;
+  pressure_tpm?: number;
+  pressure_rpm?: number;
+  sample_count?: number;
+  concurrency_sample_count?: number;
+  actual_runway_hours?: number | null;
+  dynamic_runway_hours?: number | null;
+  target_runway_hours?: number;
+  actual_target_hours?: number;
+  estimated_concurrency?: number;
+  concurrency_coverage?: number | null;
+  concurrency_target_coverage?: number;
+  replenishment_required?: boolean;
+  recommended_refill_accounts?: number;
+  recommended_refill_options?: Record<string, {
+    account_type?: string;
+    quota_refill_accounts?: number;
+    concurrency_refill_accounts?: number;
+    recommended_refill_accounts?: number;
+  }>;
+  quota_refill_accounts?: number;
+  concurrency_refill_accounts?: number;
+  inventory_risk?: boolean;
   used_5h_percent?: number;
   available_5h_percent?: number;
   active_available_5h_percent?: number;
@@ -356,9 +385,9 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [statusPreferences, setStatusPreferences] = useState<StatusPreferences>({});
   const [savingPreference, setSavingPreference] = useState<"site" | "group" | null>(null);
+  const [autoRefreshRevision, setAutoRefreshRevision] = useState(0);
 
   const selectedSite = sites.find((site) => site.id === selectedSiteId) || null;
-  const refreshIntervalMinutes = selectedSite?.refresh_interval_minutes || 30;
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) || null;
   const sortedSites = useMemo(() => sortSitesByPinned(sites, statusPreferences.pinned_site_id), [sites, statusPreferences.pinned_site_id]);
   const sortedGroups = useMemo(() => sortGroupsByPinned(groups, statusPreferences.pinned_group_id), [groups, statusPreferences.pinned_group_id]);
@@ -393,7 +422,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   }, [visibleAccounts]);
 
   const loadSites = async () => {
-    const data = await api<SitesResponse>("/sub2api-sites", token);
+    const data = await api<SitesResponse>("/sub2api-sites?site_type=sub2api", token);
     setSites(data.items);
     const nextSiteId = chooseSiteId(data.items, selectedSiteId, statusPreferences.pinned_site_id);
     if (nextSiteId && nextSiteId !== selectedSiteId) {
@@ -428,17 +457,21 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     }
   };
 
+  const fetchAccountPage = async (siteId: string, groupId: number, page: number) => {
+    const params = new URLSearchParams({
+      page: String(page),
+      page_size: String(accountPageSize),
+    });
+    if (statusFilter) params.set("status", statusFilter);
+    return api<AccountsResponse>(`/sub2api-sites/${siteId}/groups/${groupId}/accounts?${params.toString()}`, token);
+  };
+
   const loadAccounts = async (siteId = selectedSiteId, groupId = selectedGroupId, page = accountPage) => {
     if (!siteId || groupId === null) return;
     const requestKey = accountCacheKey(siteId, groupId, page, accountPageSize, statusFilter);
     setLoadingAccountsKey(requestKey);
     try {
-      const params = new URLSearchParams({
-        page: String(page),
-        page_size: String(accountPageSize),
-      });
-      if (statusFilter) params.set("status", statusFilter);
-      const data = await api<AccountsResponse>(`/sub2api-sites/${siteId}/groups/${groupId}/accounts?${params.toString()}`, token);
+      const data = await fetchAccountPage(siteId, groupId, page);
       cacheAccounts(siteId, groupId, page, accountPageSize, statusFilter, {
         items: data.items,
         total: data.total,
@@ -458,6 +491,70 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     } finally {
       setLoadingAccountsKey((current) => (current === requestKey ? null : current));
     }
+  };
+
+  const refreshStatusData = async (animateChanges = false) => {
+    const refreshContextKey = currentAccountKeyRef.current;
+    const [sitesData, preferences] = await Promise.all([
+      api<SitesResponse>("/sub2api-sites?site_type=sub2api", token),
+      api<StatusPreferences>("/api-pools/status-preferences", token),
+    ]);
+    const nextSiteId = chooseSiteId(sitesData.items, selectedSiteId, preferences.pinned_site_id);
+    if (!nextSiteId) {
+      if (currentAccountKeyRef.current !== refreshContextKey) return;
+      setSites(sitesData.items);
+      setStatusPreferences(preferences);
+      setSelectedSiteId("");
+      setGroups([]);
+      setSelectedGroupId(null);
+      setAccounts([]);
+      setAccountsTotal(0);
+      setAccountsDataKey("");
+      if (animateChanges) setAutoRefreshRevision((current) => current + 1);
+      return;
+    }
+
+    const groupsData = await api<GroupsResponse>(`/sub2api-sites/${nextSiteId}/groups?page=1&page_size=100`, token);
+    const nextGroupId = chooseGroupId(groupsData.items, selectedGroupId, preferences.pinned_group_id);
+    if (nextGroupId === null) {
+      if (currentAccountKeyRef.current !== refreshContextKey) return;
+      setSites(sitesData.items);
+      setStatusPreferences(preferences);
+      setSelectedSiteId(nextSiteId);
+      setGroups(groupsData.items);
+      setSelectedGroupId(null);
+      setAccounts([]);
+      setAccountsTotal(0);
+      setAccountsDataKey("");
+      setLastLoadedAt(groupsData.cache_meta?.last_refreshed_at || null);
+      if (animateChanges) setAutoRefreshRevision((current) => current + 1);
+      return;
+    }
+
+    const requestKey = accountCacheKey(nextSiteId, nextGroupId, accountPage, accountPageSize, statusFilter);
+    const accountsData = await fetchAccountPage(nextSiteId, nextGroupId, accountPage);
+    if (currentAccountKeyRef.current !== refreshContextKey) return;
+    const snapshotLoadedAt = accountsData.cache_meta?.last_refreshed_at || groupsData.cache_meta?.last_refreshed_at || lastLoadedAt;
+    const nextGroups = accountsData.capacity_summary
+      ? groupsData.items.map((group) => (group.id === nextGroupId ? { ...group, capacity_summary: accountsData.capacity_summary } : group))
+      : groupsData.items;
+    cacheAccounts(nextSiteId, nextGroupId, accountPage, accountPageSize, statusFilter, {
+      items: accountsData.items,
+      total: accountsData.total,
+      capacitySummary: accountsData.capacity_summary,
+      lastLoadedAt: snapshotLoadedAt,
+      cachedAt: Date.now(),
+    });
+    setSites(sitesData.items);
+    setStatusPreferences(preferences);
+    setSelectedSiteId(nextSiteId);
+    setGroups(nextGroups);
+    setSelectedGroupId(nextGroupId);
+    setAccounts(accountsData.items);
+    setAccountsTotal(accountsData.total);
+    setAccountsDataKey(requestKey);
+    setLastLoadedAt(snapshotLoadedAt);
+    if (animateChanges) setAutoRefreshRevision((current) => current + 1);
   };
 
   const hydrateAccountsFromCache = (siteId: string, groupId: number, page: number, pageSize: number, filter: string) => {
@@ -648,6 +745,11 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     );
   };
 
+  usePageAutoRefresh(() => refreshStatusData(true), {
+    enabled: Boolean(selectedSiteId && selectedGroupId !== null),
+    paused: Boolean(refreshingRemote || refreshingFrontend || remoteActionBusyId !== null || confirmState || savingPreference),
+  });
+
   const testConnection = async () => {
     if (!selectedSiteId) return;
     try {
@@ -671,7 +773,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     }
     loadStatusPreferences()
       .then((preferences) =>
-        api<SitesResponse>("/sub2api-sites", token).then((data) => {
+        api<SitesResponse>("/sub2api-sites?site_type=sub2api", token).then((data) => {
           setSites(data.items);
           const nextSiteId = chooseSiteId(data.items, selectedSiteId, preferences.pinned_site_id);
           if (nextSiteId) setSelectedSiteId(nextSiteId);
@@ -753,23 +855,6 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     return () => window.removeEventListener("sub2api-cache-updated", handleCacheUpdated);
   }, [selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter]);
 
-  useEffect(() => {
-    if (!selectedSiteId) return;
-    const intervalMs = Math.max(30, refreshIntervalMinutes || 30) * 60_000;
-    const timer = window.setInterval(() => {
-      loadGroups(selectedSiteId)
-        .then((nextGroups) => {
-          const nextGroupId = chooseGroupId(nextGroups, selectedGroupId, statusPreferences.pinned_group_id);
-          if (nextGroupId !== null) {
-            return loadAccounts(selectedSiteId, nextGroupId, accountPage);
-          }
-          return undefined;
-        })
-        .catch((error) => showToast(errorMessage(error), true));
-    }, intervalMs);
-    return () => window.clearInterval(timer);
-  }, [selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter, refreshIntervalMinutes, statusPreferences.pinned_group_id]);
-
   const refreshAll = async () => {
     if (!selectedSiteId) return;
     setRefreshingRemote(true);
@@ -802,15 +887,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     if (!selectedSiteId) return;
     setRefreshingFrontend(true);
     try {
-      const nextGroups = await loadGroups(selectedSiteId);
-      const nextGroupId = chooseGroupId(nextGroups, selectedGroupId, statusPreferences.pinned_group_id);
-      if (nextGroupId !== null) {
-        setSelectedGroupId(nextGroupId);
-        await loadAccounts(selectedSiteId, nextGroupId, accountPage);
-      } else {
-        setAccounts([]);
-        setAccountsTotal(0);
-      }
+      await refreshStatusData();
       showToast("前端数据已刷新");
     } catch (error) {
       showToast(errorMessage(error), true);
@@ -820,6 +897,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   };
 
   return (
+    <AutoRefreshAnimationContext.Provider value={autoRefreshRevision}>
     <section className="view pool-status-page">
       <section className="panel pool-compact-toolbar">
         <div className="pool-title">
@@ -950,15 +1028,15 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
           <section className="pool-health-card">
             <div className="pool-health-main">
               <span><MetricHelp helpKey="账号池概览">账号池概览</MetricHelp></span>
-              <strong>{numberValue(selectedGroup?.capacity_summary?.pool_active_normal_accounts)}</strong>
-              <em><MetricHelp helpKey="active / 正常">active / 正常 {numberValue(selectedGroup?.capacity_summary?.pool_normal_accounts)}</MetricHelp></em>
+              <strong><AnimatedValue value={numberValue(selectedGroup?.capacity_summary?.pool_active_normal_accounts)} /></strong>
+              <em><MetricHelp helpKey="active / 正常">active / 正常 <AnimatedValue value={numberValue(selectedGroup?.capacity_summary?.pool_normal_accounts)} /></MetricHelp></em>
             </div>
             <div className="pool-health-grid">
               <MiniMetric label="5h 429" value={numberValue(selectedGroup?.capacity_summary?.pool_five_hour_rate_limited_accounts)} />
               <MiniMetric label="7d 429" value={numberValue(selectedGroup?.capacity_summary?.pool_seven_day_rate_limited_accounts)} />
               <MiniMetric label="异常数量" value={numberValue(selectedGroup?.capacity_summary?.pool_abnormal_accounts)} />
             </div>
-            <p>已排除 Bug Team {numberValue(selectedGroup?.capacity_summary?.pool_excluded_bug_team_accounts)} 个，不参与概览与容量计算。</p>
+            <p>已排除 Bug Team <AnimatedValue value={numberValue(selectedGroup?.capacity_summary?.pool_excluded_bug_team_accounts)} /> 个，不参与概览与容量计算。</p>
           </section>
 
           <ConcurrencyCapacitySummary summary={selectedGroup?.capacity_summary} loading={capacitySummaryLoading} />
@@ -1073,6 +1151,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
         tone={confirmState?.tone}
       />
     </section>
+    </AutoRefreshAnimationContext.Provider>
   );
 }
 
@@ -1125,10 +1204,10 @@ function RemoteAccountRow({
         </div>
       </td>
       <td className="capacity-cell">
-        <span>{numberValue(account.current_concurrency)}</span>
+        <span><AnimatedValue value={numberValue(account.current_concurrency)} /></span>
         <span className="capacity-separator">/</span>
-        <strong>{numberValue(account.concurrency)}</strong>
-        <div className="cell-sub">load {numberValue(account.load_factor)}</div>
+        <strong><AnimatedValue value={numberValue(account.concurrency)} /></strong>
+        <div className="cell-sub">load <AnimatedValue value={numberValue(account.load_factor)} /></div>
       </td>
       <td>
         <StatusPill value={statusView.label} tone={statusView.tone} />
@@ -1198,7 +1277,7 @@ function UsageWindow({ account, label, windowKey }: { account: RemoteAccount; la
     <div className="usage-window">
       <div className="usage-window-top">
         <span>{label}</span>
-        <strong>{usedPercent}%</strong>
+        <strong><AnimatedValue value={`${usedPercent}%`} /></strong>
         <em>{formatDuration(resetAfter)}</em>
       </div>
       <div className="usage-track" aria-label={`${label} used ${usedPercent}%`}>
@@ -1236,25 +1315,25 @@ function ConcurrencyCapacitySummary({ summary, loading }: { summary?: CapacitySu
           <em>当前使用组</em>
         </div>
         <small>
-          安全账号 {numberValue(summary?.concurrency_safe_accounts)} 个 · 临界账号 {numberValue(summary?.concurrency_near_limit_accounts)} 个 · 5h限流 {numberValue(summary?.concurrency_five_hour_limited_accounts)} 个 · 短期7d {numberValue(summary?.concurrency_short_seven_day_limited_accounts)} 个 · 长期7d排除 {numberValue(summary?.concurrency_long_seven_day_limited_accounts)} 个
+          安全账号 <AnimatedValue value={numberValue(summary?.concurrency_safe_accounts)} /> 个 · 临界账号 <AnimatedValue value={numberValue(summary?.concurrency_near_limit_accounts)} /> 个 · 5h限流 <AnimatedValue value={numberValue(summary?.concurrency_five_hour_limited_accounts)} /> 个 · 短期7d <AnimatedValue value={numberValue(summary?.concurrency_short_seven_day_limited_accounts)} /> 个 · 长期7d排除 <AnimatedValue value={numberValue(summary?.concurrency_long_seven_day_limited_accounts)} /> 个
         </small>
       </div>
       <div className="concurrency-capacity-values">
         <div>
           <span><MetricHelp helpKey="当前并发">当前并发</MetricHelp></span>
-          <strong>{loading ? "-" : actual}</strong>
+          <strong><AnimatedValue value={loading ? "-" : actual} /></strong>
         </div>
         <div>
           <span><MetricHelp helpKey="安全可用并发">安全可用并发</MetricHelp></span>
-          <strong>{loading ? "-" : safeAvailable}</strong>
+          <strong><AnimatedValue value={loading ? "-" : safeAvailable} /></strong>
         </div>
         <div>
           <span><MetricHelp helpKey="即时可用并发">即时可用并发</MetricHelp></span>
-          <strong>{loading ? "-" : immediateAvailable}</strong>
+          <strong><AnimatedValue value={loading ? "-" : immediateAvailable} /></strong>
         </div>
         <div>
           <span><MetricHelp helpKey="可恢复总并发容量">可恢复总并发容量</MetricHelp></span>
-          <strong>{loading ? "-" : total}</strong>
+          <strong><AnimatedValue value={loading ? "-" : total} /></strong>
         </div>
       </div>
       <div className="concurrency-capacity-meter" aria-label={`当前并发 ${actual}，安全可用并发 ${safeAvailable}，即时可用并发 ${immediateAvailable}，可恢复总并发容量 ${total}`}>
@@ -1264,10 +1343,10 @@ function ConcurrencyCapacitySummary({ summary, loading }: { summary?: CapacitySu
         <span className="unavailable" style={{ width: `${unavailablePercent}%` }} />
       </div>
       <div className="concurrency-capacity-legend">
-        <span><i className="used" /><MetricHelp helpKey="当前并发">使用中 {actual} 并发</MetricHelp></span>
-        <span><i className="safe" /><MetricHelp helpKey="安全可用并发">安全可用 {safeAvailable} 并发</MetricHelp></span>
-        <span><i className="near-limit" /><MetricHelp helpKey="临界可用并发">临界可用 {nearLimitAvailable} 并发</MetricHelp></span>
-        <span><i className="unavailable" /><MetricHelp helpKey="暂时不可用并发">暂时不可用 {unavailable} 并发 · {unavailableAccounts} 个账号</MetricHelp></span>
+        <span><i className="used" /><MetricHelp helpKey="当前并发">使用中 <AnimatedValue value={actual} /> 并发</MetricHelp></span>
+        <span><i className="safe" /><MetricHelp helpKey="安全可用并发">安全可用 <AnimatedValue value={safeAvailable} /> 并发</MetricHelp></span>
+        <span><i className="near-limit" /><MetricHelp helpKey="临界可用并发">临界可用 <AnimatedValue value={nearLimitAvailable} /> 并发</MetricHelp></span>
+        <span><i className="unavailable" /><MetricHelp helpKey="暂时不可用并发">暂时不可用 <AnimatedValue value={unavailable} /> 并发 · <AnimatedValue value={unavailableAccounts} /> 个账号</MetricHelp></span>
       </div>
     </section>
   );
@@ -1280,15 +1359,10 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
   const sevenDayFiveHourPeakMultiple = summary?.five_hour_peak_multiple;
   const recentDayFiveHourPeak = summary?.recent_day_five_hour_peak_cost;
   const recentDayFiveHourPeakMultiple = summary?.recent_day_five_hour_peak_multiple;
-  const activeSevenDayFiveHourPeakMultiple = summary?.active_five_hour_peak_multiple;
-  const activeRecentDayFiveHourPeakMultiple = summary?.active_recent_day_five_hour_peak_multiple;
   const burstOneHourMultiple = summary?.burst_1h_five_hour_multiple;
-  const activeBurstOneHourMultiple = summary?.active_burst_1h_five_hour_multiple;
   const burstTrendTone = burstTrendMetricTone(summary?.burst_1h_trend, summary?.burst_1h_trend_strength);
   const recent24hSpeedDays = summary?.current_speed_days;
-  const activeRecent24hSpeedDays = summary?.active_current_speed_days;
   const sevenDayPeak24hSpeedDays = summary?.seven_day_peak_speed_days;
-  const activeSevenDayPeak24hSpeedDays = summary?.active_seven_day_peak_speed_days;
   const fiveHourUsedPercent = summary?.used_5h_percent;
   const sevenDayUsedPercent = summary?.used_7d_percent;
   const fiveHourRemainingPercent = summary?.available_5h_percent ?? remainingPercent(fiveHourUsedPercent);
@@ -1311,10 +1385,6 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
         <CapacityMetric
           label="动态5h总容量"
           value={formatUsd(summary?.dynamic_five_hour_capacity_usd ?? summary?.five_hour_capacity_usd)}
-          sideValues={[
-            capacitySideValue("实际池", summary?.active_five_hour_capacity_usd),
-            capacitySideValue("备用池", summary?.reserve_five_hour_capacity_usd),
-          ]}
           sub={
             <CapacityMoneyLine
               label="动态可用额度"
@@ -1335,10 +1405,6 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
         <CapacityMetric
           label="总容量：7d"
           value={formatUsd(summary?.seven_day_capacity_usd)}
-          sideValues={[
-            capacitySideValue("实际池", summary?.active_seven_day_capacity_usd),
-            capacitySideValue("备用池", summary?.reserve_seven_day_capacity_usd),
-          ]}
           sub={
             <CapacityMoneyLine
               label="可用额度"
@@ -1357,28 +1423,30 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           reverse
         />
         <CapacityMetric
-          label="峰值容量：最近一天5h"
-          value={formatMultiple(recentDayFiveHourPeakMultiple)}
-          sub={`峰值 ${formatUsd(recentDayFiveHourPeak)}，总容量：5h ${formatUsd(summary?.five_hour_capacity_usd)}`}
-          percent={multipleScalePercent(recentDayFiveHourPeakMultiple)}
-          tone={multipleScaleTone(recentDayFiveHourPeakMultiple)}
-          overlay={capacityOverlayWithReserve(summary?.reserve_five_hour_capacity_usd, "使用池", formatMultiple(activeRecentDayFiveHourPeakMultiple), multipleScalePercent(activeRecentDayFiveHourPeakMultiple), multipleScaleTone(activeRecentDayFiveHourPeakMultiple))}
+          label="实时可用时间"
+          value={formatRunwayHours(summary?.dynamic_runway_hours)}
+          sub={`实际可用 ${formatRunwayHours(summary?.actual_runway_hours)} · 动态目标 ${formatRunwayHours(summary?.target_runway_hours ?? 3)}`}
+          percent={runwayScalePercent(summary?.dynamic_runway_hours, summary?.target_runway_hours ?? 3)}
+          tone={runwayTone(summary?.dynamic_runway_hours, summary?.realtime_risk_ready)}
+          meterLegendLabel="动态覆盖"
+          meterValue={formatRunwayHours(summary?.dynamic_runway_hours)}
+          meterTiered
         />
         <CapacityMetric
-          label="峰值容量：7天最高5h"
-          value={formatMultiple(sevenDayFiveHourPeakMultiple)}
-          sub={`峰值 ${formatUsd(sevenDayFiveHourPeak)}，总容量：5h ${formatUsd(summary?.five_hour_capacity_usd)}`}
-          percent={multipleScalePercent(sevenDayFiveHourPeakMultiple)}
-          tone={multipleScaleTone(sevenDayFiveHourPeakMultiple)}
-          overlay={capacityOverlayWithReserve(summary?.reserve_five_hour_capacity_usd, "使用池", formatMultiple(activeSevenDayFiveHourPeakMultiple), multipleScalePercent(activeSevenDayFiveHourPeakMultiple), multipleScaleTone(activeSevenDayFiveHourPeakMultiple))}
+          label="压力阶段"
+          value={summary?.pressure_stage_label || "等待数据"}
+          sub={`TPM ${formatRate(summary?.pressure_tpm)} · RPM ${formatRate(summary?.pressure_rpm)} · ${summary?.sample_count || 0} 个分钟样本`}
+          tone={pressureStageTone(summary?.pressure_stage)}
         />
         <CapacityMetric
-          label="突发峰值：1h预估"
-          value={formatMultiple(burstOneHourMultiple)}
-          sub={`当前小时已用 ${formatUsd(summary?.burst_1h_observed_cost)}，按${formatMinutes(summary?.burst_1h_elapsed_minutes)}折算1h ${formatUsd(summary?.burst_1h_cost)}，折算5h ${formatUsd(summary?.burst_1h_five_hour_estimated_cost)}`}
-          percent={multipleScalePercent(burstOneHourMultiple)}
-          tone={multipleScaleTone(burstOneHourMultiple)}
-          overlay={capacityOverlayWithReserve(summary?.reserve_five_hour_capacity_usd, "使用池", formatMultiple(activeBurstOneHourMultiple), multipleScalePercent(activeBurstOneHourMultiple), multipleScaleTone(activeBurstOneHourMultiple))}
+          label="安全并发覆盖"
+          value={formatMultiple(summary?.concurrency_coverage)}
+          sub={`压力并发 ${formatRate(summary?.estimated_concurrency)} · 并发样本 ${summary?.concurrency_sample_count || 0} · 安全可用 ${formatRate(summary?.concurrency_safe_available)}${refillRecommendationText(summary, true) ? ` · ${refillRecommendationText(summary, true)}` : ""}`}
+          percent={concurrencyCoverageScalePercent(summary?.concurrency_coverage, summary?.concurrency_target_coverage ?? 1.2)}
+          tone={concurrencyCoverageTone(summary?.concurrency_coverage, summary?.realtime_risk_ready)}
+          meterLegendLabel="目标"
+          meterValue={formatMultiple(summary?.concurrency_target_coverage ?? 1.2)}
+          meterTiered
         />
         <CapacityMetric
           label="突发趋势：最近1h"
@@ -1386,14 +1454,33 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={burstTrendSubText(summary)}
           tone={burstTrendTone}
         />
-
+        <CapacityMetric
+          label="峰值容量：最近一天5h"
+          value={formatMultiple(recentDayFiveHourPeakMultiple)}
+          sub={`峰值 ${formatUsd(recentDayFiveHourPeak)}，总容量：5h ${formatUsd(summary?.five_hour_capacity_usd)}`}
+          percent={multipleScalePercent(recentDayFiveHourPeakMultiple)}
+          tone={multipleScaleTone(recentDayFiveHourPeakMultiple)}
+        />
+        <CapacityMetric
+          label="峰值容量：7天最高5h"
+          value={formatMultiple(sevenDayFiveHourPeakMultiple)}
+          sub={`峰值 ${formatUsd(sevenDayFiveHourPeak)}，总容量：5h ${formatUsd(summary?.five_hour_capacity_usd)}`}
+          percent={multipleScalePercent(sevenDayFiveHourPeakMultiple)}
+          tone={multipleScaleTone(sevenDayFiveHourPeakMultiple)}
+        />
+        <CapacityMetric
+          label="突发峰值：1h预估"
+          value={formatMultiple(burstOneHourMultiple)}
+          sub={`当前小时已用 ${formatUsd(summary?.burst_1h_observed_cost)}，按${formatMinutes(summary?.burst_1h_elapsed_minutes)}折算1h ${formatUsd(summary?.burst_1h_cost)}，折算5h ${formatUsd(summary?.burst_1h_five_hour_estimated_cost)}`}
+          percent={multipleScalePercent(burstOneHourMultiple)}
+          tone={multipleScaleTone(burstOneHourMultiple)}
+        />
         <CapacityMetric
           label="预估天数：最近24h"
           value={formatDays(recent24hSpeedDays)}
           sub={`按最近24h消耗 ${formatUsd(summary?.recent_24h_cost)}`}
           percent={daysScalePercent(recent24hSpeedDays)}
           tone={daysScaleTone(recent24hSpeedDays)}
-          overlay={capacityOverlayWithReserve(summary?.reserve_seven_day_capacity_usd, "使用池", formatDays(activeRecent24hSpeedDays), daysScalePercent(activeRecent24hSpeedDays), daysScaleTone(activeRecent24hSpeedDays))}
         />
         <CapacityMetric
           label="预估天数：7天最高24h"
@@ -1401,7 +1488,6 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           sub={`按7天最高24h消耗 ${formatUsd(summary?.seven_day_24h_peak_cost)}`}
           percent={daysScalePercent(sevenDayPeak24hSpeedDays)}
           tone={daysScaleTone(sevenDayPeak24hSpeedDays)}
-          overlay={capacityOverlayWithReserve(summary?.reserve_seven_day_capacity_usd, "使用池", formatDays(activeSevenDayPeak24hSpeedDays), daysScalePercent(activeSevenDayPeak24hSpeedDays), daysScaleTone(activeSevenDayPeak24hSpeedDays))}
         />
         <CapacityMetric
           label="预估消耗：最近24h"
@@ -1486,17 +1572,17 @@ const METRIC_HELP_DETAILS: Record<string, MetricHelpDetail> = {
     note: "此处主数值单位是并发槽位，不是账号数量；界面会同时显示涉及的账号数。5h 429属于可恢复容量，长期7d、401和Bug Team不进入该值。",
   },
   "容量预估": {
-    purpose: "综合账号数量、额度、峰值和消耗速度给出维护状态。",
-    formula: "优先级依次为等待数据、耗尽、危险、紧张、健康、充裕、十分充裕；判断使用包含备用池后的容量。",
-    note: "耗尽：可用账号 <= 2、最近一天5h < 0.2x或可用不足6小时；危险：<1x或不足1天；紧张：<1.5x或不足3天；充裕：>=3x且>=5天；十分充裕：7天峰值>=5x且峰值速度>=10天。自动补号线为<1.75x或不足3.5天。",
+    purpose: "使用每分钟 TPM/RPM、实际额度和安全并发判断当前分组还能支撑多久。",
+    formula: "压力速度取 EMA15、最近2小时P90和趋势调整EMA5中的最大值；只计算远端实际账号，不计算可用池或备选池。",
+    note: "耗尽：账号 <=2或动态不足30分钟；危险：实际不足1小时、动态不足1小时或并发<1x；需要补号：动态不足3小时或并发<1.2x。分钟数据不足15条时暂用历史公式。",
   },
   "动态5h总容量": {
     purpose: "显示当前分组在5h窗口下用于动态评估的总额度。",
-    formula: "Σ对应账号类型的5h额度，包含实际池和备用池；排除Bug Team、异常账号和7d已耗尽账号。",
+    formula: "Σ远端当前分组中对应账号类型的5h额度；排除Bug Team、异常账号和7d已耗尽账号。",
   },
   "总容量：7d": {
     purpose: "显示当前分组完整的周额度规模。",
-    formula: "Σ对应账号类型的7d额度，包含实际池和备用池；排除Bug Team和异常账号。",
+    formula: "Σ远端当前分组中对应账号类型的7d额度；排除Bug Team和异常账号。",
   },
   "实际池": {
     purpose: "当前已经在远端使用分组中的账号额度。",
@@ -1589,7 +1675,7 @@ function CapacityMoneyLine({ label, values }: { label: string; values: Array<[st
             <span className={`capacity-money-item ${itemClass}`}>
               {index > 0 ? <span className="capacity-money-separator">，</span> : null}
               <span><MetricHelp helpKey={itemLabel}>{itemLabel}</MetricHelp> </span>
-              <strong>{itemValue}</strong>
+              <strong><AnimatedValue value={itemValue} /></strong>
             </span>
           </Fragment>
         );
@@ -1600,18 +1686,22 @@ function CapacityMoneyLine({ label, values }: { label: string; values: Array<[st
 
 function CapacitySubText({ value }: { value: ReactNode }) {
   if (typeof value !== "string") return <>{value}</>;
-  const parts = value.split(/(\$[\d,]+(?:\.\d+)?)/g);
+  const parts = value.split(/(\$[\d,]+(?:\.\d+)?|[-+]?\d[\d,]*(?:\.\d+)?(?:%|x)?)/g);
   return (
     <>
-      {parts.map((part, index) =>
-        part.startsWith("$") ? (
-          <strong className="capacity-money-strong" key={`${part}-${index}`}>
-            {part}
-          </strong>
-        ) : (
-          part
-        ),
-      )}
+      {parts.map((part, index) => {
+        if (part.startsWith("$")) {
+          return (
+            <strong className="capacity-money-strong" key={`${part}-${index}`}>
+              <AnimatedValue value={part} />
+            </strong>
+          );
+        }
+        if (/^[-+]?\d[\d,]*(?:\.\d+)?(?:%|x)?$/.test(part)) {
+          return <AnimatedValue key={`${part}-${index}`} value={part} />;
+        }
+        return part;
+      })}
     </>
   );
 }
@@ -1621,31 +1711,41 @@ function capacityOverlay(label: string, value: string, percent?: number | null, 
   return { label, value, percent, tone };
 }
 
-function capacityOverlayWithReserve(
-  reserveCapacity: unknown,
-  label: string,
-  value: string,
-  percent?: number | null,
-  tone?: CapacityMetricTone,
-): CapacityMeterOverlay | undefined {
-  const reserve = optionalNumberValue(reserveCapacity);
-  if (reserve === null || reserve <= 0) return undefined;
-  return capacityOverlay(label, value, percent, tone);
-}
-
-function capacitySideValue(label: string, value: unknown) {
-  if (value === undefined || value === null) return undefined;
-  return { label, value: formatUsd(value) };
-}
-
 function capacityHealthReason(summary?: CapacitySummary) {
   if (!summary) return "等待 dashboard cost 数据";
-  const reserve = numberValue(summary.reserve_available_accounts);
-  const active = numberValue(summary.active_available_accounts);
-  const suffix = reserve > 0 ? `，含备用池 ${reserve} 个，使用池 ${active} 个` : "";
   const reason = summary.health_reason || "等待 dashboard cost 数据";
-  const refill = summary.auto_refill_required && !reason.includes("自动补号") ? "；已触发自动补号阈值" : "";
-  return `${reason}${suffix}${refill}`;
+  const recommendation = refillRecommendationText(summary);
+  const refill = recommendation ? `；${recommendation}` : "";
+  return `${reason}${refill}`;
+}
+
+const refillAccountTypeLabels: Record<string, string> = {
+  free: "Free",
+  plus: "Plus",
+  team: "Team",
+  k12: "K12",
+  pro: "Pro",
+};
+
+function refillRecommendationText(summary?: CapacitySummary, compact = false) {
+  if (!summary?.replenishment_required) return "";
+  const options = Object.entries(summary.recommended_refill_options || {})
+    .map(([key, option]) => {
+      const count = Math.max(0, Math.round(numberValue(option.recommended_refill_accounts)));
+      if (count <= 0) return "";
+      const accountType = String(option.account_type || key).trim().toLowerCase();
+      const label = refillAccountTypeLabels[accountType] || accountType.toUpperCase() || "账号";
+      return `${label} ${count} 个`;
+    })
+    .filter(Boolean);
+  if (options.length > 0) {
+    if (compact) return `建议 ${options.join(" / ")}（仅供参考）`;
+    return `建议补号：${options.join("，或 ")}。仅供参考，请结合实时供货和账号质量判断。`;
+  }
+  const legacyCount = Math.max(0, Math.round(numberValue(summary.recommended_refill_accounts)));
+  if (legacyCount <= 0) return "";
+  if (compact) return `建议 ${legacyCount} 个（仅供参考）`;
+  return `建议补号：${legacyCount} 个。仅供参考，请结合实时供货和账号质量判断。`;
 }
 
 function CapacityMetric({
@@ -1659,6 +1759,7 @@ function CapacityMetric({
   meterLabel,
   meterLegendLabel,
   meterValue,
+  meterTiered = false,
   reverse = false,
   showMeterHead = false,
   secondary,
@@ -1676,6 +1777,7 @@ function CapacityMetric({
   meterLabel?: string;
   meterLegendLabel?: string;
   meterValue?: string;
+  meterTiered?: boolean;
   reverse?: boolean;
   showMeterHead?: boolean;
   secondary?: {
@@ -1704,9 +1806,9 @@ function CapacityMetric({
           {showInlineSub ? (
             <>
               <span>含备用</span>
-              {value}
+              <AnimatedValue value={value} />
             </>
-          ) : value}
+          ) : <AnimatedValue value={value} />}
         </strong>
         {showInlineSub && (
           <small className="capacity-metric-inline-sub">
@@ -1718,7 +1820,7 @@ function CapacityMetric({
             {visibleSideValues.map((item) => (
               <span className="capacity-metric-side-value" key={item.label}>
                 <em><MetricHelp helpKey={item.label}>{item.label}</MetricHelp></em>
-                <b>{item.value}</b>
+                <b><AnimatedValue value={item.value} /></b>
               </span>
             ))}
           </span>
@@ -1734,18 +1836,18 @@ function CapacityMetric({
           {(showMeterHead || meterLabel) && (
             <div className="capacity-secondary-head">
               <span>{meterLabel || sub}</span>
-              <strong className={`capacity-secondary-value ${tone}`}>{meterValue || value}</strong>
+              <strong className={`capacity-secondary-value ${tone}`}><AnimatedValue value={meterValue || value} /></strong>
             </div>
           )}
           {overlay && <CapacityMeterLegend overlay={overlay} baseLabel={meterLegendLabel} baseValue={meterValue || value} baseTone={tone} />}
-          <CapacityMeter label={label} percent={percent} tone={tone} overlay={overlay} reverse={reverse} />
+          <CapacityMeter label={label} percent={percent} tone={tone} overlay={overlay} reverse={reverse} tiered={meterTiered} />
         </div>
       )}
       {secondary && (
         <div className="capacity-secondary">
           <div className="capacity-secondary-head">
             <span>{secondary.label}</span>
-            <strong className={`capacity-secondary-value ${secondary.tone || "muted"}`}>{secondary.value}</strong>
+            <strong className={`capacity-secondary-value ${secondary.tone || "muted"}`}><AnimatedValue value={secondary.value} /></strong>
           </div>
           {secondary.percent !== undefined && secondary.percent !== null && (
             <>
@@ -1772,8 +1874,8 @@ function CapacityMeterLegend({
 }) {
   return (
     <div className="capacity-meter-legend">
-      <span className={`capacity-meter-legend-value ${overlay.tone || "muted"}`}><MetricHelp helpKey={overlay.label}>{overlay.label}</MetricHelp> {overlay.value}</span>
-      <span className={`capacity-meter-legend-value ${baseTone}`}><MetricHelp helpKey={baseLabel}>{baseLabel}</MetricHelp> {baseValue}</span>
+      <span className={`capacity-meter-legend-value ${overlay.tone || "muted"}`}><MetricHelp helpKey={overlay.label}>{overlay.label}</MetricHelp> <AnimatedValue value={overlay.value} /></span>
+      <span className={`capacity-meter-legend-value ${baseTone}`}><MetricHelp helpKey={baseLabel}>{baseLabel}</MetricHelp> <AnimatedValue value={baseValue} /></span>
     </div>
   );
 }
@@ -1784,15 +1886,17 @@ function CapacityMeter({
   tone,
   overlay,
   reverse = false,
+  tiered = false,
 }: {
   label: string;
   percent: number;
   tone: CapacityMetricTone;
   overlay?: CapacityMeterOverlay;
   reverse?: boolean;
+  tiered?: boolean;
 }) {
   return (
-    <div className={`capacity-meter ${overlay ? "layered" : ""} ${reverse ? "reverse" : ""}`} aria-label={`${label} ${percent}%`}>
+    <div className={`capacity-meter ${overlay ? "layered" : ""} ${reverse ? "reverse" : ""} ${tiered ? "tiered" : ""}`} aria-label={`${label} ${percent}%`}>
       <div className={`capacity-meter-fill reserve ${tone}`} style={{ width: `${clampPercent(percent)}%` }} />
       {overlay?.percent !== undefined && overlay.percent !== null && (
         <div className={`capacity-meter-fill active ${overlay.tone || "muted"}`} style={{ width: `${clampPercent(overlay.percent)}%` }} />
@@ -1807,7 +1911,7 @@ function CompactStats({ items }: { items: Array<[string, string | number]> }) {
       {items.map(([label, value]) => (
         <div className="compact-stat" key={label}>
           <span>{label}</span>
-          <strong>{value}</strong>
+          <strong><AnimatedValue value={value} /></strong>
         </div>
       ))}
     </section>
@@ -1817,7 +1921,7 @@ function CompactStats({ items }: { items: Array<[string, string | number]> }) {
 function MiniMetric({ label, value }: { label: string; value: number }) {
   return (
     <div className="mini-metric">
-      <strong>{value}</strong>
+      <strong><AnimatedValue value={value} /></strong>
       <span><MetricHelp helpKey={label}>{label}</MetricHelp></span>
     </div>
   );
@@ -2081,6 +2185,47 @@ function formatMultiple(value: unknown): string {
   const number = optionalNumberValue(value);
   if (number === null) return "-";
   return `${number.toFixed(2)}x`;
+}
+
+function formatRunwayHours(value: unknown): string {
+  const number = optionalNumberValue(value);
+  if (number === null) return "-";
+  if (number < 1) return `${Math.max(0, Math.round(number * 60))}分钟`;
+  if (number < 10) return `${number.toFixed(1)}小时`;
+  return `${number.toFixed(0)}小时`;
+}
+
+function formatRate(value: unknown): string {
+  const number = optionalNumberValue(value);
+  if (number === null) return "-";
+  return Math.round(number).toLocaleString("zh-CN");
+}
+
+function runwayTone(value: unknown, ready: unknown): CapacityMetricTone {
+  if (ready !== true) return "muted";
+  const number = optionalNumberValue(value);
+  if (number === null) return "muted";
+  if (number < 1) return "danger";
+  if (number < 3) return "warning";
+  if (number >= 6) return "info";
+  return "success";
+}
+
+function concurrencyCoverageTone(value: unknown, ready: unknown): CapacityMetricTone {
+  if (ready !== true) return "muted";
+  const number = optionalNumberValue(value);
+  if (number === null) return "success";
+  if (number < 1) return "danger";
+  if (number < 1.2) return "warning";
+  return "success";
+}
+
+function pressureStageTone(value?: string): CapacityMetricTone {
+  if (value === "peak_guard") return "danger";
+  if (value === "accelerating" || value === "transmission") return "warning";
+  if (value === "inventory_risk") return "info";
+  if (value === "stable" || value === "recovering") return "success";
+  return "muted";
 }
 
 function formatPercentChange(value: unknown): string {

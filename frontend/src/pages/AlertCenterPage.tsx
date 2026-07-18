@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import { errorMessage, formatDateTime } from "../utils/format";
 
 type Props = {
@@ -46,7 +47,7 @@ export function AlertCenterPage({ token, showToast }: Props) {
   const [loading, setLoading] = useState(false);
   const [markingId, setMarkingId] = useState<string | null>(null);
 
-  const loadAlerts = async () => {
+  const loadAlerts = async (silent = false) => {
     setLoading(true);
     try {
       const params = new URLSearchParams({
@@ -57,7 +58,7 @@ export function AlertCenterPage({ token, showToast }: Props) {
       setItems(data.items || []);
       setTotal(numberValue(data.total));
     } catch (error) {
-      showToast(errorMessage(error), true);
+      if (!silent) showToast(errorMessage(error), true);
     } finally {
       setLoading(false);
     }
@@ -79,6 +80,8 @@ export function AlertCenterPage({ token, showToast }: Props) {
       setMarkingId(null);
     }
   };
+
+  usePageAutoRefresh(() => loadAlerts(true), { paused: Boolean(markingId) });
 
   useEffect(() => {
     loadAlerts();
@@ -108,7 +111,7 @@ export function AlertCenterPage({ token, showToast }: Props) {
             全部告警
           </button>
         </div>
-        <button className="ghost compact-button" type="button" onClick={loadAlerts} disabled={loading}>
+        <button className="ghost compact-button" type="button" onClick={() => void loadAlerts()} disabled={loading}>
           {loading ? "刷新中..." : "刷新"}
         </button>
       </section>

@@ -8,6 +8,7 @@ import { AlertCenterPage } from "./pages/AlertCenterPage";
 import { ApiPoolStatusPage } from "./pages/ApiPoolStatusPage";
 import { ApiTokensPage } from "./pages/ApiTokensPage";
 import { AuditPage } from "./pages/AuditPage";
+import { ClientSitesPage } from "./pages/ClientSitesPage";
 import { EventRecordsPage } from "./pages/EventRecordsPage";
 import { IntroPage } from "./pages/IntroPage";
 import { AvailablePoolPage, ReservePoolPage } from "./pages/ManualPoolPage";
@@ -39,6 +40,7 @@ const poolNavItems: Array<[ViewName, string]> = [
   ["event-records", "事件记录"],
   ["alert-center", "异常告警"],
   ["pool-lifecycle", "账号池管理"],
+  ["client-sites", "客户站点"],
 ];
 
 const adminNavItems: Array<[ViewName, string]> = [
@@ -59,7 +61,8 @@ const navShortLabels: Record<ViewName, string> = {
   "api-pools": "池",
   "event-records": "事",
   "alert-center": "警",
-  "pool-lifecycle": "逻",
+  "pool-lifecycle": "站",
+  "client-sites": "客",
   "agent-analysis": "析",
   "agent-workbench": "台",
   "api-tokens": "管",
@@ -77,7 +80,8 @@ const viewPaths: Record<ViewName, string> = {
   "api-pools": "/api-pool-status",
   "event-records": "/event-records",
   "alert-center": "/alert-center",
-  "pool-lifecycle": "/pool-lifecycle",
+  "pool-lifecycle": "/account-pool-management",
+  "client-sites": "/client-sites",
   "agent-analysis": "/agent-analysis",
   "agent-workbench": "/agent-workbench",
   "api-tokens": "/system-management",
@@ -91,6 +95,8 @@ const pathAliases: Record<string, ViewName> = {
   "/push-error-todos": "push-error-todos",
   "/api-pools": "api-pools",
   "/api-tokens": "api-tokens",
+  "/pool-lifecycle": "pool-lifecycle",
+  "/site-configuration": "pool-lifecycle",
 };
 
 function isMobileMenuLayout() {
@@ -179,7 +185,7 @@ function App() {
           <img className="brand-logo" src={logoUrl} alt="AIwelink" />
           <div className="brand-copy">
             <h1>AIwelink</h1>
-            <p>sub2api 账号管理</p>
+            <p>API 客户端管理</p>
           </div>
         </div>
         <button className="sidebar-toggle" onClick={toggleSidebar} title={sidebarCollapsed ? "展开菜单" : "收起菜单"} type="button">
@@ -242,6 +248,7 @@ function App() {
             {view === "event-records" && <EventRecordsPage token={token} showToast={showToast} />}
             {view === "alert-center" && <AlertCenterPage token={token} showToast={showToast} />}
             {view === "pool-lifecycle" && <AccountPoolsPage token={token} showToast={showToast} />}
+            {view === "client-sites" && <ClientSitesPage token={token} showToast={showToast} />}
             {view === "agent-analysis" && <AgentAnalysisPage token={token} showToast={showToast} />}
             {view === "agent-workbench" && <AgentWorkbenchPage token={token} showToast={showToast} />}
             {view === "api-tokens" && <ApiTokensPage token={token} showToast={showToast} />}

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import { errorMessage, formatDateTime } from "../utils/format";
 
 type Props = {
@@ -314,20 +315,20 @@ export function AgentWorkbenchPage({ token, showToast }: Props) {
   const groupedTasks = useMemo(() => groupTasksByStatus(tasks), [tasks]);
   const taskCounts = useMemo(() => countTasks(tasks), [tasks]);
 
-  const loadTasks = async () => {
+  const loadTasks = async (silent = false) => {
     setTasksLoading(true);
     try {
       const data = await api<AgentTasksResponse>("/agent/tasks?limit=200", token);
       setTasks(data.items || []);
       setTaskTotal(data.total || 0);
     } catch (error) {
-      showToast(errorMessage(error), true);
+      if (!silent) showToast(errorMessage(error), true);
     } finally {
       setTasksLoading(false);
     }
   };
 
-  const loadRuns = async (triggerFilter = runTriggerFilter) => {
+  const loadRuns = async (triggerFilter = runTriggerFilter, silent = false) => {
     setRunsLoading(true);
     try {
       const query = new URLSearchParams({ limit: "100" });
@@ -338,13 +339,13 @@ export function AgentWorkbenchPage({ token, showToast }: Props) {
       setRuns(data.items || []);
       setRunTotal(data.total || 0);
     } catch (error) {
-      showToast(errorMessage(error), true);
+      if (!silent) showToast(errorMessage(error), true);
     } finally {
       setRunsLoading(false);
     }
   };
 
-  const loadTraceSteps = async (runId = traceRunId) => {
+  const loadTraceSteps = async (runId = traceRunId, silent = false) => {
     const normalizedRunId = runId.trim();
     if (!normalizedRunId) {
       showToast("请先选择或输入 run_id", true);
@@ -357,13 +358,13 @@ export function AgentWorkbenchPage({ token, showToast }: Props) {
       setTraceTotal(data.total || 0);
       setTraceRunId(normalizedRunId);
     } catch (error) {
-      showToast(errorMessage(error), true);
+      if (!silent) showToast(errorMessage(error), true);
     } finally {
       setTraceLoading(false);
     }
   };
 
-  const loadTriggerData = async () => {
+  const loadTriggerData = async (silent = false) => {
     setTriggersLoading(true);
     try {
       const [ticksData, eventData, patrolData] = await Promise.all([
@@ -375,13 +376,13 @@ export function AgentWorkbenchPage({ token, showToast }: Props) {
       setEventTriggers(eventData.items || []);
       setPatrolRuns(patrolData.items || []);
     } catch (error) {
-      showToast(errorMessage(error), true);
+      if (!silent) showToast(errorMessage(error), true);
     } finally {
       setTriggersLoading(false);
     }
   };
 
-  const loadEvalData = async (preferredEvalRunId = selectedEvalRunId) => {
+  const loadEvalData = async (preferredEvalRunId = selectedEvalRunId, silent = false) => {
     setEvalsLoading(true);
     try {
       const [casesData, runsData] = await Promise.all([
@@ -407,7 +408,7 @@ export function AgentWorkbenchPage({ token, showToast }: Props) {
         setEvalResults(resultsData.items || []);
       }
     } catch (error) {
-      showToast(errorMessage(error), true);
+      if (!silent) showToast(errorMessage(error), true);
     } finally {
       setEvalsLoading(false);
     }
@@ -460,7 +461,7 @@ export function AgentWorkbenchPage({ token, showToast }: Props) {
     }
   };
 
-  const loadMemoryData = async (typeFilter = memoryTypeFilter, poolFilter = memoryPoolFilter) => {
+  const loadMemoryData = async (typeFilter = memoryTypeFilter, poolFilter = memoryPoolFilter, silent = false) => {
     setMemoryLoading(true);
     try {
       const query = new URLSearchParams({ limit: "100" });
@@ -474,13 +475,13 @@ export function AgentWorkbenchPage({ token, showToast }: Props) {
       setMemories(data.items || []);
       setMemoryTypes(data.memory_types || []);
     } catch (error) {
-      showToast(errorMessage(error), true);
+      if (!silent) showToast(errorMessage(error), true);
     } finally {
       setMemoryLoading(false);
     }
   };
 
-  const loadNotifications = async (statusFilter = notificationStatusFilter) => {
+  const loadNotifications = async (statusFilter = notificationStatusFilter, silent = false) => {
     setNotificationsLoading(true);
     try {
       const query = new URLSearchParams({ limit: "100" });
@@ -490,11 +491,28 @@ export function AgentWorkbenchPage({ token, showToast }: Props) {
       const data = await api<AgentListResponse<AgentNotificationItem>>(`/agent/notifications?${query.toString()}`, token);
       setNotifications(data.items || []);
     } catch (error) {
-      showToast(errorMessage(error), true);
+      if (!silent) showToast(errorMessage(error), true);
     } finally {
       setNotificationsLoading(false);
     }
   };
+
+  const refreshActiveTab = async () => {
+    if (activeTab === "tasks") await loadTasks(true);
+    if (activeTab === "runs") await loadRuns(runTriggerFilter, true);
+    if (activeTab === "trace") {
+      if (traceRunId) await loadTraceSteps(traceRunId, true);
+      else await loadRuns("all", true);
+    }
+    if (activeTab === "triggers") await loadTriggerData(true);
+    if (activeTab === "evals") await loadEvalData(selectedEvalRunId, true);
+    if (activeTab === "memory") await loadMemoryData(memoryTypeFilter, memoryPoolFilter, true);
+    if (activeTab === "notifications") await loadNotifications(notificationStatusFilter, true);
+  };
+
+  usePageAutoRefresh(refreshActiveTab, {
+    paused: Boolean(taskBusyKey || evalRunning || notificationBusyTaskId),
+  });
 
   const dispatchNotification = async (taskId: string) => {
     if (!taskId) {
@@ -635,7 +653,7 @@ export function AgentWorkbenchPage({ token, showToast }: Props) {
           <p>面向运维和调试的完整工作台，用来追踪 task、run、trace、trigger、eval、memory 和 notification。</p>
         </div>
         {activeTab === "tasks" ? (
-          <button className="ghost" type="button" onClick={loadTasks} disabled={tasksLoading}>
+          <button className="ghost" type="button" onClick={() => void loadTasks()} disabled={tasksLoading}>
             {tasksLoading ? "刷新中..." : "刷新 Tasks"}
           </button>
         ) : activeTab === "runs" ? (
@@ -647,7 +665,7 @@ export function AgentWorkbenchPage({ token, showToast }: Props) {
             {traceLoading ? "刷新中..." : "刷新 Trace"}
           </button>
         ) : activeTab === "triggers" ? (
-          <button className="ghost" type="button" onClick={loadTriggerData} disabled={triggersLoading}>
+          <button className="ghost" type="button" onClick={() => void loadTriggerData()} disabled={triggersLoading}>
             {triggersLoading ? "刷新中..." : "刷新 Triggers"}
           </button>
         ) : activeTab === "evals" ? (

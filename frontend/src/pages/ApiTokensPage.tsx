@@ -1,5 +1,6 @@
 import { FormEvent, ReactNode, useEffect, useId, useState } from "react";
 import { api } from "../api/client";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import type { ApiPool } from "../types";
 import { errorMessage, formatDateTime } from "../utils/format";
 
@@ -591,6 +592,15 @@ export function ApiTokensPage({ token, showToast }: Props) {
     const loader = activeTab === "tokens" ? loadTokens : activeTab === "notifications" ? loadNotificationChannels : loadAgentLlmSettings;
     loader().catch((error) => showToast(errorMessage(error), true));
   };
+
+  usePageAutoRefresh(
+    async () => {
+      if (activeTab === "tokens") await loadTokens();
+      if (activeTab === "notifications") await loadNotificationChannels();
+      if (activeTab === "agent-llm") await loadAgentPools();
+    },
+    { paused: Boolean(busy || editingChannelId) },
+  );
 
   const channelLabel = (item: NotificationChannel) => {
     if (item.channel_type === "telegram") return "TG机器人";

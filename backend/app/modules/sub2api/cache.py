@@ -1,8 +1,10 @@
 import asyncio
 import logging
+import math
 import re
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import HTTPException, status
@@ -10,6 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReplaceOne, UpdateOne
 
 from app.modules.api_pools.capacity_limits import DEFAULT_CAPACITY_ACCOUNT_LIMITS, get_capacity_account_limits
+from app.modules.sub2api.capacity_risk import calculate_capacity_risk
 from app.modules.sub2api.client import Sub2ApiClient
 from app.utils import now_utc, serialize_doc
 
@@ -17,6 +20,8 @@ from app.utils import now_utc, serialize_doc
 logger = logging.getLogger("app.sub2api_cache")
 
 DEFAULT_SITE_ID = "default"
+DEFAULT_SITE_TYPE = "sub2api"
+SITE_TYPES = {"sub2api", "newapi"}
 DEFAULT_REFRESH_INTERVAL_MINUTES = 30
 MIN_REFRESH_INTERVAL_MINUTES = 1
 REFRESH_DEBOUNCE_SECONDS = 3
@@ -28,6 +33,10 @@ CONCURRENCY_SAFE_FIVE_HOUR_USAGE_PERCENT = 80
 CONCURRENCY_SAFE_SEVEN_DAY_USAGE_PERCENT = 80
 BUG_TEAM_MIN_WINDOW_MINUTES = 28 * 24 * 60
 CAPACITY_ACCOUNT_LIMITS = DEFAULT_CAPACITY_ACCOUNT_LIMITS
+REFILL_ACCOUNT_TYPES_BY_POOL = {
+    "plus": ("plus", "k12"),
+    "pro": ("pro",),
+}
 CAPACITY_HEALTH_THRESHOLDS = {
     "exhausted_available_accounts": 2,
     "exhausted_recent_day_peak_multiple": 0.2,
@@ -72,20 +81,25 @@ _site_locks: dict[str, asyncio.Lock] = {}
 
 def public_site(site: dict[str, Any]) -> dict[str, Any]:
     result = dict(site)
+    result["site_type"] = site_type(result)
     result.setdefault("refresh_interval_minutes", DEFAULT_REFRESH_INTERVAL_MINUTES)
     result.setdefault("auto_remove_abnormal_accounts", False)
     result.setdefault("status", "active")
     result.setdefault("source", "database")
     result["token_configured"] = bool(result.get("token"))
+    result["uptime_kuma_api_key_configured"] = bool(result.get("uptime_kuma_api_key"))
     result.pop("token", None)
+    result.pop("uptime_kuma_api_key", None)
     return result
 
 
 async def get_site(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SITE_ID, *, include_token: bool = False) -> dict[str, Any] | None:
-    doc = await db.sub2api_sites.find_one({"_id": site_id, "status": {"$ne": "deleted"}})
+    query = sub2api_site_query(status={"$ne": "deleted"}) | {"_id": site_id}
+    doc = await db.sub2api_sites.find_one(query)
     if doc is None:
         return None
     site = dict(doc)
+    site["site_type"] = site_type(site)
     site.setdefault("refresh_interval_minutes", DEFAULT_REFRESH_INTERVAL_MINUTES)
     site.setdefault("auto_remove_abnormal_accounts", False)
     site.setdefault("status", "active")
@@ -96,17 +110,28 @@ async def get_site(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SITE_ID, *, 
     return serialize_doc(site)
 
 
-async def list_sites(db: AsyncIOMotorDatabase) -> dict[str, Any]:
-    cursor = db.sub2api_sites.find({"status": {"$ne": "deleted"}}).sort([("created_at", 1), ("_id", 1)])
+async def list_sites(db: AsyncIOMotorDatabase, *, site_type: str | None = None) -> dict[str, Any]:
+    if site_type is not None:
+        normalized_type = normalize_site_type(site_type)
+        if normalized_type != "sub2api":
+            raise ValueError("customer sites must be configured through /api/client-sites")
+    query = sub2api_site_query(status={"$ne": "deleted"})
+    cursor = db.sub2api_sites.find(query).sort([("created_at", 1), ("_id", 1)])
     items = [public_site(doc | {"id": doc["_id"]}) async for doc in cursor]
     return {"items": items, "total": len(items)}
 
 
 async def update_site_config(db: AsyncIOMotorDatabase, site_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    current = await db.sub2api_sites.find_one({"_id": site_id, "status": {"$ne": "deleted"}})
+    site_query = sub2api_site_query(status={"$ne": "deleted"}) | {"_id": site_id}
+    current = await db.sub2api_sites.find_one(site_query)
     if current is None:
         return {}
     updates: dict[str, Any] = {"updated_at": now_utc()}
+    normalized_type = normalize_site_type(payload.get("site_type", current.get("site_type")))
+    if normalized_type != "sub2api":
+        raise ValueError("customer sites must be configured through /api/client-sites")
+    updates["site_type"] = "sub2api"
+    updates["admin_user_id"] = ""
     if "name" in payload:
         updates["name"] = str(payload["name"] or site_id).strip() or site_id
     if "base_url" in payload:
@@ -119,7 +144,11 @@ async def update_site_config(db: AsyncIOMotorDatabase, site_id: str, payload: di
         updates["refresh_interval_minutes"] = _site_refresh_interval_minutes(payload)
     if "auto_remove_abnormal_accounts" in payload:
         updates["auto_remove_abnormal_accounts"] = bool(payload["auto_remove_abnormal_accounts"])
-    await db.sub2api_sites.update_one({"_id": site_id}, {"$set": updates})
+    if "uptime_kuma_url" in payload:
+        updates["uptime_kuma_url"] = _optional_http_url(payload.get("uptime_kuma_url"), "uptime_kuma_url")
+    if str(payload.get("uptime_kuma_api_key") or "").strip():
+        updates["uptime_kuma_api_key"] = str(payload["uptime_kuma_api_key"]).strip()
+    await db.sub2api_sites.update_one(site_query, {"$set": updates})
     return await get_site(db, site_id) or {}
 
 
@@ -128,15 +157,22 @@ async def create_site_config(db: AsyncIOMotorDatabase, payload: dict[str, Any]) 
     base_url = str(payload.get("base_url") or "").strip().rstrip("/")
     if not site_id or not base_url:
         return {}
+    normalized_type = normalize_site_type(payload.get("site_type"))
+    if normalized_type != "sub2api":
+        raise ValueError("customer sites must be configured through /api/client-sites")
     now = now_utc()
     doc = {
         "_id": site_id,
         "name": str(payload.get("name") or site_id).strip() or site_id,
         "base_url": base_url,
+        "site_type": "sub2api",
+        "admin_user_id": "",
         "token": str(payload.get("token") or "").strip(),
         "status": str(payload.get("status") or "active"),
         "refresh_interval_minutes": _site_refresh_interval_minutes(payload),
         "auto_remove_abnormal_accounts": bool(payload.get("auto_remove_abnormal_accounts", False)),
+        "uptime_kuma_url": _optional_http_url(payload.get("uptime_kuma_url"), "uptime_kuma_url"),
+        "uptime_kuma_api_key": str(payload.get("uptime_kuma_api_key") or "").strip(),
         "source": "database",
         "created_at": now,
         "updated_at": now,
@@ -146,11 +182,53 @@ async def create_site_config(db: AsyncIOMotorDatabase, payload: dict[str, Any]) 
 
 
 async def delete_site_config(db: AsyncIOMotorDatabase, site_id: str) -> bool:
+    site_query = sub2api_site_query(status={"$ne": "deleted"}) | {"_id": site_id}
     result = await db.sub2api_sites.update_one(
-        {"_id": site_id, "status": {"$ne": "deleted"}},
+        site_query,
         {"$set": {"status": "deleted", "deleted_at": now_utc(), "updated_at": now_utc()}},
     )
     return result.modified_count > 0
+
+
+def normalize_site_type(value: Any) -> str:
+    normalized = str(value or DEFAULT_SITE_TYPE).strip().lower()
+    if normalized not in SITE_TYPES:
+        raise ValueError(f"unsupported site_type: {normalized}")
+    return normalized
+
+
+def _optional_http_url(value: Any, field_name: str) -> str:
+    normalized = str(value or "").strip().rstrip("/")
+    if not normalized:
+        return ""
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{field_name} must be an http or https URL")
+    return normalized
+
+
+def site_type(site: dict[str, Any]) -> str:
+    try:
+        return normalize_site_type(site.get("site_type"))
+    except ValueError:
+        return DEFAULT_SITE_TYPE
+
+
+def is_sub2api_site(site: dict[str, Any] | None) -> bool:
+    return bool(site) and site_type(site) == "sub2api"
+
+
+def sub2api_site_query(*, status: Any = None) -> dict[str, Any]:
+    query: dict[str, Any] = {}
+    if status is not None:
+        query["status"] = status
+    query["$or"] = [
+        {"site_type": "sub2api"},
+        {"site_type": {"$exists": False}},
+        {"site_type": None},
+        {"site_type": ""},
+    ]
+    return query
 
 
 async def get_cache_meta(db: AsyncIOMotorDatabase, site_id: str) -> dict[str, Any]:
@@ -278,7 +356,7 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
             group_ops = []
             empty_capacity_summary: dict[str, Any] | None = None
             for group in groups:
-                group_id = group.get("id")
+                group_id = _int_group_id(group.get("id"))
                 if group_id is None:
                     continue
                 capacity_summary = group_capacity_summaries.get(group_id)
@@ -286,6 +364,7 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                     if empty_capacity_summary is None:
                         empty_capacity_summary = await _capacity_summary_for_accounts(db, site_id, [])
                     capacity_summary = empty_capacity_summary
+                    group_capacity_summaries[group_id] = capacity_summary
                 group_ops.append(
                     ReplaceOne(
                         {"_id": f"{site_id}:{group_id}"},
@@ -332,6 +411,19 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                 db.sub2api_groups_cache.delete_many({"site_id": site_id, "group_id": {"$nin": group_ids}}),
                 db.sub2api_accounts_cache.delete_many({"site_id": site_id, "sub2api_account_id": {"$nin": account_ids}}),
             )
+            capacity_notification_summary: dict[str, Any] | None = None
+            try:
+                from app.modules.sub2api.capacity_notifications import evaluate_capacity_notifications
+
+                capacity_notification_summary = await evaluate_capacity_notifications(
+                    db,
+                    site_id=site_id,
+                    groups=groups,
+                    capacity_summaries=group_capacity_summaries,
+                )
+            except Exception as exc:  # noqa: BLE001 - notification failures must not fail cache refresh.
+                capacity_notification_summary = {"ok": False, "message": str(exc)}
+                logger.warning("sub2api_capacity_notification_failed site_id=%s error=%s", site_id, exc)
             try:
                 from app.modules.api_pools.pools import sync_api_pools_from_sub2api_groups
 
@@ -354,6 +446,7 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                 "auto_removed_abnormal_accounts": auto_remove_summary.get("removed", 0) if auto_remove_summary else 0,
                 "auto_remove_abnormal_failed": auto_remove_summary.get("failed", 0) if auto_remove_summary else 0,
                 "dashboard": dashboard_summary,
+                "capacity_notifications": capacity_notification_summary,
                 "started_at": started_at,
                 "finished_at": now_utc(),
             }
@@ -413,7 +506,7 @@ async def request_debounced_refresh(db: AsyncIOMotorDatabase, site_id: str = DEF
 
 
 async def refresh_account_caches_for_all_sites(db: AsyncIOMotorDatabase) -> dict[str, Any]:
-    sites = (await list_sites(db)).get("items", [])
+    sites = (await list_sites(db, site_type="sub2api")).get("items", [])
     results = []
     for site in sites:
         if not site or site.get("status") != "active":
@@ -436,7 +529,7 @@ async def refresh_account_caches_for_all_sites(db: AsyncIOMotorDatabase) -> dict
 async def refresh_scheduler_loop(db: AsyncIOMotorDatabase) -> None:
     while True:
         try:
-            for site in (await list_sites(db)).get("items", []):
+            for site in (await list_sites(db, site_type="sub2api")).get("items", []):
                 if not site or site.get("status") != "active":
                     continue
                 site_id = str(site.get("id"))
@@ -581,8 +674,33 @@ async def _restore_cached_usage_snapshots(db: AsyncIOMotorDatabase, site_id: str
         cached = cached_by_remote_id.get(account.get("id"))
         if isinstance(cached, dict):
             cached_account = cached.get("account", {}) if isinstance(cached.get("account"), dict) else {}
+            _copy_cached_plan_type(account, cached_account)
             _copy_cached_usage(account, cached_account)
             _copy_cached_remote_test(account, cached)
+
+
+def _copy_cached_plan_type(account: dict[str, Any], cached: dict[str, Any]) -> None:
+    extra = dict(account.get("extra") if isinstance(account.get("extra"), dict) else {})
+    source = str(account.get("codex_plan_type_source") or extra.get("codex_plan_type_source") or "")
+    if source != "fallback_k12":
+        return
+
+    cached_credentials = cached.get("credentials") if isinstance(cached.get("credentials"), dict) else {}
+    cached_extra = cached.get("extra") if isinstance(cached.get("extra"), dict) else {}
+    cached_plan_type = _first_present(cached, cached_credentials, cached_extra, "plan_type")
+    if cached_plan_type is None:
+        return
+    cached_plan_type = str(cached_plan_type).strip()
+    if not cached_plan_type:
+        return
+
+    cached_source = str(cached.get("codex_plan_type_source") or cached_extra.get("codex_plan_type_source") or "")
+    resolved_source = "fallback_k12" if cached_source == "fallback_k12" else "cached"
+    account["plan_type"] = cached_plan_type
+    account["codex_plan_type_source"] = resolved_source
+    extra["plan_type"] = cached_plan_type
+    extra["codex_plan_type_source"] = resolved_source
+    account["extra"] = extra
 
 
 def _copy_cached_usage(account: dict[str, Any], cached: dict[str, Any]) -> None:
@@ -764,11 +882,9 @@ async def _capacity_summary_for_accounts(
     capacity_limits = (await get_capacity_account_limits(db, site_id))["limits"]
     type_summary = _capacity_by_account_type(capacity_accounts, five_hour_capacity_accounts, capacity_limits)
     primary_type = _primary_capacity_type(type_summary)
-    reserve_type_summary = await _reserve_capacity_by_account_type(db, site_id, group_id, capacity_limits) if group_id is not None else _empty_capacity_type_summary(capacity_limits)
-    if primary_type == "total" and reserve_type_summary["total"]["available_accounts"] > 0:
-        primary_type = _primary_capacity_type(reserve_type_summary)
-    selected = type_summary.get(primary_type, type_summary["total"])
-    selected_reserve = reserve_type_summary.get(primary_type, reserve_type_summary["total"])
+    reserve_type_summary = _empty_capacity_type_summary(capacity_limits)
+    selected = type_summary["total"]
+    selected_reserve = reserve_type_summary["total"]
     cost_summary = await _dashboard_cost_summary(db, site_id, group_id=group_id)
     five_hour_peak_cost = cost_summary["five_hour_peak_cost"]
     recent_day_five_hour_peak_cost = cost_summary["recent_day_five_hour_peak_cost"]
@@ -779,7 +895,11 @@ async def _capacity_summary_for_accounts(
     seven_day_cost = cost_summary["seven_day_cost"]
     active_five_hour_capacity_usd = selected["five_hour_capacity_usd"]
     active_seven_day_capacity_usd = selected["seven_day_capacity_usd"]
-    selected_limits = capacity_limits.get(primary_type, {})
+    selected_account_count = int(selected["available_accounts"])
+    selected_limits = {
+        "five_hour_usd": active_five_hour_capacity_usd / selected_account_count if selected_account_count > 0 else 0.0,
+        "seven_day_usd": active_seven_day_capacity_usd / selected_account_count if selected_account_count > 0 else 0.0,
+    }
     selected_seven_day_limit_usd = float(selected_limits.get("seven_day_usd") or 0)
     estimated_recent_24h_consumed_accounts = _ratio_or_none(recent_24h_cost, selected_seven_day_limit_usd)
     estimated_seven_day_peak_24h_consumed_accounts = _ratio_or_none(seven_day_24h_peak_cost, selected_seven_day_limit_usd)
@@ -856,23 +976,39 @@ async def _capacity_summary_for_accounts(
     recent_5h_remaining_usd = max(0.0, five_hour_capacity_usd - recent_5h_cost)
     recent_24h_remaining_usd = max(0.0, twenty_four_hour_capacity_usd - recent_24h_cost)
     seven_day_remaining_usd = max(0.0, seven_day_capacity_usd - seven_day_cost)
-    health = _capacity_health(
-        available_accounts=selected["available_accounts"] + selected_reserve["available_accounts"],
-        reserve_accounts=selected_reserve["available_accounts"],
-        five_hour_capacity_usd=five_hour_capacity_usd,
-        seven_day_capacity_usd=seven_day_capacity_usd,
-        five_hour_peak_multiple=five_hour_peak_multiple,
-        active_five_hour_peak_multiple=active_five_hour_peak_multiple,
-        recent_day_five_hour_peak_multiple=recent_day_five_hour_peak_multiple,
-        active_recent_day_five_hour_peak_multiple=active_recent_day_five_hour_peak_multiple,
-        twenty_four_hour_peak_multiple=twenty_four_hour_peak_multiple,
-        current_speed_multiple=current_speed_multiple,
-        current_speed_days=current_speed_days,
-        active_current_speed_days=active_current_speed_days,
-        seven_day_peak_speed_days=seven_day_peak_speed_days,
-        five_x_speed_days=five_x_speed_days,
+    tpm_samples = await _load_group_tpm_samples(db, site_id=site_id, group_id=group_id)
+    concurrency_total = float(concurrency_summary.get("concurrency_total_capacity") or 0)
+    concurrency_accounts = int(concurrency_summary.get("concurrency_eligible_accounts") or 0)
+    average_account_concurrency = concurrency_total / concurrency_accounts if concurrency_accounts > 0 else 0.0
+    realtime_risk = calculate_capacity_risk(
+        samples=tpm_samples,
+        now=now_utc(),
+        cost_per_token=_number_or_none(cost_summary.get("recent_6h_cost_per_token")),
+        actual_five_hour_remaining_usd=five_hour_actual_remaining_usd,
+        dynamic_five_hour_remaining_usd=dynamic_five_hour_remaining_estimated_usd,
+        actual_seven_day_remaining_usd=seven_day_actual_remaining_usd,
+        dynamic_seven_day_remaining_usd=seven_day_remaining_estimated_usd,
+        available_accounts=selected["available_accounts"],
+        safe_concurrency_available=float(concurrency_summary.get("concurrency_safe_available") or 0),
+        per_account_five_hour_usd=float(selected_limits.get("five_hour_usd") or 0),
+        per_account_seven_day_usd=float(selected_limits.get("seven_day_usd") or 0),
+        average_account_concurrency=average_account_concurrency,
+        refill_account_options=_refill_account_options(primary_type, capacity_limits),
+        primary_refill_account_type=primary_type,
     )
+    health = {
+        "status": realtime_risk["health_status"],
+        "label": realtime_risk["health_label"],
+        "tone": realtime_risk["health_tone"],
+        "reason": realtime_risk["health_reason"],
+    }
+    risk_details = {
+        key: value
+        for key, value in realtime_risk.items()
+        if key not in {"health_status", "health_label", "health_tone", "health_reason"}
+    }
     return {
+        "capacity_model": "single_pool_realtime",
         "available_accounts": selected["available_accounts"] + selected_reserve["available_accounts"],
         "available_5h_accounts": selected["available_5h_accounts"] + selected_reserve["available_5h_accounts"],
         "active_available_accounts": selected["available_accounts"],
@@ -986,7 +1122,11 @@ async def _capacity_summary_for_accounts(
         "health_label": health["label"],
         "health_tone": health["tone"],
         "health_reason": health["reason"],
-        "auto_refill_required": health["auto_refill_required"],
+        "auto_refill_required": False,
+        "realtime_risk_ready": realtime_risk["ready"],
+        "replenishment_required": realtime_risk["replenishment_required"] if realtime_risk["ready"] else False,
+        "recommended_refill_accounts": realtime_risk["recommended_refill_accounts"] if realtime_risk["ready"] else 0,
+        **risk_details,
         **pool_status_summary,
         **concurrency_summary,
         "cost_window": cost_summary,
@@ -1228,18 +1368,18 @@ def _dynamic_five_hour_usage(account: dict[str, Any] | None, five_hour_limit_usd
             "seven_day_actual_remaining_usd": seven_day_limit_usd,
         }
 
-    bug_team = is_bug_team_account(account)
-    five_hour_prefix = "codex_7d" if bug_team else "codex_5h"
+    use_seven_day_percent = math.isclose(five_hour_limit_usd, seven_day_limit_usd, rel_tol=1e-9, abs_tol=1e-9)
+    five_hour_prefix = "codex_7d" if use_seven_day_percent else "codex_5h"
     used_percent = _usage_number(account, f"{five_hour_prefix}_used_percent")
     used_percent = _clamp_percent(used_percent if isinstance(used_percent, (int, float)) else 0)
     seven_day_used_percent = _usage_number(account, "codex_7d_used_percent")
     seven_day_used_percent = _clamp_percent(seven_day_used_percent if isinstance(seven_day_used_percent, (int, float)) else 0)
     reset_after_seconds = _usage_number(account, f"{five_hour_prefix}_reset_after_seconds")
     if not isinstance(reset_after_seconds, (int, float)):
-        reset_at = _parse_datetime(_first_present(account, account.get("extra") if isinstance(account.get("extra"), dict) else {}, f"{five_hour_prefix}_reset_at", "7d_reset_at" if bug_team else "5h_reset_at"))
-        reset_after_seconds = max(0, (reset_at - now_utc()).total_seconds()) if reset_at is not None else (SEVEN_DAY_WINDOW_SECONDS if bug_team else FIVE_HOUR_WINDOW_SECONDS)
+        reset_at = _parse_datetime(_first_present(account, account.get("extra") if isinstance(account.get("extra"), dict) else {}, f"{five_hour_prefix}_reset_at", "7d_reset_at" if use_seven_day_percent else "5h_reset_at"))
+        reset_after_seconds = max(0, (reset_at - now_utc()).total_seconds()) if reset_at is not None else (SEVEN_DAY_WINDOW_SECONDS if use_seven_day_percent else FIVE_HOUR_WINDOW_SECONDS)
     window_minutes = _usage_number(account, f"{five_hour_prefix}_window_minutes")
-    window_seconds = max(1.0, float(window_minutes) * 60) if isinstance(window_minutes, (int, float)) and window_minutes > 0 else (SEVEN_DAY_WINDOW_SECONDS if bug_team else FIVE_HOUR_WINDOW_SECONDS)
+    window_seconds = max(1.0, float(window_minutes) * 60) if isinstance(window_minutes, (int, float)) and window_minutes > 0 else (SEVEN_DAY_WINDOW_SECONDS if use_seven_day_percent else FIVE_HOUR_WINDOW_SECONDS)
     reset_factor = max(0.0, min(1.0, float(reset_after_seconds) / window_seconds))
     actual_used_usd = max(0.0, min(five_hour_limit_usd, five_hour_limit_usd * used_percent / 100))
     seven_day_actual_used_usd = max(0.0, min(seven_day_limit_usd, seven_day_limit_usd * seven_day_used_percent / 100))
@@ -1292,6 +1432,21 @@ def _primary_capacity_type(type_summary: dict[str, dict[str, Any]]) -> str:
         return "total"
     priority = {"pro": 6, "bug_team": 5, "plus": 4, "k12": 3, "team": 2, "free": 1}
     return max(candidates, key=lambda item: (item[1], priority.get(item[0], 0)))[0]
+
+
+def _refill_account_options(
+    primary_type: str,
+    capacity_limits: dict[str, dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    normalized_type = str(primary_type or "").strip().lower()
+    if normalized_type in {"", "total", "bug_team"}:
+        return {}
+    account_types = REFILL_ACCOUNT_TYPES_BY_POOL.get(normalized_type, (normalized_type,))
+    return {
+        account_type: dict(capacity_limits[account_type])
+        for account_type in account_types
+        if account_type in capacity_limits
+    }
 
 
 def _capacity_account_type(account: dict[str, Any]) -> str:
@@ -1413,6 +1568,10 @@ async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, gro
     seven_day_24h_peak_cost = round(max(daily_costs) if daily_costs else _rolling_peak_cost(hourly, 24), 6)
     recent_24h_cost = round(sum(_float_or_zero(doc.get("cost")) for doc in hourly[-24:]), 6)
     recent_5h_cost = round(sum(_float_or_zero(doc.get("cost")) for doc in hourly[-5:]), 6)
+    recent_6h_docs = hourly[-6:]
+    recent_6h_cost = sum(_float_or_zero(doc.get("actual_cost") if doc.get("actual_cost") is not None else doc.get("cost")) for doc in recent_6h_docs)
+    recent_6h_tokens = sum(_float_or_zero(doc.get("total_tokens")) for doc in recent_6h_docs)
+    recent_6h_cost_per_token = recent_6h_cost / recent_6h_tokens if recent_6h_tokens > 0 else None
     seven_day_cost = round(sum(daily_costs), 6)
     return {
         "five_hour_peak_cost": five_hour_peak_cost,
@@ -1422,12 +1581,38 @@ async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, gro
         "seven_day_24h_peak_cost": seven_day_24h_peak_cost,
         "recent_24h_cost": recent_24h_cost,
         "recent_5h_cost": recent_5h_cost,
+        "recent_6h_cost": round(recent_6h_cost, 6),
+        "recent_6h_tokens": round(recent_6h_tokens),
+        "recent_6h_cost_per_token": recent_6h_cost_per_token,
         "seven_day_cost": seven_day_cost,
         "hourly_points": len(hourly_docs),
         "daily_points": len(daily_docs),
         "group_id": group_id,
         "calculated_at": now_utc(),
     }
+
+
+async def _load_group_tpm_samples(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    group_id: int | None,
+) -> list[dict[str, Any]]:
+    collection = getattr(db, "sub2api_tpm_samples", None)
+    if group_id is None or collection is None:
+        return []
+    cutoff = now_utc() - timedelta(hours=6)
+    cursor = collection.find(
+        {"site_id": site_id, "group_id": group_id, "sampled_at": {"$gte": cutoff}},
+        {
+            "sampled_at": 1,
+            "tpm": 1,
+            "rpm": 1,
+            "average_duration_ms": 1,
+            "current_concurrency": 1,
+        },
+    ).sort("sampled_at", 1).limit(400)
+    return [doc async for doc in cursor]
 
 
 def _five_hour_daily_peak_cost(hourly: list[dict[str, Any]]) -> float:
@@ -2088,6 +2273,15 @@ def _normalize_account_snapshot(account: dict[str, Any]) -> dict[str, Any]:
         value = _first_present(normalized, credentials, extra, field)
         if value is not None:
             normalized[field] = value
+
+    plan_type = str(_first_present(normalized, credentials, extra, "plan_type") or "").strip()
+    if plan_type:
+        normalized["plan_type"] = plan_type
+    else:
+        normalized["plan_type"] = "k12"
+        normalized["codex_plan_type_source"] = "fallback_k12"
+        extra["plan_type"] = "k12"
+        extra["codex_plan_type_source"] = "fallback_k12"
 
     credential_expires_at = _first_present(credentials, extra, "expires_at", "credential_expires_at")
     if credential_expires_at is not None:

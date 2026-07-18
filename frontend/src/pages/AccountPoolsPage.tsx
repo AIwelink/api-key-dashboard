@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import type { ApiPool } from "../types";
-import { errorMessage, formatDateTime, text } from "../utils/format";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
+import { errorMessage, formatDateTime } from "../utils/format";
+import { safeHttpUrl } from "../utils/url";
 
 type Props = {
   token: string;
@@ -17,39 +18,12 @@ type Site = {
   token_configured: boolean;
   refresh_interval_minutes?: number;
   auto_remove_abnormal_accounts?: boolean;
-};
-
-type Group = {
-  id: number;
-  name: string;
-  platform?: string;
-  status?: string;
-  account_count?: number;
-  active_account_count?: number;
-  rate_limited_account_count?: number;
-  subscription_type?: string;
+  uptime_kuma_url?: string;
+  uptime_kuma_api_key_configured?: boolean;
 };
 
 type SitesResponse = {
   items: Site[];
-  total: number;
-};
-
-type GroupsResponse = {
-  items: Group[];
-  total: number;
-  cache_meta?: {
-    last_refreshed_at?: string;
-  };
-};
-
-type AccountsResponse = {
-  items: unknown[];
-  total: number;
-};
-
-type ApiPoolResponse = {
-  items: ApiPool[];
   total: number;
 };
 
@@ -77,6 +51,13 @@ type GroupObservabilitySetting = {
   record_usage_samples?: boolean;
   record_status_events?: boolean;
   record_duplicate_email_warning?: boolean;
+  capacity_notification_enabled?: boolean;
+  capacity_notification_threshold?: "tight" | "danger" | "exhausted";
+  capacity_notification_cooldown_minutes?: number;
+  capacity_notification_last_at?: string | null;
+  capacity_notification_last_status?: string | null;
+  capacity_notification_last_health_status?: string | null;
+  uptime_kuma_monitor_url?: string;
   group_account_count?: number;
   group_active_account_count?: number;
   updated_at?: string;
@@ -110,6 +91,8 @@ type SiteForm = {
   status: string;
   refresh_interval_minutes: number;
   auto_remove_abnormal_accounts: boolean;
+  uptime_kuma_url: string;
+  uptime_kuma_api_key: string;
 };
 
 type ConfirmState = {
@@ -129,6 +112,8 @@ const emptySiteForm: SiteForm = {
   status: "active",
   refresh_interval_minutes: 30,
   auto_remove_abnormal_accounts: false,
+  uptime_kuma_url: "",
+  uptime_kuma_api_key: "",
 };
 
 const capacityLimitLabels: Record<CapacityLimitKey, string> = {
@@ -152,14 +137,7 @@ const defaultCapacityLimitForm: CapacityLimitForm = {
 export function AccountPoolsPage({ token, showToast }: Props) {
   const [sites, setSites] = useState<Site[]>([]);
   const [selectedSiteId, setSelectedSiteId] = useState("");
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
-  const [reserveTotal, setReserveTotal] = useState(0);
-  const [reserveSummary, setReserveSummary] = useState({ plus: 0, team: 0, k12: 0, free: 0, pro: 0, phoneBound: 0, problem: 0 });
-  const [localPools, setLocalPools] = useState<ApiPool[]>([]);
-  const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [loadingReserveSummary, setLoadingReserveSummary] = useState(false);
   const [editingSiteId, setEditingSiteId] = useState<string | null>(null);
   const [siteForm, setSiteForm] = useState<SiteForm>(emptySiteForm);
   const [savingSite, setSavingSite] = useState(false);
@@ -174,11 +152,9 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 
   const selectedSite = sites.find((site) => site.id === selectedSiteId) || null;
-  const selectedGroup = groups.find((group) => group.id === selectedGroupId) || null;
-  const groupSummary = useMemo(() => summarizeGroups(groups), [groups]);
 
   const loadSites = async () => {
-    const data = await api<SitesResponse>("/sub2api-sites", token);
+    const data = await api<SitesResponse>("/sub2api-sites?site_type=sub2api", token);
     setSites(data.items);
     if (!selectedSiteId && data.items[0]) {
       setSelectedSiteId(data.items[0].id);
@@ -199,7 +175,9 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       status: siteForm.status,
       refresh_interval_minutes: siteForm.refresh_interval_minutes,
       auto_remove_abnormal_accounts: siteForm.auto_remove_abnormal_accounts,
+      uptime_kuma_url: siteForm.uptime_kuma_url.trim(),
       ...(siteForm.token.trim() ? { token: siteForm.token.trim() } : {}),
+      ...(siteForm.uptime_kuma_api_key.trim() ? { uptime_kuma_api_key: siteForm.uptime_kuma_api_key.trim() } : {}),
     };
     if (!payload.id || !payload.base_url) {
       showToast("站点 ID 和 Base URL 必填", true);
@@ -221,7 +199,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       setSelectedSiteId(saved.id);
       setEditingSiteId(saved.id);
       setSiteForm(siteToForm(saved));
-      showToast("站点配置已保存");
+      showToast("账号池站点已保存");
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
@@ -261,57 +239,6 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     });
   };
 
-  const loadGroups = async (siteId = selectedSiteId) => {
-    if (!siteId) return [];
-    const data = await api<GroupsResponse>(`/sub2api-sites/${siteId}/groups?page=1&page_size=500`, token);
-    setGroups(data.items);
-    setLastRefreshedAt(data.cache_meta?.last_refreshed_at || null);
-    if (!selectedGroupId || !data.items.some((group) => group.id === selectedGroupId)) {
-      setSelectedGroupId(data.items[0]?.id ?? null);
-    }
-    return data.items;
-  };
-
-  const loadReserveSummary = async () => {
-    setLoadingReserveSummary(true);
-    try {
-      const targetParams = new URLSearchParams({ pool_status: "reserve", limit: "1" });
-      if (selectedSiteId) targetParams.set("site_id", selectedSiteId);
-      if (selectedGroupId !== null) targetParams.set("pool_id", String(selectedGroupId));
-      const withFilter = (key?: string, value?: string) => {
-        const params = new URLSearchParams(targetParams);
-        if (key && value) params.set(key, value);
-        return `/accounts?${params.toString()}`;
-      };
-      const [allData, plusData, teamData, k12Data, freeData, proData, phoneData] = await Promise.all([
-        api<AccountsResponse>(withFilter(), token),
-        api<AccountsResponse>(withFilter("account_type", "plus"), token),
-        api<AccountsResponse>(withFilter("account_type", "team"), token),
-        api<AccountsResponse>(withFilter("account_type", "k12"), token),
-        api<AccountsResponse>(withFilter("account_type", "free"), token),
-        api<AccountsResponse>(withFilter("account_type", "pro"), token),
-        api<AccountsResponse>(withFilter("phone_bound", "true"), token),
-      ]);
-      setReserveTotal(allData.total);
-      setReserveSummary({
-        plus: plusData.total,
-        team: teamData.total,
-        k12: k12Data.total,
-        free: freeData.total,
-        pro: proData.total,
-        phoneBound: phoneData.total,
-        problem: 0,
-      });
-    } finally {
-      setLoadingReserveSummary(false);
-    }
-  };
-
-  const loadLocalPools = async () => {
-    const data = await api<ApiPoolResponse>("/api-pools", token);
-    setLocalPools(data.items);
-  };
-
   const loadCapacityLimits = async (siteId = selectedSiteId) => {
     const requestId = ++capacityLimitsRequestRef.current;
     setCapacityLimits(capacityLimitsToForm({} as CapacityLimitsResponse["limits"]));
@@ -340,6 +267,14 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     const data = await api<GroupObservabilityResponse>(`/api-pools/observability/groups?site_id=${encodeURIComponent(siteId)}`, token);
     setObservabilitySettings(data.items);
   };
+
+  usePageAutoRefresh(
+    () => loadObservabilitySettings(selectedSiteId),
+    {
+      enabled: Boolean(selectedSiteId),
+      paused: Boolean(refreshing || savingSite || savingCapacityLimits || savingObservabilityKey || probing || confirmState),
+    },
+  );
 
   const saveObservabilitySetting = async (setting: GroupObservabilitySetting, updates: Partial<GroupObservabilitySetting>) => {
     if (!selectedSiteId) return;
@@ -406,14 +341,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     setRefreshing(true);
     try {
       const result = await api<RefreshResponse>(`/sub2api-sites/${selectedSiteId}/refresh`, token, { method: "POST" });
-      const nextGroups = await loadGroups(selectedSiteId);
-      const nextGroupId =
-        selectedGroupId !== null && nextGroups.some((group) => group.id === selectedGroupId)
-          ? selectedGroupId
-          : nextGroups[0]?.id ?? null;
-      if (nextGroupId !== null) {
-        setSelectedGroupId(nextGroupId);
-      }
+      await loadObservabilitySettings(selectedSiteId);
       showToast(
         typeof result.groups === "number" || typeof result.accounts === "number"
           ? `同步完成：${result.groups || 0} 个分组，${result.accounts || 0} 个账号`
@@ -427,7 +355,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   };
 
   useEffect(() => {
-    Promise.all([loadSites(), loadLocalPools(), loadReserveSummary()]).catch((error) => showToast(errorMessage(error), true));
+    loadSites().catch((error) => showToast(errorMessage(error), true));
   }, []);
 
   useEffect(() => {
@@ -436,16 +364,14 @@ export function AccountPoolsPage({ token, showToast }: Props) {
         loadSites().catch((error) => showToast(errorMessage(error), true));
         return;
       }
-      loadGroups(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
+      loadObservabilitySettings(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
     };
     window.addEventListener("sub2api-cache-updated", handleCacheUpdated);
     return () => window.removeEventListener("sub2api-cache-updated", handleCacheUpdated);
-  }, [selectedSiteId, selectedGroupId]);
+  }, [selectedSiteId]);
 
   useEffect(() => {
     if (!selectedSiteId) {
-      setGroups([]);
-      setSelectedGroupId(null);
       setObservabilitySettings([]);
       loadCapacityLimits("").catch((error) => showToast(errorMessage(error), true));
       return;
@@ -455,39 +381,29 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       setEditingSiteId(site.id);
       setSiteForm(siteToForm(site));
     }
-    setGroups([]);
-    setSelectedGroupId(null);
-    loadGroups(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
     loadObservabilitySettings(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
     loadCapacityLimits(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
   }, [selectedSiteId, sites]);
-
-  useEffect(() => {
-    loadReserveSummary().catch((error) => showToast(errorMessage(error), true));
-  }, [selectedSiteId, selectedGroupId]);
 
   return (
     <section className="view accounts-page">
       <div className="topbar">
         <div>
           <h2>账号池管理</h2>
-          <p>管理 sub2api 站点配置、目标分组、本地备选池和后续账号池策略。</p>
+          <p>管理账号池后端 Sub2API、分组探测、容量参数和监控映射。</p>
         </div>
-        <div className="button-row">
-          <button className="ghost" type="button" onClick={() => loadGroups().catch((error) => showToast(errorMessage(error), true))}>
-            刷新缓存
-          </button>
+        {editingSiteId && (
           <button type="button" onClick={refreshRemoteCache} disabled={!selectedSiteId || refreshing}>
-            {refreshing ? "同步中..." : "同步 sub2api 账号池数据"}
+            {refreshing ? "同步中..." : "同步 Sub2API 账号池数据"}
           </button>
-        </div>
+        )}
       </div>
 
       <section className="panel site-config-panel">
         <div className="panel-header">
           <div>
-            <h3>站点配置</h3>
-            <p>配置 sub2api 站点、API Key、刷新间隔和异常账号自动处理。</p>
+            <h3>账号池后端连接</h3>
+            <p>这里只配置承载账号与调度状态的 Sub2API，不包含向客户提供服务的站点。</p>
           </div>
           <div className="button-row">
             <button className="compact-button" type="button" onClick={saveSiteForm} disabled={savingSite}>
@@ -530,7 +446,11 @@ export function AccountPoolsPage({ token, showToast }: Props) {
             <span className="field-label">
               <strong>显示名称</strong>
             </span>
-            <input value={siteForm.name} onChange={(event) => setSiteForm((current) => ({ ...current, name: event.target.value }))} placeholder="sub2api 5001" />
+            <input
+              value={siteForm.name}
+              onChange={(event) => setSiteForm((current) => ({ ...current, name: event.target.value }))}
+              placeholder="Sub2API US06"
+            />
           </label>
           <label className="span-2">
             <span className="field-label">
@@ -539,7 +459,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
             <input
               value={siteForm.base_url}
               onChange={(event) => setSiteForm((current) => ({ ...current, base_url: event.target.value }))}
-              placeholder="http://216.167.70.204:5001"
+              placeholder="http://104.238.221.47:5001"
             />
           </label>
           <label>
@@ -562,35 +482,62 @@ export function AccountPoolsPage({ token, showToast }: Props) {
               <option value="disabled">disabled</option>
             </select>
           </label>
-          <label>
-            <span className="field-label">
-              <strong>刷新间隔</strong>
-            </span>
-            <input
-              min={1}
-              max={1440}
-              type="number"
-              value={siteForm.refresh_interval_minutes}
-              onChange={(event) => setSiteForm((current) => ({ ...current, refresh_interval_minutes: Number(event.target.value) }))}
-            />
-          </label>
-          <label className="switch-field site-config-switch">
-            <input
-              type="checkbox"
-              checked={siteForm.auto_remove_abnormal_accounts}
-              onChange={(event) => setSiteForm((current) => ({ ...current, auto_remove_abnormal_accounts: event.target.checked }))}
-            />
-            <span className="switch-track" aria-hidden="true">
-              <span className="switch-thumb" />
-            </span>
-            <span className="switch-copy">
-              <strong>自动移除异常账号</strong>
-              <em>{siteForm.auto_remove_abnormal_accounts ? "已开启" : "已关闭"}</em>
-            </span>
-          </label>
+          <>
+              <label>
+                <span className="field-label">
+                  <strong>刷新间隔</strong>
+                </span>
+                <input
+                  min={1}
+                  max={1440}
+                  type="number"
+                  value={siteForm.refresh_interval_minutes}
+                  onChange={(event) => setSiteForm((current) => ({ ...current, refresh_interval_minutes: Number(event.target.value) }))}
+                />
+              </label>
+              <label className="switch-field site-config-switch">
+                <input
+                  type="checkbox"
+                  checked={siteForm.auto_remove_abnormal_accounts}
+                  onChange={(event) => setSiteForm((current) => ({ ...current, auto_remove_abnormal_accounts: event.target.checked }))}
+                />
+                <span className="switch-track" aria-hidden="true">
+                  <span className="switch-thumb" />
+                </span>
+                <span className="switch-copy">
+                  <strong>自动移除异常账号</strong>
+                  <em>{siteForm.auto_remove_abnormal_accounts ? "已开启" : "已关闭"}</em>
+                </span>
+              </label>
+              <label className="span-2">
+                <span className="field-label">
+                  <strong>Uptime Kuma 地址</strong>
+                </span>
+                <input
+                  value={siteForm.uptime_kuma_url}
+                  onChange={(event) => setSiteForm((current) => ({ ...current, uptime_kuma_url: event.target.value }))}
+                  placeholder="https://status.aiwelink.cn"
+                  type="url"
+                />
+              </label>
+              <label>
+                <span className="field-label">
+                  <strong>Uptime Kuma API Key</strong>
+                </span>
+                <input
+                  value={siteForm.uptime_kuma_api_key}
+                  onChange={(event) => setSiteForm((current) => ({ ...current, uptime_kuma_api_key: event.target.value }))}
+                  placeholder={selectedSite?.uptime_kuma_api_key_configured ? "已配置，留空不修改" : "API Key"}
+                  type="password"
+                />
+                {selectedSite?.uptime_kuma_api_key_configured && <span className="cell-sub">密钥已配置</span>}
+              </label>
+          </>
         </div>
       </section>
 
+      {editingSiteId && (
+        <>
       <section className="panel capacity-limit-config-panel">
         <div className="panel-header">
           <div>
@@ -656,8 +603,8 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       <section className="panel observability-config-panel">
         <div className="panel-header">
           <div>
-            <h3>账号探测配置</h3>
-            <p>按分组配置轻量探测间隔；间隔从上次完成后计算，同一站点不会重复启动探测。</p>
+            <h3>分组监控与通知</h3>
+            <p>按分组配置账号探测和容量预警；容量通知会发送到所有已启用的通知通道。</p>
           </div>
           <div className="button-row">
             <button className="ghost compact-button" type="button" onClick={() => loadObservabilitySettings().catch((error) => showToast(errorMessage(error), true))} disabled={!selectedSiteId}>
@@ -679,6 +626,8 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                 <th>详细记录</th>
                 <th>样本保留</th>
                 <th>记录内容</th>
+                <th>容量通知</th>
+                <th>Uptime Kuma</th>
                 <th>最后更新</th>
               </tr>
             </thead>
@@ -686,6 +635,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
               {observabilitySettings.map((setting) => {
                 const rowKey = `${setting.site_id}:${setting.group_id}`;
                 const busy = savingObservabilityKey === rowKey;
+                const uptimeMonitorHref = safeHttpUrl(setting.uptime_kuma_monitor_url);
                 return (
                   <tr key={rowKey}>
                     <td>
@@ -781,13 +731,98 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                         </label>
                       </div>
                     </td>
+                    <td>
+                      <div className="inline-check-stack">
+                        <label className="inline-check">
+                          <input
+                            checked={setting.capacity_notification_enabled === true}
+                            disabled={busy}
+                            type="checkbox"
+                            onChange={(event) => saveObservabilitySetting(setting, { capacity_notification_enabled: event.target.checked })}
+                          />
+                          <span>{setting.capacity_notification_enabled === true ? "开启" : "关闭"}</span>
+                        </label>
+                        <select
+                          disabled={busy || setting.capacity_notification_enabled !== true}
+                          value={setting.capacity_notification_threshold || "tight"}
+                          onChange={(event) =>
+                            saveObservabilitySetting(setting, {
+                              capacity_notification_threshold: event.target.value as "tight" | "danger" | "exhausted",
+                            })
+                          }
+                        >
+                          <option value="tight">紧张及以下</option>
+                          <option value="danger">危险及以下</option>
+                          <option value="exhausted">仅耗尽</option>
+                        </select>
+                        <div>
+                          <input
+                            className="compact-number-input"
+                            disabled={busy || setting.capacity_notification_enabled !== true}
+                            min={5}
+                            max={1440}
+                            type="number"
+                            defaultValue={setting.capacity_notification_cooldown_minutes || 60}
+                            onBlur={(event) =>
+                              saveObservabilitySetting(setting, {
+                                capacity_notification_cooldown_minutes: clampInt(
+                                  event.target.value,
+                                  5,
+                                  1440,
+                                  setting.capacity_notification_cooldown_minutes || 60,
+                                ),
+                              })
+                            }
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") event.currentTarget.blur();
+                            }}
+                          />
+                          <span className="cell-sub"> 分钟重复提醒</span>
+                        </div>
+                        {setting.capacity_notification_last_at && (
+                          <span className="cell-sub">
+                            最近 {formatDateTime(setting.capacity_notification_last_at)} · {setting.capacity_notification_last_status || "-"}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="uptime-monitor-cell">
+                      <div className="uptime-monitor-field">
+                        <input
+                          key={`${rowKey}:${setting.uptime_kuma_monitor_url || ""}`}
+                          defaultValue={setting.uptime_kuma_monitor_url || ""}
+                          disabled={busy}
+                          onBlur={(event) => {
+                            const monitorUrl = event.target.value.trim();
+                            if (monitorUrl !== (setting.uptime_kuma_monitor_url || "")) {
+                              saveObservabilitySetting(setting, { uptime_kuma_monitor_url: monitorUrl });
+                            }
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") event.currentTarget.blur();
+                          }}
+                          placeholder="https://status.aiwelink.cn/dashboard/4"
+                          type="url"
+                        />
+                        {uptimeMonitorHref && (
+                          <a
+                            className="uptime-monitor-link"
+                            href={uptimeMonitorHref}
+                            rel="noreferrer"
+                            target="_blank"
+                          >
+                            打开监控
+                          </a>
+                        )}
+                      </div>
+                    </td>
                     <td>{formatDateTime(setting.updated_at)}</td>
                   </tr>
                 );
               })}
               {!observabilitySettings.length && (
                 <tr>
-                  <td className="muted" colSpan={8}>
+                  <td className="muted" colSpan={10}>
                     暂无分组探测配置，请先同步 sub2api 分组。
                   </td>
                 </tr>
@@ -796,173 +831,8 @@ export function AccountPoolsPage({ token, showToast }: Props) {
           </table>
         </div>
       </section>
-
-      <section className="compact-stats">
-        <div className="compact-stat">
-          <span>sub2api 分组</span>
-          <strong>{groups.length}</strong>
-        </div>
-        <div className="compact-stat">
-          <span>总账号</span>
-          <strong>{groupSummary.totalAccounts}</strong>
-        </div>
-        <div className="compact-stat">
-          <span>活跃账号</span>
-          <strong>{groupSummary.activeAccounts}</strong>
-        </div>
-        <div className="compact-stat">
-          <span>本地备选账号</span>
-          <strong>{reserveTotal}</strong>
-        </div>
-      </section>
-
-      <section className="grid two">
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <h3>sub2api 目标分组</h3>
-              <p>这些分组来自统一的 sub2api 账号池缓存，当前只作为后续推送目标分组。</p>
-            </div>
-            <label className="inline-select">
-              <span>站点</span>
-              <select value={selectedSiteId} onChange={(event) => setSelectedSiteId(event.target.value)}>
-                {sites.map((site) => (
-                  <option key={site.id} value={site.id}>
-                    {site.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <div className="site-meta logic-site-meta">
-            <strong>{selectedSite?.base_url || "未配置"}</strong>
-            <span>{selectedSite?.token_configured ? "密钥已配置" : "密钥未配置"}</span>
-            <span>最后同步：{lastRefreshedAt ? formatDateTime(lastRefreshedAt) : "-"}</span>
-          </div>
-
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>分组</th>
-                  <th>平台</th>
-                  <th>账号</th>
-                  <th>限流</th>
-                  <th>状态</th>
-                </tr>
-              </thead>
-              <tbody>
-                {groups.map((group) => (
-                  <tr
-                    className={selectedGroupId === group.id ? "selected-row" : ""}
-                    key={group.id}
-                    onClick={() => setSelectedGroupId(group.id)}
-                  >
-                    <td>
-                      <div className="cell-main">{group.name}</div>
-                      <div className="cell-sub">#{group.id}</div>
-                    </td>
-                    <td>{displayValue(group.platform)}</td>
-                    <td>
-                      {numberValue(group.active_account_count)} / {numberValue(group.account_count)}
-                    </td>
-                    <td>{numberValue(group.rate_limited_account_count)}</td>
-                    <td>
-                      <StatusPill value={displayValue(group.status)} tone={group.status === "active" ? "success" : "muted"} />
-                    </td>
-                  </tr>
-                ))}
-                {!groups.length && (
-                  <tr>
-                    <td className="muted" colSpan={5}>
-                      暂无 sub2api 分组缓存，请先同步。
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <h3>当前备选账号池</h3>
-              <p>从可用池手动加入的本地 reserve 账号；目标分组：{selectedGroup ? `${selectedGroup.name} · #${selectedGroup.id}` : "未选择"}</p>
-            </div>
-            <button className="ghost compact-button" type="button" onClick={() => loadReserveSummary().catch((error) => showToast(errorMessage(error), true))}>
-              刷新参数
-            </button>
-          </div>
-
-          <section className="compact-stats logic-account-stats">
-            <div className="compact-stat">
-              <span>备选总数</span>
-              <strong>{loadingReserveSummary ? "..." : reserveTotal}</strong>
-            </div>
-            <div className="compact-stat">
-              <span>Plus</span>
-              <strong>{reserveSummary.plus}</strong>
-            </div>
-            <div className="compact-stat">
-              <span>Team子号</span>
-              <strong>{reserveSummary.team}</strong>
-            </div>
-            <div className="compact-stat">
-              <span>K12</span>
-              <strong>{reserveSummary.k12}</strong>
-            </div>
-            <div className="compact-stat">
-              <span>已绑手机</span>
-              <strong>{reserveSummary.phoneBound}</strong>
-            </div>
-            <div className="compact-stat">
-              <span>目标分组</span>
-              <strong>{selectedGroup ? `#${selectedGroup.id}` : "-"}</strong>
-            </div>
-          </section>
-
-          <div className="list">
-            <div className="list-item">
-              <strong>显示范围</strong>
-              <div className="cell-sub">这里只显示整体参数，不展示账号明细。账号明细请到“使用备选池”页面查看和操作。</div>
-            </div>
-            <div className="list-item">
-              <strong>当前推送目标</strong>
-              <div className="cell-sub">
-                {selectedGroup ? `${selectedGroup.name} · #${selectedGroup.id}` : "尚未选择 sub2api 目标分组"}
-              </div>
-            </div>
-            <div className="list-item">
-              <strong>本地配置状态</strong>
-              <div className="cell-sub">本地池配置暂不实际使用，后续再开发容量阈值和自动推送策略。</div>
-            </div>
-          </div>
-        </section>
-      </section>
-
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h3>本地池配置</h3>
-            <p>暂不实际使用。后续再开发容量阈值、推送策略、验证 group 和自动化规则。</p>
-          </div>
-          <span className="muted">{localPools.length} 条历史配置</span>
-        </div>
-        <div className="list">
-          {localPools.map((pool) => (
-            <div className="list-item" key={pool.id}>
-              <strong>{pool.name}</strong>
-              <div className="cell-sub">
-                {pool.account_type} / site={pool.site_id} / active group #{pool.active_group_id}
-              </div>
-              <div className="cell-sub">当前仅保留配置记录，不参与备选池判断和自动推送。</div>
-            </div>
-          ))}
-          {!localPools.length && <div className="empty-state">暂无本地池配置</div>}
-        </div>
-      </section>
+        </>
+      )}
       <ConfirmDialog
         confirmText={confirmState?.confirmText}
         details={confirmState?.details}
@@ -979,26 +849,6 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       />
     </section>
   );
-}
-
-function StatusPill({ value, tone = "muted" }: { value: string; tone?: "success" | "warning" | "danger" | "muted" }) {
-  return <span className={`status-pill ${tone}`}>{value}</span>;
-}
-
-function summarizeGroups(groups: Group[]) {
-  return groups.reduce(
-    (summary, group) => {
-      summary.totalAccounts += numberValue(group.account_count);
-      summary.activeAccounts += numberValue(group.active_account_count);
-      summary.rateLimitedAccounts += numberValue(group.rate_limited_account_count);
-      return summary;
-    },
-    { totalAccounts: 0, activeAccounts: 0, rateLimitedAccounts: 0 },
-  );
-}
-
-function displayValue(value: unknown) {
-  return text(value) || "-";
 }
 
 function numberValue(value: unknown) {
@@ -1047,5 +897,7 @@ function siteToForm(site: Site): SiteForm {
     status: site.status || "active",
     refresh_interval_minutes: site.refresh_interval_minutes || 30,
     auto_remove_abnormal_accounts: site.auto_remove_abnormal_accounts === true,
+    uptime_kuma_url: site.uptime_kuma_url || "",
+    uptime_kuma_api_key: "",
   };
 }

@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { AccountEditPanel } from "../components/AccountEditPanel";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import type { AccountDocument, ApiPool } from "../types";
 import { errorMessage, formatDateTime, formatPayment, text } from "../utils/format";
 
@@ -227,10 +228,10 @@ export function TodoPage({ token, showToast }: Props) {
     setProblemTotal(data.total);
   };
 
-  const loadResurrectionAccounts = async () => {
+  const loadResurrectionAccounts = async ({ silent = false }: { silent?: boolean } = {}) => {
     const [pools, sites] = await Promise.all([
       api<ApiPoolResponse>("/api-pools", token),
-      api<Sub2ApiSitesResponse>("/sub2api-sites", token),
+      api<Sub2ApiSitesResponse>("/sub2api-sites?site_type=sub2api", token),
     ]);
     const activeSiteIds = new Set(sites.items.filter((site) => site.status !== "deleted" && site.status !== "disabled").map((site) => site.id));
     const fallbackSiteId = activeSiteIds.size === 1 ? Array.from(activeSiteIds)[0] : "";
@@ -288,7 +289,7 @@ export function TodoPage({ token, showToast }: Props) {
     });
     setResurrectionTotal(candidates.length);
     setResurrectionAccounts(candidates.slice(resurrectionSkip, resurrectionSkip + resurrectionLimit));
-    if (skippedPools > 0) {
+    if (skippedPools > 0 && !silent) {
       showToast(`已跳过 ${skippedPools} 个站点配置失效的账号池`, true);
     }
   };
@@ -319,6 +320,13 @@ export function TodoPage({ token, showToast }: Props) {
     if (problemSkip === 0) loadProblemAccounts().catch((error) => showToast(errorMessage(error), true));
     if (resurrectionSkip === 0) loadResurrectionAccounts().catch((error) => showToast(errorMessage(error), true));
   };
+
+  usePageAutoRefresh(
+    async () => {
+      await Promise.all([loadAccounts(), loadProblemAccounts(), loadResurrectionAccounts({ silent: true })]);
+    },
+    { paused: Boolean(editingAccount || resurrectionWorkspace || busyId || resurrectionBusy) },
+  );
 
   const runAccountAction = async (account: AccountDocument, action: "start" | "release" | "return-processing" | "complete" | "fail") => {
     setBusyId(account.id);
@@ -1383,6 +1391,8 @@ export function PushErrorTodoPage({ token, showToast }: Props) {
     if (skip === 0) loadAccounts().catch((error) => showToast(errorMessage(error), true));
     else setSkip(0);
   };
+
+  usePageAutoRefresh(loadAccounts, { paused: Boolean(busyId) });
 
   const runPushErrorAction = async (account: AccountDocument, action: "start" | "release" | "test" | "plus_reprocess" | "problem_library") => {
     setBusyId(account.id);

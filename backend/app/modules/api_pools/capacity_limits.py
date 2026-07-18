@@ -78,6 +78,17 @@ async def update_capacity_account_limits(
         },
         upsert=True,
     )
+    await db.sub2api_groups_cache.update_many(
+        {"site_id": normalized_site_id} if normalized_site_id is not None else {},
+        {
+            "$unset": {
+                "capacity_summary": "",
+                "group.capacity_summary": "",
+                "capacity_calculated_at": "",
+            },
+            "$set": {"capacity_limits_updated_at": now},
+        },
+    )
     return serialize_doc(await get_capacity_account_limits(db, normalized_site_id))
 
 

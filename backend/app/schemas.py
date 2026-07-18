@@ -1,6 +1,7 @@
 from typing import Any, Literal
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 
 Role = Literal["owner", "admin", "maintainer", "viewer"]
@@ -209,6 +210,23 @@ class GroupObservabilitySettingUpdate(BaseModel):
     record_usage_samples: bool | None = None
     record_status_events: bool | None = None
     record_duplicate_email_warning: bool | None = None
+    capacity_notification_enabled: bool | None = None
+    capacity_notification_threshold: Literal["tight", "danger", "exhausted"] | None = None
+    capacity_notification_cooldown_minutes: int | None = Field(default=None, ge=5, le=1440)
+    uptime_kuma_monitor_url: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("uptime_kuma_monitor_url")
+    @classmethod
+    def validate_uptime_kuma_monitor_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return ""
+        parsed = urlparse(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("uptime_kuma_monitor_url must be an http or https URL")
+        return normalized
 
 
 class AlertReadRequest(BaseModel):

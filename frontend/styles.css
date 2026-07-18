@@ -14,6 +14,83 @@
   --shadow: 0 8px 24px rgba(89, 40, 58, 0.08);
 }
 
+.auto-refresh-value {
+  position: relative;
+  display: inline-block;
+  min-width: 0.5ch;
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+  isolation: isolate;
+}
+
+.auto-refresh-value-change {
+  animation: auto-refresh-value-flash 1.05s ease-out;
+}
+
+.auto-refresh-value-change::after {
+  position: absolute;
+  z-index: -1;
+  inset: -0.16em -0.3em;
+  border-radius: 4px;
+  background-position: 100% 50%;
+  background-size: 220% 100%;
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  animation: auto-refresh-value-gradient 1.05s ease-out;
+}
+
+.auto-refresh-value-change.up::after {
+  background-image: linear-gradient(100deg, transparent 5%, rgba(24, 160, 88, 0.12) 36%, rgba(24, 160, 88, 0.4) 54%, transparent 95%);
+}
+
+.auto-refresh-value-change.down::after {
+  background-image: linear-gradient(100deg, transparent 5%, rgba(218, 86, 72, 0.12) 36%, rgba(218, 86, 72, 0.38) 54%, transparent 95%);
+}
+
+.auto-refresh-value-change.changed::after {
+  background-image: linear-gradient(100deg, transparent 5%, rgba(43, 124, 190, 0.1) 36%, rgba(43, 124, 190, 0.34) 54%, transparent 95%);
+}
+
+@keyframes auto-refresh-value-flash {
+  0%, 100% {
+    filter: brightness(1);
+    transform: scale(1);
+  }
+  22% {
+    filter: brightness(1.22);
+    transform: scale(1.06);
+  }
+  48% {
+    filter: brightness(1.06);
+    transform: scale(1.02);
+  }
+}
+
+@keyframes auto-refresh-value-gradient {
+  0% {
+    background-position: 100% 50%;
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  72% {
+    opacity: 0.72;
+  }
+  100% {
+    background-position: -100% 50%;
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auto-refresh-value-change,
+  .auto-refresh-value-change::after {
+    animation: none;
+  }
+}
+
 .pool-status-page .metric-help {
   position: relative;
   z-index: auto;
@@ -858,11 +935,59 @@ legend {
   box-shadow: none;
 }
 
+.client-site-updated-at {
+  margin-top: 12px;
+}
+
 .site-config-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 10px 12px;
   align-items: end;
+}
+
+.site-type-segment {
+  min-height: 42px;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--accent-soft);
+}
+
+.site-type-segment legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.site-type-segment label {
+  position: relative;
+  flex: 1;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 12px;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.site-type-segment label + label {
+  border-left: 1px solid var(--line);
+}
+
+.site-type-segment label:has(input:checked) {
+  color: var(--accent-strong);
+  background: var(--panel);
+  font-weight: 700;
+}
+
+.site-type-segment input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .capacity-limit-config-panel {
@@ -894,6 +1019,32 @@ legend {
 .compact-number-input {
   width: 72px;
   min-width: 72px;
+}
+
+.uptime-monitor-cell {
+  min-width: 260px;
+}
+
+.uptime-monitor-field {
+  display: grid;
+  gap: 5px;
+}
+
+.uptime-monitor-field input {
+  min-width: 240px;
+}
+
+.uptime-monitor-link {
+  width: max-content;
+  color: #276a99;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.uptime-monitor-link:hover {
+  color: #174d73;
+  text-decoration: underline;
 }
 
 .capacity-limit-grid {
@@ -1082,7 +1233,7 @@ legend {
   font-size: 17px;
 }
 
-.mini-metric span {
+.mini-metric > span {
   color: var(--muted);
   font-size: 11px;
 }
@@ -1157,7 +1308,7 @@ legend {
   gap: 10px;
 }
 
-.pool-health-main span,
+.pool-health-main > span,
 .pool-health-card p {
   color: var(--muted);
   font-size: 12px;
@@ -1383,7 +1534,7 @@ legend {
   font-weight: 850;
 }
 
-.capacity-metric-value span {
+.capacity-metric-value > span:not(.auto-refresh-value) {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
@@ -1466,6 +1617,21 @@ legend {
   height: 10px;
   border-radius: 999px;
   background: #e6e9ee;
+}
+
+.capacity-meter.tiered::after {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  background-image: linear-gradient(
+    90deg,
+    transparent 0 calc(100% - 1px),
+    rgb(43 53 64 / 18%) calc(100% - 1px) 100%
+  );
+  background-repeat: repeat-x;
+  background-size: calc(100% / 6) 100%;
+  content: "";
+  pointer-events: none;
 }
 
 .capacity-meter.reverse .capacity-meter-fill.reserve {
@@ -1556,6 +1722,7 @@ legend {
   height: 100%;
   min-width: 3px;
   border-radius: inherit;
+  transition: width 720ms cubic-bezier(0.22, 1, 0.36, 1), background-color 240ms ease;
 }
 
 .capacity-meter-fill.excellent {
@@ -1626,6 +1793,7 @@ legend {
   height: 100%;
   min-width: 3px;
   border-radius: inherit;
+  transition: width 720ms cubic-bezier(0.22, 1, 0.36, 1), background-color 240ms ease;
 }
 
 .usage-loading {
@@ -1812,7 +1980,7 @@ legend {
   line-height: 1.25;
 }
 
-.usage-window-top span {
+.usage-window-top > span {
   color: var(--text);
   font-weight: 700;
 }
@@ -1881,7 +2049,7 @@ legend {
   padding: 5px 10px;
 }
 
-.compact-stat span {
+.compact-stat > span {
   color: var(--muted);
   font-size: 12px;
 }
@@ -5356,7 +5524,7 @@ code {
   gap: 8px;
 }
 
-.pool-status-page .concurrency-capacity-head span {
+.pool-status-page .concurrency-capacity-head > div > span {
   color: var(--text);
   font-size: 15px;
   font-weight: 850;
@@ -5390,7 +5558,7 @@ code {
   border-right: 0;
 }
 
-.pool-status-page .concurrency-capacity-values span {
+.pool-status-page .concurrency-capacity-values > div > span {
   color: var(--muted);
   font-size: 12px;
 }
@@ -5412,6 +5580,7 @@ code {
 .pool-status-page .concurrency-capacity-meter span {
   display: block;
   height: 100%;
+  transition: width 720ms cubic-bezier(0.22, 1, 0.36, 1), background-color 240ms ease;
 }
 
 .pool-status-page .concurrency-capacity-meter .used,
@@ -5607,7 +5776,7 @@ code {
     font-size: 20px;
   }
 
-  .pool-status-page .concurrency-capacity-values span {
+  .pool-status-page .concurrency-capacity-values > div > span {
     min-height: 30px;
     line-height: 1.25;
   }
@@ -5768,7 +5937,7 @@ code {
   .pool-status-page .capacity-metric-label b,
   .pool-status-page .capacity-metric-label em,
   .pool-status-page .capacity-metric-value,
-  .pool-status-page .capacity-metric-value span,
+  .pool-status-page .capacity-metric-value > span:not(.auto-refresh-value),
   .pool-status-page .capacity-metric-inline-sub,
   .pool-status-page .capacity-metric-side-values,
   .pool-status-page .capacity-metric-side-value,
@@ -5901,8 +6070,8 @@ code {
     font-size: 16px;
   }
 
-  .pool-status-page .pool-mini-metrics .mini-metric span,
-  .pool-status-page .pool-health-grid .mini-metric span {
+  .pool-status-page .pool-mini-metrics .mini-metric > span,
+  .pool-status-page .pool-health-grid .mini-metric > span {
     display: block;
     max-width: 100%;
     overflow: hidden;
@@ -5968,5 +6137,14 @@ code {
 
   .pool-status-page .capacity-metric strong {
     font-size: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .capacity-meter-fill,
+  .overall-fill,
+  .usage-fill,
+  .pool-status-page .concurrency-capacity-meter span {
+    transition: none;
   }
 }

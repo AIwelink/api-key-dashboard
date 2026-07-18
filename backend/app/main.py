@@ -10,13 +10,14 @@ from fastapi.staticfiles import StaticFiles
 from app.config import PROJECT_ROOT, get_settings
 from app.database import close_mongo_connection, connect_to_mongo, get_db
 from app.logging_config import RequestLoggingMiddleware, cleanup_old_logs, log_cleanup_loop, setup_logging
-from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, event_records, import_batches, imports, notifications, settings, sub2api_sites, sync, todo_items, users
+from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, client_sites, event_records, import_batches, imports, notifications, settings, sub2api_sites, sync, todo_items, users
 from app.modules.system.bootstrap import ensure_bootstrap_data, ensure_indexes
 from app.modules.agent.scheduler import start_agent_scheduler, stop_agent_scheduler
 from app.modules.sub2api.account_probe import probe_scheduler_loop
-from app.modules.sub2api.auto_refill import auto_refill_scheduler_loop
 from app.modules.sub2api.cache import refresh_account_caches_for_all_sites, refresh_scheduler_loop
+from app.modules.sub2api.capacity_sampler import capacity_sampler_loop
 from app.modules.sub2api.dashboard import refresh_due_dashboard_snapshots_for_all_sites
+from app.modules.sub2api.tpm_sampler import tpm_sampler_loop
 
 
 settings_obj = get_settings()
@@ -39,7 +40,8 @@ async def lifespan(app_instance: FastAPI):
     account_cache_startup_task = asyncio.create_task(refresh_account_caches_for_all_sites(db))
     refresh_task = asyncio.create_task(refresh_scheduler_loop(db))
     account_probe_task = asyncio.create_task(probe_scheduler_loop(db))
-    auto_refill_task = asyncio.create_task(auto_refill_scheduler_loop(db))
+    tpm_sampler_task = asyncio.create_task(tpm_sampler_loop(db))
+    capacity_sampler_task = asyncio.create_task(capacity_sampler_loop(db))
     cleanup_task = asyncio.create_task(log_cleanup_loop(settings_obj))
     await start_agent_scheduler(app_instance)
     try:
@@ -48,7 +50,16 @@ async def lifespan(app_instance: FastAPI):
     finally:
         logger.info("app_stopping")
         await stop_agent_scheduler(app_instance)
-        for task in (dashboard_startup_task, account_cache_startup_task, refresh_task, account_probe_task, auto_refill_task, cleanup_task):
+        background_tasks = (
+            dashboard_startup_task,
+            account_cache_startup_task,
+            refresh_task,
+            account_probe_task,
+            tpm_sampler_task,
+            capacity_sampler_task,
+            cleanup_task,
+        )
+        for task in background_tasks:
             task.cancel()
             try:
                 await task
@@ -77,6 +88,7 @@ app.include_router(import_batches.router, prefix="/api")
 app.include_router(imports.router, prefix="/api")
 app.include_router(api_pools.router, prefix="/api")
 app.include_router(api_tokens.router, prefix="/api")
+app.include_router(client_sites.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")
 app.include_router(event_records.router, prefix="/api")
 app.include_router(sync.router, prefix="/api")
