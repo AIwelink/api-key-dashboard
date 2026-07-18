@@ -98,7 +98,7 @@ export function PresencePage({ token, showToast }: Props) {
       <div className="topbar">
         <div>
           <h2>前台在线</h2>
-          <p>最近 30 天 · 上海时间</p>
+          <p>自 2026/07/18 起 · 最多 30 天 · 上海时间</p>
         </div>
         <button disabled={loading} onClick={() => loadHistory(true).catch(() => undefined)} type="button">
           {loading ? "刷新中" : "刷新"}
@@ -108,7 +108,7 @@ export function PresencePage({ token, showToast }: Props) {
       <div className="presence-summary" aria-label="在线概览">
         <div><strong>{history.online_users}</strong><span>当前在线</span></div>
         <div><strong>{history.total}</strong><span>检测用户</span></div>
-        <div><strong>{history.days}</strong><span>统计天数</span></div>
+        <div><strong>{history.days}</strong><span>已记录天数</span></div>
       </div>
 
       <div className="presence-workspace">
@@ -130,7 +130,7 @@ export function PresencePage({ token, showToast }: Props) {
                   <strong>{item.user_name || item.user_email || item.user_id}</strong>
                   <em>{item.role || "-"}</em>
                 </span>
-                <span className="presence-month-strip" aria-label={`${item.user_name || item.user_id} 30日在线概览`}>
+                <span className="presence-month-strip" aria-label={`${item.user_name || item.user_id} 监测期在线概览`}>
                   {presenceDaysRecentFirst(item.daily_timeline).map((day) => (
                     <i
                       className={`presence-segment ${presenceSegmentTone(day.online_ratio_percent)}`}
@@ -179,14 +179,14 @@ export function PresencePage({ token, showToast }: Props) {
 
               <div className="presence-detail-metrics">
                 <div><span>在线总时长</span><strong>{formatOnlineMinutes(selectedUser.online_minutes)}</strong></div>
-                <div><span>30日在线占比</span><strong>{selectedUser.online_ratio_percent}%</strong></div>
+                <div><span>统计期在线占比</span><strong>{selectedUser.online_ratio_percent}%</strong></div>
                 <div><span>常见在线时段</span><strong className="presence-period-text">{formatCommonPeriods(selectedUser.common_periods)}</strong></div>
               </div>
 
               <section className="presence-pattern-section">
                 <div className="presence-section-heading">
                   <h3>常见在线时段</h3>
-                  <span>30 日半小时分布</span>
+                  <span>统计期半小时分布</span>
                 </div>
                 <TimelineAxis />
                 <div className="presence-pattern-strip">
@@ -208,8 +208,8 @@ export function PresencePage({ token, showToast }: Props) {
 
               <section className="presence-history-section">
                 <div className="presence-section-heading">
-                  <h3>30 天在线时间段</h3>
-                  <span>每格 30 分钟 · 5 分钟采样</span>
+                  <h3>在线时间段</h3>
+                  <span>最近日期优先 · 5 分钟采样</span>
                 </div>
                 <div className="presence-day-bars">
                   <div className="presence-day-axis-row">

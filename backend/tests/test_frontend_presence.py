@@ -163,7 +163,7 @@ class FrontendPresenceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PresenceHistoryAggregationTests(unittest.TestCase):
-    def test_builds_thirty_day_timeline_and_keeps_users_without_history(self) -> None:
+    def test_timeline_starts_at_monitoring_epoch_and_keeps_users_without_history(self) -> None:
         observed_at = datetime(2026, 7, 18, 10, 0, tzinfo=UTC)
         users = [
             {"_id": "user-1", "name": "Active", "email": "active@example.com", "role": "maintainer"},
@@ -187,11 +187,13 @@ class PresenceHistoryAggregationTests(unittest.TestCase):
             days=30,
         )
 
-        self.assertEqual(result["days"], 30)
+        self.assertEqual(result["days"], 1)
+        self.assertEqual(result["start_at"], datetime(2026, 7, 17, 16, 0, tzinfo=UTC))
         self.assertEqual(len(result["items"]), 2)
         active = next(item for item in result["items"] if item["user_id"] == "user-1")
         quiet = next(item for item in result["items"] if item["user_id"] == "user-2")
-        self.assertEqual(len(active["daily_timeline"]), 30)
+        self.assertEqual(len(active["daily_timeline"]), 1)
+        self.assertEqual(active["daily_timeline"][0]["date"], "2026-07-18")
         self.assertEqual(len(active["daily_timeline"][0]["segments"]), 48)
         self.assertGreater(active["online_minutes"], 0)
         self.assertGreater(active["online_ratio_percent"], 0)

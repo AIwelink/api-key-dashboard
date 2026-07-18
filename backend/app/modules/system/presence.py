@@ -18,6 +18,7 @@ PRESENCE_HISTORY_DAYS = 30
 PRESENCE_HISTORY_RETENTION_DAYS = 35
 PRESENCE_HISTORY_BUCKET_MINUTES = 5
 PRESENCE_DISPLAY_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
+PRESENCE_HISTORY_STARTED_AT = datetime(2026, 7, 18, 0, 0, tzinfo=PRESENCE_DISPLAY_TIMEZONE).astimezone(UTC)
 
 
 def presence_document_id(user_id: Any, client_id: str, session_id: str) -> str:
@@ -187,7 +188,8 @@ def build_presence_history(
     start_at = _history_start(observed_at, normalized_days)
     observed_local = observed_at.astimezone(PRESENCE_DISPLAY_TIMEZONE)
     start_local = start_at.astimezone(PRESENCE_DISPLAY_TIMEZONE)
-    local_dates = [start_local.date() + timedelta(days=index) for index in range(normalized_days)]
+    available_days = max(1, min(normalized_days, (observed_local.date() - start_local.date()).days + 1))
+    local_dates = [start_local.date() + timedelta(days=index) for index in range(available_days)]
     date_indexes = {value: index for index, value in enumerate(local_dates)}
 
     profiles: dict[str, dict[str, Any]] = {}
@@ -247,7 +249,7 @@ def build_presence_history(
     elapsed_minutes = max(1, math.floor((observed_at - start_at).total_seconds() / 60))
     items = []
     for user_id, profile in profiles.items():
-        bucket_counts = [[0 for _ in range(48)] for _ in range(normalized_days)]
+        bucket_counts = [[0 for _ in range(48)] for _ in range(available_days)]
         for bucket_at in buckets_by_user.get(user_id, set()):
             local_bucket = bucket_at.astimezone(PRESENCE_DISPLAY_TIMEZONE)
             day_index = date_indexes.get(local_bucket.date())
@@ -299,7 +301,7 @@ def build_presence_history(
         "items": items,
         "total": len(items),
         "online_users": sum(1 for item in items if item["is_online"]),
-        "days": normalized_days,
+        "days": available_days,
         "bucket_minutes": PRESENCE_HISTORY_BUCKET_MINUTES,
         "start_at": start_at,
         "end_at": observed_at,
@@ -408,7 +410,8 @@ async def _collect_cursor(cursor: Any) -> list[dict[str, Any]]:
 def _history_start(observed_at: datetime, days: int) -> datetime:
     observed_local = _aware_utc(observed_at).astimezone(PRESENCE_DISPLAY_TIMEZONE)
     start_date = observed_local.date() - timedelta(days=max(0, days - 1))
-    return datetime.combine(start_date, time.min, tzinfo=PRESENCE_DISPLAY_TIMEZONE).astimezone(UTC)
+    rolling_start = datetime.combine(start_date, time.min, tzinfo=PRESENCE_DISPLAY_TIMEZONE).astimezone(UTC)
+    return max(rolling_start, PRESENCE_HISTORY_STARTED_AT)
 
 
 def _history_bucket(value: datetime) -> datetime:

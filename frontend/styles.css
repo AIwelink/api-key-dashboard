@@ -3906,11 +3906,15 @@ button.ghost.success-button:hover {
 }
 
 .presence-month-strip {
-  grid-template-columns: repeat(30, minmax(2px, 1fr));
+  display: flex;
   gap: 0;
   height: 13px;
   overflow: hidden;
   border-radius: 3px;
+}
+
+.presence-month-strip .presence-segment {
+  flex: 1 1 0;
 }
 
 .presence-user-stats {
