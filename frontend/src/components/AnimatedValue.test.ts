@@ -46,4 +46,15 @@ describe("percentage bar motion", () => {
     expect(rule).not.toContain("animation:");
     expect(rule).not.toContain("box-shadow: 0 0");
   });
+
+  it("moves one slow highlight across the excellent bar using transform", () => {
+    const waveRule = styles.match(/\.capacity-meter-fill\.excellent::after\s*\{([^}]*)\}/s)?.[1] || "";
+    const waveFrames = styles.match(/@keyframes capacity-excellent-wave\s*\{([\s\S]*?)\n\}/)?.[1] || "";
+
+    expect(waveRule).toContain('content: ""');
+    expect(waveRule).toContain("animation: capacity-excellent-wave 6s");
+    expect(waveFrames).toContain("translate3d");
+    expect(waveFrames).not.toContain("background-position");
+    expect(styles).not.toContain("repeating-linear-gradient(115deg");
+  });
 });

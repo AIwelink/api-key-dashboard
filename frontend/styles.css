@@ -1661,9 +1661,23 @@ legend {
 }
 
 .capacity-meter-fill.excellent {
+  position: relative;
+  overflow: hidden;
   background: #7567c7;
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 24%);
   transition-duration: 480ms, 160ms;
+}
+
+.capacity-meter-fill.excellent::after {
+  position: absolute;
+  inset-block: -60%;
+  left: 0;
+  width: 44%;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgb(255 255 255 / 34%) 0%, rgb(255 255 255 / 14%) 38%, transparent 72%);
+  content: "";
+  pointer-events: none;
+  animation: capacity-excellent-wave 6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
 .capacity-meter-fill.info {
@@ -1684,6 +1698,17 @@ legend {
 
 .capacity-meter-fill.muted {
   background: #b6c0ca;
+}
+
+@keyframes capacity-excellent-wave {
+  0%,
+  20% {
+    transform: translate3d(-180%, 0, 0);
+  }
+  72%,
+  100% {
+    transform: translate3d(350%, 0, 0);
+  }
 }
 
 @keyframes capacity-danger-pulse {
@@ -6449,6 +6474,7 @@ code {
   .pool-status-page .capacity-metric strong {
     font-size: 20px;
   }
+
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -6457,5 +6483,9 @@ code {
   .usage-fill,
   .pool-status-page .concurrency-capacity-meter span {
     transition: none;
+  }
+
+  .capacity-meter-fill.excellent::after {
+    animation: none;
   }
 }
