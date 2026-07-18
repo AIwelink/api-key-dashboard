@@ -34,6 +34,7 @@
 - [11-user-management.md](./11-user-management.md)：登录、角色和后台用户管理。
 - [12-account-fields.md](./12-account-fields.md)：账号上传与管理字段。
 - [13-sub2api-admin-api-integration.md](./13-sub2api-admin-api-integration.md)：sub2api Admin API 实测记录和本地封装入口。
+- [31-newapi-data-api-integration.md](./31-newapi-data-api-integration.md)：NewAPI 模型用量、RPM/TPM 与用户统计接口的实测标准和待确认边界。
 
 ## 生命周期与功能记录
 

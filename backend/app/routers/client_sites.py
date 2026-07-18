@@ -7,6 +7,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
 from app.modules.system.audit import write_audit_log
+from app.modules.system.client_site_database import run_client_site_database_test
 from app.modules.system.client_sites import (
     create_client_site,
     delete_client_site,
@@ -70,6 +71,29 @@ async def patch_client_site(
         after=updated,
     )
     return updated
+
+
+@router.post("/{site_id}/database/test")
+async def test_site_database(
+    site_id: str,
+    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    try:
+        result = await run_client_site_database_test(db, site_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="client_site.database_test",
+        resource_type="client_site",
+        resource_id=site_id,
+        after=result,
+    )
+    return result
 
 
 @router.delete("/{site_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -19,6 +19,15 @@ type ClientSite = {
   status: "active" | "disabled";
   note?: string;
   updated_at?: string;
+  database_dsn_configured?: boolean;
+  database_type?: "mysql" | "postgresql";
+  database_endpoint?: string;
+  data_retention_days?: number;
+  last_database_test_at?: string;
+  last_database_test_ok?: boolean;
+  last_database_test_error?: string;
+  last_database_latency_ms?: number;
+  last_database_version?: string;
 };
 
 type ClientSiteForm = {
@@ -30,6 +39,18 @@ type ClientSiteForm = {
   admin_user_id: string;
   status: "active" | "disabled";
   note: string;
+  database_dsn: string;
+  data_retention_days: number;
+};
+
+type DatabaseTestResult = {
+  ok: boolean;
+  database_type: "mysql" | "postgresql";
+  database_endpoint: string;
+  latency_ms: number;
+  server_version?: string;
+  error?: string;
+  tested_at: string;
 };
 
 type ConfirmState = {
@@ -47,6 +68,8 @@ const emptyForm: ClientSiteForm = {
   admin_user_id: "",
   status: "active",
   note: "",
+  database_dsn: "",
+  data_retention_days: 90,
 };
 
 export function ClientSitesPage({ token, showToast }: Props) {
@@ -55,6 +78,7 @@ export function ClientSitesPage({ token, showToast }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<ClientSiteForm>(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [testingDatabase, setTestingDatabase] = useState(false);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 
   const loadSites = async () => {
@@ -90,7 +114,9 @@ export function ClientSitesPage({ token, showToast }: Props) {
       admin_user_id: form.admin_user_id.trim(),
       status: form.status,
       note: form.note.trim(),
+      data_retention_days: form.data_retention_days,
       ...(form.api_key.trim() ? { api_key: form.api_key.trim() } : {}),
+      ...(form.database_dsn.trim() ? { database_dsn: form.database_dsn.trim() } : {}),
     };
     if (!payload.id || !payload.base_url) {
       showToast("客户站点 ID 和 Base URL 必填", true);
@@ -121,6 +147,29 @@ export function ClientSitesPage({ token, showToast }: Props) {
       showToast(errorMessage(error), true);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const testDatabase = async () => {
+    if (!editingId) {
+      showToast("请先保存客户站点", true);
+      return;
+    }
+    setTestingDatabase(true);
+    try {
+      const result = await api<DatabaseTestResult>(`/client-sites/${encodeURIComponent(editingId)}/database/test`, token, {
+        method: "POST",
+      });
+      await loadSites();
+      if (result.ok) {
+        showToast(`数据库连接成功，延迟 ${result.latency_ms.toFixed(0)} ms`);
+      } else {
+        showToast(`数据库连接失败：${result.error || "未知错误"}`, true);
+      }
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setTestingDatabase(false);
     }
   };
 
@@ -288,6 +337,70 @@ export function ClientSitesPage({ token, showToast }: Props) {
           </label>
         </div>
 
+        <div className="client-site-database-section">
+          <div className="panel-header client-site-database-header">
+            <div>
+              <h3>数据库连接</h3>
+              <p>用于后续历史数据分析；API 连接继续负责 RPM/TPM 等 URL 数据。</p>
+            </div>
+            <button
+              className="ghost compact-button"
+              type="button"
+              onClick={testDatabase}
+              disabled={!editingId || !selectedSite?.database_dsn_configured || saving || testingDatabase}
+            >
+              {testingDatabase ? "测试中..." : "测试数据库连接"}
+            </button>
+          </div>
+
+          <div className="site-config-grid">
+            <label>
+              <span className="field-label"><strong>数据库类型</strong><span>（固定）</span></span>
+              <input value={form.client_type === "newapi" ? "MySQL" : "PostgreSQL"} readOnly />
+            </label>
+
+            <label className="span-2">
+              <span className="field-label"><strong>数据库连接串</strong></span>
+              <input
+                value={form.database_dsn}
+                onChange={(event) => setForm((current) => ({ ...current, database_dsn: event.target.value }))}
+                placeholder={selectedSite?.database_dsn_configured ? "已配置，留空不修改" : databaseDsnPlaceholder(form.client_type)}
+                type="password"
+                autoComplete="new-password"
+              />
+              {selectedSite?.database_dsn_configured && (
+                <span className="cell-sub">已配置 · {selectedSite.database_endpoint || "连接信息已隐藏"}</span>
+              )}
+            </label>
+
+            <label>
+              <span className="field-label"><strong>数据保留</strong><span>（天）</span></span>
+              <input
+                min={1}
+                max={3650}
+                type="number"
+                value={form.data_retention_days}
+                onChange={(event) => setForm((current) => ({ ...current, data_retention_days: Number(event.target.value) }))}
+              />
+            </label>
+          </div>
+
+          {selectedSite?.last_database_test_at && (
+            <div className={`database-test-result ${selectedSite.last_database_test_ok ? "is-success" : "is-error"}`}>
+              <strong>{selectedSite.last_database_test_ok ? "连接正常" : "连接失败"}</strong>
+              <span>{formatDateTime(selectedSite.last_database_test_at)}</span>
+              {selectedSite.last_database_test_ok ? (
+                <span>
+                  {selectedSite.last_database_latency_ms?.toFixed(0) ?? "-"} ms
+                  {selectedSite.last_database_version ? ` · ${selectedSite.last_database_version}` : ""}
+                </span>
+              ) : (
+                <span>{selectedSite.last_database_test_error || "未返回错误信息"}</span>
+              )}
+            </div>
+          )}
+        </div>
+
         {selectedSite?.updated_at && <div className="cell-sub client-site-updated-at">最后更新：{formatDateTime(selectedSite.updated_at)}</div>}
       </section>
 
@@ -316,5 +429,14 @@ function siteToForm(site: ClientSite): ClientSiteForm {
     admin_user_id: site.admin_user_id || "",
     status: site.status || "active",
     note: site.note || "",
+    database_dsn: "",
+    data_retention_days: site.data_retention_days || 90,
   };
+}
+
+
+function databaseDsnPlaceholder(clientType: ClientSiteForm["client_type"]) {
+  return clientType === "newapi"
+    ? "mysql://user:password@host:3306/database"
+    : "postgresql://user:password@host:5432/database";
 }

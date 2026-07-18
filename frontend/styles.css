@@ -874,6 +874,36 @@ legend {
   margin-top: 12px;
 }
 
+.client-site-database-section {
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.client-site-database-header {
+  margin-bottom: 14px;
+}
+
+.database-test-result {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 14px;
+  padding-left: 12px;
+  border-left: 3px solid var(--muted);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.database-test-result.is-success {
+  border-left-color: var(--success);
+}
+
+.database-test-result.is-error {
+  border-left-color: var(--danger);
+}
+
 .site-config-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));

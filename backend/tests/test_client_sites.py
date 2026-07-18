@@ -83,6 +83,110 @@ class ClientSiteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["client_type"], "sub2api")
 
+    async def test_newapi_accepts_mysql_database_dsn_and_masks_credentials(self) -> None:
+        stored = {
+            "_id": "customer-newapi-us01",
+            "name": "Customer NewAPI US01",
+            "client_type": "newapi",
+            "base_url": "https://client.example.com",
+            "api_key": "client-secret",
+            "admin_user_id": "42",
+            "database_dsn": "mysql://report:secret%40word@mysql.internal:3307/newapi",
+            "status": "active",
+        }
+        collection = SimpleNamespace(replace_one=AsyncMock(), find_one=AsyncMock(return_value=stored))
+        db = SimpleNamespace(client_sites=collection)
+
+        result = await client_sites.create_client_site(
+            db,
+            payload=stored | {"id": stored["_id"]},
+            actor={"_id": "admin@example.com"},
+        )
+
+        saved = collection.replace_one.await_args.args[1]
+        self.assertEqual(saved["database_dsn"], stored["database_dsn"])
+        self.assertEqual(saved["data_retention_days"], 90)
+        self.assertTrue(result["database_dsn_configured"])
+        self.assertEqual(result["database_type"], "mysql")
+        self.assertEqual(result["database_endpoint"], "mysql.internal:3307/newapi")
+        self.assertNotIn("database_dsn", result)
+        self.assertNotIn("report", str(result))
+        self.assertNotIn("secret", str(result))
+
+    async def test_sub2api_accepts_postgresql_database_dsn(self) -> None:
+        stored = {
+            "_id": "customer-sub2api-us01",
+            "name": "Customer Sub2API US01",
+            "client_type": "sub2api",
+            "base_url": "https://sub2-client.example.com",
+            "api_key": "client-secret",
+            "admin_user_id": "",
+            "database_dsn": "postgresql://reader:secret@postgres.internal:5433/sub2api",
+            "data_retention_days": 120,
+            "status": "active",
+        }
+        collection = SimpleNamespace(replace_one=AsyncMock(), find_one=AsyncMock(return_value=stored))
+        db = SimpleNamespace(client_sites=collection)
+
+        result = await client_sites.create_client_site(
+            db,
+            payload=stored | {"id": stored["_id"]},
+            actor={"_id": "admin@example.com"},
+        )
+
+        self.assertEqual(collection.replace_one.await_args.args[1]["data_retention_days"], 120)
+        self.assertEqual(result["database_type"], "postgresql")
+        self.assertEqual(result["database_endpoint"], "postgres.internal:5433/sub2api")
+
+    async def test_database_dsn_protocol_must_match_client_type(self) -> None:
+        db = SimpleNamespace(
+            client_sites=SimpleNamespace(
+                replace_one=AsyncMock(),
+                find_one=AsyncMock(return_value=None),
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "mysql"):
+            await client_sites.create_client_site(
+                db,
+                payload={
+                    "id": "customer-newapi-us01",
+                    "client_type": "newapi",
+                    "base_url": "https://client.example.com",
+                    "admin_user_id": "42",
+                    "database_dsn": "postgresql://reader:secret@postgres.internal/newapi",
+                },
+                actor={"_id": "admin@example.com"},
+            )
+
+    async def test_blank_database_dsn_update_preserves_secret(self) -> None:
+        current = {
+            "_id": "customer-newapi-us01",
+            "client_type": "newapi",
+            "base_url": "https://client.example.com",
+            "admin_user_id": "42",
+            "database_dsn": "mysql://reader:secret@mysql.internal/newapi",
+            "data_retention_days": 90,
+            "status": "active",
+        }
+        collection = SimpleNamespace(
+            find_one=AsyncMock(side_effect=[current, current]),
+            update_one=AsyncMock(),
+        )
+        db = SimpleNamespace(client_sites=collection)
+
+        result = await client_sites.update_client_site(
+            db,
+            site_id="customer-newapi-us01",
+            payload={"database_dsn": "", "data_retention_days": 180},
+            actor={"_id": "admin@example.com"},
+        )
+
+        updates = collection.update_one.await_args.args[1]["$set"]
+        self.assertNotIn("database_dsn", updates)
+        self.assertEqual(updates["data_retention_days"], 180)
+        self.assertTrue(result["database_dsn_configured"])
+
     async def test_legacy_newapi_sites_are_migrated_and_removed_from_account_pool_sites(self) -> None:
         legacy = {
             "_id": "newapi-us01",
