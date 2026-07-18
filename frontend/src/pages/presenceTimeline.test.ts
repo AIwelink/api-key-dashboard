@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatOnlineMinutes, presenceSegmentTone } from "./presenceTimeline";
+import { formatOnlineMinutes, presenceDaysRecentFirst, presenceSegmentTone } from "./presenceTimeline";
 
 describe("presence timeline presentation", () => {
   it("maps unavailable, offline and increasing online ratios to gray-green tones", () => {
@@ -14,5 +14,20 @@ describe("presence timeline presentation", () => {
     expect(formatOnlineMinutes(45)).toBe("45分钟");
     expect(formatOnlineMinutes(150)).toBe("2小时30分钟");
     expect(formatOnlineMinutes(3_030)).toBe("2天2小时30分钟");
+  });
+
+  it("puts the most recent date first without reversing its 00:00 to 24:00 segments", () => {
+    const olderSegments = Array<number | null>(48).fill(0);
+    olderSegments.fill(20, 0, 6);
+    const recentSegments = Array<number | null>(48).fill(null);
+    recentSegments.fill(80, 12, 18);
+
+    const timeline = presenceDaysRecentFirst([
+      { date: "2026-07-17", segments: olderSegments },
+      { date: "2026-07-18", segments: recentSegments },
+    ]);
+
+    expect(timeline.map((item) => item.date)).toEqual(["2026-07-18", "2026-07-17"]);
+    expect(timeline[0].segments).toEqual(recentSegments);
   });
 });

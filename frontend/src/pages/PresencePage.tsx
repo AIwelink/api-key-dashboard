@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import { errorMessage, formatDateTime } from "../utils/format";
-import { formatOnlineMinutes, halfHourLabel, presenceSegmentTone } from "./presenceTimeline";
+import { formatOnlineMinutes, halfHourLabel, presenceDaysRecentFirst, presenceSegmentTone } from "./presenceTimeline";
 
 type Props = {
   token: string;
@@ -124,7 +124,7 @@ export function PresencePage({ token, showToast }: Props) {
                   <em>{item.role || "-"}</em>
                 </span>
                 <span className="presence-month-strip" aria-label={`${item.user_name || item.user_id} 30日在线概览`}>
-                  {item.daily_timeline.map((day) => (
+                  {presenceDaysRecentFirst(item.daily_timeline).map((day) => (
                     <i
                       className={`presence-segment ${presenceSegmentTone(day.online_ratio_percent)}`}
                       key={day.date}
@@ -194,26 +194,26 @@ export function PresencePage({ token, showToast }: Props) {
                   <h3>30 天在线时间段</h3>
                   <span>每格 30 分钟 · 5 分钟采样</span>
                 </div>
-                <div className="presence-timeline-scroll">
-                  <div className="presence-timeline">
-                    <TimelineAxis withLabel />
-                    {selectedUser.daily_timeline.map((day) => (
-                      <div className="presence-day-row" key={day.date}>
-                        <span className="presence-day-label">{formatDayLabel(day.date)}</span>
-                        <div className="presence-day-segments">
-                          {day.segments.map((value, index) => (
-                            <i
-                              aria-label={`${day.date} ${halfHourLabel(index)} 到 ${halfHourLabel(index + 1)} ${value === null ? "尚未到达" : `在线 ${value}%`}`}
-                              className={`presence-segment ${presenceSegmentTone(value)}`}
-                              key={index}
-                              title={`${day.date} · ${halfHourLabel(index)}-${halfHourLabel(index + 1)} · ${value === null ? "尚未到达" : `在线约 ${Math.round(value * 0.3)} 分钟`}`}
-                            />
-                          ))}
-                        </div>
-                        <span className="presence-day-total">{formatOnlineMinutes(day.online_minutes)}</span>
+                <div className="presence-day-bars">
+                  {presenceDaysRecentFirst(selectedUser.daily_timeline).map((day) => (
+                    <div className="presence-day-bar" key={day.date}>
+                      <div className="presence-day-bar-heading">
+                        <strong>{formatDayLabel(day.date)}</strong>
+                        <span>{formatOnlineMinutes(day.online_minutes)} · {day.online_ratio_percent}%</span>
                       </div>
-                    ))}
-                  </div>
+                      <TimelineAxis />
+                      <div className="presence-day-segments">
+                        {day.segments.map((value, index) => (
+                          <i
+                            aria-label={`${day.date} ${halfHourLabel(index)} 到 ${halfHourLabel(index + 1)} ${value === null ? "尚未到达" : `在线 ${value}%`}`}
+                            className={`presence-segment ${presenceSegmentTone(value)}`}
+                            key={index}
+                            title={`${day.date} · ${halfHourLabel(index)}-${halfHourLabel(index + 1)} · ${value === null ? "尚未到达" : `在线约 ${Math.round(value * 0.3)} 分钟`}`}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </section>
             </>
@@ -226,12 +226,10 @@ export function PresencePage({ token, showToast }: Props) {
   );
 }
 
-function TimelineAxis({ withLabel = false }: { withLabel?: boolean }) {
+function TimelineAxis() {
   return (
-    <div className={`presence-time-axis ${withLabel ? "with-label" : ""}`}>
-      {withLabel && <span />}
+    <div className="presence-time-axis">
       <div><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div>
-      {withLabel && <span />}
     </div>
   );
 }

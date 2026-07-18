@@ -22,3 +22,7 @@ export function halfHourLabel(slotIndex: number) {
   if (slotIndex >= 48) return "24:00";
   return `${String(Math.floor(slotIndex / 2)).padStart(2, "0")}:${slotIndex % 2 ? "30" : "00"}`;
 }
+
+export function presenceDaysRecentFirst<T extends { date: string }>(days: readonly T[]): T[] {
+  return [...days].sort((left, right) => right.date.localeCompare(left.date));
+}

@@ -3826,6 +3826,10 @@ button.ghost.success-button:hover {
   border-top: 1px solid var(--line);
 }
 
+.presence-page {
+  min-width: 1080px;
+}
+
 .presence-users {
   min-width: 0;
   border-right: 1px solid var(--line);
@@ -3999,14 +4003,6 @@ button.ghost.success-button:hover {
   margin-bottom: 6px;
 }
 
-.presence-time-axis.with-label,
-.presence-day-row {
-  display: grid;
-  grid-template-columns: 76px minmax(560px, 1fr) 82px;
-  gap: 10px;
-  align-items: center;
-}
-
 .presence-time-axis > div {
   display: flex;
   justify-content: space-between;
@@ -4031,33 +4027,35 @@ button.ghost.success-button:hover {
   height: 8px;
 }
 
-.presence-timeline-scroll {
-  overflow-x: auto;
-  padding-bottom: 6px;
+.presence-day-bars {
+  display: grid;
+  gap: 17px;
 }
 
-.presence-timeline {
-  min-width: 760px;
+.presence-day-bar {
+  min-width: 0;
 }
 
-.presence-day-row {
-  min-height: 24px;
+.presence-day-bar-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 4px;
+}
+
+.presence-day-bar-heading strong {
+  font-size: 12px;
+}
+
+.presence-day-bar-heading span {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .presence-day-segments {
   grid-template-columns: repeat(48, minmax(4px, 1fr));
   height: 16px;
-}
-
-.presence-day-label,
-.presence-day-total {
-  color: var(--muted);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.presence-day-total {
-  text-align: right;
 }
 
 .presence-segment {
@@ -4105,55 +4103,6 @@ button.ghost.success-button:hover {
 .presence-dot.online {
   background: #218252;
   box-shadow: 0 0 0 3px rgba(33, 130, 82, 0.13);
-}
-
-@media (max-width: 900px) {
-  .presence-workspace {
-    grid-template-columns: 1fr;
-  }
-
-  .presence-users {
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-    padding: 16px 0;
-  }
-
-  .presence-user-list {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .presence-detail {
-    padding-left: 0;
-  }
-}
-
-@media (max-width: 620px) {
-  .presence-summary {
-    gap: 12px;
-  }
-
-  .presence-summary strong {
-    font-size: 24px;
-  }
-
-  .presence-user-list,
-  .presence-detail-metrics {
-    grid-template-columns: 1fr;
-  }
-
-  .presence-detail-header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .presence-current-state {
-    align-items: flex-start;
-    text-align: left;
-  }
-
-  .presence-detail-metrics > div {
-    border-bottom: 1px solid var(--line);
-  }
 }
 
 .token-list-item {
