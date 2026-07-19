@@ -82,6 +82,31 @@ class BugTeamCapacityTests(unittest.TestCase):
     def test_bug_team_is_detected_before_regular_team(self) -> None:
         self.assertEqual(cache._capacity_account_type(bug_team_account()), "bug_team")
 
+    def test_plus_without_an_independent_five_hour_window_is_not_bug_team(self) -> None:
+        account = {
+            "id": 1780,
+            "plan_type": "plus",
+            "credentials": {"plan_type": "plus"},
+            "extra": {
+                "codex_5h_window_minutes": 0,
+                "codex_7d_window_minutes": 43_800,
+                "codex_7d_used_percent": 25,
+                "codex_7d_reset_after_seconds": 2_607_895,
+            },
+        }
+
+        self.assertFalse(cache.is_bug_team_account(account))
+        self.assertEqual(cache._capacity_account_type(account), "plus")
+
+        usage = cache._dynamic_five_hour_usage(
+            account,
+            five_hour_limit_usd=120,
+            seven_day_limit_usd=120,
+            five_hour_available=True,
+        )
+        self.assertAlmostEqual(usage["actual_used_usd"], 30)
+        self.assertAlmostEqual(usage["actual_remaining_usd"], 90)
+
     def test_bug_team_is_excluded_from_capacity_summary(self) -> None:
         limits = normalize_capacity_limits(None)
 

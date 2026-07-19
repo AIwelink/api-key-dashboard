@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import { AnimatedValue, AutoRefreshAnimationContext } from "../components/AnimatedValue";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
+import { isCurrentSiteRequest, mergeCapacitySummaryForRequest } from "../utils/apiPoolRequestState";
 import { concurrencyCoverageScalePercent, concurrencyCoverageTone, runwayScalePercent, runwayTone } from "../utils/capacityScale";
 import { errorMessage, formatDateTime, parseDisplayDate, text } from "../utils/format";
 
@@ -418,6 +419,9 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     [selectedSiteId, selectedGroupId, accountPage, accountPageSize, statusFilter],
   );
   const currentAccountKeyRef = useRef(currentAccountKey);
+  const selectedSiteIdRef = useRef(selectedSiteId);
+  currentAccountKeyRef.current = currentAccountKey;
+  selectedSiteIdRef.current = selectedSiteId;
   const accountsMatchCurrent = Boolean(currentAccountKey && accountsDataKey === currentAccountKey);
   const visibleAccounts = accountsMatchCurrent ? accounts : [];
   const visibleAccountsTotal = accountsMatchCurrent ? accountsTotal : 0;
@@ -431,10 +435,6 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   const allPageSelected = visibleAccounts.length > 0 && selectedVisibleAccounts.length === visibleAccounts.length;
   const somePageSelected = selectedVisibleAccounts.length > 0 && !allPageSelected;
   const totalPages = Math.max(1, Math.ceil(visibleAccountsTotal / accountPageSize));
-
-  useEffect(() => {
-    currentAccountKeyRef.current = currentAccountKey;
-  }, [currentAccountKey]);
 
   useEffect(() => {
     const pageIds = new Set(visibleAccounts.map((account) => account.id));
@@ -461,6 +461,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
     setLoadingGroups(true);
     try {
       const data = await api<GroupsResponse>(`/sub2api-sites/${siteId}/groups?page=1&page_size=100`, token);
+      if (!isCurrentSiteRequest(siteId, selectedSiteIdRef.current)) return [];
       setGroups(data.items);
       setLastLoadedAt(data.cache_meta?.last_refreshed_at || null);
       const nextGroupId = chooseGroupId(data.items, selectedGroupId, statusPreferences.pinned_group_id);
@@ -473,7 +474,9 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
       }
       return data.items;
     } finally {
-      setLoadingGroups(false);
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current)) {
+        setLoadingGroups(false);
+      }
     }
   };
 
@@ -500,7 +503,15 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
         cachedAt: Date.now(),
       });
       if (data.capacity_summary) {
-        updateGroupCapacitySummary(groupId, data.capacity_summary);
+        setGroups((current) =>
+          mergeCapacitySummaryForRequest(
+            current,
+            requestKey,
+            currentAccountKeyRef.current,
+            groupId,
+            data.capacity_summary as CapacitySummary,
+          ),
+        );
       }
       if (currentAccountKeyRef.current === requestKey) {
         setAccounts(data.items);
