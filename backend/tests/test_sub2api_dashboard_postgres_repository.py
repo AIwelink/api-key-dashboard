@@ -163,6 +163,123 @@ class Sub2ApiDashboardPostgresRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
         engine.dispose.assert_awaited_once()
 
+    async def test_group_hourly_snapshot_aggregates_usage_logs(self) -> None:
+        connection = FakeConnection(
+            [
+                {
+                    "bucket": datetime(2026, 7, 18, 1, 0, tzinfo=UTC),
+                    "total_requests": 4,
+                    "input_tokens": 10,
+                    "output_tokens": 20,
+                    "cache_creation_tokens": 30,
+                    "cache_read_tokens": 40,
+                    "total_cost": Decimal("2.5"),
+                    "actual_cost": Decimal("2.0"),
+                    "account_cost": Decimal("1.5"),
+                    "computed_at": datetime(2026, 7, 18, 1, 12, tzinfo=UTC),
+                }
+            ]
+        )
+        engine = FakeEngine(connection)
+
+        result = await dashboard_postgres_repository.fetch_group_dashboard_snapshot(
+            "host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
+            group_id=3,
+            start_date="2026-07-18",
+            end_date="2026-07-18",
+            granularity="hour",
+            engine_factory=lambda *_args, **_kwargs: engine,
+        )
+
+        self.assertEqual(result["trend"][0]["total_tokens"], 100)
+        sql, parameters = connection.executed[0]
+        self.assertIn("usage_logs", sql)
+        self.assertIn("group_id = :group_id", sql)
+        self.assertEqual(parameters["group_id"], 3)
+        engine.dispose.assert_awaited_once()
+
+    async def test_model_statistics_aggregate_usage_logs_without_http(self) -> None:
+        connection = FakeConnection(
+            [
+                {
+                    "model": "gpt-5.4",
+                    "total_requests": 9,
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "cache_creation_tokens": 20,
+                    "cache_read_tokens": 30,
+                    "total_cost": Decimal("8.5"),
+                    "actual_cost": Decimal("8.0"),
+                    "account_cost": Decimal("7.5"),
+                }
+            ]
+        )
+        engine = FakeEngine(connection)
+
+        models = await dashboard_postgres_repository.fetch_model_statistics(
+            "host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
+            start_date="2026-07-12",
+            end_date="2026-07-18",
+            engine_factory=lambda *_args, **_kwargs: engine,
+        )
+
+        self.assertEqual(
+            models,
+            [
+                {
+                    "model": "gpt-5.4",
+                    "requests": 9,
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "cache_creation_tokens": 20,
+                    "cache_read_tokens": 30,
+                    "total_tokens": 200,
+                    "cost": 8.5,
+                    "actual_cost": 8.0,
+                    "account_cost": 7.5,
+                }
+            ],
+        )
+        sql, _ = connection.executed[0]
+        self.assertIn("usage_logs", sql)
+        self.assertIn("GROUP BY", sql)
+        engine.dispose.assert_awaited_once()
+
+    async def test_group_hour_counters_are_loaded_in_one_database_query(self) -> None:
+        connection = FakeConnection(
+            [
+                {
+                    "group_id": 3,
+                    "total_requests": 12,
+                    "total_tokens": 345,
+                    "source_updated_at": datetime(2026, 7, 18, 1, 14, tzinfo=UTC),
+                },
+                {
+                    "group_id": 5,
+                    "total_requests": 7,
+                    "total_tokens": 89,
+                    "source_updated_at": datetime(2026, 7, 18, 1, 13, tzinfo=UTC),
+                },
+            ]
+        )
+        engine = FakeEngine(connection)
+
+        counters = await dashboard_postgres_repository.fetch_group_hour_counters(
+            "host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
+            group_ids=[3, 5, 7],
+            sampled_at=datetime(2026, 7, 18, 1, 15, tzinfo=UTC),
+            engine_factory=lambda *_args, **_kwargs: engine,
+        )
+
+        self.assertEqual(counters[3]["total_tokens"], 345)
+        self.assertEqual(counters[5]["total_requests"], 7)
+        self.assertEqual(counters[7]["total_tokens"], 0)
+        self.assertEqual(len(connection.executed), 1)
+        sql, parameters = connection.executed[0]
+        self.assertIn("group_id = ANY", sql)
+        self.assertEqual(parameters["group_ids"], [3, 5, 7])
+        engine.dispose.assert_awaited_once()
+
 
 if __name__ == "__main__":
     unittest.main()

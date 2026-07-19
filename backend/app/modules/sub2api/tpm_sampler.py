@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -16,7 +16,7 @@ from app.modules.sub2api.cache import (
     update_cached_account_runtime_fields,
 )
 from app.modules.sub2api.client import Sub2ApiClient, account_in_group
-from app.modules.sub2api.dashboard import parse_bucket_time, parse_remote_datetime
+from app.modules.sub2api.dashboard_postgres_repository import fetch_group_hour_counters
 from app.utils import now_utc
 
 
@@ -24,9 +24,8 @@ logger = logging.getLogger("app.sub2api_tpm_sampler")
 
 TPM_SAMPLE_RETENTION_DAYS = 14
 TPM_SAMPLE_INTERVAL_SECONDS = 60
-TPM_SAMPLE_TIMEZONE = "Asia/Shanghai"
 TPM_SAMPLE_SCHEMA_VERSION = 2
-SHANGHAI_TZ = timezone(timedelta(hours=8))
+TPM_COUNTER_SOURCE = "postgresql_usage_logs"
 
 _site_sample_locks: dict[str, asyncio.Lock] = {}
 
@@ -36,37 +35,25 @@ async def sample_group_tpm(
     *,
     site_id: str,
     group_id: int,
-    client: Sub2ApiClient,
+    counters: dict[str, Any],
     sampled_at: datetime | None = None,
     current_concurrency: float | None = None,
 ) -> dict[str, Any]:
     sampled_at = _as_utc(sampled_at or now_utc())
     bucket_at = sampled_at.replace(second=0, microsecond=0)
-    local_date = sampled_at.astimezone(SHANGHAI_TZ).date().isoformat()
-    snapshot = await client.get_dashboard_snapshot(
-        start_date=local_date,
-        end_date=local_date,
-        granularity="hour",
-        timezone=TPM_SAMPLE_TIMEZONE,
-        include_stats=True,
-        include_trend=True,
-        include_model_stats=False,
-        include_group_stats=True,
-        include_users_trend=False,
-        group_id=group_id,
-    )
-    stats = snapshot.get("stats") if isinstance(snapshot.get("stats"), dict) else {}
     previous = await db.sub2api_tpm_samples.find_one(
         {
             "site_id": site_id,
             "group_id": group_id,
             "schema_version": TPM_SAMPLE_SCHEMA_VERSION,
+            "counter_source": TPM_COUNTER_SOURCE,
             "bucket_at": {"$lt": bucket_at},
         },
         sort=[("bucket_at", -1)],
     )
 
-    total_tokens, total_requests = _current_group_counters(snapshot, sampled_at=sampled_at)
+    total_tokens = _nonnegative_integer(counters.get("total_tokens")) or 0
+    total_requests = _nonnegative_integer(counters.get("total_requests")) or 0
     calculated_tpm, token_delta, elapsed_seconds = _calculate_tpm_from_previous(
         previous=previous,
         current_total_tokens=total_tokens,
@@ -82,11 +69,12 @@ async def sample_group_tpm(
     document = {
         "_id": sample_id,
         "schema_version": TPM_SAMPLE_SCHEMA_VERSION,
+        "counter_source": TPM_COUNTER_SOURCE,
         "site_id": site_id,
         "group_id": group_id,
         "bucket_at": bucket_at,
         "sampled_at": sampled_at,
-        "stats_updated_at": parse_remote_datetime(stats.get("stats_updated_at")),
+        "stats_updated_at": _datetime_value(counters.get("source_updated_at")),
         "tpm": calculated_tpm,
         "reported_tpm": None,
         "calculated_tpm": calculated_tpm,
@@ -100,7 +88,7 @@ async def sample_group_tpm(
         "token_delta": token_delta,
         "request_delta": request_delta,
         "elapsed_seconds": elapsed_seconds,
-        "source": "group_trend_delta" if calculated_tpm is not None else "unavailable",
+        "source": "postgresql_group_counter_delta" if calculated_tpm is not None else "unavailable",
         "expires_at": sampled_at + timedelta(days=TPM_SAMPLE_RETENTION_DAYS),
     }
     await db.sub2api_tpm_samples.replace_one({"_id": sample_id}, document, upsert=True)
@@ -118,6 +106,15 @@ async def sample_site_tpm(db: AsyncIOMotorDatabase, *, site_id: str) -> dict[str
             return {"ok": False, "site_id": site_id, "message": "sub2api site not found"}
         if not is_sub2api_site(site):
             return {"ok": False, "site_id": site_id, "message": "site is not a sub2api client"}
+        sql_dsn = str(site.get("sql_dsn") or "").strip()
+        if not sql_dsn:
+            return {
+                "ok": False,
+                "site_id": site_id,
+                "status": "not_configured",
+                "error_code": "sql_dsn_not_configured",
+                "message": "Sub2API SQL_DSN is required for group TPM sampling",
+            }
         group_ids = sorted(
             {
                 int(doc["group_id"])
@@ -125,6 +122,22 @@ async def sample_site_tpm(db: AsyncIOMotorDatabase, *, site_id: str) -> dict[str
                 if isinstance(doc.get("group_id"), int)
             }
         )
+        sampled_at = now_utc()
+        try:
+            counters_by_group = await fetch_group_hour_counters(
+                sql_dsn,
+                group_ids=group_ids,
+                sampled_at=sampled_at,
+            )
+        except Exception as exc:  # noqa: BLE001 - database counters are required for this sample.
+            logger.warning("sub2api_tpm_database_sample_failed site_id=%s error_type=%s", site_id, type(exc).__name__)
+            return {
+                "ok": False,
+                "site_id": site_id,
+                "status": "failed",
+                "error_code": "database_read_failed",
+                "message": type(exc).__name__,
+            }
         client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
         try:
             accounts = await _fetch_all_accounts(client)
@@ -143,7 +156,8 @@ async def sample_site_tpm(db: AsyncIOMotorDatabase, *, site_id: str) -> dict[str
                     db,
                     site_id=site_id,
                     group_id=group_id,
-                    client=client,
+                    counters=counters_by_group.get(group_id, {}),
+                    sampled_at=sampled_at,
                     current_concurrency=concurrency_by_group.get(group_id),
                 )
             except Exception as exc:  # noqa: BLE001 - one group must not block other samples.
@@ -274,21 +288,6 @@ def _calculate_counter_rate(
         return None, None, elapsed_seconds
     calculated_rate = delta / (elapsed_seconds / 60)
     return calculated_rate, delta, elapsed_seconds
-
-
-def _current_group_counters(snapshot: dict[str, Any], *, sampled_at: datetime) -> tuple[int, int]:
-    current_hour = sampled_at.replace(minute=0, second=0, microsecond=0)
-    trend = snapshot.get("trend") if isinstance(snapshot.get("trend"), list) else []
-    for item in reversed(trend):
-        if not isinstance(item, dict):
-            continue
-        bucket_at = parse_bucket_time(item.get("date"), "hour")
-        if bucket_at == current_hour:
-            return (
-                _nonnegative_integer(item.get("total_tokens")) or 0,
-                _nonnegative_integer(item.get("requests")) or 0,
-            )
-    return 0, 0
 
 
 def _datetime_value(value: Any) -> datetime | None:

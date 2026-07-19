@@ -17,7 +17,6 @@ from app.modules.agent.scheduler import start_agent_scheduler, stop_agent_schedu
 from app.modules.sub2api.account_probe import probe_scheduler_loop
 from app.modules.sub2api.cache import refresh_account_caches_for_all_sites, refresh_scheduler_loop
 from app.modules.sub2api.capacity_sampler import capacity_sampler_loop
-from app.modules.sub2api.dashboard import refresh_due_dashboard_snapshots_for_all_sites
 from app.modules.sub2api.tpm_sampler import tpm_sampler_loop
 
 
@@ -37,7 +36,6 @@ async def lifespan(app_instance: FastAPI):
     await ensure_indexes(db)
     await ensure_bootstrap_data(db)
     app_instance.state.agent_scheduler_db = db
-    dashboard_startup_task = asyncio.create_task(refresh_due_dashboard_snapshots_for_all_sites(db, force=True))
     account_cache_startup_task = asyncio.create_task(refresh_account_caches_for_all_sites(db))
     refresh_task = asyncio.create_task(refresh_scheduler_loop(db))
     account_probe_task = asyncio.create_task(probe_scheduler_loop(db))
@@ -53,7 +51,6 @@ async def lifespan(app_instance: FastAPI):
         logger.info("app_stopping")
         await stop_agent_scheduler(app_instance)
         background_tasks = (
-            dashboard_startup_task,
             account_cache_startup_task,
             refresh_task,
             account_probe_task,

@@ -229,7 +229,7 @@ total_duration_ms, active_users, computed_at
 | 站点整体小时/日趋势 | 可以 | `usage_dashboard_hourly/daily` |
 | 分组历史趋势 | 可以，但需聚合 | `usage_logs(group_id, created_at)` |
 | 账号历史消耗 | 可以，但需聚合 | `usage_logs(account_id, created_at)` |
-| 5h/7d usage 窗口 | 可以；缺失快照时回退 HTTP | 官方比例和重置时间读取 `accounts.extra`，窗口请求/Token/成本聚合 `usage_logs(account_id, created_at)` |
+| 5h/7d usage 窗口 | 已切换；不回退 HTTP | 官方比例和重置时间读取 `accounts.extra`，窗口请求/Token/成本聚合 `usage_logs(account_id, created_at)`；缺失值按缺失数据处理 |
 | 账号测试、OAuth、recover-state | 不可以 | 属于远程动作，不是数据库读模型 |
 | 创建、更新、删除、调度开关 | 保留 HTTP | 写操作继续使用管理 API，避免绕过业务校验和事件处理 |
 
@@ -339,13 +339,24 @@ ttft_count, ttft_sum_ms, generation_ms
 1. 已完成：建立只读 PostgreSQL/MySQL 仓储边界，业务模块不直接拼接外部输入 SQL。
 2. 已完成：Sub2API `groups/accounts/account_groups` 读链路切到 PostgreSQL，Mongo 和前端契约保持不变。
 3. 已完成：站点整体 dashboard 趋势读取 `usage_dashboard_hourly/daily`。
-4. 已完成：账号 5h/7d 窗口统计批量聚合 `usage_logs`；数据库失败或官方窗口缺失时回退 HTTP。
-5. 待完成：按分组聚合 `usage_logs(group_id, created_at)`，替换分组 dashboard HTTP。
-6. 待完成：NewAPI 模型/用户小时数据读取 `quota_data`；RPM/TPM 继续使用分钟采样器。
+4. 已完成：账号 5h/7d 窗口统计批量聚合 `usage_logs`；数据库失败或官方窗口缺失时明确标记失败/缺失，不再回退 HTTP。
+5. 已完成：分组趋势、模型统计和分组分钟 TPM/RPM 计数读取 `usage_logs(group_id, created_at)`；账号探测读取 PostgreSQL 账号快照。
+6. 已完成：停止新增 Sub2API dashboard 趋势、模型和快照 Mongo 镜像；账号变化批次不再记录 `usage.*` 与 `subscription.credential_expires_at`。
+7. 待完成：NewAPI 模型/用户小时数据读取 `quota_data`；RPM/TPM 继续使用分钟采样器。
+
+### MongoDB 保留边界
+
+- 保留配置、通知状态、异常/401/缺失等不可由当前远程状态重建的操作事件。
+- 保留带 TTL 的分钟 TPM/RPM 与 5 分钟容量回测样本。
+- 当前并发属于 Sub2API 进程内运行态，PostgreSQL 没有等价字段；分钟采样仍只从账号列表 HTTP 响应提取白名单运行态字段，不用于账号/用量/趋势数据回退，也不追加历史版本。
+- 暂时保留 `sub2api_accounts_cache` 和 `sub2api_groups_cache` 当前快照，因为账号列表、操作面板与本地账号元数据仍依赖该读取契约；不再向这些集合追加历史版本。
+- 不再写入 `sub2api_dashboard_trends`、`sub2api_dashboard_models`、`sub2api_dashboard_snapshots`。
+- `remote_account_change_batches` 后续只记录低频订阅字段变化，不再记录可由 PostgreSQL 重建的账号用量、凭证过期时间和订阅最近检查时间。
+- 账号探测不再自动生成包含账号用量的每日 checkpoint；旧 checkpoint 仅保留给历史迁移/读取并等待 TTL 清理。
 
 ## 明确风险
 
 - Sub2API `credentials`、`extra` 和 NewAPI 多个表包含密钥或认证信息。SQL 必须使用字段白名单；不得使用 `SELECT *`。
 - 数据库读路径绕过远程 API 的响应规范化，仓储层必须保持现有 Mongo 缓存字段契约，前端不应感知数据源变化。
-- 数据库版本升级可能改变表结构。上线前应比较结构摘要，不匹配时自动回退 HTTP 或阻止切换。
+- 数据库版本升级可能改变表结构。上线前应比较结构摘要；已切换的数据源不再自动回退 HTTP，结构不匹配时应阻止刷新并明确告警。
 - 5h/7d 窗口已通过 Sub2API 源码核对和真实站点双读验证；RPM/TPM 与后续分组/模型聚合仍需分别校验。

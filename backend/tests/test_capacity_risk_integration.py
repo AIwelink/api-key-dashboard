@@ -78,37 +78,45 @@ def cost_summary(*, historical_peak: float = 0.0) -> dict[str, object]:
 
 
 class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_dashboard_cost_summary_excludes_stale_rows_from_recent_windows(self) -> None:
-        class Cursor:
-            def __init__(self, items: list[dict[str, object]]) -> None:
-                self.items = items
-
-            def sort(self, *_args):
-                return self
-
-            def limit(self, *_args):
-                return self
-
-            def __aiter__(self):
-                return self._iterate()
-
-            async def _iterate(self):
-                for item in self.items:
-                    yield item
-
-        stale = {
-            "bucket": "2026-07-14 11:00",
-            "bucket_at": NOW - timedelta(days=2),
-            "cost": 100,
-            "actual_cost": 100,
-            "total_tokens": 1_000,
+    async def test_recent_derived_capacity_summary_avoids_requerying_postgres(self) -> None:
+        cached_summary = {
+            "account_type": "plus",
+            "calculated_at": NOW - timedelta(seconds=30),
+            "dynamic_runway_hours": 4.5,
         }
-        trends = SimpleNamespace(
-            find=lambda query: Cursor([stale] if query.get("granularity") == "hour" else [])
+        groups = SimpleNamespace(
+            find_one=AsyncMock(return_value={"capacity_summary": cached_summary}),
+            update_one=AsyncMock(),
         )
-        db = SimpleNamespace(sub2api_dashboard_trends=trends)
+        accounts = SimpleNamespace(find=lambda *_args, **_kwargs: self.fail("account cache should not be read"))
+        db = SimpleNamespace(sub2api_groups_cache=groups, sub2api_accounts_cache=accounts)
 
         with patch.object(cache, "now_utc", return_value=NOW):
+            result = await cache._get_or_update_group_capacity_summary(db, "api-5001", 3)
+
+        self.assertEqual(result["dynamic_runway_hours"], 4.5)
+        groups.update_one.assert_not_awaited()
+
+    async def test_dashboard_cost_summary_excludes_stale_rows_from_recent_windows(self) -> None:
+        db = object()
+        fetch_group = AsyncMock(
+            return_value={
+                "trend": [
+                    {
+                        "date": "2026-07-14 20:00",
+                        "cost": 100,
+                        "actual_cost": 100,
+                        "total_tokens": 1_000,
+                    }
+                ]
+            }
+        )
+
+        with (
+            patch.object(cache, "now_utc", return_value=NOW),
+            patch.object(cache, "get_site", AsyncMock(return_value={"sql_dsn": "host=db user=u password=p dbname=d"})),
+            patch.object(cache, "fetch_postgres_group_dashboard_snapshot", fetch_group),
+        ):
             summary = await cache._dashboard_cost_summary(db, "api-5001", group_id=3)
 
         self.assertEqual(summary["recent_5h_cost"], 0)
@@ -117,6 +125,7 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["recent_6h_tokens"], 0)
         self.assertIsNone(summary["recent_6h_cost_per_token"])
         self.assertEqual(summary["burst_1h"]["window_count"], 0)
+        fetch_group.assert_awaited_once()
 
     async def test_group_sample_loader_includes_recorded_concurrency(self) -> None:
         class Cursor:

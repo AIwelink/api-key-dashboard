@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-import httpx
 from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReplaceOne, UpdateOne
@@ -18,6 +17,10 @@ from app.modules.sub2api.account_usage_postgres_repository import (
 )
 from app.modules.sub2api.capacity_risk import calculate_capacity_risk
 from app.modules.sub2api.client import Sub2ApiClient
+from app.modules.sub2api.dashboard_postgres_repository import (
+    fetch_group_dashboard_snapshot as fetch_postgres_group_dashboard_snapshot,
+    fetch_site_dashboard_snapshot as fetch_postgres_dashboard_snapshot,
+)
 from app.modules.sub2api.postgres_repository import fetch_pool_snapshot as fetch_postgres_pool_snapshot
 from app.utils import now_utc, serialize_doc
 
@@ -103,6 +106,7 @@ HTTP_RUNTIME_ACCOUNT_FIELDS = (
     "window_cost_sticky_reserve",
 )
 HTTP_RUNTIME_CACHE_MAX_AGE_SECONDS = 3 * 60
+CAPACITY_SUMMARY_READ_CACHE_SECONDS = 60
 
 _refresh_tasks: dict[str, asyncio.Task] = {}
 _refresh_tasks_lock = asyncio.Lock()
@@ -389,30 +393,26 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                 upsert=True,
             )
 
-            client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
-            pool_snapshot = await _fetch_pool_snapshot(site, client)
+            pool_snapshot = await _fetch_pool_snapshot(site)
             groups = pool_snapshot["groups"]
             group_ids = [_int_group_id(group.get("id")) for group in groups if isinstance(group, dict)]
             group_ids = [group_id for group_id in group_ids if group_id is not None]
             accounts = [_normalize_account_snapshot(account) for account in pool_snapshot["accounts"]]
             fetched_at = now_utc()
-            dashboard_summary, usage_refresh_summary = await asyncio.gather(
-                _refresh_dashboard_for_cache(
-                    db,
-                    site_id=site_id,
-                    client=client,
-                    group_ids=group_ids,
-                    sql_dsn=str(site.get("sql_dsn") or "") or None,
-                ),
-                _apply_account_usage_windows(
-                    db,
-                    site_id,
-                    client,
-                    accounts,
-                    fetched_at,
-                    sql_dsn=str(site.get("sql_dsn") or "") or None,
-                    pool_snapshot_source=str(pool_snapshot["source"]),
-                ),
+            dashboard_summary = {
+                "ok": True,
+                "status": "database_direct",
+                "data_source": "postgresql",
+                "mongo_mirror": False,
+            }
+            usage_refresh_summary = await _apply_account_usage_windows(
+                db,
+                site_id,
+                None,
+                accounts,
+                fetched_at,
+                sql_dsn=str(site.get("sql_dsn") or "") or None,
+                pool_snapshot_source=str(pool_snapshot["source"]),
             )
             runtime_fetched_at_by_account = usage_refresh_summary["runtime_fetched_at_by_account"]
             group_capacity_summaries = await _group_capacity_summaries(db, site_id, accounts)
@@ -545,7 +545,7 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
             raise
         except Exception as exc:
             finished_at = now_utc()
-            message = str(exc) or exc.__class__.__name__
+            message = redact_sql_error(exc, site.get("sql_dsn"), "postgresql")
             logger.exception("sub2api_refresh_failed site_id=%s error=%s", site_id, message)
             try:
                 await db.sub2api_cache_meta.update_one(
@@ -678,30 +678,13 @@ async def _fetch_all_accounts(client: Sub2ApiClient) -> list[dict[str, Any]]:
     return accounts
 
 
-async def _fetch_pool_snapshot(site: dict[str, Any], client: Sub2ApiClient) -> dict[str, Any]:
+async def _fetch_pool_snapshot(site: dict[str, Any], client: Sub2ApiClient | None = None) -> dict[str, Any]:
+    del client
     sql_dsn = str(site.get("sql_dsn") or "").strip()
-    if sql_dsn:
-        try:
-            snapshot = await fetch_postgres_pool_snapshot(sql_dsn)
-            return {**snapshot, "source": "postgresql"}
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - the established HTTP path is the read fallback.
-            fallback_reason = redact_sql_error(exc, sql_dsn, "postgresql")
-            logger.warning("sub2api_database_snapshot_failed fallback=http error=%s", fallback_reason)
-            snapshot = await _fetch_http_pool_snapshot(client)
-            return {**snapshot, "source": "http_fallback", "fallback_reason": fallback_reason}
-    snapshot = await _fetch_http_pool_snapshot(client)
-    return {**snapshot, "source": "http"}
-
-
-async def _fetch_http_pool_snapshot(client: Sub2ApiClient) -> dict[str, list[dict[str, Any]]]:
-    groups_data, accounts = await asyncio.gather(
-        client.list_groups(page=1, page_size=500),
-        _fetch_all_accounts(client),
-    )
-    groups = [group for group in groups_data.get("items", []) if isinstance(group, dict)]
-    return {"groups": groups, "accounts": accounts}
+    if not sql_dsn:
+        raise ValueError("Sub2API SQL_DSN is required for pool snapshot reads")
+    snapshot = await fetch_postgres_pool_snapshot(sql_dsn)
+    return {**snapshot, "source": "postgresql", "fallback_reason": None}
 
 
 def _runtime_fetched_at_for_snapshot(
@@ -715,139 +698,59 @@ def _runtime_fetched_at_for_snapshot(
     return restored_runtime_fetched_at.get(account_id)
 
 
-async def _refresh_dashboard_for_cache(
-    db: AsyncIOMotorDatabase,
-    *,
-    site_id: str,
-    client: Sub2ApiClient,
-    group_ids: list[int],
-    sql_dsn: str | None,
-) -> dict[str, Any]:
-    try:
-        from app.modules.sub2api.dashboard import refresh_dashboard_snapshots
-
-        return await refresh_dashboard_snapshots(
-            db,
-            site_id=site_id,
-            client=client,
-            group_ids=group_ids,
-            sql_dsn=sql_dsn,
-        )
-    except Exception as exc:  # noqa: BLE001 - account cache refresh should not fail only because dashboard stats failed.
-        logger.warning("sub2api_dashboard_refresh_failed site_id=%s error=%s", site_id, exc)
-        return {"ok": False, "message": str(exc)}
-
-
 async def _apply_account_usage_windows(
     db: AsyncIOMotorDatabase,
     site_id: str,
-    client: Sub2ApiClient,
+    client: Sub2ApiClient | None,
     accounts: list[dict[str, Any]],
     synced_at: datetime,
     *,
     sql_dsn: str | None = None,
     pool_snapshot_source: str = "http",
 ) -> dict[str, Any]:
-    missing_official_window_ids = {
-        account.get("id")
-        for account in accounts
-        if account.get("id") is not None and _account_needs_http_usage(account)
-    }
+    del client
     runtime_fetched_at_by_account = await _restore_cached_usage_snapshots(db, site_id, accounts)
     selected_accounts = [account for account in accounts if account.get("id") is not None]
+    if not sql_dsn or pool_snapshot_source != "postgresql":
+        raise ValueError("Sub2API SQL_DSN is required for account usage reads")
     if not selected_accounts:
         return {
             "runtime_fetched_at_by_account": runtime_fetched_at_by_account,
-            "source": "postgresql" if sql_dsn and pool_snapshot_source == "postgresql" else "http",
+            "source": "postgresql",
             "fallback_reason": None,
             "database_accounts": 0,
             "http_accounts": 0,
             "http_failures": 0,
         }
 
-    source = "http"
-    fallback_reason: str | None = None
     database_accounts = 0
-    http_accounts = selected_accounts
-    if sql_dsn and pool_snapshot_source == "postgresql":
-        try:
-            database_snapshots = await fetch_postgres_account_usage_snapshots(
-                sql_dsn,
-                accounts=selected_accounts,
-                observed_at=synced_at,
-            )
-            for account in selected_accounts:
-                account_id = account.get("id")
-                usage = database_snapshots.get(int(account_id)) if account_id is not None else None
-                if usage is None:
-                    continue
-                _apply_account_usage_snapshot(account, usage, synced_at)
-                database_accounts += 1
-            database_snapshot_ids = set(database_snapshots)
-            http_accounts = [
-                account
-                for account in selected_accounts
-                if account.get("id") in missing_official_window_ids
-                or int(account.get("id")) not in database_snapshot_ids
-            ]
-            source = "postgresql_with_http_fallback" if http_accounts else "postgresql"
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - the established account usage endpoint is the fallback.
-            fallback_reason = redact_sql_error(exc, sql_dsn, "postgresql")
-            logger.warning(
-                "sub2api_account_usage_database_failed site_id=%s fallback=http error=%s",
-                site_id,
-                fallback_reason,
-            )
-            source = "http_fallback"
-            database_accounts = 0
-            http_accounts = selected_accounts
+    database_snapshots = await fetch_postgres_account_usage_snapshots(
+        sql_dsn,
+        accounts=selected_accounts,
+        observed_at=synced_at,
+    )
+    for account in selected_accounts:
+        account_id = account.get("id")
+        usage = database_snapshots.get(int(account_id)) if account_id is not None else None
+        if usage is None:
+            continue
+        _apply_account_usage_snapshot(account, usage, synced_at)
+        database_accounts += 1
 
     logger.info(
-        "sub2api_account_usage_refresh_start site_id=%s database=%s http=%s total=%s source=%s",
+        "sub2api_account_usage_refresh_start site_id=%s database=%s total=%s source=postgresql",
         site_id,
         database_accounts,
-        len(http_accounts),
         len(accounts),
-        source,
     )
-
-    async def fetch_and_apply(account: dict[str, Any], http_client: httpx.AsyncClient) -> None:
-        account_id = account.get("id")
-        if account_id is None:
-            return
-        try:
-            usage = await client.get_account_usage(account_id, timezone="Asia/Shanghai", http_client=http_client)
-        except Exception:
-            logger.exception("sub2api_account_usage_fetch_failed account_id=%s", account_id)
-            raise
-        _apply_account_usage_snapshot(account, usage, synced_at)
-
-    http_failures = 0
-    if http_accounts:
-        limits = httpx.Limits(max_connections=None, max_keepalive_connections=200)
-        async with httpx.AsyncClient(timeout=15, limits=limits) as http_client:
-            results = await asyncio.gather(
-                *(fetch_and_apply(account, http_client) for account in http_accounts),
-                return_exceptions=True,
-            )
-        http_failures = sum(isinstance(result, BaseException) for result in results)
     return {
         "runtime_fetched_at_by_account": runtime_fetched_at_by_account,
-        "source": source,
-        "fallback_reason": fallback_reason,
+        "source": "postgresql",
+        "fallback_reason": None,
         "database_accounts": database_accounts,
-        "http_accounts": len(http_accounts),
-        "http_failures": http_failures,
+        "http_accounts": 0,
+        "http_failures": 0,
     }
-
-
-def _account_needs_http_usage(account: dict[str, Any]) -> bool:
-    return any(
-        _usage_number(account, field) is None
-        for field in ("codex_5h_used_percent", "codex_7d_used_percent")
-    )
 
 
 async def _restore_cached_usage_snapshots(
@@ -1044,6 +947,17 @@ def _apply_account_usage_snapshot(account: dict[str, Any], usage: dict[str, Any]
 
 
 async def _get_or_update_group_capacity_summary(db: AsyncIOMotorDatabase, site_id: str, group_id: int) -> dict[str, Any]:
+    group_doc = await db.sub2api_groups_cache.find_one(
+        {"site_id": site_id, "group_id": group_id},
+        {"capacity_summary": 1, "capacity_calculated_at": 1},
+    )
+    cached_summary = group_doc.get("capacity_summary") if isinstance(group_doc, dict) else None
+    if isinstance(cached_summary, dict):
+        calculated_at = _parse_datetime(
+            group_doc.get("capacity_calculated_at") or cached_summary.get("calculated_at")
+        )
+        if calculated_at is not None and (now_utc() - calculated_at).total_seconds() <= CAPACITY_SUMMARY_READ_CACHE_SECONDS:
+            return serialize_doc(cached_summary)
     cursor = db.sub2api_accounts_cache.find({"site_id": site_id, "group_ids": group_id})
     accounts: list[dict[str, Any]] = []
     account_ops: list[UpdateOne] = []
@@ -1825,37 +1739,50 @@ def _normalize_capacity_account_type(value: Any) -> str:
 
 
 async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, group_id: int | None = None) -> dict[str, Any]:
-    query: dict[str, Any] = {"site_id": site_id, "group_id": group_id}
-    if group_id is None:
-        query = {"site_id": site_id, "$or": [{"group_id": None}, {"group_id": {"$exists": False}}]}
-    hourly_docs = [
-        doc
-        async for doc in db.sub2api_dashboard_trends.find({**query, "granularity": "hour"}).sort("bucket_at", -1).limit(24 * 8)
-    ]
-    daily_docs = [
-        doc
-        async for doc in db.sub2api_dashboard_trends.find({**query, "granularity": "day"}).sort("bucket_at", -1).limit(14)
-    ]
-    hourly = list(reversed(hourly_docs))
     current_time = now_utc()
+    site = await get_site(db, site_id, include_token=True)
+    sql_dsn = str((site or {}).get("sql_dsn") or "").strip()
+    if not sql_dsn:
+        raise ValueError("Sub2API SQL_DSN is required for capacity trend reads")
+    local_today = current_time.astimezone(timezone(timedelta(hours=8))).date()
+    snapshot_args = {
+        "start_date": (local_today - timedelta(days=7)).isoformat(),
+        "end_date": local_today.isoformat(),
+        "granularity": "hour",
+    }
+    if group_id is None:
+        snapshot = await fetch_postgres_dashboard_snapshot(sql_dsn, **snapshot_args)
+    else:
+        snapshot = await fetch_postgres_group_dashboard_snapshot(
+            sql_dsn,
+            group_id=group_id,
+            **snapshot_args,
+        )
+    hourly = [
+        {
+            **item,
+            "bucket": item.get("date"),
+            "bucket_at": _postgres_dashboard_bucket_at(item.get("date")),
+        }
+        for item in snapshot.get("trend") or []
+        if isinstance(item, dict)
+    ]
     hourly_7d = _dashboard_docs_since(hourly, current_time - timedelta(days=7))
     hourly_24h = _dashboard_docs_since(hourly, current_time - timedelta(hours=24))
     hourly_8h = _dashboard_docs_since(hourly, current_time - timedelta(hours=8))
     hourly_6h = _dashboard_docs_since(hourly, current_time - timedelta(hours=6))
     hourly_5h = _dashboard_docs_since(hourly, current_time - timedelta(hours=5))
-    daily_7d = _dashboard_docs_since(daily_docs, current_time - timedelta(days=7))
     five_hour_peak_cost = _five_hour_daily_peak_cost(hourly_7d)
     recent_day_five_hour_peak_cost = _rolling_peak_cost(hourly_24h, 5)
     burst_1h = _burst_1h_summary(hourly_8h)
-    daily_costs = [_float_or_zero(doc.get("cost")) for doc in daily_7d]
-    seven_day_24h_peak_cost = round(max(daily_costs) if daily_costs else _rolling_peak_cost(hourly_7d, 24), 6)
+    seven_day_24h_peak_cost = round(_rolling_peak_cost(hourly_7d, 24), 6)
     recent_24h_cost = round(sum(_float_or_zero(doc.get("cost")) for doc in hourly_24h), 6)
     recent_5h_cost = round(sum(_float_or_zero(doc.get("cost")) for doc in hourly_5h), 6)
     recent_6h_docs = hourly_6h
     recent_6h_cost = sum(_float_or_zero(doc.get("actual_cost") if doc.get("actual_cost") is not None else doc.get("cost")) for doc in recent_6h_docs)
     recent_6h_tokens = sum(_float_or_zero(doc.get("total_tokens")) for doc in recent_6h_docs)
     recent_6h_cost_per_token = recent_6h_cost / recent_6h_tokens if recent_6h_tokens > 0 else None
-    seven_day_cost = round(sum(daily_costs), 6)
+    seven_day_cost = round(sum(_float_or_zero(doc.get("cost")) for doc in hourly_7d), 6)
     return {
         "five_hour_peak_cost": five_hour_peak_cost,
         "seven_day_five_hour_peak_cost": five_hour_peak_cost,
@@ -1868,11 +1795,22 @@ async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, gro
         "recent_6h_tokens": round(recent_6h_tokens),
         "recent_6h_cost_per_token": recent_6h_cost_per_token,
         "seven_day_cost": seven_day_cost,
-        "hourly_points": len(hourly_docs),
-        "daily_points": len(daily_docs),
+        "hourly_points": len(hourly),
+        "daily_points": 0,
         "group_id": group_id,
         "calculated_at": now_utc(),
     }
+
+
+def _postgres_dashboard_bucket_at(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%d %H:%M").replace(
+            tzinfo=timezone(timedelta(hours=8))
+        ).astimezone(UTC)
+    except ValueError:
+        return None
 
 
 async def _load_group_tpm_samples(

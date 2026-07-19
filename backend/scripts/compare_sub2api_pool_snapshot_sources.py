@@ -15,10 +15,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.database import close_mongo_connection, connect_to_mongo, get_db
 from app.modules.sub2api.account_usage_postgres_repository import fetch_account_usage_snapshots
-from app.modules.sub2api.cache import _extract_group_ids, _fetch_http_pool_snapshot, get_site
+from app.modules.sub2api.cache import _extract_group_ids, _fetch_all_accounts, get_site
 from app.modules.sub2api.client import Sub2ApiClient
 from app.modules.sub2api.dashboard import dashboard_snapshot_ranges
-from app.modules.sub2api.dashboard_postgres_repository import fetch_site_dashboard_snapshot
+from app.modules.sub2api.dashboard_postgres_repository import (
+    fetch_group_dashboard_snapshot,
+    fetch_group_hour_counters,
+    fetch_model_statistics,
+    fetch_site_dashboard_snapshot,
+)
 from app.modules.sub2api.postgres_repository import fetch_pool_snapshot
 
 
@@ -37,6 +42,17 @@ DASHBOARD_COMPARE_FIELDS = (
 )
 ACCOUNT_USAGE_COMPARE_FIELDS = ("utilization", "resets_at", "remaining_seconds")
 ACCOUNT_WINDOW_STATS_COMPARE_FIELDS = ("requests", "tokens", "cost", "standard_cost", "user_cost")
+
+
+async def _fetch_http_pool_snapshot(client: Sub2ApiClient) -> dict[str, list[dict[str, Any]]]:
+    groups_data, accounts = await asyncio.gather(
+        client.list_groups(page=1, page_size=500),
+        _fetch_all_accounts(client),
+    )
+    return {
+        "groups": [item for item in groups_data.get("items", []) if isinstance(item, dict)],
+        "accounts": accounts,
+    }
 
 
 def compare_snapshots(database: dict[str, Any], http: dict[str, Any]) -> dict[str, Any]:
@@ -301,6 +317,7 @@ async def main(
     http_contract_only: bool = False,
     dashboard_only: bool = False,
     account_usage_only: bool = False,
+    database_group_id: int | None = None,
     sample_size: int = 50,
 ) -> None:
     await connect_to_mongo()
@@ -313,6 +330,56 @@ async def main(
         if not sql_dsn:
             raise ValueError("SQL_DSN is not configured")
         client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
+        if database_group_id is not None:
+            ranges = dashboard_snapshot_ranges()
+            snapshots = await asyncio.gather(
+                *(
+                    fetch_group_dashboard_snapshot(
+                        sql_dsn,
+                        group_id=database_group_id,
+                        start_date=str(config["params"]["start_date"]),
+                        end_date=str(config["params"]["end_date"]),
+                        granularity=str(config["params"]["granularity"]),
+                    )
+                    for config in ranges
+                )
+            )
+            models, counters = await asyncio.gather(
+                fetch_model_statistics(
+                    sql_dsn,
+                    group_id=database_group_id,
+                    start_date=str(ranges[-1]["params"]["start_date"]),
+                    end_date=str(ranges[-1]["params"]["end_date"]),
+                ),
+                fetch_group_hour_counters(
+                    sql_dsn,
+                    group_ids=[database_group_id],
+                    sampled_at=datetime.now(UTC),
+                ),
+            )
+            print(
+                json.dumps(
+                    {
+                        "site_id": site_id,
+                        "group_id": database_group_id,
+                        "data_source": "postgresql",
+                        "ranges": [
+                            {
+                                "range_type": config["range_type"],
+                                "granularity": snapshot["granularity"],
+                                "trend_points": len(snapshot["trend"]),
+                            }
+                            for config, snapshot in zip(ranges, snapshots, strict=True)
+                        ],
+                        "models": len(models),
+                        "current_hour_counters": counters.get(database_group_id),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    default=str,
+                )
+            )
+            return
         if account_usage_only:
             all_accounts = [
                 doc["account"]
@@ -438,6 +505,7 @@ if __name__ == "__main__":
     parser.add_argument("--http-contract-only", action="store_true", help="Print only HTTP response field names")
     parser.add_argument("--dashboard", action="store_true", help="Compare site-wide PostgreSQL and HTTP dashboard trends")
     parser.add_argument("--account-usage", action="store_true", help="Compare a sample of account usage windows")
+    parser.add_argument("--database-group", type=int, help="Validate PostgreSQL group trends, models and current-hour counters")
     parser.add_argument("--sample-size", type=int, default=50, help="Account usage comparison sample size")
     arguments = parser.parse_args()
     asyncio.run(
@@ -446,6 +514,7 @@ if __name__ == "__main__":
             http_contract_only=arguments.http_contract_only,
             dashboard_only=arguments.dashboard,
             account_usage_only=arguments.account_usage,
+            database_group_id=arguments.database_group,
             sample_size=arguments.sample_size,
         )
     )

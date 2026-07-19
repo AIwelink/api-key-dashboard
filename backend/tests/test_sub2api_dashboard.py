@@ -1,69 +1,39 @@
 from __future__ import annotations
 
-import asyncio
 import unittest
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.modules.sub2api import dashboard
 
 
-class DashboardRefreshConcurrencyTests(unittest.IsolatedAsyncioTestCase):
-    async def test_all_site_and_group_ranges_are_requested_in_parallel(self) -> None:
-        started: set[tuple[int | None, str]] = set()
-        all_started = asyncio.Event()
-
-        async def get_snapshot(**params: object) -> dict[str, object]:
-            key = (params.get("group_id"), str(params.get("granularity")))
-            started.add(key)
-            if len(started) == 4:
-                all_started.set()
-            await all_started.wait()
-            return {"granularity": params.get("granularity")}
-
-        async def store_snapshot(*_: object, group_id: int | None, range_type: str, **__: object) -> dict[str, object]:
-            return {"ok": True, "group_id": group_id, "range_type": range_type, "trend_points": 1, "models": 0}
-
+class DashboardDatabaseSourceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_refresh_uses_postgres_only_and_does_not_write_remote_datasets_to_mongo(self) -> None:
         client = AsyncMock()
-        client.get_dashboard_snapshot.side_effect = get_snapshot
-        db = SimpleNamespace(sub2api_dashboard_meta=SimpleNamespace(update_one=AsyncMock()))
-
-        with patch.object(dashboard, "store_dashboard_snapshot", AsyncMock(side_effect=store_snapshot)):
-            result = await asyncio.wait_for(
-                dashboard.refresh_dashboard_snapshots(db, site_id="api-5001", client=client, force=True, group_ids=[3]),
-                timeout=1,
-            )
-
-        self.assertEqual(started, {(None, "hour"), (None, "day"), (3, "hour"), (3, "day")})
-        self.assertEqual(len(result["ranges"]), 4)
-        self.assertEqual(result["trend_points"], 4)
-
-    async def test_database_site_trends_replace_http_trends_but_keep_http_models(self) -> None:
-        client = AsyncMock()
-        client.get_dashboard_snapshot.side_effect = lambda **params: {
-            "generated_at": "2026-07-19T00:05:00Z",
-            "granularity": params["granularity"],
-            "trend": [{"date": "http"}],
-            "models": [{"model": "gpt-5"}],
-        }
-        database_snapshot = {
-            "generated_at": "2026-07-19T00:00:00Z",
-            "start_date": "2026-07-13",
-            "end_date": "2026-07-19",
+        db = SimpleNamespace(
+            sub2api_dashboard_meta=SimpleNamespace(find_one=AsyncMock(return_value=None), update_one=AsyncMock()),
+            sub2api_dashboard_trends=SimpleNamespace(bulk_write=AsyncMock()),
+            sub2api_dashboard_models=SimpleNamespace(bulk_write=AsyncMock()),
+            sub2api_dashboard_snapshots=SimpleNamespace(replace_one=AsyncMock()),
+        )
+        site_snapshot = {
+            "generated_at": datetime(2026, 7, 18, 1, 5, tzinfo=UTC),
             "granularity": "hour",
-            "trend": [{"date": "database"}],
+            "start_date": "2026-07-18",
+            "end_date": "2026-07-18",
+            "trend": [{"date": "2026-07-18 09:00", "requests": 2, "cost": 1.5}],
             "models": [],
         }
-        stored: list[tuple[int | None, str, dict[str, object]]] = []
+        group_snapshot = {**site_snapshot, "trend": [{"date": "2026-07-18 09:00", "requests": 1, "cost": 1.0}]}
+        fetch_site = AsyncMock(return_value=site_snapshot)
+        fetch_group = AsyncMock(return_value=group_snapshot)
+        fetch_models = AsyncMock(return_value=[{"model": "gpt-5.4", "requests": 2, "cost": 1.5}])
 
-        async def store(*_: object, group_id: int | None, range_type: str, snapshot: dict[str, object], **__: object):
-            stored.append((group_id, range_type, snapshot))
-            return {"group_id": group_id, "range_type": range_type, "trend_points": 1, "models": len(snapshot.get("models", []))}
-
-        db = SimpleNamespace(sub2api_dashboard_meta=SimpleNamespace(update_one=AsyncMock()))
         with (
-            patch.object(dashboard, "fetch_postgres_dashboard_snapshot", AsyncMock(return_value=database_snapshot)) as fetch_database,
-            patch.object(dashboard, "store_dashboard_snapshot", AsyncMock(side_effect=store)),
+            patch.object(dashboard, "fetch_postgres_dashboard_snapshot", fetch_site),
+            patch.object(dashboard, "fetch_postgres_group_dashboard_snapshot", fetch_group),
+            patch.object(dashboard, "fetch_postgres_model_statistics", fetch_models),
         ):
             result = await dashboard.refresh_dashboard_snapshots(
                 db,
@@ -74,118 +44,83 @@ class DashboardRefreshConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 sql_dsn="host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
             )
 
-        self.assertEqual(fetch_database.await_count, 2)
-        site_snapshots = [snapshot for group_id, _, snapshot in stored if group_id is None]
-        group_snapshots = [snapshot for group_id, _, snapshot in stored if group_id == 3]
-        self.assertEqual([item["trend"] for item in site_snapshots], [[{"date": "database"}], [{"date": "database"}]])
-        self.assertEqual([item["models"] for item in site_snapshots], [[{"model": "gpt-5"}], [{"model": "gpt-5"}]])
-        self.assertTrue(all(item["_models_generated_at"] == "2026-07-19T00:05:00Z" for item in site_snapshots))
-        self.assertEqual([item["trend"] for item in group_snapshots], [[{"date": "http"}], [{"date": "http"}]])
+        self.assertTrue(result["ok"])
         self.assertEqual(result["site_trend_source"], "postgresql")
+        self.assertEqual(fetch_site.await_count, 2)
+        self.assertEqual(fetch_group.await_count, 2)
+        self.assertEqual(fetch_models.await_count, 2)
+        client.get_dashboard_snapshot.assert_not_awaited()
+        db.sub2api_dashboard_trends.bulk_write.assert_not_awaited()
+        db.sub2api_dashboard_models.bulk_write.assert_not_awaited()
+        db.sub2api_dashboard_snapshots.replace_one.assert_not_awaited()
+        db.sub2api_dashboard_meta.update_one.assert_awaited_once()
 
-    async def test_database_trend_with_http_model_failure_is_partial_and_remains_due(self) -> None:
+    async def test_refresh_without_sql_dsn_fails_instead_of_falling_back_to_http(self) -> None:
         client = AsyncMock()
-        client.get_dashboard_snapshot.side_effect = RuntimeError("model endpoint unavailable")
-        database_snapshot = {
-            "generated_at": "2026-07-19T00:00:00Z",
-            "start_date": "2026-07-13",
-            "end_date": "2026-07-19",
-            "granularity": "hour",
-            "trend": [{"date": "database"}],
-            "models": [],
-        }
-        db = SimpleNamespace(sub2api_dashboard_meta=SimpleNamespace(update_one=AsyncMock()))
+        db = SimpleNamespace(sub2api_dashboard_meta=SimpleNamespace(find_one=AsyncMock(), update_one=AsyncMock()))
 
-        async def store(*_: object, group_id: int | None, range_type: str, **__: object):
-            return {"group_id": group_id, "range_type": range_type, "trend_points": 1, "models": 0}
-
-        with (
-            patch.object(dashboard, "fetch_postgres_dashboard_snapshot", AsyncMock(return_value=database_snapshot)),
-            patch.object(dashboard, "store_dashboard_snapshot", AsyncMock(side_effect=store)),
-        ):
-            result = await dashboard.refresh_dashboard_snapshots(
+        with self.assertRaisesRegex(ValueError, "SQL_DSN"):
+            await dashboard.refresh_dashboard_snapshots(
                 db,
                 site_id="api-5001",
                 client=client,
                 force=True,
-                sql_dsn="host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
+                sql_dsn=None,
             )
 
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["status"], "partial")
-        self.assertEqual(result["model_refresh_failed_ranges"], 2)
-        self.assertIsNone(result["refreshed_at"])
-        saved_meta = db.sub2api_dashboard_meta.update_one.await_args.args[1]["$set"]
-        self.assertIsNone(saved_meta["refreshed_at"])
-
-    async def test_database_site_trend_failure_falls_back_to_http(self) -> None:
-        client = AsyncMock()
-        client.get_dashboard_snapshot.return_value = {
-            "granularity": "hour",
-            "trend": [{"date": "http"}],
-            "models": [],
-        }
-        stored: list[dict[str, object]] = []
-
-        async def store(*_: object, snapshot: dict[str, object], **__: object):
-            stored.append(snapshot)
-            return {"trend_points": 1, "models": 0}
-
-        db = SimpleNamespace(sub2api_dashboard_meta=SimpleNamespace(update_one=AsyncMock()))
-        with (
-            patch.object(dashboard, "fetch_postgres_dashboard_snapshot", AsyncMock(side_effect=RuntimeError("database unavailable"))),
-            patch.object(dashboard, "store_dashboard_snapshot", AsyncMock(side_effect=store)),
-        ):
-            result = await dashboard.refresh_dashboard_snapshots(
-                db,
-                site_id="api-5001",
-                client=client,
-                force=True,
-                sql_dsn="host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
-            )
-
-        self.assertTrue(all(snapshot["trend"] == [{"date": "http"}] for snapshot in stored))
-        self.assertEqual(result["site_trend_source"], "http_fallback")
+        client.get_dashboard_snapshot.assert_not_awaited()
 
 
-class DashboardStorageTests(unittest.IsolatedAsyncioTestCase):
-    async def test_normalized_dashboard_documents_do_not_repeat_raw_payloads(self) -> None:
-        trends = SimpleNamespace(bulk_write=AsyncMock())
-        models = SimpleNamespace(bulk_write=AsyncMock())
-        snapshots = SimpleNamespace(replace_one=AsyncMock())
+class DashboardReadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dashboard_read_queries_postgres_instead_of_mongo_mirrors(self) -> None:
         db = SimpleNamespace(
-            sub2api_dashboard_trends=trends,
-            sub2api_dashboard_models=models,
-            sub2api_dashboard_snapshots=snapshots,
+            sub2api_sites=SimpleNamespace(
+                find_one=AsyncMock(
+                    return_value={
+                        "_id": "api-5001",
+                        "site_type": "sub2api",
+                        "sql_dsn": "host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
+                    }
+                )
+            ),
+            sub2api_dashboard_meta=SimpleNamespace(find_one=AsyncMock(return_value={"_id": "api-5001"})),
+            sub2api_dashboard_trends=SimpleNamespace(find=AsyncMock()),
+            sub2api_dashboard_models=SimpleNamespace(find=AsyncMock()),
+            sub2api_dashboard_snapshots=SimpleNamespace(find=AsyncMock()),
         )
-        snapshot = {
-            "generated_at": "2026-07-18T06:53:00Z",
-            "_models_generated_at": "2026-07-18T06:54:00Z",
+        hourly = {
+            "generated_at": datetime(2026, 7, 18, 1, 5, tzinfo=UTC),
             "granularity": "hour",
-            "start_date": "2026-07-17",
+            "start_date": "2026-07-12",
             "end_date": "2026-07-18",
-            "trend": [{"date": "2026-07-18 06:00:00", "requests": 12, "cost": 3.5, "unknown": "large"}],
-            "models": [{"model": "gpt-5", "requests": 12, "cost": 3.5, "unknown": "large"}],
-            "stats": {"requests": 12, "large_nested_payload": ["unused"] * 20},
+            "trend": [{"date": "2026-07-18 09:00", "requests": 12, "total_tokens": 100, "cost": 3.5}],
+            "models": [],
         }
+        daily = {**hourly, "granularity": "day", "trend": [{"date": "2026-07-18", "requests": 12, "total_tokens": 100, "cost": 3.5}]}
+        fetch_site = AsyncMock(side_effect=[hourly, daily])
+        fetch_models = AsyncMock(side_effect=[[{"model": "gpt-5.4", "cost": 3.5}], [{"model": "gpt-5.4", "cost": 9.5}]])
 
-        await dashboard.store_dashboard_snapshot(
-            db,
-            site_id="api-5001",
-            group_id=3,
-            range_type="recent_hours",
-            snapshot=snapshot,
-        )
+        with (
+            patch.object(dashboard, "fetch_postgres_dashboard_snapshot", fetch_site),
+            patch.object(dashboard, "fetch_postgres_model_statistics", fetch_models),
+        ):
+            result = await dashboard.get_stored_dashboard_snapshots(db, site_id="api-5001")
 
-        trend_operation = trends.bulk_write.await_args.args[0][0]
-        model_operation = models.bulk_write.await_args.args[0][0]
-        self.assertNotIn("raw", trend_operation._doc)
-        self.assertNotIn("raw", model_operation._doc)
-        self.assertEqual(trend_operation._doc["generated_at"].isoformat(), "2026-07-18T06:53:00+00:00")
-        self.assertEqual(model_operation._doc["generated_at"].isoformat(), "2026-07-18T06:54:00+00:00")
-        snapshot_document = snapshots.replace_one.await_args.args[1]
-        self.assertNotIn("raw", snapshot_document)
-        self.assertEqual(snapshot_document["trend_points"], 1)
+        self.assertEqual(result["hourly_trend"][0]["bucket"], "2026-07-18 09:00")
+        self.assertEqual(result["daily_trend"][0]["bucket"], "2026-07-18")
+        self.assertEqual(result["recent_models"][0]["model"], "gpt-5.4")
+        self.assertEqual(result["weekly_models"][0]["cost"], 9.5)
+        db.sub2api_dashboard_trends.find.assert_not_called()
+        db.sub2api_dashboard_models.find.assert_not_called()
+        db.sub2api_dashboard_snapshots.find.assert_not_called()
+
+
+class DashboardRangeTests(unittest.TestCase):
+    def test_ranges_cover_hourly_and_daily_windows(self) -> None:
+        ranges = dashboard.dashboard_snapshot_ranges(datetime(2026, 7, 18, 1, 0, tzinfo=UTC))
+
+        self.assertEqual([item["range_type"] for item in ranges], ["recent_hours", "last_7d"])
+        self.assertEqual([item["params"]["granularity"] for item in ranges], ["hour", "day"])
 
 
 if __name__ == "__main__":

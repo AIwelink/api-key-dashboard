@@ -16,12 +16,11 @@ from app.modules.notifications.service import send_notification_event
 from app.modules.sub2api.account_history import (
     build_history_change,
     dynamic_snapshot,
-    ensure_daily_checkpoint,
     persist_history_changes,
     snapshot_hash,
 )
-from app.modules.sub2api.client import Sub2ApiClient
 from app.modules.sub2api.cache import _get_or_update_group_capacity_summary, get_site, is_bug_team_account, is_sub2api_site, list_sites
+from app.modules.sub2api.postgres_repository import fetch_pool_snapshot
 from app.utils import now_utc, serialize_doc
 
 
@@ -32,8 +31,6 @@ DEFAULT_SAMPLE_RETENTION_DAYS = 14
 DEFAULT_MISSING_CONFIRM_COUNT = 3
 CONFIRMED_401_RECOVERY_COUNT = 3
 PROBE_LOOP_SLEEP_SECONDS = 30
-ACCOUNT_LIST_PAGE_SIZE = 200
-MAX_ACCOUNT_LIST_PAGES = 100
 
 STATUS_NORMAL = {"active", "ok", "healthy", "normal", "available"}
 STATUS_ABNORMAL = {"abnormal", "error", "failed", "disabled", "inactive", "invalid", "revoked"}
@@ -378,7 +375,6 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
         "duplicate_email_count": 0,
     }
     try:
-        client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
         settings = await _settings_for_site(db, site_id)
         enabled_group_ids = {group_id for group_id, setting in settings.items() if setting.get("enabled") is not False}
         if group_ids is not None:
@@ -404,7 +400,7 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
                 upsert=True,
             )
             return {"ok": True, "site_id": site_id, "run_id": run_id, "group_ids_checked": [], "message": "no enabled groups due", **counters}
-        accounts = [_normalize_probe_account(item) for item in await _fetch_all_accounts(client)]
+        accounts = [_normalize_probe_account(item) for item in await _fetch_probe_accounts(site)]
         fetched_at = now_utc()
         identity_accounts = [account for account in accounts if not _is_spark_shadow_account(account)]
         all_seen_identity_ids = {
@@ -525,19 +521,6 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
             detected_at=fetched_at,
         )
         counters.update(missing_counts)
-        try:
-            checkpoint_result = await ensure_daily_checkpoint(
-                db,
-                site_id=site_id,
-                checkpoint_at=fetched_at,
-            )
-            counters["daily_checkpoint_created"] = int(checkpoint_result.get("status") == "created")
-            counters["daily_checkpoint_accounts"] = int(checkpoint_result.get("accounts") or 0)
-        except Exception as exc:  # noqa: BLE001 - checkpoint history must not fail account probing.
-            counters["daily_checkpoint_created"] = 0
-            counters["daily_checkpoint_accounts"] = 0
-            counters["daily_checkpoint_error"] = str(exc) or exc.__class__.__name__
-            logger.warning("sub2api_account_checkpoint_failed site_id=%s error=%s", site_id, exc)
         finished_at = now_utc()
         group_ids_checked = sorted(enabled_group_ids)
         await db.remote_account_probe_runs.update_one(
@@ -613,22 +596,15 @@ async def _settings_for_site(db: AsyncIOMotorDatabase, site_id: str) -> dict[int
     return settings
 
 
-async def _fetch_all_accounts(client: Sub2ApiClient) -> list[dict[str, Any]]:
-    accounts: list[dict[str, Any]] = []
-    total: int | None = None
-    page = 1
-    while page <= MAX_ACCOUNT_LIST_PAGES:
-        data = await client.list_accounts(page=page, page_size=ACCOUNT_LIST_PAGE_SIZE, sort_by="last_used_at", sort_order="asc", timezone="Asia/Shanghai")
-        items = data.get("items", [])
-        if total is None and isinstance(data.get("total"), int):
-            total = int(data["total"])
-        accounts.extend([item for item in items if isinstance(item, dict)])
-        if not items:
-            break
-        if total is not None and page * ACCOUNT_LIST_PAGE_SIZE >= total:
-            break
-        page += 1
-    return accounts
+async def _fetch_probe_accounts(site: dict[str, Any]) -> list[dict[str, Any]]:
+    sql_dsn = str(site.get("sql_dsn") or "").strip()
+    if not sql_dsn:
+        raise ValueError("Sub2API SQL_DSN is required for account probing")
+    snapshot = await fetch_pool_snapshot(sql_dsn)
+    accounts = snapshot.get("accounts")
+    if not isinstance(accounts, list):
+        raise ValueError("Sub2API PostgreSQL account snapshot is invalid")
+    return [account for account in accounts if isinstance(account, dict)]
 
 
 def _normalize_probe_account(account: dict[str, Any]) -> dict[str, Any]:
@@ -671,13 +647,6 @@ def _subscription_snapshot(
         parsed = _parse_datetime(_first_present(account, credentials, extra, field))
         if parsed is not None:
             result[field] = parsed.astimezone(UTC)
-    credential_expires_at = _parse_datetime(
-        _first_present(account, extra, "credential_expires_at")
-        or credentials.get("credential_expires_at")
-        or credentials.get("expires_at")
-    )
-    if credential_expires_at is not None:
-        result["credential_expires_at"] = credential_expires_at.astimezone(UTC)
     for field in ("subscription_status", "chatgpt_subscription_status"):
         value = _first_present(account, credentials, extra, field)
         if value is not None and str(value).strip():
@@ -801,9 +770,9 @@ def _usage_rollover_state(
         "rollover_detected": bool(rollover_fields),
         "rollover_details": {
             "rollover_fields": rollover_fields,
-            "previous_usage_snapshot": previous_snapshot,
-            "current_usage_snapshot": current_snapshot,
-            "cumulative_usage_totals": totals,
+            "previous_values": {field: previous_snapshot.get(field) for field in rollover_fields},
+            "current_values": {field: current_snapshot.get(field) for field in rollover_fields},
+            "cumulative_values": {field: totals.get(field) for field in rollover_fields},
         },
     }
 
@@ -941,16 +910,23 @@ def _prepare_history_change(
     )
     if not isinstance(baseline, dict) or not history_enabled:
         return None, current
-    return (
-        build_history_change(
-            identity_id=_identity_id(site_id, account["normalized_email"]),
-            remote_account_id=account.get("remote_account_id"),
-            previous=baseline,
-            current=current,
-            occurrence_id=occurrence_id,
-        ),
-        None,
+    compact_baseline = dynamic_snapshot(
+        {
+            "subscription_snapshot": baseline.get("subscription")
+            if isinstance(baseline.get("subscription"), dict)
+            else {},
+        }
     )
+    change = build_history_change(
+        identity_id=_identity_id(site_id, account["normalized_email"]),
+        remote_account_id=account.get("remote_account_id"),
+        previous=compact_baseline,
+        current=current,
+        occurrence_id=occurrence_id,
+    )
+    if change is None and compact_baseline != baseline:
+        return None, current
+    return change, None
 
 
 async def _ensure_session(
@@ -1279,6 +1255,7 @@ async def _write_event(
     details: dict[str, Any] | None = None,
 ) -> None:
     account = account or {}
+    notification_usage_snapshot = account.get("usage_snapshot") or {}
     merged_details = dict(details or {})
     if account.get("duplicate_remote_count"):
         merged_details.setdefault("duplicate_remote_count", account.get("duplicate_remote_count"))
@@ -1308,7 +1285,6 @@ async def _write_event(
         "current_group_ids": account.get("group_ids"),
         "is_401": _is_401(account) if account else bool((identity or previous or {}).get("current_is_401")),
         "error_category": _error_category(account.get("error_message") or (identity or previous or {}).get("current_error_message")),
-        "usage_snapshot": account.get("usage_snapshot") or {},
         "details": merged_details,
         "raw_excerpt": str(account.get("error_message") or (identity or previous or {}).get("current_error_message") or "")[:500],
         "created_at": detected_at,
@@ -1317,7 +1293,12 @@ async def _write_event(
     if event_type == "401_detected":
         event_id = str(result.inserted_id)
         try:
-            notification_result = await _notify_401_detected(db, event_id=event_id, event_db_id=result.inserted_id, event_doc=doc)
+            notification_result = await _notify_401_detected(
+                db,
+                event_id=event_id,
+                event_db_id=result.inserted_id,
+                event_doc={**doc, "usage_snapshot": notification_usage_snapshot},
+            )
             await db.remote_account_status_events.update_one(
                 {"_id": result.inserted_id},
                 {

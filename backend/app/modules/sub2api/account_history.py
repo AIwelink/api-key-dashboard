@@ -18,16 +18,22 @@ MAX_BATCH_BSON_BYTES = 8 * 1024 * 1024
 CHANGE_SCHEMA_VERSION = 1
 CHECKPOINT_SCHEMA_VERSION = 1
 SHANGHAI_TZ = timezone(timedelta(hours=8))
+HISTORY_EXCLUDED_SUBSCRIPTION_FIELDS = frozenset(
+    {"credential_expires_at", "chatgpt_subscription_last_checked"}
+)
 
 
 def dynamic_snapshot(account: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    subscription = account.get("subscription_snapshot")
+    subscription = subscription if isinstance(subscription, dict) else {}
     return {
-        "usage": dict(account.get("usage_snapshot") if isinstance(account.get("usage_snapshot"), dict) else {}),
-        "subscription": dict(
-            account.get("subscription_snapshot")
-            if isinstance(account.get("subscription_snapshot"), dict)
-            else {}
-        ),
+        # Usage is authoritative in PostgreSQL and is no longer duplicated into MongoDB history.
+        "usage": {},
+        "subscription": {
+            key: value
+            for key, value in subscription.items()
+            if key not in HISTORY_EXCLUDED_SUBSCRIPTION_FIELDS
+        },
     }
 
 

@@ -161,34 +161,28 @@ class Sub2ApiSnapshotSourceTests(unittest.IsolatedAsyncioTestCase):
         client.list_groups.assert_not_awaited()
         client.list_accounts.assert_not_awaited()
 
-    async def test_database_failure_falls_back_to_http_with_redacted_reason(self) -> None:
+    async def test_database_failure_does_not_fall_back_to_http(self) -> None:
         dsn = "host=postgres.internal user=reader password=topsecret dbname=sub2api sslmode=disable"
         site = {"sql_dsn": dsn}
         client = AsyncMock()
         client.list_groups.return_value = {"items": [{"id": 3}]}
 
-        with (
-            patch.object(cache, "fetch_postgres_pool_snapshot", AsyncMock(side_effect=RuntimeError(f"failed with {dsn}"))),
-            patch.object(cache, "_fetch_all_accounts", AsyncMock(return_value=[{"id": 10}])),
-        ):
-            result = await cache._fetch_pool_snapshot(site, client)
+        with patch.object(cache, "fetch_postgres_pool_snapshot", AsyncMock(side_effect=RuntimeError("database unavailable"))):
+            with self.assertRaisesRegex(RuntimeError, "database unavailable"):
+                await cache._fetch_pool_snapshot(site, client)
 
-        self.assertEqual(result["source"], "http_fallback")
-        self.assertEqual(result["groups"], [{"id": 3}])
-        self.assertEqual(result["accounts"], [{"id": 10}])
-        self.assertIn("***", result["fallback_reason"])
-        self.assertNotIn("topsecret", result["fallback_reason"])
-        self.assertNotIn(dsn, result["fallback_reason"])
+        client.list_groups.assert_not_awaited()
+        client.list_accounts.assert_not_awaited()
 
-    async def test_site_without_database_uses_http(self) -> None:
+    async def test_site_without_database_fails_without_http(self) -> None:
         client = AsyncMock()
         client.list_groups.return_value = {"items": [{"id": 3}]}
 
-        with patch.object(cache, "_fetch_all_accounts", AsyncMock(return_value=[{"id": 10}])):
-            result = await cache._fetch_pool_snapshot({}, client)
+        with self.assertRaisesRegex(ValueError, "SQL_DSN"):
+            await cache._fetch_pool_snapshot({}, client)
 
-        self.assertEqual(result["source"], "http")
-        self.assertNotIn("fallback_reason", result)
+        client.list_groups.assert_not_awaited()
+        client.list_accounts.assert_not_awaited()
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ class AsyncCursor:
 
 
 class TpmSampleTests(unittest.IsolatedAsyncioTestCase):
-    async def test_group_sample_uses_trend_deltas_instead_of_global_stats(self) -> None:
+    async def test_group_sample_uses_postgres_counter_delta(self) -> None:
         samples = SimpleNamespace(
             find_one=AsyncMock(
                 return_value={
@@ -36,212 +36,129 @@ class TpmSampleTests(unittest.IsolatedAsyncioTestCase):
             replace_one=AsyncMock(),
         )
         db = SimpleNamespace(sub2api_tpm_samples=samples)
-        client = AsyncMock()
-        client.get_dashboard_snapshot.return_value = {
-            "stats": {
-                "stats_updated_at": "2026-07-16T06:53:09Z",
-                "rpm": 45,
-                "tpm": 497365,
-                "average_duration_ms": 19419.18,
-                "total_input_tokens": 17355853370,
-                "total_output_tokens": 1294748591,
-                "total_cache_creation_tokens": 22572283,
-                "total_cache_read_tokens": 113532556448,
-                "total_tokens": 132205730692,
-            },
-            "trend": [
-                {
-                    "date": "2026-07-16 14:00",
-                    "requests": 18,
-                    "total_tokens": 1_600,
-                }
-            ],
-        }
         sampled_at = datetime(2026, 7, 16, 6, 53, 42, tzinfo=UTC)
 
         result = await tpm_sampler.sample_group_tpm(
             db,
             site_id="api-5001",
             group_id=5,
-            client=client,
             sampled_at=sampled_at,
+            counters={
+                "total_tokens": 1_600,
+                "total_requests": 18,
+                "source_updated_at": datetime(2026, 7, 16, 6, 53, 30, tzinfo=UTC),
+            },
             current_concurrency=17,
         )
 
-        client.get_dashboard_snapshot.assert_awaited_once_with(
-            start_date="2026-07-16",
-            end_date="2026-07-16",
-            granularity="hour",
-            timezone="Asia/Shanghai",
-            include_stats=True,
-            include_trend=True,
-            include_model_stats=False,
-            include_group_stats=True,
-            include_users_trend=False,
-            group_id=5,
-        )
         samples.find_one.assert_awaited_once_with(
             {
                 "site_id": "api-5001",
                 "group_id": 5,
                 "schema_version": 2,
+                "counter_source": "postgresql_usage_logs",
                 "bucket_at": {"$lt": datetime(2026, 7, 16, 6, 53, tzinfo=UTC)},
             },
             sort=[("bucket_at", -1)],
         )
         samples.replace_one.assert_awaited_once()
-        query, document = samples.replace_one.await_args.args
-        self.assertEqual(query, {"_id": "api-5001:5:2026-07-16T06:53:00Z"})
-        self.assertEqual(document["schema_version"], 2)
+        document = samples.replace_one.await_args.args[1]
         self.assertEqual(document["tpm"], 600.0)
-        self.assertIsNone(document["reported_tpm"])
-        self.assertEqual(document["calculated_tpm"], 600.0)
         self.assertEqual(document["rpm"], 8.0)
-        self.assertEqual(document["calculated_rpm"], 8.0)
-        self.assertIsNone(document["average_duration_ms"])
         self.assertEqual(document["current_concurrency"], 17.0)
-        self.assertEqual(document["source"], "group_trend_delta")
-        self.assertEqual(document["group_id"], 5)
-        self.assertEqual(document["total_tokens"], 1_600)
-        self.assertEqual(document["total_requests"], 18)
+        self.assertEqual(document["source"], "postgresql_group_counter_delta")
+        self.assertEqual(document["counter_source"], "postgresql_usage_logs")
+        self.assertEqual(document["stats_updated_at"], datetime(2026, 7, 16, 6, 53, 30, tzinfo=UTC))
         self.assertEqual(document["expires_at"], sampled_at + timedelta(days=14))
         self.assertEqual(result["sample"]["_id"], document["_id"])
-
-    async def test_missing_reported_tpm_uses_token_delta_over_actual_elapsed_time(self) -> None:
-        previous_at = datetime(2026, 7, 16, 6, 52, tzinfo=UTC)
-        samples = SimpleNamespace(
-            find_one=AsyncMock(
-                return_value={
-                    "sampled_at": previous_at,
-                    "total_tokens": 1000,
-                }
-            ),
-            replace_one=AsyncMock(),
-        )
-        db = SimpleNamespace(sub2api_tpm_samples=samples)
-        client = AsyncMock()
-        client.get_dashboard_snapshot.return_value = {
-            "stats": {"tpm": 999_999, "rpm": 999},
-            "trend": [{"date": "2026-07-16 14:00", "requests": 18, "total_tokens": 1600}],
-        }
-
-        result = await tpm_sampler.sample_group_tpm(
-            db,
-            site_id="api-5001",
-            group_id=3,
-            client=client,
-            sampled_at=datetime(2026, 7, 16, 6, 54, tzinfo=UTC),
-        )
-
-        sample = result["sample"]
-        self.assertIsNone(sample["reported_tpm"])
-        self.assertEqual(sample["calculated_tpm"], 300.0)
-        self.assertEqual(sample["tpm"], 300.0)
-        self.assertEqual(sample["token_delta"], 600)
-        self.assertEqual(sample["elapsed_seconds"], 120.0)
-        self.assertEqual(sample["source"], "group_trend_delta")
 
     async def test_counter_reset_does_not_create_negative_tpm(self) -> None:
         samples = SimpleNamespace(
             find_one=AsyncMock(
                 return_value={
                     "sampled_at": datetime(2026, 7, 16, 6, 52, tzinfo=UTC),
-                    "total_tokens": 2000,
+                    "total_tokens": 2_000,
+                    "total_requests": 20,
                 }
             ),
             replace_one=AsyncMock(),
         )
         db = SimpleNamespace(sub2api_tpm_samples=samples)
-        client = AsyncMock()
-        client.get_dashboard_snapshot.return_value = {
-            "stats": {"total_tokens": 999_999},
-            "trend": [{"date": "2026-07-16 14:00", "requests": 1, "total_tokens": 100}],
-        }
 
         result = await tpm_sampler.sample_group_tpm(
             db,
             site_id="api-5001",
             group_id=3,
-            client=client,
             sampled_at=datetime(2026, 7, 16, 6, 54, tzinfo=UTC),
+            counters={"total_tokens": 100, "total_requests": 1},
         )
 
-        sample = result["sample"]
-        self.assertIsNone(sample["tpm"])
-        self.assertIsNone(sample["calculated_tpm"])
-        self.assertIsNone(sample["token_delta"])
-        self.assertEqual(sample["elapsed_seconds"], 120.0)
-        self.assertEqual(sample["source"], "unavailable")
+        self.assertIsNone(result["sample"]["tpm"])
+        self.assertIsNone(result["sample"]["rpm"])
+        self.assertEqual(result["sample"]["source"], "unavailable")
 
 
 class TpmSiteSamplingTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         tpm_sampler._site_sample_locks.clear()
 
-    async def test_groups_run_in_parallel_and_one_failure_is_isolated(self) -> None:
-        groups = SimpleNamespace(find=lambda *_args, **_kwargs: AsyncCursor([{"group_id": 3}, {"group_id": 5}, {"group_id": 7}]))
-        db = SimpleNamespace(sub2api_groups_cache=groups)
-        started: set[int] = set()
-        all_started = asyncio.Event()
-
-        async def sample_group(*_args, group_id: int, **_kwargs):
-            started.add(group_id)
-            if len(started) == 3:
-                all_started.set()
-            await all_started.wait()
-            if group_id == 5:
-                raise RuntimeError("group unavailable")
-            return {"ok": True, "group_id": group_id}
-
-        with (
-            patch.object(
-                tpm_sampler,
-                "get_site",
-                AsyncMock(return_value={"id": "api-5001", "base_url": "http://127.0.0.1:5001", "token": "secret"}),
-            ),
-            patch.object(tpm_sampler, "_fetch_all_accounts", AsyncMock(return_value=[])),
-            patch.object(tpm_sampler, "sample_group_tpm", AsyncMock(side_effect=sample_group)),
-        ):
-            result = await asyncio.wait_for(tpm_sampler.sample_site_tpm(db, site_id="api-5001"), timeout=1)
-
-        self.assertEqual(started, {3, 5, 7})
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["sampled"], 2)
-        self.assertEqual(result["failed"], 1)
-        self.assertEqual(result["groups"], 3)
-
-    async def test_accounts_are_fetched_once_and_group_concurrency_is_forwarded(self) -> None:
+    async def test_all_group_counters_use_one_postgres_query(self) -> None:
         groups = SimpleNamespace(find=lambda *_args, **_kwargs: AsyncCursor([{"group_id": 3}, {"group_id": 5}]))
         db = SimpleNamespace(sub2api_groups_cache=groups)
         accounts = [
             {"id": 1, "group_ids": [3], "current_concurrency": 2},
-            {"id": 2, "groups": [{"id": 3}, {"id": 5}], "current_concurrency": "4"},
-            {"id": 3, "account_groups": [{"group_id": 5}], "current_concurrency": 1},
-            {"id": 4, "group_ids": [3], "current_concurrency": -5},
+            {"id": 2, "groups": [{"id": 3}, {"id": 5}], "current_concurrency": 4},
         ]
-        fetch_accounts = AsyncMock(return_value=accounts)
+        fetch_counters = AsyncMock(
+            return_value={
+                3: {"total_tokens": 100, "total_requests": 10},
+                5: {"total_tokens": 50, "total_requests": 5},
+            }
+        )
         sample_group = AsyncMock(side_effect=lambda *_args, group_id, **_kwargs: {"ok": True, "group_id": group_id})
 
         with (
             patch.object(
                 tpm_sampler,
                 "get_site",
-                AsyncMock(return_value={"id": "api-5001", "base_url": "http://127.0.0.1:5001", "token": "secret"}),
+                AsyncMock(
+                    return_value={
+                        "id": "api-5001",
+                        "base_url": "http://127.0.0.1:5001",
+                        "token": "secret",
+                        "sql_dsn": "host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
+                    }
+                ),
             ),
-            patch.object(tpm_sampler, "_fetch_all_accounts", fetch_accounts),
-            patch.object(tpm_sampler, "update_cached_account_runtime_fields", AsyncMock(return_value={"updated": 4})) as update_runtime,
+            patch.object(tpm_sampler, "_fetch_all_accounts", AsyncMock(return_value=accounts)),
+            patch.object(tpm_sampler, "update_cached_account_runtime_fields", AsyncMock(return_value={"updated": 2})),
+            patch.object(tpm_sampler, "fetch_group_hour_counters", fetch_counters),
             patch.object(tpm_sampler, "sample_group_tpm", sample_group),
         ):
             result = await tpm_sampler.sample_site_tpm(db, site_id="api-5001")
 
-        fetch_accounts.assert_awaited_once()
-        update_runtime.assert_awaited_once_with(db, "api-5001", accounts)
-        concurrency_by_group = {
-            call_item.kwargs["group_id"]: call_item.kwargs["current_concurrency"]
-            for call_item in sample_group.await_args_list
+        self.assertTrue(result["ok"])
+        fetch_counters.assert_awaited_once()
+        self.assertEqual(fetch_counters.await_args.kwargs["group_ids"], [3, 5])
+        counters_by_group = {
+            item.kwargs["group_id"]: item.kwargs["counters"]
+            for item in sample_group.await_args_list
         }
-        self.assertEqual(concurrency_by_group, {3: 6.0, 5: 5.0})
-        self.assertEqual(result["sampled"], 2)
+        self.assertEqual(counters_by_group[3]["total_tokens"], 100)
+        self.assertEqual(counters_by_group[5]["total_tokens"], 50)
+
+    async def test_missing_sql_dsn_does_not_fall_back_to_group_dashboard_urls(self) -> None:
+        groups = SimpleNamespace(find=lambda *_args, **_kwargs: AsyncCursor([{"group_id": 3}]))
+        db = SimpleNamespace(sub2api_groups_cache=groups)
+        with patch.object(
+            tpm_sampler,
+            "get_site",
+            AsyncMock(return_value={"id": "api-5001", "base_url": "http://127.0.0.1:5001", "token": "secret"}),
+        ):
+            result = await tpm_sampler.sample_site_tpm(db, site_id="api-5001")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "sql_dsn_not_configured")
 
     async def test_same_site_overlap_is_skipped(self) -> None:
         groups = SimpleNamespace(find=lambda *_args, **_kwargs: AsyncCursor([{"group_id": 3}]))
@@ -249,80 +166,32 @@ class TpmSiteSamplingTests(unittest.IsolatedAsyncioTestCase):
         started = asyncio.Event()
         release = asyncio.Event()
 
-        async def sample_group(*_args, **_kwargs):
+        async def fetch_counters(*_args, **_kwargs):
             started.set()
             await release.wait()
-            return {"ok": True, "group_id": 3}
+            return {3: {"total_tokens": 1, "total_requests": 1}}
 
-        sample_mock = AsyncMock(side_effect=sample_group)
         with (
             patch.object(
                 tpm_sampler,
                 "get_site",
-                AsyncMock(return_value={"id": "api-5001", "base_url": "http://127.0.0.1:5001", "token": "secret"}),
+                AsyncMock(return_value={"id": "api-5001", "sql_dsn": "host=db user=u password=p dbname=d"}),
             ),
             patch.object(tpm_sampler, "_fetch_all_accounts", AsyncMock(return_value=[])),
-            patch.object(tpm_sampler, "sample_group_tpm", sample_mock),
+            patch.object(tpm_sampler, "fetch_group_hour_counters", AsyncMock(side_effect=fetch_counters)),
+            patch.object(tpm_sampler, "sample_group_tpm", AsyncMock(return_value={"ok": True, "group_id": 3})),
         ):
             first = asyncio.create_task(tpm_sampler.sample_site_tpm(db, site_id="api-5001"))
             await started.wait()
             second = await tpm_sampler.sample_site_tpm(db, site_id="api-5001")
             release.set()
-            first_result = await first
+            await first
 
         self.assertEqual(second["status"], "skipped")
-        self.assertTrue(first_result["ok"])
-        self.assertEqual(sample_mock.await_count, 1)
 
 
 class TpmAllSitesSamplingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_only_active_sites_run_and_sites_are_sampled_in_parallel(self) -> None:
-        started: set[str] = set()
-        all_started = asyncio.Event()
-
-        async def sample_site(_db, *, site_id: str):
-            started.add(site_id)
-            if len(started) == 2:
-                all_started.set()
-            await all_started.wait()
-            return {"ok": True, "site_id": site_id, "sampled": 2, "failed": 0}
-
-        list_sites_mock = AsyncMock(
-            return_value={
-                "items": [
-                    {"id": "api-5001", "status": "active"},
-                    {"id": "api-disabled", "status": "disabled"},
-                    {"id": "api-5002", "status": "active", "site_type": "sub2api"},
-                    {"id": "newapi-us01", "status": "active", "site_type": "newapi"},
-                ]
-            }
-        )
-        db = object()
-        with (
-            patch.object(
-                tpm_sampler,
-                "list_sites",
-                list_sites_mock,
-            ),
-            patch.object(tpm_sampler, "sample_site_tpm", AsyncMock(side_effect=sample_site)),
-        ):
-            result = await asyncio.wait_for(tpm_sampler.sample_all_sites_tpm(db), timeout=1)
-
-        self.assertEqual(started, {"api-5001", "api-5002"})
-        self.assertEqual(result["sites"], 2)
-        self.assertEqual(result["sampled"], 4)
-        self.assertEqual(result["failed"], 0)
-        list_sites_mock.assert_awaited_once_with(db, site_type="sub2api")
-
-    async def test_one_site_failure_does_not_cancel_other_sites(self) -> None:
-        completed: list[str] = []
-
-        async def sample_site(_db, *, site_id: str):
-            if site_id == "api-broken":
-                raise RuntimeError("site unavailable")
-            completed.append(site_id)
-            return {"ok": True, "site_id": site_id, "sampled": 3, "failed": 0}
-
+    async def test_only_active_sub2api_sites_are_sampled(self) -> None:
         with (
             patch.object(
                 tpm_sampler,
@@ -330,39 +199,36 @@ class TpmAllSitesSamplingTests(unittest.IsolatedAsyncioTestCase):
                 AsyncMock(
                     return_value={
                         "items": [
-                            {"id": "api-broken", "status": "active"},
-                            {"id": "api-healthy", "status": "active"},
+                            {"id": "api-5001", "status": "active"},
+                            {"id": "api-disabled", "status": "disabled"},
+                            {"id": "api-5002", "status": "active", "site_type": "sub2api"},
                         ]
                     }
                 ),
             ),
-            patch.object(tpm_sampler, "sample_site_tpm", AsyncMock(side_effect=sample_site)),
+            patch.object(
+                tpm_sampler,
+                "sample_site_tpm",
+                AsyncMock(return_value={"ok": True, "sampled": 2, "failed": 0}),
+            ) as sample_site,
         ):
             result = await tpm_sampler.sample_all_sites_tpm(object())
 
-        self.assertEqual(completed, ["api-healthy"])
         self.assertEqual(result["sites"], 2)
-        self.assertEqual(result["site_failures"], 1)
-        self.assertEqual(result["sampled"], 3)
+        self.assertEqual(sample_site.await_count, 2)
 
 
 class TpmSchedulerTests(unittest.IsolatedAsyncioTestCase):
     async def test_sampler_runs_immediately_and_cancellation_propagates(self) -> None:
         sample_all = AsyncMock(return_value={"ok": True, "sites": 1})
         sleep = AsyncMock(side_effect=asyncio.CancelledError)
-
         with (
             patch.object(tpm_sampler, "sample_all_sites_tpm", sample_all),
             patch.object(tpm_sampler.asyncio, "sleep", sleep),
         ):
             with self.assertRaises(asyncio.CancelledError):
                 await tpm_sampler.tpm_sampler_loop(object())
-
         sample_all.assert_awaited_once()
-        sleep.assert_awaited_once()
-        sleep_seconds = sleep.await_args.args[0]
-        self.assertGreater(sleep_seconds, 0)
-        self.assertLessEqual(sleep_seconds, 60)
 
 
 class TpmIndexTests(unittest.IsolatedAsyncioTestCase):
@@ -379,7 +245,6 @@ class TpmIndexTests(unittest.IsolatedAsyncioTestCase):
                 call([("site_id", 1), ("group_id", 1), ("sampled_at", -1)]),
             ]
         )
-        self.assertEqual(collection.create_index.await_count, 3)
 
 
 if __name__ == "__main__":

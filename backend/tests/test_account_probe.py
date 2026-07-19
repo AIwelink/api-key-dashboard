@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, patch
 
 from app.modules.sub2api import account_probe
@@ -32,6 +33,49 @@ class AccountProbeSchedulingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first_result, second_result)
         runner.assert_awaited_once_with(ANY, site_id="api-5001", group_ids=[3])
+
+
+class AccountProbeDatabaseSourceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_probe_accounts_are_loaded_from_postgres_without_http(self) -> None:
+        site = {
+            "id": "api-5001",
+            "base_url": "http://127.0.0.1:5001",
+            "token": "secret",
+            "sql_dsn": "host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
+        }
+        fetch_pool = AsyncMock(return_value={"groups": [{"id": 3}], "accounts": [{"id": 953, "group_ids": [3]}]})
+
+        with patch.object(account_probe, "fetch_pool_snapshot", fetch_pool):
+            accounts = await account_probe._fetch_probe_accounts(site)
+
+        self.assertEqual(accounts, [{"id": 953, "group_ids": [3]}])
+        fetch_pool.assert_awaited_once_with(site["sql_dsn"])
+
+    async def test_probe_requires_sql_dsn_instead_of_falling_back_to_http(self) -> None:
+        with self.assertRaisesRegex(ValueError, "SQL_DSN"):
+            await account_probe._fetch_probe_accounts(
+                {"id": "api-5001", "base_url": "http://127.0.0.1:5001", "token": "secret"}
+            )
+
+    async def test_status_events_do_not_duplicate_usage_snapshots(self) -> None:
+        events = SimpleNamespace(insert_one=AsyncMock(return_value=SimpleNamespace(inserted_id="event-1")))
+        db = SimpleNamespace(remote_account_status_events=events)
+
+        await account_probe._write_event(
+            db,
+            site_id="api-5001",
+            event_type="status_changed",
+            severity="warning",
+            detected_at=datetime(2026, 7, 19, 12, 0, tzinfo=UTC),
+            account={
+                "remote_account_id": 953,
+                "normalized_email": "person@example.com",
+                "usage_snapshot": {"codex_5h_used_percent": 42},
+            },
+        )
+
+        stored = events.insert_one.await_args.args[0]
+        self.assertNotIn("usage_snapshot", stored)
 
 
 class AccountProbePlanTypeTests(unittest.TestCase):
@@ -231,6 +275,27 @@ class OfficialUsageRefreshTests(unittest.TestCase):
         self.assertTrue(result["confirmed"])
         self.assertEqual(result["confirmed_account_types"], ["pro"])
 
+    def test_usage_rollover_event_details_keep_only_changed_counter_values(self) -> None:
+        result = account_probe._usage_rollover_state(
+            previous_snapshot={
+                "codex_7d_request_count": 100,
+                "codex_7d_token_count": 1000,
+                "codex_5h_used_percent": 75,
+            },
+            current_snapshot={
+                "codex_7d_request_count": 2,
+                "codex_7d_token_count": 20,
+                "codex_5h_used_percent": 5,
+            },
+            previous_totals={},
+        )
+
+        details = result["rollover_details"]
+        self.assertNotIn("previous_usage_snapshot", details)
+        self.assertNotIn("current_usage_snapshot", details)
+        self.assertEqual(details["previous_values"]["codex_7d_request_count"], 100)
+        self.assertEqual(details["current_values"]["codex_7d_request_count"], 2)
+
 
 class AccountProbeSubscriptionTests(unittest.TestCase):
     def test_subscription_timestamps_are_normalized_before_comparison(self) -> None:
@@ -251,16 +316,19 @@ class AccountProbeSubscriptionTests(unittest.TestCase):
             {
                 "chatgpt_subscription_active_until": datetime(2026, 8, 1, 0, 0, tzinfo=UTC),
                 "chatgpt_subscription_last_checked": datetime(2026, 7, 18, 6, 30, tzinfo=UTC),
-                "credential_expires_at": datetime(2026, 8, 1, 0, 0, tzinfo=UTC),
             },
         )
 
-    def test_first_observation_initializes_history_without_change_event(self) -> None:
+    def test_first_observation_does_not_mirror_usage_or_credential_expiry_to_history(self) -> None:
         account = {
             "normalized_email": "person@example.com",
             "remote_account_id": 953,
             "usage_snapshot": {"codex_5h_used_percent": 42},
-            "subscription_snapshot": {},
+            "subscription_snapshot": {
+                "credential_expires_at": datetime(2026, 8, 1, tzinfo=UTC),
+                "chatgpt_subscription_last_checked": datetime(2026, 7, 19, tzinfo=UTC),
+                "subscription_status": "active",
+            },
         }
 
         change, baseline = account_probe._prepare_history_change(
@@ -271,9 +339,9 @@ class AccountProbeSubscriptionTests(unittest.TestCase):
         )
 
         self.assertIsNone(change)
-        self.assertEqual(baseline, {"usage": {"codex_5h_used_percent": 42}, "subscription": {}})
+        self.assertEqual(baseline, {"usage": {}, "subscription": {"subscription_status": "active"}})
 
-    def test_existing_baseline_produces_exact_usage_change(self) -> None:
+    def test_usage_only_change_does_not_create_history_batch(self) -> None:
         account = {
             "normalized_email": "person@example.com",
             "remote_account_id": 953,
@@ -293,9 +361,8 @@ class AccountProbeSubscriptionTests(unittest.TestCase):
             setting={"detailed_enabled": True, "record_usage_samples": True},
         )
 
-        assert change is not None
-        self.assertEqual(change["changes"], {"usage.codex_5h_used_percent": 0})
-        self.assertIsNone(baseline)
+        self.assertIsNone(change)
+        self.assertEqual(baseline, {"usage": {}, "subscription": {}})
 
     def test_disabled_history_tracks_baseline_without_writing_change(self) -> None:
         account = {
@@ -318,7 +385,7 @@ class AccountProbeSubscriptionTests(unittest.TestCase):
         )
 
         self.assertIsNone(change)
-        self.assertEqual(baseline, {"usage": {"codex_5h_used_percent": 50}, "subscription": {}})
+        self.assertEqual(baseline, {"usage": {}, "subscription": {}})
 
 
 if __name__ == "__main__":
