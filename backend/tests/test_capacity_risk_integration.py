@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 from app.modules.api_pools.capacity_limits import normalize_capacity_limits
 from app.modules.sub2api import cache
+from app.modules.sub2api.hourly_forecast import ForecastPoint, ForecastResult
 
 
 NOW = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
@@ -78,6 +79,40 @@ def cost_summary(*, historical_peak: float = 0.0) -> dict[str, object]:
 
 
 class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_group_capacity_summary_uses_cached_hourly_forecast(self) -> None:
+        limits = normalize_capacity_limits({"plus": {"five_hour_usd": 2, "seven_day_usd": 10}})
+        forecast = ForecastResult(
+            model="robust_seasonal_analog",
+            version="1",
+            as_of=NOW,
+            readiness="provisional",
+            history_hours=21 * 24,
+            completeness_ratio=1.0,
+            points=tuple(
+                ForecastPoint(index + 1, NOW + timedelta(hours=index), 0.5, 2.0, 14, "analog")
+                for index in range(25)
+            ),
+        )
+
+        with (
+            patch.object(cache, "now_utc", return_value=NOW),
+            patch.object(cache, "get_capacity_account_limits", AsyncMock(return_value={"limits": limits})),
+            patch.object(cache, "_dashboard_cost_summary", AsyncMock(return_value=cost_summary())),
+            patch.object(cache, "_load_group_tpm_samples", AsyncMock(return_value=minute_samples())),
+            patch.object(cache, "_load_group_hourly_demand_forecast", AsyncMock(return_value=forecast)),
+        ):
+            summary = await cache._capacity_summary_for_accounts(
+                object(),
+                "api-5001",
+                remote_accounts(used_5h_percent=0),
+                group_id=3,
+            )
+
+        self.assertEqual(summary["runway_source"], "hourly_forecast_p90")
+        self.assertEqual(summary["capacity_model"], "single_pool_hourly_forecast")
+        self.assertEqual(summary["forecast_model"], "robust_seasonal_analog")
+        self.assertEqual(summary["forecast_status"], "active")
+
     async def test_recent_derived_capacity_summary_avoids_requerying_postgres(self) -> None:
         cached_summary = {
             "account_type": "plus",

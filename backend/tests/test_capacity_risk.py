@@ -4,6 +4,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 
 from app.modules.sub2api import capacity_risk
+from app.modules.sub2api.hourly_forecast import ForecastPoint, ForecastResult
 
 
 NOW = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
@@ -53,6 +54,49 @@ def calculate(
 
 
 class CapacityRiskTests(unittest.TestCase):
+    def test_hourly_p90_forecast_replaces_tpm_runway_and_burn_rate(self) -> None:
+        demand_forecast = ForecastResult(
+            model="robust_seasonal_analog",
+            version="1",
+            as_of=NOW,
+            readiness="provisional",
+            history_hours=21 * 24,
+            completeness_ratio=1.0,
+            points=tuple(
+                ForecastPoint(index + 1, NOW + timedelta(hours=index), 0.5, 2.0, 14, "analog")
+                for index in range(25)
+            ),
+        )
+
+        result = calculate(samples([1000] * 20), demand_forecast=demand_forecast)
+
+        self.assertEqual(result["runway_source"], "hourly_forecast_p90")
+        self.assertEqual(result["forecast_status"], "active")
+        self.assertEqual(result["forecast_readiness"], "provisional")
+        self.assertEqual(result["burn_usd_per_hour"], 2.0)
+        self.assertEqual(result["actual_runway_hours"], 0.75)
+        self.assertEqual(result["dynamic_runway_hours"], 2.0)
+        self.assertEqual(result["forecast_p50_runway_hours"], 8.0)
+        self.assertEqual(result["forecast_p90_runway_hours"], 2.0)
+
+    def test_incomplete_hourly_forecast_falls_back_to_tpm_runway(self) -> None:
+        incomplete_forecast = ForecastResult(
+            model="robust_seasonal_analog",
+            version="1",
+            as_of=NOW,
+            readiness="limited",
+            history_hours=7 * 24,
+            completeness_ratio=1.0,
+            points=(ForecastPoint(1, NOW, 0.5, 2.0, 7, "analog"),),
+        )
+
+        result = calculate(samples([1000] * 20), demand_forecast=incomplete_forecast)
+
+        self.assertEqual(result["runway_source"], "tpm_pressure")
+        self.assertEqual(result["forecast_status"], "fallback")
+        self.assertEqual(result["dynamic_runway_hours"], 4.0)
+        self.assertIn("cover", result["forecast_fallback_reason"])
+
     def test_waits_for_fifteen_fresh_samples(self) -> None:
         result = calculate(samples([1000] * 14))
 

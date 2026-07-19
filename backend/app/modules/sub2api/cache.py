@@ -22,6 +22,8 @@ from app.modules.sub2api.dashboard_postgres_repository import (
     fetch_site_dashboard_snapshot as fetch_postgres_dashboard_snapshot,
 )
 from app.modules.sub2api.postgres_repository import fetch_pool_snapshot as fetch_postgres_pool_snapshot
+from app.modules.sub2api.hourly_forecast import ForecastInputError, ForecastResult
+from app.modules.sub2api.hourly_forecast_service import get_or_create_group_hourly_forecast
 from app.utils import now_utc, serialize_doc
 
 
@@ -1154,7 +1156,10 @@ async def _capacity_summary_for_accounts(
     recent_5h_remaining_usd = max(0.0, five_hour_capacity_usd - recent_5h_cost)
     recent_24h_remaining_usd = max(0.0, twenty_four_hour_capacity_usd - recent_24h_cost)
     seven_day_remaining_usd = max(0.0, seven_day_capacity_usd - seven_day_cost)
-    tpm_samples = await _load_group_tpm_samples(db, site_id=site_id, group_id=group_id)
+    tpm_samples, demand_forecast = await asyncio.gather(
+        _load_group_tpm_samples(db, site_id=site_id, group_id=group_id),
+        _load_group_hourly_demand_forecast(db, site_id=site_id, group_id=group_id),
+    )
     concurrency_total = float(concurrency_summary.get("concurrency_total_capacity") or 0)
     concurrency_accounts = int(concurrency_summary.get("concurrency_eligible_accounts") or 0)
     average_account_concurrency = concurrency_total / concurrency_accounts if concurrency_accounts > 0 else 0.0
@@ -1173,6 +1178,7 @@ async def _capacity_summary_for_accounts(
         average_account_concurrency=average_account_concurrency,
         refill_account_options=_refill_account_options(primary_type, capacity_limits),
         primary_refill_account_type=primary_type,
+        demand_forecast=demand_forecast,
     )
     health = {
         "status": realtime_risk["health_status"],
@@ -1186,7 +1192,11 @@ async def _capacity_summary_for_accounts(
         if key not in {"health_status", "health_label", "health_tone", "health_reason"}
     }
     return {
-        "capacity_model": "single_pool_realtime",
+        "capacity_model": (
+            "single_pool_hourly_forecast"
+            if realtime_risk.get("forecast_status") == "active"
+            else "single_pool_realtime"
+        ),
         "available_accounts": selected["available_accounts"] + selected_reserve["available_accounts"],
         "available_5h_accounts": selected["available_5h_accounts"] + selected_reserve["available_5h_accounts"],
         "active_available_accounts": selected["available_accounts"],
@@ -1799,6 +1809,43 @@ def _postgres_dashboard_bucket_at(value: Any) -> datetime | None:
         ).astimezone(UTC)
     except ValueError:
         return None
+
+
+async def _load_group_hourly_demand_forecast(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    group_id: int | None,
+) -> ForecastResult | None:
+    if group_id is None or getattr(db, "sub2api_hourly_forecasts", None) is None:
+        return None
+    try:
+        site = await get_site(db, site_id, include_token=True)
+        sql_dsn = str((site or {}).get("sql_dsn") or "").strip()
+        if not sql_dsn:
+            return None
+        return await get_or_create_group_hourly_forecast(
+            db,
+            site_id=site_id,
+            group_id=group_id,
+            sql_dsn=sql_dsn,
+            now=now_utc(),
+        )
+    except ForecastInputError as exc:
+        logger.info(
+            "sub2api_hourly_forecast_unavailable site_id=%s group_id=%s reason=%s",
+            site_id,
+            group_id,
+            str(exc),
+        )
+    except Exception as exc:  # noqa: BLE001 - forecast failure must not block capacity status.
+        logger.warning(
+            "sub2api_hourly_forecast_failed site_id=%s group_id=%s error_type=%s",
+            site_id,
+            group_id,
+            type(exc).__name__,
+        )
+    return None
 
 
 async def _load_group_tpm_samples(

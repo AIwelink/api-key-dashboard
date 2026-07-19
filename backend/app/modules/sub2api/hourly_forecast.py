@@ -51,6 +51,13 @@ class ForecastResult:
     points: tuple[ForecastPoint, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ForecastRunway:
+    hours: float
+    capped: bool
+    projected_cost_usd: float
+
+
 def forecast_hourly_demand(
     history: Sequence[HourlyObservation],
     *,
@@ -117,6 +124,57 @@ def forecast_hourly_demand(
         history_hours=len(normalized),
         completeness_ratio=round(completeness_ratio, 6),
         points=tuple(points),
+    )
+
+
+def forecast_cost_over_window(
+    forecast: ForecastResult,
+    *,
+    now: datetime,
+    hours: float,
+    quantile: str = "p90",
+) -> float:
+    segments = _forecast_segments(forecast, now=now, hours=hours, quantile=quantile)
+    return round(sum(cost for _, cost in segments), 6)
+
+
+def forecast_runway(
+    forecast: ForecastResult,
+    *,
+    remaining_usd: float,
+    now: datetime,
+    quantile: str = "p90",
+    max_hours: float = 24,
+) -> ForecastRunway:
+    remaining = _nonnegative(remaining_usd, field_name="remaining_usd")
+    if remaining == 0:
+        return ForecastRunway(hours=0.0, capped=False, projected_cost_usd=0.0)
+
+    elapsed_hours = 0.0
+    projected_cost = 0.0
+    for duration_hours, segment_cost in _forecast_segments(
+        forecast,
+        now=now,
+        hours=max_hours,
+        quantile=quantile,
+    ):
+        if segment_cost > 0 and remaining <= segment_cost:
+            used_fraction = remaining / segment_cost
+            elapsed_hours += duration_hours * used_fraction
+            projected_cost += remaining
+            return ForecastRunway(
+                hours=round(elapsed_hours, 6),
+                capped=False,
+                projected_cost_usd=round(projected_cost, 6),
+            )
+        remaining -= segment_cost
+        projected_cost += segment_cost
+        elapsed_hours += duration_hours
+
+    return ForecastRunway(
+        hours=round(float(max_hours), 6),
+        capped=True,
+        projected_cost_usd=round(projected_cost, 6),
     )
 
 
@@ -317,3 +375,56 @@ def _unweighted_quantile(values: Sequence[float], q: float) -> float:
     ordered = sorted(float(value) for value in values)
     index = max(0, min(len(ordered) - 1, math.ceil(q * len(ordered)) - 1))
     return ordered[index]
+
+
+def _forecast_segments(
+    forecast: ForecastResult,
+    *,
+    now: datetime,
+    hours: float,
+    quantile: str,
+) -> list[tuple[float, float]]:
+    start_at = _aware_utc(now, field_name="now")
+    duration = _positive_duration(hours)
+    end_at = start_at + timedelta(hours=duration)
+    if quantile not in {"p50", "p90"}:
+        raise ForecastInputError("quantile must be p50 or p90")
+
+    segments: list[tuple[float, float]] = []
+    covered_seconds = 0.0
+    seen_targets: set[datetime] = set()
+    for point in sorted(forecast.points, key=lambda item: item.target_at):
+        point_start = _natural_utc_hour(point.target_at, field_name="forecast target_at")
+        if point_start in seen_targets:
+            raise ForecastInputError("forecast contains duplicate target hours")
+        seen_targets.add(point_start)
+        point_end = point_start + timedelta(hours=1)
+        segment_start = max(start_at, point_start)
+        segment_end = min(end_at, point_end)
+        if segment_end <= segment_start:
+            continue
+        segment_seconds = (segment_end - segment_start).total_seconds()
+        hourly_cost = _nonnegative(getattr(point, quantile), field_name=quantile)
+        segments.append((segment_seconds / 3600, hourly_cost * segment_seconds / 3600))
+        covered_seconds += segment_seconds
+
+    required_seconds = duration * 3600
+    if abs(covered_seconds - required_seconds) > 0.001:
+        raise ForecastInputError("forecast does not cover the requested window")
+    return segments
+
+
+def _aware_utc(value: datetime, *, field_name: str) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ForecastInputError(f"{field_name} must be timezone-aware")
+    return value.astimezone(UTC)
+
+
+def _positive_duration(value: float) -> float:
+    try:
+        duration = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ForecastInputError("hours must be numeric") from exc
+    if not math.isfinite(duration) or duration <= 0 or duration > 168:
+        raise ForecastInputError("hours must be between 0 and 168")
+    return duration

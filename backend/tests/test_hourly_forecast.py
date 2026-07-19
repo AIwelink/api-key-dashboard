@@ -6,8 +6,12 @@ from datetime import UTC, datetime, timedelta
 
 from app.modules.sub2api.hourly_forecast import (
     ForecastInputError,
+    ForecastPoint,
+    ForecastResult,
     HourlyObservation,
+    forecast_cost_over_window,
     forecast_hourly_demand,
+    forecast_runway,
     weighted_quantile,
 )
 
@@ -36,6 +40,74 @@ def hourly_history(
 
 
 class HourlyForecastTests(unittest.TestCase):
+    def test_runway_prorates_partial_natural_hours(self) -> None:
+        forecast = ForecastResult(
+            model="test",
+            version="1",
+            as_of=AS_OF,
+            readiness="eligible",
+            history_hours=56 * 24,
+            completeness_ratio=1.0,
+            points=tuple(
+                ForecastPoint(
+                    horizon=index + 1,
+                    target_at=AS_OF + timedelta(hours=index),
+                    p50=5,
+                    p90=10,
+                    candidate_count=1,
+                    source="test",
+                )
+                for index in range(3)
+            ),
+        )
+
+        result = forecast_runway(
+            forecast,
+            remaining_usd=10,
+            now=AS_OF + timedelta(minutes=30),
+            quantile="p90",
+            max_hours=2,
+        )
+
+        self.assertEqual(result.hours, 1.0)
+        self.assertFalse(result.capped)
+        self.assertEqual(result.projected_cost_usd, 10.0)
+
+    def test_runway_is_capped_when_budget_outlasts_forecast_window(self) -> None:
+        forecast = ForecastResult(
+            model="test",
+            version="1",
+            as_of=AS_OF,
+            readiness="eligible",
+            history_hours=56 * 24,
+            completeness_ratio=1.0,
+            points=tuple(
+                ForecastPoint(index + 1, AS_OF + timedelta(hours=index), 5, 10, 1, "test")
+                for index in range(3)
+            ),
+        )
+
+        result = forecast_runway(
+            forecast,
+            remaining_usd=100,
+            now=AS_OF + timedelta(minutes=30),
+            quantile="p90",
+            max_hours=2,
+        )
+
+        self.assertEqual(result.hours, 2.0)
+        self.assertTrue(result.capped)
+        self.assertEqual(result.projected_cost_usd, 20.0)
+        self.assertEqual(
+            forecast_cost_over_window(
+                forecast,
+                now=AS_OF + timedelta(minutes=30),
+                hours=2,
+                quantile="p90",
+            ),
+            20.0,
+        )
+
     def test_forecasts_next_twenty_four_natural_hours(self) -> None:
         history = hourly_history(hours=14 * 24)
 

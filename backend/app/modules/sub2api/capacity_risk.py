@@ -4,6 +4,13 @@ import math
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.modules.sub2api.hourly_forecast import (
+    ForecastInputError,
+    ForecastResult,
+    forecast_cost_over_window,
+    forecast_runway,
+)
+
 
 MIN_SAMPLE_COUNT = 15
 MAX_SAMPLE_AGE = timedelta(minutes=3)
@@ -13,6 +20,8 @@ EXHAUSTED_RUNWAY_HOURS = 0.5
 INVENTORY_RISK_RUNWAY_HOURS = 6.0
 SAFE_CONCURRENCY_TARGET = 1.2
 TOTAL_CONCURRENCY_TARGET = 1 + SAFE_CONCURRENCY_TARGET
+FORECAST_RUNWAY_HOURS = 24.0
+FORECAST_BURN_WINDOW_HOURS = 3.0
 
 PRESSURE_STAGE_LABELS = {
     "waiting_data": "等待数据",
@@ -50,6 +59,7 @@ def calculate_capacity_risk(
     average_account_concurrency: float,
     refill_account_options: dict[str, dict[str, Any]] | None = None,
     primary_refill_account_type: str | None = None,
+    demand_forecast: ForecastResult | None = None,
 ) -> dict[str, Any]:
     now = _as_utc(now)
     normalized = _normalized_samples(samples)
@@ -116,7 +126,8 @@ def calculate_capacity_risk(
     concurrency_spare_coverage = _coverage(safe_concurrency_available, estimated_concurrency)
     concurrency_coverage = None if concurrency_spare_coverage is None else 1 + concurrency_spare_coverage
 
-    burn_usd_per_hour = pressure_tpm * 60 * float(cost_per_token)
+    realtime_burn_usd_per_hour = pressure_tpm * 60 * float(cost_per_token)
+    burn_usd_per_hour = realtime_burn_usd_per_hour
     actual_remaining_usd = min(
         max(0.0, actual_five_hour_remaining_usd),
         max(0.0, actual_seven_day_remaining_usd),
@@ -127,6 +138,63 @@ def calculate_capacity_risk(
     )
     actual_runway_hours = _runway(actual_remaining_usd, burn_usd_per_hour)
     dynamic_runway_hours = _runway(dynamic_remaining_usd, burn_usd_per_hour)
+    runway_source = "tpm_pressure"
+    forecast_status = "fallback"
+    forecast_fallback_reason = "forecast_unavailable"
+    forecast_p50_runway_hours = None
+    forecast_p90_runway_hours = None
+    forecast_actual_runway_capped = False
+    forecast_dynamic_runway_capped = False
+    forecast_meta: dict[str, Any] = {}
+    if demand_forecast is not None:
+        try:
+            actual_forecast = forecast_runway(
+                demand_forecast,
+                remaining_usd=actual_remaining_usd,
+                now=now,
+                quantile="p90",
+                max_hours=FORECAST_RUNWAY_HOURS,
+            )
+            dynamic_forecast = forecast_runway(
+                demand_forecast,
+                remaining_usd=dynamic_remaining_usd,
+                now=now,
+                quantile="p90",
+                max_hours=FORECAST_RUNWAY_HOURS,
+            )
+            p50_forecast = forecast_runway(
+                demand_forecast,
+                remaining_usd=dynamic_remaining_usd,
+                now=now,
+                quantile="p50",
+                max_hours=FORECAST_RUNWAY_HOURS,
+            )
+            burn_usd_per_hour = forecast_cost_over_window(
+                demand_forecast,
+                now=now,
+                hours=FORECAST_BURN_WINDOW_HOURS,
+                quantile="p90",
+            ) / FORECAST_BURN_WINDOW_HOURS
+            actual_runway_hours = actual_forecast.hours
+            dynamic_runway_hours = dynamic_forecast.hours
+            forecast_p50_runway_hours = p50_forecast.hours
+            forecast_p90_runway_hours = dynamic_forecast.hours
+            forecast_actual_runway_capped = actual_forecast.capped
+            forecast_dynamic_runway_capped = dynamic_forecast.capped
+            runway_source = "hourly_forecast_p90"
+            forecast_status = "active"
+            forecast_fallback_reason = None
+            forecast_meta = {
+                "forecast_model": demand_forecast.model,
+                "forecast_version": demand_forecast.version,
+                "forecast_as_of": demand_forecast.as_of,
+                "forecast_readiness": demand_forecast.readiness,
+                "forecast_history_hours": demand_forecast.history_hours,
+                "forecast_completeness_ratio": demand_forecast.completeness_ratio,
+                "forecast_horizon_hours": FORECAST_RUNWAY_HOURS,
+            }
+        except ForecastInputError as exc:
+            forecast_fallback_reason = str(exc)
 
     health_status, health_reason = _health_status(
         available_accounts=available_accounts,
@@ -200,8 +268,16 @@ def calculate_capacity_risk(
         "estimated_concurrency": _rounded(estimated_concurrency),
         "concurrency_coverage": _rounded(concurrency_coverage),
         "burn_usd_per_hour": _rounded(burn_usd_per_hour),
+        "realtime_burn_usd_per_hour": _rounded(realtime_burn_usd_per_hour),
         "actual_runway_hours": _rounded(actual_runway_hours),
         "dynamic_runway_hours": _rounded(dynamic_runway_hours),
+        "runway_source": runway_source,
+        "forecast_status": forecast_status,
+        "forecast_fallback_reason": forecast_fallback_reason,
+        "forecast_p50_runway_hours": _rounded(forecast_p50_runway_hours),
+        "forecast_p90_runway_hours": _rounded(forecast_p90_runway_hours),
+        "forecast_actual_runway_capped": forecast_actual_runway_capped,
+        "forecast_dynamic_runway_capped": forecast_dynamic_runway_capped,
         "target_runway_hours": DYNAMIC_RUNWAY_TARGET_HOURS,
         "actual_target_hours": ACTUAL_RUNWAY_TARGET_HOURS,
         "concurrency_target_coverage": TOTAL_CONCURRENCY_TARGET,
@@ -217,6 +293,7 @@ def calculate_capacity_risk(
         "concurrency_refill_accounts": concurrency_refill_accounts,
         "recommended_refill_accounts": recommended_refill_accounts,
         "recommended_refill_options": recommended_refill_options,
+        **forecast_meta,
     }
 
 

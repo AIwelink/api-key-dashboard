@@ -165,6 +165,18 @@ type CapacitySummary = {
   concurrency_sample_count?: number;
   actual_runway_hours?: number | null;
   dynamic_runway_hours?: number | null;
+  runway_source?: string;
+  forecast_status?: string;
+  forecast_fallback_reason?: string | null;
+  forecast_model?: string;
+  forecast_version?: string;
+  forecast_readiness?: string;
+  forecast_as_of?: string;
+  forecast_horizon_hours?: number;
+  forecast_p50_runway_hours?: number | null;
+  forecast_p90_runway_hours?: number | null;
+  forecast_actual_runway_capped?: boolean;
+  forecast_dynamic_runway_capped?: boolean;
   target_runway_hours?: number;
   actual_target_hours?: number;
   estimated_concurrency?: number;
@@ -1424,12 +1436,12 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
         />
         <CapacityMetric
           label="实时可用时间"
-          value={formatRunwayHours(summary?.dynamic_runway_hours)}
-          sub={`实际可用 ${formatRunwayHours(summary?.actual_runway_hours)} · 动态目标 ${formatRunwayHours(summary?.target_runway_hours ?? 3)}`}
-          percent={runwayScalePercent(summary?.dynamic_runway_hours, summary?.target_runway_hours ?? 3)}
+          value={formatRunwayHours(summary?.dynamic_runway_hours, summary?.forecast_dynamic_runway_capped)}
+          sub={`${summary?.forecast_status === "active" ? "P90逐小时预测" : "TPM实时估算"} · 实际可用 ${formatRunwayHours(summary?.actual_runway_hours, summary?.forecast_actual_runway_capped)} · 动态目标 ${formatRunwayHours(summary?.target_runway_hours ?? 3)}`}
+          percent={summary?.forecast_dynamic_runway_capped ? 100 : runwayScalePercent(summary?.dynamic_runway_hours, summary?.target_runway_hours ?? 3)}
           tone={runwayTone(summary?.dynamic_runway_hours, summary?.realtime_risk_ready)}
-          meterLegendLabel="动态覆盖"
-          meterValue={formatRunwayHours(summary?.dynamic_runway_hours)}
+          meterLegendLabel={summary?.forecast_status === "active" ? "P90动态覆盖" : "动态覆盖"}
+          meterValue={formatRunwayHours(summary?.dynamic_runway_hours, summary?.forecast_dynamic_runway_capped)}
           meterTiered
         />
         <CapacityMetric
@@ -1572,14 +1584,14 @@ const METRIC_HELP_DETAILS: Record<string, MetricHelpDetail> = {
     note: "此处主数值单位是并发槽位，不是账号数量；界面会同时显示涉及的账号数。5h 429属于可恢复容量，长期7d、401和Bug Team不进入该值。",
   },
   "容量预估": {
-    purpose: "使用每分钟 TPM/RPM、实际额度和安全并发判断当前分组还能支撑多久。",
-    formula: "压力速度取 EMA15、最近2小时P90和趋势调整EMA5中的最大值；只计算远端实际账号，不计算可用池或备选池。",
-    note: "耗尽：账号 <=2或动态不足30分钟；危险：实际不足1小时、动态不足1小时或并发<1x；需要补号：动态不足3小时或并发<1.2x。分钟数据不足15条时暂用历史公式。",
+    purpose: "使用未来逐小时额度需求预测、实际额度和安全并发判断当前分组还能支撑多久。",
+    formula: "额度风险使用未来24小时P90逐小时预测；流量阶段和并发仍读取每分钟TPM/RPM。只计算远端实际账号，不计算可用池或备选池。",
+    note: "耗尽：账号 <=2或动态不足30分钟；危险：实际不足1小时、动态不足1小时或并发<1x；需要补号：动态不足3小时或并发<1.2x。预测不可用时自动降级到TPM实时估算。",
   },
   "实时可用时间": {
-    purpose: "按当前压力速度估算账号池现有额度还能持续运行多久，用于判断未来几小时是否需要补号。",
-    formula: "每小时消耗 = 压力TPM × 60 × 单Token成本；可用时间 = min(5h剩余额度, 7d剩余额度) / 每小时消耗。主值使用动态剩余额度，说明行同时展示不计算未来刷新的实际可用时间。",
-    note: "压力TPM综合EMA15、最近2小时P90和趋势调整EMA5。少于1小时为红色，1-3小时为黄色，3-24小时为绿色，24-48小时为蓝色，48小时及以上为紫色顶级。",
+    purpose: "按未来每个自然小时的预测消耗逐段扣减账号池额度，用于判断未来几小时是否需要补号。",
+    formula: "从当前分钟开始，对未来24小时P90逐小时预测按时间比例累计扣减 min(5h剩余额度, 7d剩余额度)；主值使用动态剩余额度，说明行同时展示不计算未来刷新的实际可用时间。",
+    note: "预测窗口内耗尽时显示具体时长；额度能覆盖完整预测窗口时，超过24小时显示为 >24小时。预测数据不足或数据库不可用时自动回退到TPM实时估算，并在指标下方标明口径。",
   },
   "压力阶段": {
     purpose: "把流量变化和当前容量风险归纳为一个运营阶段，用于判断继续观察、准备补号、峰值保底还是关注库存风险。",
@@ -2202,12 +2214,14 @@ function formatMultiple(value: unknown): string {
   return `${number.toFixed(2)}x`;
 }
 
-function formatRunwayHours(value: unknown): string {
+function formatRunwayHours(value: unknown, capped = false): string {
   const number = optionalNumberValue(value);
   if (number === null) return "-";
-  if (number < 1) return `${Math.max(0, Math.round(number * 60))}分钟`;
-  if (number < 10) return `${number.toFixed(1)}小时`;
-  return `${number.toFixed(0)}小时`;
+  let formatted: string;
+  if (number < 1) formatted = `${Math.max(0, Math.round(number * 60))}分钟`;
+  else if (number < 10) formatted = `${number.toFixed(1)}小时`;
+  else formatted = `${number.toFixed(0)}小时`;
+  return capped ? `>${formatted}` : formatted;
 }
 
 function formatRate(value: unknown): string {

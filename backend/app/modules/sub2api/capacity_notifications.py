@@ -287,7 +287,8 @@ def _capacity_notification_text(
     lines.extend(
         [
             f"压力阶段：{summary.get('pressure_stage_label') or '等待数据'}",
-            f"实际 / 动态可用：{_hours(summary.get('actual_runway_hours'))} / {_hours(summary.get('dynamic_runway_hours'))}",
+            f"预测口径：{'未来24小时 P90逐小时' if summary.get('forecast_status') == 'active' else 'TPM实时估算（降级）'}",
+            f"实际 / 动态可用：{_runway_hours(summary, 'actual_runway_hours', 'forecast_actual_runway_capped')} / {_runway_hours(summary, 'dynamic_runway_hours', 'forecast_dynamic_runway_capped')}",
             f"5h 可用：实际 {_money(summary.get('five_hour_actual_remaining_usd'))} / 动态 {_money(summary.get('dynamic_five_hour_remaining_estimated_usd'))} / 容量 {_money(summary.get('dynamic_five_hour_capacity_usd'))}",
             f"7d 可用：实际 {_money(summary.get('seven_day_actual_remaining_usd'))} / 动态 {_money(summary.get('seven_day_remaining_estimated_usd'))} / 容量 {_money(summary.get('seven_day_capacity_usd'))}",
             f"TPM / RPM：{_metric(summary.get('pressure_tpm'))} / {_metric(summary.get('pressure_rpm'))}",
@@ -315,7 +316,8 @@ def _capacity_recovery_text(
             f"分组：{group_name}（#{group_id}）",
             f"恢复状态：{summary.get('health_label') or HEALTH_LABELS.get(str(summary.get('health_status'))) or '-'}",
             f"压力阶段：{summary.get('pressure_stage_label') or '-'}",
-            f"实际 / 动态可用：{_hours(summary.get('actual_runway_hours'))} / {_hours(summary.get('dynamic_runway_hours'))}",
+            f"预测口径：{'未来24小时 P90逐小时' if summary.get('forecast_status') == 'active' else 'TPM实时估算（降级）'}",
+            f"实际 / 动态可用：{_runway_hours(summary, 'actual_runway_hours', 'forecast_actual_runway_capped')} / {_runway_hours(summary, 'dynamic_runway_hours', 'forecast_dynamic_runway_capped')}",
             f"并发覆盖：{_multiple(summary.get('concurrency_coverage'))}",
             f"可用账号：{int(summary.get('available_accounts') or 0)} 个",
             f"恢复时间：{recovered_time}",
@@ -343,6 +345,13 @@ def _hours(value: Any) -> str:
     if number < 1:
         return f"{round(number * 60)}分钟"
     return f"{number:.1f}小时"
+
+
+def _runway_hours(summary: dict[str, Any], value_key: str, capped_key: str) -> str:
+    formatted = _hours(summary.get(value_key))
+    if formatted == "-" or not summary.get(capped_key):
+        return formatted
+    return f">{formatted}"
 
 
 def _metric(value: Any) -> str:
