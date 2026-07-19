@@ -34,6 +34,7 @@ DEFAULT_SITE_TYPE = "sub2api"
 SITE_TYPES = {"sub2api", "newapi"}
 DEFAULT_REFRESH_INTERVAL_MINUTES = 1
 MIN_REFRESH_INTERVAL_MINUTES = 1
+DEFAULT_LONG_7D_PROBE_MODEL = "gpt-5.5"
 FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60
 FIVE_HOUR_DYNAMIC_MAX_WAIT_SECONDS = 2 * 60 * 60
 SEVEN_DAY_WINDOW_SECONDS = 7 * 24 * 60 * 60
@@ -118,6 +119,7 @@ def public_site(site: dict[str, Any]) -> dict[str, Any]:
     result = dict(site)
     result["site_type"] = site_type(result)
     result.setdefault("refresh_interval_minutes", DEFAULT_REFRESH_INTERVAL_MINUTES)
+    result.setdefault("long_7d_probe_model", DEFAULT_LONG_7D_PROBE_MODEL)
     result.setdefault("auto_remove_abnormal_accounts", False)
     result.setdefault("status", "active")
     result.setdefault("source", "database")
@@ -142,6 +144,7 @@ async def get_site(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SITE_ID, *, 
     site = dict(doc)
     site["site_type"] = site_type(site)
     site.setdefault("refresh_interval_minutes", DEFAULT_REFRESH_INTERVAL_MINUTES)
+    site.setdefault("long_7d_probe_model", DEFAULT_LONG_7D_PROBE_MODEL)
     site.setdefault("auto_remove_abnormal_accounts", False)
     site.setdefault("status", "active")
     site.setdefault("source", "database")
@@ -183,6 +186,8 @@ async def update_site_config(db: AsyncIOMotorDatabase, site_id: str, payload: di
         updates["status"] = str(payload["status"] or "active")
     if "refresh_interval_minutes" in payload:
         updates["refresh_interval_minutes"] = _site_refresh_interval_minutes(payload)
+    if "long_7d_probe_model" in payload:
+        updates["long_7d_probe_model"] = _site_long_7d_probe_model(payload)
     if "auto_remove_abnormal_accounts" in payload:
         updates["auto_remove_abnormal_accounts"] = bool(payload["auto_remove_abnormal_accounts"])
     if "uptime_kuma_url" in payload:
@@ -217,6 +222,7 @@ async def create_site_config(db: AsyncIOMotorDatabase, payload: dict[str, Any]) 
         "token": str(payload.get("token") or "").strip(),
         "status": str(payload.get("status") or "active"),
         "refresh_interval_minutes": _site_refresh_interval_minutes(payload),
+        "long_7d_probe_model": _site_long_7d_probe_model(payload),
         "auto_remove_abnormal_accounts": bool(payload.get("auto_remove_abnormal_accounts", False)),
         "uptime_kuma_url": _optional_http_url(payload.get("uptime_kuma_url"), "uptime_kuma_url"),
         "uptime_kuma_api_key": str(payload.get("uptime_kuma_api_key") or "").strip(),
@@ -630,6 +636,10 @@ def _site_refresh_interval_minutes(site: dict[str, Any]) -> int:
     except (TypeError, ValueError):
         interval = DEFAULT_REFRESH_INTERVAL_MINUTES
     return max(MIN_REFRESH_INTERVAL_MINUTES, min(interval, 1440))
+
+
+def _site_long_7d_probe_model(site: dict[str, Any]) -> str:
+    return str(site.get("long_7d_probe_model") or "").strip() or DEFAULT_LONG_7D_PROBE_MODEL
 
 
 async def _fetch_all_accounts(client: Sub2ApiClient) -> list[dict[str, Any]]:

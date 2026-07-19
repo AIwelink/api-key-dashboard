@@ -306,7 +306,7 @@ def _capacity_notification_text(
             f"实际 / 动态可用：{_runway_hours(summary, 'actual_runway_hours', 'forecast_actual_runway_capped')} / {_runway_hours(summary, 'dynamic_runway_hours', 'forecast_dynamic_runway_capped')}",
             f"5h 可用：实际 {_money(summary.get('five_hour_actual_remaining_usd'))} / 动态 {_money(summary.get('dynamic_five_hour_remaining_estimated_usd'))} / 容量 {_money(summary.get('dynamic_five_hour_capacity_usd'))}",
             f"7d 可用：实际 {_money(summary.get('seven_day_actual_remaining_usd'))} / 动态 {_money(summary.get('seven_day_remaining_estimated_usd'))} / 容量 {_money(summary.get('seven_day_capacity_usd'))}",
-            f"{_traffic_site_label(summary.get('traffic_site_id') or site_id)} TPM / RPM：{_metric(summary.get('latest_tpm'))} / {_metric(summary.get('latest_rpm'))}",
+            f"TPM / RPM：{_metric(summary.get('latest_tpm'))} / {_metric(summary.get('latest_rpm'))}",
             f"并发覆盖：{_multiple(summary.get('concurrency_coverage'))}",
             f"当前账号：{int(summary.get('available_accounts') or 0)} 个，5h 可用 {int(summary.get('available_5h_accounts') or 0)} 个",
             f"建议动作：{_refill_action(summary.get('recommended_refill_accounts'), summary.get('recommended_refill_options'))}",
@@ -342,11 +342,6 @@ def _capacity_recovery_text(
 
 def _notification_severity(health_status: str) -> str:
     return {"tight": "warning", "danger": "danger", "exhausted": "critical"}.get(health_status, "warning")
-
-
-def _traffic_site_label(value: Any) -> str:
-    site_id = str(value or "").strip()
-    return "5001" if site_id == "5001" or site_id.endswith("-5001") else site_id or "5001"
 
 
 def _number(value: Any) -> float | None:

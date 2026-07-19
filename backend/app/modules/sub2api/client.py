@@ -260,6 +260,7 @@ class Sub2ApiClient:
         *,
         model_id: str = "gpt-5.4-mini",
         prompt: str = "",
+        mode: str = "default",
     ) -> dict[str, Any]:
         if not self.configured:
             raise HTTPException(
@@ -271,7 +272,7 @@ class Sub2ApiClient:
         response = await self._request_admin_response_with_retries(
             "POST",
             f"/accounts/{account_id}/test",
-            json={"model_id": model_id, "prompt": prompt},
+            json={"model_id": model_id, "prompt": prompt, "mode": mode},
             timeout=60,
         )
 
@@ -295,6 +296,7 @@ class Sub2ApiClient:
         return {
             "success": success,
             "model": model_id,
+            "mode": mode,
             "prompt": prompt,
             "latency_ms": latency_ms,
             "response_preview": content[:500],

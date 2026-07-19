@@ -12,6 +12,6 @@ describe("poolTrafficMetrics", () => {
       pressure_rpm: 97,
     });
 
-    expect(result).toEqual({ siteLabel: "5001", tpm: 9_424_160, rpm: 95 });
+    expect(result).toEqual({ tpm: 9_424_160, rpm: 95 });
   });
 });

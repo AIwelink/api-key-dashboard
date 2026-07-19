@@ -1473,7 +1473,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
         <CapacityMetric
           label="压力阶段"
           value={summary?.pressure_stage_label || "等待数据"}
-          sub={`${traffic.siteLabel} TPM ${formatRate(traffic.tpm)} · RPM ${formatRate(traffic.rpm)} · ${summary?.sample_count || 0} 个分钟样本`}
+          sub={`TPM ${formatRate(traffic.tpm)} · RPM ${formatRate(traffic.rpm)} · ${summary?.sample_count || 0} 个分钟样本`}
           tone={pressureStageTone(summary?.pressure_stage)}
         />
         <CapacityMetric
@@ -1622,7 +1622,7 @@ const METRIC_HELP_DETAILS: Record<string, MetricHelpDetail> = {
   "压力阶段": {
     purpose: "把流量变化和当前容量风险归纳为一个运营阶段，用于判断继续观察、准备补号、峰值保底还是关注库存风险。",
     formula: "综合TPM/RPM的EMA5、EMA15、EMA60计算短期动量和需求倍率，并结合流量是否确认回落、实时容量健康状态和动态可用时间判定。",
-    note: "页面只显示当前5001账号池分组的最新原始TPM/RPM。预测内部使用同一站点、同一分组的EMA/P90压力值，不汇总客户端站点。等待数据：分钟样本尚未就绪；稳定：需求倍率低于1.2；压力传导：需求倍率达到1.2；加速上涨：需求倍率达到1.5或TPM短期动量达到1.2；峰值保底：容量已危险或耗尽；回落观察：流量确认下降；库存风险：流量下降且动态可用时间超过6小时。",
+    note: "页面只显示当前账号池分组的最新原始TPM/RPM。预测内部使用同一站点、同一分组的EMA/P90压力值，不汇总客户端站点。等待数据：分钟样本尚未就绪；稳定：需求倍率低于1.2；压力传导：需求倍率达到1.2；加速上涨：需求倍率达到1.5或TPM短期动量达到1.2；峰值保底：容量已危险或耗尽；回落观察：流量确认下降；库存风险：流量下降且动态可用时间超过6小时。",
   },
   "安全并发覆盖": {
     purpose: "判断低额度风险账号之外的安全并发，能覆盖当前压力并发多少倍。",

@@ -17,6 +17,7 @@ type Site = {
   status: string;
   token_configured: boolean;
   refresh_interval_minutes?: number;
+  long_7d_probe_model?: string;
   auto_remove_abnormal_accounts?: boolean;
   uptime_kuma_url?: string;
   uptime_kuma_api_key_configured?: boolean;
@@ -96,6 +97,7 @@ type SiteForm = {
   token: string;
   status: string;
   refresh_interval_minutes: number;
+  long_7d_probe_model: string;
   auto_remove_abnormal_accounts: boolean;
   uptime_kuma_url: string;
   uptime_kuma_api_key: string;
@@ -127,6 +129,7 @@ const emptySiteForm: SiteForm = {
   token: "",
   status: "active",
   refresh_interval_minutes: 1,
+  long_7d_probe_model: "gpt-5.5",
   auto_remove_abnormal_accounts: false,
   uptime_kuma_url: "",
   uptime_kuma_api_key: "",
@@ -192,6 +195,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       base_url: siteForm.base_url.trim(),
       status: siteForm.status,
       refresh_interval_minutes: siteForm.refresh_interval_minutes,
+      long_7d_probe_model: siteForm.long_7d_probe_model.trim() || "gpt-5.5",
       auto_remove_abnormal_accounts: siteForm.auto_remove_abnormal_accounts,
       uptime_kuma_url: siteForm.uptime_kuma_url.trim(),
       ...(siteForm.token.trim() ? { token: siteForm.token.trim() } : {}),
@@ -536,6 +540,17 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                   value={siteForm.refresh_interval_minutes}
                   onChange={(event) => setSiteForm((current) => ({ ...current, refresh_interval_minutes: Number(event.target.value) }))}
                 />
+              </label>
+              <label>
+                <span className="field-label">
+                  <strong>长期 7d 限流探测模型</strong>
+                </span>
+                <input
+                  value={siteForm.long_7d_probe_model}
+                  onChange={(event) => setSiteForm((current) => ({ ...current, long_7d_probe_model: event.target.value }))}
+                  placeholder="gpt-5.5"
+                />
+                <span className="cell-sub">恢复超过 24h 的账号每 24h 串行探测一次</span>
               </label>
               <label className="switch-field site-config-switch">
                 <input
@@ -974,6 +989,7 @@ function siteToForm(site: Site): SiteForm {
     token: "",
     status: site.status || "active",
     refresh_interval_minutes: site.refresh_interval_minutes || 1,
+    long_7d_probe_model: site.long_7d_probe_model || "gpt-5.5",
     auto_remove_abnormal_accounts: site.auto_remove_abnormal_accounts === true,
     uptime_kuma_url: site.uptime_kuma_url || "",
     uptime_kuma_api_key: "",

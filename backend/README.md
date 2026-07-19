@@ -97,6 +97,7 @@ app/modules/agent/       Agent 运维能力
 sub2api_sites
 sub2api_groups_cache
 sub2api_accounts_cache
+long_7d_account_probes
 sub2api_cache_meta
 sub2api_dashboard_trends
 sub2api_tpm_samples

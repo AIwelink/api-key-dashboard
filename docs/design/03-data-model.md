@@ -253,6 +253,7 @@ sub2api 站点当前由数据库管理，支持多个站点。生产 URL、站�
   token,
   status: "active" | "disabled" | "deleted",
   refresh_interval_minutes,
+  long_7d_probe_model: "gpt-5.5",
   auto_remove_abnormal_accounts,
   uptime_kuma_url,
   uptime_kuma_api_key,
@@ -296,6 +297,36 @@ sub2api 站点当前由数据库管理，支持多个站点。生产 URL、站�
 ```
 
 `account` 是 sub2api Admin API 返回的远程账号对象，只作为远程状态快照，不替代本地 `accounts.account_json`。
+
+## long_7d_account_probes
+
+保存长期 7d 限流账号主动测试的 24 小时去重和最近结果。该集合不能合并进 `sub2api_accounts_cache`，因为账号缓存刷新会全量替换快照。
+
+```js
+{
+  _id: "{site_id}:{remote_account_id}",
+  site_id,
+  remote_account_id,
+  status: "running" | "passed" | "failed",
+  last_attempt_at,
+  last_finished_at,
+  model,
+  error,
+  last_result: {
+    success,
+    model,
+    mode: "default",
+    latency_ms,
+    response_preview,
+    error,
+    disable_reason: "token_invalidated" | "deactivated_workspace" | "inactive_token_owner" | null,
+    schedulable_disabled,
+    disable_error
+  },
+  created_at,
+  updated_at
+}
+```
 
 ## sub2api_cache_meta
 

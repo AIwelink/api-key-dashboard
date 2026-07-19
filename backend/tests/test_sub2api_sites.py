@@ -24,6 +24,53 @@ class Sub2ApiSiteRefreshIntervalTests(unittest.TestCase):
         self.assertEqual(cache._site_refresh_interval_minutes({"refresh_interval_minutes": 3000}), 1440)
         self.assertEqual(cache._site_refresh_interval_minutes({"refresh_interval_minutes": "invalid"}), 1)
 
+    def test_public_site_supplies_long_seven_day_probe_model_for_legacy_site(self) -> None:
+        site = cache.public_site({"_id": "api-5001", "token": "secret"})
+
+        self.assertEqual(site["long_7d_probe_model"], "gpt-5.5")
+
+
+class LongSevenDayProbeModelSiteSettingsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_create_persists_trimmed_probe_model(self) -> None:
+        stored = {
+            "_id": "api-5001",
+            "name": "Sub2API US06",
+            "base_url": "https://sub2api.example.com",
+            "site_type": "sub2api",
+            "long_7d_probe_model": "gpt-5.6",
+            "status": "active",
+        }
+        sites = SimpleNamespace(replace_one=AsyncMock(), find_one=AsyncMock(return_value=stored))
+        db = SimpleNamespace(sub2api_sites=sites)
+
+        result = await cache.create_site_config(
+            db,
+            stored | {"id": stored["_id"], "long_7d_probe_model": "  gpt-5.6  "},
+        )
+
+        self.assertEqual(sites.replace_one.await_args.args[1]["long_7d_probe_model"], "gpt-5.6")
+        self.assertEqual(result["long_7d_probe_model"], "gpt-5.6")
+
+    async def test_blank_update_restores_default_probe_model(self) -> None:
+        current = {
+            "_id": "api-5001",
+            "site_type": "sub2api",
+            "base_url": "https://sub2api.example.com",
+            "long_7d_probe_model": "gpt-5.4",
+            "status": "active",
+        }
+        updated = current | {"long_7d_probe_model": "gpt-5.5"}
+        sites = SimpleNamespace(
+            find_one=AsyncMock(side_effect=[current, updated]),
+            update_one=AsyncMock(),
+        )
+        db = SimpleNamespace(sub2api_sites=sites)
+
+        result = await cache.update_site_config(db, "api-5001", {"long_7d_probe_model": ""})
+
+        self.assertEqual(sites.update_one.await_args.args[1]["$set"]["long_7d_probe_model"], "gpt-5.5")
+        self.assertEqual(result["long_7d_probe_model"], "gpt-5.5")
+
 
 class UptimeKumaSiteSettingsTests(unittest.IsolatedAsyncioTestCase):
     def test_public_site_masks_uptime_kuma_api_key(self) -> None:

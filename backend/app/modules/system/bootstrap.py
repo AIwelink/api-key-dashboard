@@ -143,6 +143,8 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.sub2api_accounts_cache.create_index([("site_id", 1), ("email", 1)])
     await db.sub2api_accounts_cache.create_index([("site_id", 1), ("subscription_expires_at", 1)])
     await db.sub2api_accounts_cache.create_index([("site_id", 1), ("codex_7d_used_percent", -1), ("codex_5h_used_percent", -1)])
+    await db.long_7d_account_probes.create_index([("site_id", 1), ("remote_account_id", 1)], unique=True)
+    await db.long_7d_account_probes.create_index([("site_id", 1), ("last_attempt_at", 1)])
     await db.sub2api_cache_meta.create_index("fetched_at")
     await db.sub2api_dashboard_meta.create_index("updated_at")
     await db.sub2api_hourly_forecasts.create_index([("site_id", 1), ("group_id", 1), ("as_of", -1)])
