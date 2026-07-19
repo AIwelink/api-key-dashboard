@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -154,6 +155,58 @@ class Sub2ApiUsageRefreshTests(unittest.IsolatedAsyncioTestCase):
                     datetime(2026, 7, 19, 12, 0, tzinfo=UTC),
                 )
         client.get_account_usage.assert_not_awaited()
+
+
+class Sub2ApiRefreshRequestTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        cache._refresh_tasks.clear()
+
+    async def test_refresh_starts_without_debounce_sleep(self) -> None:
+        db = SimpleNamespace(sub2api_cache_meta=SimpleNamespace(update_one=AsyncMock()))
+        refresh = AsyncMock(return_value={"ok": True, "site_id": "api-5001"})
+
+        with (
+            patch.object(cache, "refresh_site_cache", refresh),
+            patch.object(cache.asyncio, "sleep", AsyncMock()) as sleep,
+        ):
+            result = await cache.request_debounced_refresh(db, "api-5001")
+
+        sleep.assert_not_awaited()
+        refresh.assert_awaited_once_with(db, "api-5001")
+        self.assertEqual(result, {"ok": True, "site_id": "api-5001"})
+
+    async def test_overlapping_requests_share_one_refresh(self) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        db = SimpleNamespace(sub2api_cache_meta=SimpleNamespace(update_one=AsyncMock()))
+
+        async def refresh(_db: object, site_id: str) -> dict[str, object]:
+            started.set()
+            await release.wait()
+            return {"ok": True, "site_id": site_id}
+
+        with patch.object(cache, "refresh_site_cache", side_effect=refresh) as refresh_mock:
+            first = asyncio.create_task(cache.request_debounced_refresh(db, "api-5001"))
+            await started.wait()
+            second = asyncio.create_task(cache.request_debounced_refresh(db, "api-5001"))
+            await asyncio.sleep(0)
+            release.set()
+            first_result, second_result = await asyncio.gather(first, second)
+
+        self.assertEqual(refresh_mock.await_count, 1)
+        self.assertEqual(first_result, second_result)
+
+    async def test_completed_refresh_can_run_again_immediately(self) -> None:
+        db = SimpleNamespace(sub2api_cache_meta=SimpleNamespace(update_one=AsyncMock()))
+        refresh = AsyncMock(side_effect=[{"run": 1}, {"run": 2}])
+
+        with patch.object(cache, "refresh_site_cache", refresh):
+            first = await cache.request_debounced_refresh(db, "api-5001")
+            second = await cache.request_debounced_refresh(db, "api-5001")
+
+        self.assertEqual(first, {"run": 1})
+        self.assertEqual(second, {"run": 2})
+        self.assertEqual(refresh.await_count, 2)
 
 
 if __name__ == "__main__":

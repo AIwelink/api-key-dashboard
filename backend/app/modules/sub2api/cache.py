@@ -32,7 +32,6 @@ DEFAULT_SITE_TYPE = "sub2api"
 SITE_TYPES = {"sub2api", "newapi"}
 DEFAULT_REFRESH_INTERVAL_MINUTES = 30
 MIN_REFRESH_INTERVAL_MINUTES = 1
-REFRESH_DEBOUNCE_SECONDS = 3
 FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60
 FIVE_HOUR_DYNAMIC_MAX_WAIT_SECONDS = 2 * 60 * 60
 SEVEN_DAY_WINDOW_SECONDS = 7 * 24 * 60 * 60
@@ -578,7 +577,7 @@ async def request_debounced_refresh(db: AsyncIOMotorDatabase, site_id: str = DEF
         if current and not current.done():
             task = current
         else:
-            task = asyncio.create_task(_delayed_refresh(db, site_id))
+            task = asyncio.create_task(refresh_site_cache(db, site_id))
             _refresh_tasks[site_id] = task
     return await task
 
@@ -629,17 +628,6 @@ def _site_refresh_interval_minutes(site: dict[str, Any]) -> int:
     except (TypeError, ValueError):
         interval = DEFAULT_REFRESH_INTERVAL_MINUTES
     return max(MIN_REFRESH_INTERVAL_MINUTES, min(interval, 1440))
-
-
-async def _delayed_refresh(db: AsyncIOMotorDatabase, site_id: str) -> dict[str, Any]:
-    requested_at = now_utc()
-    await db.sub2api_cache_meta.update_one(
-        {"_id": site_id},
-        {"$set": {"site_id": site_id, "status": "scheduled", "requested_at": requested_at, "updated_at": requested_at}},
-        upsert=True,
-    )
-    await asyncio.sleep(REFRESH_DEBOUNCE_SECONDS)
-    return await refresh_site_cache(db, site_id)
 
 
 async def _fetch_all_accounts(client: Sub2ApiClient) -> list[dict[str, Any]]:
