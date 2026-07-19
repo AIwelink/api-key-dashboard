@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -106,6 +107,42 @@ class BugTeamCapacityTests(unittest.TestCase):
         )
         self.assertAlmostEqual(usage["actual_used_usd"], 30)
         self.assertAlmostEqual(usage["actual_remaining_usd"], 90)
+
+    def test_no_five_hour_window_prioritizes_seven_day_rate_limit_when_usage_is_stale(self) -> None:
+        current_time = datetime(2026, 7, 19, 15, 30, tzinfo=timezone.utc)
+        account = {
+            "id": 2020,
+            "status": "active",
+            "schedulable": True,
+            "plan_type": "plus",
+            "rate_limit_reset_at": current_time + timedelta(days=3),
+            "extra": {
+                "codex_5h_used_percent": 0,
+                "codex_5h_reset_after_seconds": 0,
+                "codex_5h_window_minutes": 0,
+                "codex_7d_used_percent": 0,
+                "codex_7d_reset_after_seconds": 3 * 24 * 60 * 60,
+                "codex_7d_window_minutes": 10_080,
+            },
+        }
+
+        with patch.object(cache, "now_utc", return_value=current_time):
+            self.assertTrue(cache._is_7d_exhausted(account))
+            self.assertFalse(cache._is_five_hour_rate_limited(account))
+            status = cache._pool_account_status_summary([account])
+            capacity_accounts = [item for item in [account] if cache._is_capacity_account(item)]
+            capacity = cache._capacity_by_account_type(
+                capacity_accounts,
+                [item for item in capacity_accounts if not cache._is_7d_exhausted(item)],
+                normalize_capacity_limits({"plus": {"five_hour_usd": 110, "seven_day_usd": 110}}),
+            )
+
+        self.assertEqual(status["pool_five_hour_rate_limited_accounts"], 0)
+        self.assertEqual(status["pool_seven_day_rate_limited_accounts"], 1)
+        self.assertEqual(status["pool_active_normal_accounts"], 0)
+        self.assertEqual(capacity["plus"]["available_accounts"], 1)
+        self.assertEqual(capacity["plus"]["available_5h_accounts"], 0)
+        self.assertEqual(capacity["plus"]["five_hour_dynamic_capacity_usd"], 0)
 
     def test_bug_team_is_excluded_from_capacity_summary(self) -> None:
         limits = normalize_capacity_limits(None)

@@ -1,11 +1,35 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from app.modules.sub2api import cache
 
 
 class ConcurrencyCapacityTests(unittest.TestCase):
+    def test_no_five_hour_window_rate_limit_is_seven_day_for_concurrency(self) -> None:
+        current_time = datetime(2026, 7, 19, 15, 30, tzinfo=timezone.utc)
+        account = {
+            "status": "active",
+            "schedulable": True,
+            "concurrency": 10,
+            "current_concurrency": 0,
+            "rate_limit_reset_at": current_time + timedelta(hours=12),
+            "codex_5h_used_percent": 0,
+            "codex_5h_window_minutes": 0,
+            "codex_7d_used_percent": 0,
+            "codex_7d_reset_after_seconds": 12 * 60 * 60,
+            "codex_7d_window_minutes": 10_080,
+        }
+
+        with patch.object(cache, "now_utc", return_value=current_time):
+            self.assertEqual(cache._current_concurrency_unavailable_kind(account), "short_seven_day")
+            summary = cache._concurrency_capacity_summary([account])
+
+        self.assertEqual(summary["concurrency_five_hour_limited_accounts"], 0)
+        self.assertEqual(summary["concurrency_short_seven_day_limited_accounts"], 1)
+
     def test_five_hour_and_seven_day_safe_thresholds_are_both_eighty_percent(self) -> None:
         safe = {"codex_5h_used_percent": 79.99, "codex_7d_used_percent": 79.99}
         five_hour_boundary = {"codex_5h_used_percent": 80, "codex_7d_used_percent": 20}

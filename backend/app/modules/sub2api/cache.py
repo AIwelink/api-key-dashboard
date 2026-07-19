@@ -2231,6 +2231,8 @@ def _is_abnormal_account(account: dict[str, Any]) -> bool:
 
 
 def _is_five_hour_rate_limited(account: dict[str, Any]) -> bool:
+    if _uses_seven_day_as_primary_usage_window(account):
+        return False
     used_5h = _usage_number(account, "codex_5h_used_percent")
     if isinstance(used_5h, (int, float)) and used_5h >= 100:
         return True
@@ -2318,13 +2320,9 @@ def _concurrency_number(value: float) -> int | float:
 
 
 def _current_concurrency_unavailable_kind(account: dict[str, Any]) -> str | None:
-    used_5h = _usage_number(account, "codex_5h_used_percent")
-    used_7d = _usage_number(account, "codex_7d_used_percent")
-    if isinstance(used_7d, (int, float)) and used_7d >= 100:
+    if _is_7d_exhausted(account):
         return "short_seven_day"
-    if isinstance(used_5h, (int, float)) and used_5h >= 100:
-        return "five_hour"
-    if _is_temporary_rate_limit(account):
+    if _is_five_hour_rate_limited(account):
         return "five_hour"
     status = str(account.get("status") or "").lower()
     if status != "active" or account.get("schedulable") is False:
@@ -2341,19 +2339,31 @@ def _is_safe_concurrency_account(account: dict[str, Any]) -> bool:
 
 
 def _is_long_seven_day_concurrency_limit(account: dict[str, Any]) -> bool:
-    used_7d = _usage_number(account, "codex_7d_used_percent")
     reset_after = _usage_number(account, "codex_7d_reset_after_seconds")
     if not isinstance(reset_after, (int, float)):
         extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
         reset_at = _parse_datetime(_first_present(account, extra, "codex_7d_reset_at", "7d_reset_at"))
         reset_after = max(0.0, (reset_at - now_utc()).total_seconds()) if reset_at is not None else None
     has_long_reset = isinstance(reset_after, (int, float)) and reset_after > 24 * 60 * 60
-    return isinstance(used_7d, (int, float)) and used_7d >= 100 and has_long_reset
+    return _is_7d_exhausted(account) and has_long_reset
 
 
 def _is_7d_exhausted(account: dict[str, Any]) -> bool:
     used_7d = _usage_number(account, "codex_7d_used_percent")
-    return isinstance(used_7d, (int, float)) and used_7d >= 100
+    if isinstance(used_7d, (int, float)) and used_7d >= 100:
+        return True
+    return _uses_seven_day_as_primary_usage_window(account) and _is_temporary_rate_limit(account)
+
+
+def _uses_seven_day_as_primary_usage_window(account: dict[str, Any]) -> bool:
+    five_hour_window = _usage_number(account, "codex_5h_window_minutes")
+    seven_day_window = _usage_number(account, "codex_7d_window_minutes")
+    return (
+        isinstance(five_hour_window, (int, float))
+        and five_hour_window <= 0
+        and isinstance(seven_day_window, (int, float))
+        and seven_day_window > 0
+    )
 
 
 def _is_capacity_account(account: dict[str, Any]) -> bool:
