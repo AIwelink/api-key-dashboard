@@ -1199,6 +1199,9 @@ async def _capacity_summary_for_accounts(
             if realtime_risk.get("forecast_status") == "active"
             else "single_pool_realtime"
         ),
+        "traffic_site_id": site_id,
+        "traffic_group_id": group_id,
+        "traffic_metric_source": "sub2api_group",
         "available_accounts": selected["available_accounts"] + selected_reserve["available_accounts"],
         "available_5h_accounts": selected["available_5h_accounts"] + selected_reserve["available_5h_accounts"],
         "active_available_accounts": selected["available_accounts"],

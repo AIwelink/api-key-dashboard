@@ -69,6 +69,8 @@ def calculate_capacity_risk(
     normalized_cost_per_request = _positive(cost_per_request)
     normalized = _normalized_samples(samples)
     latest_at = normalized[-1]["sampled_at"] if normalized else None
+    latest_tpm = normalized[-1]["tpm"] if normalized else None
+    latest_rpm = normalized[-1]["rpm"] if normalized else None
     recent_samples = normalized[-MIN_SAMPLE_COUNT:]
     continuous_minutes = (
         len(recent_samples) >= MIN_SAMPLE_COUNT
@@ -97,6 +99,8 @@ def calculate_capacity_risk(
             concurrency_sample_count=concurrency_sample_count,
             rpm_sample_count=rpm_sample_count,
             latest_sampled_at=latest_at,
+            latest_tpm=latest_tpm,
+            latest_rpm=latest_rpm,
         )
 
     tpm_values = [item["tpm"] for item in normalized]
@@ -296,6 +300,8 @@ def calculate_capacity_risk(
         "concurrency_sample_count": len(concurrency_values),
         "rpm_sample_count": len(rpm_values),
         "latest_sampled_at": latest_at,
+        "latest_tpm": _rounded(latest_tpm),
+        "latest_rpm": _rounded(latest_rpm),
         "tpm_ema_5": _rounded(tpm_ema_5),
         "tpm_ema_15": _rounded(tpm_ema_15),
         "tpm_ema_60": _rounded(tpm_ema_60),
@@ -354,6 +360,8 @@ def _pending_summary(
     concurrency_sample_count: int,
     rpm_sample_count: int,
     latest_sampled_at: datetime | None,
+    latest_tpm: float | None,
+    latest_rpm: float | None,
 ) -> dict[str, Any]:
     label, tone = HEALTH_META["pending"]
     return {
@@ -362,6 +370,8 @@ def _pending_summary(
         "concurrency_sample_count": concurrency_sample_count,
         "rpm_sample_count": rpm_sample_count,
         "latest_sampled_at": latest_sampled_at,
+        "latest_tpm": _rounded(latest_tpm),
+        "latest_rpm": _rounded(latest_rpm),
         "pressure_stage": "waiting_data",
         "pressure_stage_label": PRESSURE_STAGE_LABELS["waiting_data"],
         "inventory_risk": False,

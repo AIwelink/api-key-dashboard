@@ -209,12 +209,21 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     yield item
 
         collection = SimpleNamespace(find=lambda query, projection: (setattr(collection, "query", query), setattr(collection, "projection", projection), Cursor())[-1])
-        db = SimpleNamespace(sub2api_tpm_samples=collection)
+        class ForbiddenClientMetrics:
+            def __getattr__(self, name):
+                raise AssertionError(f"client metrics must not be read for pool capacity: {name}")
+
+        db = SimpleNamespace(
+            sub2api_tpm_samples=collection,
+            client_minute_metrics=ForbiddenClientMetrics(),
+        )
 
         with patch.object(cache, "now_utc", return_value=NOW):
             result = await cache._load_group_tpm_samples(db, site_id="api-5001", group_id=3)
 
         self.assertEqual(result[0]["current_concurrency"], 7)
+        self.assertEqual(collection.query["site_id"], "api-5001")
+        self.assertEqual(collection.query["group_id"], 3)
         self.assertEqual(collection.query["schema_version"], 2)
         self.assertEqual(collection.projection["current_concurrency"], 1)
 
@@ -246,6 +255,8 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["recommended_refill_options"]["plus"]["recommended_refill_accounts"], 1)
         self.assertEqual(summary["recommended_refill_options"]["k12"]["recommended_refill_accounts"], 1)
         self.assertFalse(summary["auto_refill_required"])
+        self.assertEqual(summary["traffic_site_id"], "api-5001")
+        self.assertEqual(summary["traffic_group_id"], 3)
 
     async def test_missing_concurrency_history_stays_pending_instead_of_using_historical_danger(self) -> None:
         limits = normalize_capacity_limits({"plus": {"five_hour_usd": 2, "seven_day_usd": 10}})

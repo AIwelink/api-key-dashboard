@@ -198,6 +198,9 @@ class CapacityNotificationTextTests(unittest.TestCase):
                 "dynamic_runway_hours": 2.5,
                 "pressure_tpm": 497365,
                 "pressure_rpm": 45,
+                "latest_tpm": 321000,
+                "latest_rpm": 42,
+                "traffic_site_id": "api-5001",
                 "concurrency_coverage": 1.08,
                 "recommended_refill_accounts": 4,
                 "recommended_refill_options": {
@@ -218,7 +221,8 @@ class CapacityNotificationTextTests(unittest.TestCase):
         self.assertIn("压力阶段：加速上涨", message)
         self.assertIn("预测口径：未来24小时 P90逐小时 + 当前小时Nowcast", message)
         self.assertIn("实际 / 动态可用：1.2小时 / 2.5小时", message)
-        self.assertIn("TPM / RPM：497,365 / 45", message)
+        self.assertIn("5001 TPM / RPM：321,000 / 42", message)
+        self.assertNotIn("497,365 / 45", message)
         self.assertIn("并发覆盖：1.08x", message)
         self.assertIn("5h 可用：实际 $80.00 / 动态 $160.00 / 容量 $220.00", message)
         self.assertIn("7d 可用：实际 $500.00 / 动态 $700.00 / 容量 $900.00", message)

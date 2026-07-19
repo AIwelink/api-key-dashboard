@@ -54,6 +54,13 @@ def calculate(
 
 
 class CapacityRiskTests(unittest.TestCase):
+    def test_latest_pool_sample_is_separate_from_pressure_forecast(self) -> None:
+        result = calculate(samples([100] * 15 + [300] * 5, rpm=93))
+
+        self.assertEqual(result["latest_tpm"], 300)
+        self.assertEqual(result["latest_rpm"], 93)
+        self.assertGreater(result["pressure_tpm"], result["latest_tpm"])
+
     def test_rpm_cost_channel_drives_realtime_burn_when_it_is_higher(self) -> None:
         result = calculate(
             samples([1000] * 20, rpm=120),
