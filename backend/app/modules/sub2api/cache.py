@@ -1179,6 +1179,7 @@ async def _capacity_summary_for_accounts(
         refill_account_options=_refill_account_options(primary_type, capacity_limits),
         primary_refill_account_type=primary_type,
         demand_forecast=demand_forecast,
+        current_hour_observed_cost_usd=_number_or_none(burst_summary.get("current_hour_observed_cost")),
     )
     health = {
         "status": realtime_risk["health_status"],
@@ -1774,13 +1775,13 @@ async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, gro
     recent_day_five_hour_peak_cost = _rolling_peak_cost(hourly_24h, 5)
     burst_1h = _burst_1h_summary(hourly_8h)
     seven_day_24h_peak_cost = round(_rolling_peak_cost(hourly_7d, 24), 6)
-    recent_24h_cost = round(sum(_float_or_zero(doc.get("cost")) for doc in hourly_24h), 6)
-    recent_5h_cost = round(sum(_float_or_zero(doc.get("cost")) for doc in hourly_5h), 6)
+    recent_24h_cost = round(sum(_capacity_cost(doc) for doc in hourly_24h), 6)
+    recent_5h_cost = round(sum(_capacity_cost(doc) for doc in hourly_5h), 6)
     recent_6h_docs = hourly_6h
-    recent_6h_cost = sum(_float_or_zero(doc.get("actual_cost") if doc.get("actual_cost") is not None else doc.get("cost")) for doc in recent_6h_docs)
+    recent_6h_cost = sum(_capacity_cost(doc) for doc in recent_6h_docs)
     recent_6h_tokens = sum(_float_or_zero(doc.get("total_tokens")) for doc in recent_6h_docs)
     recent_6h_cost_per_token = recent_6h_cost / recent_6h_tokens if recent_6h_tokens > 0 else None
-    seven_day_cost = round(sum(_float_or_zero(doc.get("cost")) for doc in hourly_7d), 6)
+    seven_day_cost = round(sum(_capacity_cost(doc) for doc in hourly_7d), 6)
     return {
         "five_hour_peak_cost": five_hour_peak_cost,
         "seven_day_five_hour_peak_cost": five_hour_peak_cost,
@@ -1895,7 +1896,7 @@ def _five_hour_daily_peak_cost(hourly: list[dict[str, Any]]) -> float:
     peak = 0.0
     for docs in by_day.values():
         docs.sort(key=lambda item: str(item.get("bucket") or ""))
-        costs = [_float_or_zero(doc.get("cost")) for doc in docs]
+        costs = [_capacity_cost(doc) for doc in docs]
         if len(costs) >= 5:
             peak = max(peak, max(sum(costs[index:index + 5]) for index in range(0, len(costs) - 4)))
         elif costs:
@@ -1904,7 +1905,7 @@ def _five_hour_daily_peak_cost(hourly: list[dict[str, Any]]) -> float:
 
 
 def _rolling_peak_cost(items: list[dict[str, Any]], window_size: int) -> float:
-    costs = [_float_or_zero(item.get("cost")) for item in items]
+    costs = [_capacity_cost(item) for item in items]
     if not costs:
         return 0.0
     if len(costs) <= window_size:
@@ -1914,13 +1915,15 @@ def _rolling_peak_cost(items: list[dict[str, Any]], window_size: int) -> float:
 
 def _burst_1h_summary(hourly: list[dict[str, Any]]) -> dict[str, Any]:
     recent_docs = hourly[-8:]
-    costs = [_float_or_zero(doc.get("cost")) for doc in recent_docs]
+    costs = [_capacity_cost(doc) for doc in recent_docs]
     latest_doc = recent_docs[-1] if recent_docs else None
     elapsed_minutes = _latest_hour_elapsed_minutes(latest_doc)
+    has_current_hour = _latest_doc_is_current_hour(latest_doc)
     projection_multiplier = 60 / max(5, elapsed_minutes)
     if not costs:
         return {
             "observed_cost": 0.0,
+            "current_hour_observed_cost": None,
             "cost": 0.0,
             "previous_cost": 0.0,
             "trend_recent_avg_cost": 0.0,
@@ -1955,6 +1958,7 @@ def _burst_1h_summary(hourly: list[dict[str, Any]]) -> dict[str, Any]:
     strength, strength_label = _burst_trend_strength(change_percent)
     return {
         "observed_cost": round(observed_current, 6),
+        "current_hour_observed_cost": round(observed_current, 6) if has_current_hour else None,
         "cost": round(current, 6),
         "previous_cost": round(previous, 6),
         "trend_recent_avg_cost": round(recent_average, 6),
@@ -1977,6 +1981,35 @@ def _burst_1h_summary(hourly: list[dict[str, Any]]) -> dict[str, Any]:
 def _current_hour_elapsed_minutes() -> float:
     local_now = now_utc().astimezone(timezone(timedelta(hours=8)))
     return max(1, min(60, local_now.minute + local_now.second / 60))
+
+
+def _capacity_cost(item: dict[str, Any]) -> float:
+    value = item.get("account_cost")
+    if value is None:
+        value = item.get("cost")
+    return _float_or_zero(value)
+
+
+def _latest_doc_is_current_hour(latest_doc: dict[str, Any] | None) -> bool:
+    if not latest_doc:
+        return False
+    local_now = now_utc().astimezone(timezone(timedelta(hours=8)))
+    current_hour = local_now.replace(minute=0, second=0, microsecond=0)
+    bucket_at = _parse_datetime(latest_doc.get("bucket_at"))
+    if bucket_at is None:
+        bucket = str(latest_doc.get("bucket") or "")
+        try:
+            bucket_at = datetime.strptime(bucket, "%Y-%m-%d %H:%M").replace(
+                tzinfo=timezone(timedelta(hours=8))
+            )
+        except ValueError:
+            return False
+    latest_hour = bucket_at.astimezone(timezone(timedelta(hours=8))).replace(
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    return latest_hour == current_hour
 
 
 def _latest_hour_elapsed_minutes(latest_doc: dict[str, Any] | None) -> float:

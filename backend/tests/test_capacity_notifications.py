@@ -157,6 +157,7 @@ class CapacityNotificationTextTests(unittest.TestCase):
                 "health_reason": "动态容量不足 3 小时",
                 "pressure_stage_label": "加速上涨",
                 "forecast_status": "active",
+                "forecast_nowcast_applied": True,
                 "actual_runway_hours": 1.25,
                 "dynamic_runway_hours": 2.5,
                 "pressure_tpm": 497365,
@@ -179,7 +180,7 @@ class CapacityNotificationTextTests(unittest.TestCase):
         )
 
         self.assertIn("压力阶段：加速上涨", message)
-        self.assertIn("预测口径：未来24小时 P90逐小时", message)
+        self.assertIn("预测口径：未来24小时 P90逐小时 + 当前小时Nowcast", message)
         self.assertIn("实际 / 动态可用：1.2小时 / 2.5小时", message)
         self.assertIn("TPM / RPM：497,365 / 45", message)
         self.assertIn("并发覆盖：1.08x", message)

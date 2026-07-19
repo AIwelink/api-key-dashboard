@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Sequence
 
@@ -56,6 +56,17 @@ class ForecastRunway:
     hours: float
     capped: bool
     projected_cost_usd: float
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentHourNowcast:
+    forecast: ForecastResult
+    applied: bool
+    observed_cost_usd: float
+    model_p50_remaining_usd: float
+    model_p90_remaining_usd: float
+    realtime_remaining_usd: float
+    selected_p90_remaining_usd: float
 
 
 def forecast_hourly_demand(
@@ -124,6 +135,55 @@ def forecast_hourly_demand(
         history_hours=len(normalized),
         completeness_ratio=round(completeness_ratio, 6),
         points=tuple(points),
+    )
+
+
+def apply_current_hour_nowcast(
+    forecast: ForecastResult,
+    *,
+    now: datetime,
+    observed_current_hour_cost_usd: float,
+    realtime_cost_per_hour: float,
+) -> CurrentHourNowcast:
+    current_at = _aware_utc(now, field_name="now")
+    observed_cost = _nonnegative(observed_current_hour_cost_usd, field_name="observed_current_hour_cost_usd")
+    realtime_rate = _nonnegative(realtime_cost_per_hour, field_name="realtime_cost_per_hour")
+    current_index = None
+    current_point = None
+    for index, point in enumerate(forecast.points):
+        point_start = _natural_utc_hour(point.target_at, field_name="forecast target_at")
+        if point_start <= current_at < point_start + timedelta(hours=1):
+            current_index = index
+            current_point = point
+            break
+    if current_index is None or current_point is None:
+        raise ForecastInputError("forecast does not contain the current natural hour")
+
+    remaining_fraction = (
+        current_point.target_at + timedelta(hours=1) - current_at
+    ).total_seconds() / 3600
+    if remaining_fraction <= 0:
+        raise ForecastInputError("current forecast hour has already ended")
+    model_p50_remaining = max(0.0, current_point.p50 - observed_cost)
+    model_p90_remaining = max(model_p50_remaining, current_point.p90 - observed_cost, 0.0)
+    realtime_remaining = realtime_rate * remaining_fraction
+    selected_p90_remaining = max(model_p90_remaining, realtime_remaining, model_p50_remaining)
+    adjusted_point = replace(
+        current_point,
+        p50=round(model_p50_remaining / remaining_fraction, 6),
+        p90=round(selected_p90_remaining / remaining_fraction, 6),
+        source=f"{current_point.source}+nowcast",
+    )
+    points = list(forecast.points)
+    points[current_index] = adjusted_point
+    return CurrentHourNowcast(
+        forecast=replace(forecast, points=tuple(points)),
+        applied=True,
+        observed_cost_usd=round(observed_cost, 6),
+        model_p50_remaining_usd=round(model_p50_remaining, 6),
+        model_p90_remaining_usd=round(model_p90_remaining, 6),
+        realtime_remaining_usd=round(realtime_remaining, 6),
+        selected_p90_remaining_usd=round(selected_p90_remaining, 6),
     )
 
 

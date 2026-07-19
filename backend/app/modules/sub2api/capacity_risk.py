@@ -7,6 +7,7 @@ from typing import Any
 from app.modules.sub2api.hourly_forecast import (
     ForecastInputError,
     ForecastResult,
+    apply_current_hour_nowcast,
     forecast_cost_over_window,
     forecast_runway,
 )
@@ -60,6 +61,7 @@ def calculate_capacity_risk(
     refill_account_options: dict[str, dict[str, Any]] | None = None,
     primary_refill_account_type: str | None = None,
     demand_forecast: ForecastResult | None = None,
+    current_hour_observed_cost_usd: float | None = None,
 ) -> dict[str, Any]:
     now = _as_utc(now)
     normalized = _normalized_samples(samples)
@@ -145,32 +147,52 @@ def calculate_capacity_risk(
     forecast_p90_runway_hours = None
     forecast_actual_runway_capped = False
     forecast_dynamic_runway_capped = False
+    forecast_nowcast_applied = False
+    forecast_current_hour_observed_usd = None
+    forecast_current_hour_model_remaining_usd = None
+    forecast_current_hour_realtime_remaining_usd = None
+    forecast_current_hour_selected_remaining_usd = None
     forecast_meta: dict[str, Any] = {}
     if demand_forecast is not None:
         try:
+            effective_forecast = demand_forecast
+            observed_cost = _nonnegative(current_hour_observed_cost_usd)
+            if observed_cost is not None:
+                nowcast = apply_current_hour_nowcast(
+                    demand_forecast,
+                    now=now,
+                    observed_current_hour_cost_usd=observed_cost,
+                    realtime_cost_per_hour=realtime_burn_usd_per_hour,
+                )
+                effective_forecast = nowcast.forecast
+                forecast_nowcast_applied = nowcast.applied
+                forecast_current_hour_observed_usd = nowcast.observed_cost_usd
+                forecast_current_hour_model_remaining_usd = nowcast.model_p90_remaining_usd
+                forecast_current_hour_realtime_remaining_usd = nowcast.realtime_remaining_usd
+                forecast_current_hour_selected_remaining_usd = nowcast.selected_p90_remaining_usd
             actual_forecast = forecast_runway(
-                demand_forecast,
+                effective_forecast,
                 remaining_usd=actual_remaining_usd,
                 now=now,
                 quantile="p90",
                 max_hours=FORECAST_RUNWAY_HOURS,
             )
             dynamic_forecast = forecast_runway(
-                demand_forecast,
+                effective_forecast,
                 remaining_usd=dynamic_remaining_usd,
                 now=now,
                 quantile="p90",
                 max_hours=FORECAST_RUNWAY_HOURS,
             )
             p50_forecast = forecast_runway(
-                demand_forecast,
+                effective_forecast,
                 remaining_usd=dynamic_remaining_usd,
                 now=now,
                 quantile="p50",
                 max_hours=FORECAST_RUNWAY_HOURS,
             )
             burn_usd_per_hour = forecast_cost_over_window(
-                demand_forecast,
+                effective_forecast,
                 now=now,
                 hours=FORECAST_BURN_WINDOW_HOURS,
                 quantile="p90",
@@ -181,7 +203,7 @@ def calculate_capacity_risk(
             forecast_p90_runway_hours = dynamic_forecast.hours
             forecast_actual_runway_capped = actual_forecast.capped
             forecast_dynamic_runway_capped = dynamic_forecast.capped
-            runway_source = "hourly_forecast_p90"
+            runway_source = "hourly_forecast_p90_nowcast" if forecast_nowcast_applied else "hourly_forecast_p90"
             forecast_status = "active"
             forecast_fallback_reason = None
             forecast_meta = {
@@ -278,6 +300,11 @@ def calculate_capacity_risk(
         "forecast_p90_runway_hours": _rounded(forecast_p90_runway_hours),
         "forecast_actual_runway_capped": forecast_actual_runway_capped,
         "forecast_dynamic_runway_capped": forecast_dynamic_runway_capped,
+        "forecast_nowcast_applied": forecast_nowcast_applied,
+        "forecast_current_hour_observed_usd": _rounded(forecast_current_hour_observed_usd),
+        "forecast_current_hour_model_remaining_usd": _rounded(forecast_current_hour_model_remaining_usd),
+        "forecast_current_hour_realtime_remaining_usd": _rounded(forecast_current_hour_realtime_remaining_usd),
+        "forecast_current_hour_selected_remaining_usd": _rounded(forecast_current_hour_selected_remaining_usd),
         "target_runway_hours": DYNAMIC_RUNWAY_TARGET_HOURS,
         "actual_target_hours": ACTUAL_RUNWAY_TARGET_HOURS,
         "concurrency_target_coverage": TOTAL_CONCURRENCY_TARGET,

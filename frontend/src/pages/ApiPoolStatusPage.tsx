@@ -177,6 +177,11 @@ type CapacitySummary = {
   forecast_p90_runway_hours?: number | null;
   forecast_actual_runway_capped?: boolean;
   forecast_dynamic_runway_capped?: boolean;
+  forecast_nowcast_applied?: boolean;
+  forecast_current_hour_observed_usd?: number | null;
+  forecast_current_hour_model_remaining_usd?: number | null;
+  forecast_current_hour_realtime_remaining_usd?: number | null;
+  forecast_current_hour_selected_remaining_usd?: number | null;
   target_runway_hours?: number;
   actual_target_hours?: number;
   estimated_concurrency?: number;
@@ -1437,7 +1442,7 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
         <CapacityMetric
           label="实时可用时间"
           value={formatRunwayHours(summary?.dynamic_runway_hours, summary?.forecast_dynamic_runway_capped)}
-          sub={`${summary?.forecast_status === "active" ? "P90逐小时预测" : "TPM实时估算"} · 实际可用 ${formatRunwayHours(summary?.actual_runway_hours, summary?.forecast_actual_runway_capped)} · 动态目标 ${formatRunwayHours(summary?.target_runway_hours ?? 3)}`}
+          sub={`${summary?.forecast_status === "active" ? (summary?.forecast_nowcast_applied ? "P90逐小时 + 当前小时Nowcast" : "P90逐小时预测") : "TPM实时估算"} · 实际可用 ${formatRunwayHours(summary?.actual_runway_hours, summary?.forecast_actual_runway_capped)} · 动态目标 ${formatRunwayHours(summary?.target_runway_hours ?? 3)}`}
           percent={summary?.forecast_dynamic_runway_capped ? 100 : runwayScalePercent(summary?.dynamic_runway_hours, summary?.target_runway_hours ?? 3)}
           tone={runwayTone(summary?.dynamic_runway_hours, summary?.realtime_risk_ready)}
           meterLegendLabel={summary?.forecast_status === "active" ? "P90动态覆盖" : "动态覆盖"}
@@ -1585,13 +1590,13 @@ const METRIC_HELP_DETAILS: Record<string, MetricHelpDetail> = {
   },
   "容量预估": {
     purpose: "使用未来逐小时额度需求预测、实际额度和安全并发判断当前分组还能支撑多久。",
-    formula: "额度风险使用未来24小时P90逐小时预测；流量阶段和并发仍读取每分钟TPM/RPM。只计算远端实际账号，不计算可用池或备选池。",
+    formula: "额度风险使用未来24小时P90逐小时预测；当前小时结合已发生account_cost与分钟TPM速度进行Nowcast。流量阶段和并发仍读取每分钟TPM/RPM。",
     note: "耗尽：账号 <=2或动态不足30分钟；危险：实际不足1小时、动态不足1小时或并发<1x；需要补号：动态不足3小时或并发<1.2x。预测不可用时自动降级到TPM实时估算。",
   },
   "实时可用时间": {
     purpose: "按未来每个自然小时的预测消耗逐段扣减账号池额度，用于判断未来几小时是否需要补号。",
-    formula: "从当前分钟开始，对未来24小时P90逐小时预测按时间比例累计扣减 min(5h剩余额度, 7d剩余额度)；主值使用动态剩余额度，说明行同时展示不计算未来刷新的实际可用时间。",
-    note: "预测窗口内耗尽时显示具体时长；额度能覆盖完整预测窗口时，超过24小时显示为 >24小时。预测数据不足或数据库不可用时自动回退到TPM实时估算，并在指标下方标明口径。",
+    formula: "当前小时Nowcast = max(P90整小时预测 - 当前小时已发生account_cost, 压力TPM对应成本速度 × 剩余时间)；后续完整小时继续使用P90预测，再逐段扣减 min(5h剩余额度, 7d剩余额度)。",
+    note: "成本统一使用账号额度侧account_cost。当前小时实耗缺失时保留原P90比例估算；预测窗口内耗尽时显示具体时长，超过24小时显示为 >24小时；预测不可用时回退到TPM实时估算。",
   },
   "压力阶段": {
     purpose: "把流量变化和当前容量风险归纳为一个运营阶段，用于判断继续观察、准备补号、峰值保底还是关注库存风险。",

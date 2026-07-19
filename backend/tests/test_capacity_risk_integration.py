@@ -162,6 +162,32 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["burst_1h"]["window_count"], 0)
         fetch_group.assert_awaited_once()
 
+    async def test_dashboard_cost_summary_uses_account_cost_for_capacity_velocity(self) -> None:
+        fetch_group = AsyncMock(
+            return_value={
+                "trend": [
+                    {
+                        "date": "2026-07-16 20:00",
+                        "cost": 100,
+                        "actual_cost": 50,
+                        "account_cost": 200,
+                        "total_tokens": 1_000,
+                    }
+                ]
+            }
+        )
+
+        with (
+            patch.object(cache, "now_utc", return_value=NOW),
+            patch.object(cache, "get_site", AsyncMock(return_value={"sql_dsn": "host=db user=u password=p dbname=d"})),
+            patch.object(cache, "fetch_postgres_group_dashboard_snapshot", fetch_group),
+        ):
+            summary = await cache._dashboard_cost_summary(object(), "api-5001", group_id=3)
+
+        self.assertEqual(summary["recent_6h_cost_per_token"], 0.2)
+        self.assertEqual(summary["burst_1h"]["current_hour_observed_cost"], 200)
+
+
     async def test_group_sample_loader_includes_recorded_concurrency(self) -> None:
         class Cursor:
             def __init__(self) -> None:

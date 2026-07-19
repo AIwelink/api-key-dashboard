@@ -9,6 +9,7 @@ from app.modules.sub2api.hourly_forecast import (
     ForecastPoint,
     ForecastResult,
     HourlyObservation,
+    apply_current_hour_nowcast,
     forecast_cost_over_window,
     forecast_hourly_demand,
     forecast_runway,
@@ -40,6 +41,75 @@ def hourly_history(
 
 
 class HourlyForecastTests(unittest.TestCase):
+    def test_current_hour_nowcast_uses_realtime_spike_for_remaining_minutes(self) -> None:
+        forecast = ForecastResult(
+            model="test",
+            version="1",
+            as_of=AS_OF,
+            readiness="eligible",
+            history_hours=56 * 24,
+            completeness_ratio=1.0,
+            points=tuple(
+                ForecastPoint(index + 1, AS_OF + timedelta(hours=index), 6, 10, 1, "test")
+                for index in range(25)
+            ),
+        )
+
+        nowcast = apply_current_hour_nowcast(
+            forecast,
+            now=AS_OF + timedelta(minutes=30),
+            observed_current_hour_cost_usd=8,
+            realtime_cost_per_hour=20,
+        )
+
+        self.assertTrue(nowcast.applied)
+        self.assertEqual(nowcast.model_p90_remaining_usd, 2.0)
+        self.assertEqual(nowcast.realtime_remaining_usd, 10.0)
+        self.assertEqual(nowcast.selected_p90_remaining_usd, 10.0)
+        self.assertEqual(
+            forecast_cost_over_window(
+                nowcast.forecast,
+                now=AS_OF + timedelta(minutes=30),
+                hours=0.5,
+                quantile="p90",
+            ),
+            10.0,
+        )
+
+    def test_current_hour_nowcast_uses_model_residual_after_observed_cost(self) -> None:
+        forecast = ForecastResult(
+            model="test",
+            version="1",
+            as_of=AS_OF,
+            readiness="eligible",
+            history_hours=56 * 24,
+            completeness_ratio=1.0,
+            points=tuple(
+                ForecastPoint(index + 1, AS_OF + timedelta(hours=index), 6, 10, 1, "test")
+                for index in range(25)
+            ),
+        )
+
+        nowcast = apply_current_hour_nowcast(
+            forecast,
+            now=AS_OF + timedelta(minutes=30),
+            observed_current_hour_cost_usd=8,
+            realtime_cost_per_hour=2,
+        )
+
+        self.assertEqual(nowcast.model_p90_remaining_usd, 2.0)
+        self.assertEqual(nowcast.realtime_remaining_usd, 1.0)
+        self.assertEqual(nowcast.selected_p90_remaining_usd, 2.0)
+        self.assertEqual(
+            forecast_cost_over_window(
+                nowcast.forecast,
+                now=AS_OF + timedelta(minutes=30),
+                hours=0.5,
+                quantile="p90",
+            ),
+            2.0,
+        )
+
     def test_runway_prorates_partial_natural_hours(self) -> None:
         forecast = ForecastResult(
             model="test",

@@ -97,6 +97,38 @@ class CapacityRiskTests(unittest.TestCase):
         self.assertEqual(result["dynamic_runway_hours"], 4.0)
         self.assertIn("cover", result["forecast_fallback_reason"])
 
+    def test_current_hour_nowcast_replaces_uniform_proration_during_spike(self) -> None:
+        now = NOW + timedelta(minutes=30)
+        demand_forecast = ForecastResult(
+            model="robust_seasonal_analog",
+            version="1",
+            as_of=NOW,
+            readiness="provisional",
+            history_hours=21 * 24,
+            completeness_ratio=1.0,
+            points=tuple(
+                ForecastPoint(index + 1, NOW + timedelta(hours=index), 6, 10, 14, "analog")
+                for index in range(25)
+            ),
+        )
+
+        result = calculate(
+            samples([20_000] * 20, latest_at=now),
+            now=now,
+            demand_forecast=demand_forecast,
+            actual_five_hour_remaining_usd=10,
+            dynamic_five_hour_remaining_usd=10,
+            current_hour_observed_cost_usd=8,
+        )
+
+        self.assertEqual(result["actual_runway_hours"], 0.5)
+        self.assertEqual(result["dynamic_runway_hours"], 0.5)
+        self.assertTrue(result["forecast_nowcast_applied"])
+        self.assertEqual(result["forecast_current_hour_model_remaining_usd"], 2.0)
+        self.assertEqual(result["forecast_current_hour_realtime_remaining_usd"], 10.0)
+        self.assertEqual(result["forecast_current_hour_selected_remaining_usd"], 10.0)
+
+
     def test_waits_for_fifteen_fresh_samples(self) -> None:
         result = calculate(samples([1000] * 14))
 
