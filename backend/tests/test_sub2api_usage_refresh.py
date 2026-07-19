@@ -99,6 +99,157 @@ class Sub2ApiUsageRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(accounts[1]["codex_7d_used_percent"], 56)
         self.assertEqual(accounts[1]["codex_usage_synced_at"], synced_at)
 
+    async def test_database_usage_avoids_http_for_accounts_with_complete_windows(self) -> None:
+        synced_at = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+        accounts = [
+            {
+                "id": 2976,
+                "platform": "openai",
+                "type": "oauth",
+                "codex_5h_used_percent": 12,
+                "codex_7d_used_percent": 34,
+            }
+        ]
+        database_snapshots = {
+            2976: {
+                "five_hour": {"utilization": 12, "window_stats": {"requests": 20, "tokens": 200, "cost": 2.5}},
+                "seven_day": {"utilization": 34, "window_stats": {"requests": 50, "tokens": 500, "cost": 6.5}},
+            }
+        }
+        client = AsyncMock()
+
+        with (
+            patch.object(cache, "_restore_cached_usage_snapshots", AsyncMock(return_value={})),
+            patch.object(cache, "fetch_postgres_account_usage_snapshots", AsyncMock(return_value=database_snapshots)) as fetch_database,
+        ):
+            result = await cache._apply_account_usage_windows(
+                object(),
+                "api-5001",
+                client,
+                accounts,
+                synced_at,
+                sql_dsn="host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
+                pool_snapshot_source="postgresql",
+            )
+
+        fetch_database.assert_awaited_once()
+        client.get_account_usage.assert_not_awaited()
+        self.assertEqual(accounts[0]["codex_5h_request_count"], 20)
+        self.assertEqual(accounts[0]["codex_7d_token_count"], 500)
+        self.assertEqual(result["source"], "postgresql")
+        self.assertEqual(result["database_accounts"], 1)
+        self.assertEqual(result["http_accounts"], 0)
+
+    async def test_database_usage_only_uses_http_for_accounts_missing_official_windows(self) -> None:
+        synced_at = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+        accounts = [
+            {"id": 2976, "platform": "openai", "type": "oauth", "codex_5h_used_percent": 12, "codex_7d_used_percent": 34},
+            {"id": 2977, "platform": "openai", "type": "oauth", "codex_5h_used_percent": 20},
+        ]
+        database_snapshots = {
+            account["id"]: {"five_hour": {"window_stats": {"requests": account["id"]}}}
+            for account in accounts
+        }
+        client = AsyncMock()
+        client.get_account_usage.return_value = {
+            "five_hour": {"utilization": 21, "window_stats": {"requests": 7}},
+            "seven_day": {"utilization": 45, "window_stats": {"requests": 9}},
+        }
+
+        with (
+            patch.object(cache, "_restore_cached_usage_snapshots", AsyncMock(return_value={})),
+            patch.object(cache, "fetch_postgres_account_usage_snapshots", AsyncMock(return_value=database_snapshots)),
+        ):
+            result = await cache._apply_account_usage_windows(
+                object(),
+                "api-5001",
+                client,
+                accounts,
+                synced_at,
+                sql_dsn="host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
+                pool_snapshot_source="postgresql",
+            )
+
+        requested_ids = [call.args[0] for call in client.get_account_usage.await_args_list]
+        self.assertEqual(requested_ids, [2977])
+        self.assertEqual(accounts[0]["codex_5h_request_count"], 2976)
+        self.assertEqual(accounts[1]["codex_7d_used_percent"], 45)
+        self.assertEqual(result["source"], "postgresql_with_http_fallback")
+        self.assertEqual(result["database_accounts"], 2)
+        self.assertEqual(result["http_accounts"], 1)
+
+    async def test_database_usage_failure_falls_back_to_http_for_all_accounts(self) -> None:
+        synced_at = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+        accounts = [
+            {"id": 2976, "platform": "openai", "type": "oauth", "codex_5h_used_percent": 12, "codex_7d_used_percent": 34},
+            {"id": 2977, "platform": "openai", "type": "oauth", "codex_5h_used_percent": 20, "codex_7d_used_percent": 40},
+        ]
+        client = AsyncMock()
+        client.get_account_usage.return_value = {
+            "five_hour": {"utilization": 10},
+            "seven_day": {"utilization": 20},
+        }
+
+        with (
+            patch.object(cache, "_restore_cached_usage_snapshots", AsyncMock(return_value={})),
+            patch.object(
+                cache,
+                "fetch_postgres_account_usage_snapshots",
+                AsyncMock(side_effect=RuntimeError("password=secret database unavailable")),
+            ),
+        ):
+            result = await cache._apply_account_usage_windows(
+                object(),
+                "api-5001",
+                client,
+                accounts,
+                synced_at,
+                sql_dsn="host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
+                pool_snapshot_source="postgresql",
+            )
+
+        requested_ids = [call.args[0] for call in client.get_account_usage.await_args_list]
+        self.assertCountEqual(requested_ids, [2976, 2977])
+        self.assertEqual(result["source"], "http_fallback")
+        self.assertNotIn("secret", result["fallback_reason"])
+        self.assertEqual(result["http_accounts"], 2)
+
+    async def test_database_usage_missing_row_falls_back_to_http_for_that_account(self) -> None:
+        synced_at = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+        accounts = [
+            {"id": 2976, "platform": "openai", "type": "oauth", "codex_5h_used_percent": 12, "codex_7d_used_percent": 34},
+            {"id": 2977, "platform": "openai", "type": "oauth", "codex_5h_used_percent": 20, "codex_7d_used_percent": 40},
+        ]
+        client = AsyncMock()
+        client.get_account_usage.return_value = {
+            "five_hour": {"utilization": 21, "window_stats": {"requests": 7}},
+            "seven_day": {"utilization": 45, "window_stats": {"requests": 9}},
+        }
+
+        with (
+            patch.object(cache, "_restore_cached_usage_snapshots", AsyncMock(return_value={})),
+            patch.object(
+                cache,
+                "fetch_postgres_account_usage_snapshots",
+                AsyncMock(return_value={2976: {"five_hour": {"window_stats": {"requests": 20}}}}),
+            ),
+        ):
+            result = await cache._apply_account_usage_windows(
+                object(),
+                "api-5001",
+                client,
+                accounts,
+                synced_at,
+                sql_dsn="host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
+                pool_snapshot_source="postgresql",
+            )
+
+        requested_ids = [call.args[0] for call in client.get_account_usage.await_args_list]
+        self.assertEqual(requested_ids, [2977])
+        self.assertEqual(result["source"], "postgresql_with_http_fallback")
+        self.assertEqual(result["database_accounts"], 1)
+        self.assertEqual(result["http_accounts"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

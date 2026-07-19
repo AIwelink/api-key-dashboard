@@ -9,9 +9,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.database import close_mongo_connection, connect_to_mongo, get_db
+from app.modules.sub2api.account_usage_postgres_repository import fetch_account_usage_snapshots
 from app.modules.sub2api.cache import _extract_group_ids, _fetch_http_pool_snapshot, get_site
 from app.modules.sub2api.client import Sub2ApiClient
 from app.modules.sub2api.dashboard import dashboard_snapshot_ranges
@@ -32,6 +35,8 @@ DASHBOARD_COMPARE_FIELDS = (
     "cost",
     "actual_cost",
 )
+ACCOUNT_USAGE_COMPARE_FIELDS = ("utilization", "resets_at", "remaining_seconds")
+ACCOUNT_WINDOW_STATS_COMPARE_FIELDS = ("requests", "tokens", "cost", "standard_cost", "user_cost")
 
 
 def compare_snapshots(database: dict[str, Any], http: dict[str, Any]) -> dict[str, Any]:
@@ -117,6 +122,65 @@ def compare_dashboard_snapshots(database: dict[str, Any], http: dict[str, Any]) 
         "difference_count": len(differences),
         "difference_examples": differences[:MAX_DIFFERENCE_EXAMPLES],
     }
+
+
+def compare_account_usage_snapshots(
+    database: dict[int, dict[str, Any]],
+    http: dict[int, dict[str, Any]],
+) -> dict[str, Any]:
+    database_ids = set(database)
+    http_ids = set(http)
+    differences = []
+    for account_id in sorted(database_ids & http_ids):
+        window_differences = {}
+        for window in ("five_hour", "seven_day"):
+            database_window = database[account_id].get(window)
+            http_window = http[account_id].get(window)
+            metrics = _account_usage_window_differences(database_window, http_window)
+            if metrics:
+                window_differences[window] = metrics
+        if window_differences:
+            differences.append({"id": account_id, "windows": window_differences})
+    return {
+        "database_accounts": len(database_ids),
+        "http_accounts": len(http_ids),
+        "account_ids_only_in_database": sorted(database_ids - http_ids)[:MAX_DIFFERENCE_EXAMPLES],
+        "account_ids_only_in_http": sorted(http_ids - database_ids)[:MAX_DIFFERENCE_EXAMPLES],
+        "difference_count": len(differences),
+        "difference_examples": differences[:MAX_DIFFERENCE_EXAMPLES],
+    }
+
+
+def _account_usage_window_differences(database: Any, http: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(database, dict) or not isinstance(http, dict):
+        return {} if database == http else {"window": {"database": database, "http": http}}
+    differences = {}
+    for field in ACCOUNT_USAGE_COMPARE_FIELDS:
+        database_value = database.get(field)
+        http_value = http.get(field)
+        if field == "resets_at":
+            equal = _values_equal(database_value, http_value)
+        elif field == "remaining_seconds":
+            equal = _seconds_values_close(database_value, http_value)
+        else:
+            equal = _numeric_values_equal(database_value, http_value)
+        if not equal:
+            differences[field] = {"database": database_value, "http": http_value}
+    database_stats = database.get("window_stats") if isinstance(database.get("window_stats"), dict) else {}
+    http_stats = http.get("window_stats") if isinstance(http.get("window_stats"), dict) else {}
+    for field in ACCOUNT_WINDOW_STATS_COMPARE_FIELDS:
+        database_value = database_stats.get(field)
+        http_value = http_stats.get(field)
+        if not _numeric_values_equal(database_value, http_value):
+            differences[field] = {"database": database_value, "http": http_value}
+    return differences
+
+
+def _seconds_values_close(left: Any, right: Any) -> bool:
+    try:
+        return abs(int(left or 0) - int(right or 0)) <= 5
+    except (TypeError, ValueError):
+        return left == right
 
 
 def _trend_by_bucket(value: Any) -> dict[str, dict[str, Any]]:
@@ -231,16 +295,61 @@ def _as_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-async def main(site_id: str, *, http_contract_only: bool = False, dashboard_only: bool = False) -> None:
+async def main(
+    site_id: str,
+    *,
+    http_contract_only: bool = False,
+    dashboard_only: bool = False,
+    account_usage_only: bool = False,
+    sample_size: int = 50,
+) -> None:
     await connect_to_mongo()
     try:
-        site = await get_site(get_db(), site_id, include_token=True)
+        db = get_db()
+        site = await get_site(db, site_id, include_token=True)
         if site is None:
             raise LookupError("sub2api site not found")
         sql_dsn = str(site.get("sql_dsn") or "").strip()
         if not sql_dsn:
             raise ValueError("SQL_DSN is not configured")
         client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
+        if account_usage_only:
+            all_accounts = [
+                doc["account"]
+                async for doc in db.sub2api_accounts_cache.find(
+                    {"site_id": site_id, "account.id": {"$ne": None}},
+                    {"account": 1},
+                )
+                if isinstance(doc.get("account"), dict)
+            ]
+            if not all_accounts:
+                pool_snapshot = await fetch_pool_snapshot(sql_dsn)
+                all_accounts = [
+                    account
+                    for account in pool_snapshot.get("accounts", [])
+                    if isinstance(account, dict) and account.get("id") is not None
+                ]
+            accounts = _account_usage_sample(all_accounts, sample_size)
+            observed_at = datetime.now(UTC)
+            database_usage, http_result = await asyncio.gather(
+                fetch_account_usage_snapshots(sql_dsn, accounts=accounts, observed_at=observed_at),
+                _fetch_http_account_usage_sample(client, accounts),
+            )
+            http_usage, http_errors = http_result
+            print(
+                json.dumps(
+                    {
+                        "site_id": site_id,
+                        "sample_size": len(accounts),
+                        "http_errors": http_errors,
+                        **compare_account_usage_snapshots(database_usage, http_usage),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    default=str,
+                )
+            )
+            return
         if dashboard_only:
             comparisons = []
             for range_config in dashboard_snapshot_ranges():
@@ -288,16 +397,55 @@ async def main(site_id: str, *, http_contract_only: bool = False, dashboard_only
         await close_mongo_connection()
 
 
+async def _fetch_http_account_usage_sample(
+    client: Sub2ApiClient,
+    accounts: list[dict[str, Any]],
+) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
+    limits = httpx.Limits(max_connections=20, max_keepalive_connections=20)
+    async with httpx.AsyncClient(timeout=20, limits=limits) as http_client:
+        results = await asyncio.gather(
+            *(
+                client.get_account_usage(account["id"], timezone="Asia/Shanghai", http_client=http_client)
+                for account in accounts
+            ),
+            return_exceptions=True,
+        )
+    snapshots: dict[int, dict[str, Any]] = {}
+    errors = []
+    for account, result in zip(accounts, results, strict=True):
+        account_id = int(account["id"])
+        if isinstance(result, BaseException):
+            errors.append({"id": account_id, "error": str(result)})
+        elif isinstance(result, dict):
+            snapshots[account_id] = result
+    return snapshots, errors
+
+
+def _account_usage_sample(accounts: list[dict[str, Any]], sample_size: int) -> list[dict[str, Any]]:
+    def usage_score(account: dict[str, Any]) -> int:
+        extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+        has_five_hour = account.get("codex_5h_used_percent") is not None or extra.get("codex_5h_used_percent") is not None
+        has_seven_day = account.get("codex_7d_used_percent") is not None or extra.get("codex_7d_used_percent") is not None
+        return int(has_five_hour) + int(has_seven_day)
+
+    prioritized = sorted(accounts, key=usage_score, reverse=True)
+    return prioritized[: max(1, sample_size)]
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compare non-sensitive Sub2API pool snapshot fields across PostgreSQL and HTTP")
     parser.add_argument("site_id", help="Configured account-pool site ID")
     parser.add_argument("--http-contract-only", action="store_true", help="Print only HTTP response field names")
     parser.add_argument("--dashboard", action="store_true", help="Compare site-wide PostgreSQL and HTTP dashboard trends")
+    parser.add_argument("--account-usage", action="store_true", help="Compare a sample of account usage windows")
+    parser.add_argument("--sample-size", type=int, default=50, help="Account usage comparison sample size")
     arguments = parser.parse_args()
     asyncio.run(
         main(
             arguments.site_id,
             http_contract_only=arguments.http_contract_only,
             dashboard_only=arguments.dashboard,
+            account_usage_only=arguments.account_usage,
+            sample_size=arguments.sample_size,
         )
     )

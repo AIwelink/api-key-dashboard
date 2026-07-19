@@ -13,6 +13,9 @@ from pymongo import ReplaceOne, UpdateOne
 
 from app.modules.api_pools.capacity_limits import DEFAULT_CAPACITY_ACCOUNT_LIMITS, get_capacity_account_limits
 from app.modules.system.sql_dsn import redact_sql_error, sql_dsn_endpoint, validate_optional_sql_dsn
+from app.modules.sub2api.account_usage_postgres_repository import (
+    fetch_account_usage_snapshots as fetch_postgres_account_usage_snapshots,
+)
 from app.modules.sub2api.capacity_risk import calculate_capacity_risk
 from app.modules.sub2api.client import Sub2ApiClient
 from app.modules.sub2api.postgres_repository import fetch_pool_snapshot as fetch_postgres_pool_snapshot
@@ -393,7 +396,7 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
             group_ids = [group_id for group_id in group_ids if group_id is not None]
             accounts = [_normalize_account_snapshot(account) for account in pool_snapshot["accounts"]]
             fetched_at = now_utc()
-            dashboard_summary, runtime_fetched_at_by_account = await asyncio.gather(
+            dashboard_summary, usage_refresh_summary = await asyncio.gather(
                 _refresh_dashboard_for_cache(
                     db,
                     site_id=site_id,
@@ -401,8 +404,17 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                     group_ids=group_ids,
                     sql_dsn=str(site.get("sql_dsn") or "") or None,
                 ),
-                _apply_account_usage_windows(db, site_id, client, accounts, fetched_at),
+                _apply_account_usage_windows(
+                    db,
+                    site_id,
+                    client,
+                    accounts,
+                    fetched_at,
+                    sql_dsn=str(site.get("sql_dsn") or "") or None,
+                    pool_snapshot_source=str(pool_snapshot["source"]),
+                ),
             )
+            runtime_fetched_at_by_account = usage_refresh_summary["runtime_fetched_at_by_account"]
             group_capacity_summaries = await _group_capacity_summaries(db, site_id, accounts)
 
             group_ops = []
@@ -503,6 +515,11 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                 "accounts": len(accounts),
                 "account_snapshot_source": pool_snapshot["source"],
                 "account_snapshot_fallback_reason": pool_snapshot.get("fallback_reason"),
+                "account_usage_source": usage_refresh_summary["source"],
+                "account_usage_fallback_reason": usage_refresh_summary.get("fallback_reason"),
+                "account_usage_database_accounts": usage_refresh_summary["database_accounts"],
+                "account_usage_http_accounts": usage_refresh_summary["http_accounts"],
+                "account_usage_http_failures": usage_refresh_summary["http_failures"],
                 "auto_removed_abnormal_accounts": auto_remove_summary.get("removed", 0) if auto_remove_summary else 0,
                 "auto_remove_abnormal_failed": auto_remove_summary.get("failed", 0) if auto_remove_summary else 0,
                 "dashboard": dashboard_summary,
@@ -727,16 +744,73 @@ async def _apply_account_usage_windows(
     client: Sub2ApiClient,
     accounts: list[dict[str, Any]],
     synced_at: datetime,
-) -> dict[Any, datetime]:
+    *,
+    sql_dsn: str | None = None,
+    pool_snapshot_source: str = "http",
+) -> dict[str, Any]:
+    missing_official_window_ids = {
+        account.get("id")
+        for account in accounts
+        if account.get("id") is not None and _account_needs_http_usage(account)
+    }
     runtime_fetched_at_by_account = await _restore_cached_usage_snapshots(db, site_id, accounts)
     selected_accounts = [account for account in accounts if account.get("id") is not None]
     if not selected_accounts:
-        return runtime_fetched_at_by_account
+        return {
+            "runtime_fetched_at_by_account": runtime_fetched_at_by_account,
+            "source": "postgresql" if sql_dsn and pool_snapshot_source == "postgresql" else "http",
+            "fallback_reason": None,
+            "database_accounts": 0,
+            "http_accounts": 0,
+            "http_failures": 0,
+        }
+
+    source = "http"
+    fallback_reason: str | None = None
+    database_accounts = 0
+    http_accounts = selected_accounts
+    if sql_dsn and pool_snapshot_source == "postgresql":
+        try:
+            database_snapshots = await fetch_postgres_account_usage_snapshots(
+                sql_dsn,
+                accounts=selected_accounts,
+                observed_at=synced_at,
+            )
+            for account in selected_accounts:
+                account_id = account.get("id")
+                usage = database_snapshots.get(int(account_id)) if account_id is not None else None
+                if usage is None:
+                    continue
+                _apply_account_usage_snapshot(account, usage, synced_at)
+                database_accounts += 1
+            database_snapshot_ids = set(database_snapshots)
+            http_accounts = [
+                account
+                for account in selected_accounts
+                if account.get("id") in missing_official_window_ids
+                or int(account.get("id")) not in database_snapshot_ids
+            ]
+            source = "postgresql_with_http_fallback" if http_accounts else "postgresql"
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the established account usage endpoint is the fallback.
+            fallback_reason = redact_sql_error(exc, sql_dsn, "postgresql")
+            logger.warning(
+                "sub2api_account_usage_database_failed site_id=%s fallback=http error=%s",
+                site_id,
+                fallback_reason,
+            )
+            source = "http_fallback"
+            database_accounts = 0
+            http_accounts = selected_accounts
+
     logger.info(
-        "sub2api_account_usage_refresh_start site_id=%s selected=%s total=%s throttled=false",
+        "sub2api_account_usage_refresh_start site_id=%s database=%s http=%s total=%s source=%s",
         site_id,
-        len(selected_accounts),
+        database_accounts,
+        len(http_accounts),
         len(accounts),
+        source,
     )
 
     async def fetch_and_apply(account: dict[str, Any], http_client: httpx.AsyncClient) -> None:
@@ -747,13 +821,33 @@ async def _apply_account_usage_windows(
             usage = await client.get_account_usage(account_id, timezone="Asia/Shanghai", http_client=http_client)
         except Exception:
             logger.exception("sub2api_account_usage_fetch_failed account_id=%s", account_id)
-            return
+            raise
         _apply_account_usage_snapshot(account, usage, synced_at)
 
-    limits = httpx.Limits(max_connections=None, max_keepalive_connections=200)
-    async with httpx.AsyncClient(timeout=15, limits=limits) as http_client:
-        await asyncio.gather(*(fetch_and_apply(account, http_client) for account in selected_accounts))
-    return runtime_fetched_at_by_account
+    http_failures = 0
+    if http_accounts:
+        limits = httpx.Limits(max_connections=None, max_keepalive_connections=200)
+        async with httpx.AsyncClient(timeout=15, limits=limits) as http_client:
+            results = await asyncio.gather(
+                *(fetch_and_apply(account, http_client) for account in http_accounts),
+                return_exceptions=True,
+            )
+        http_failures = sum(isinstance(result, BaseException) for result in results)
+    return {
+        "runtime_fetched_at_by_account": runtime_fetched_at_by_account,
+        "source": source,
+        "fallback_reason": fallback_reason,
+        "database_accounts": database_accounts,
+        "http_accounts": len(http_accounts),
+        "http_failures": http_failures,
+    }
+
+
+def _account_needs_http_usage(account: dict[str, Any]) -> bool:
+    return any(
+        _usage_number(account, field) is None
+        for field in ("codex_5h_used_percent", "codex_7d_used_percent")
+    )
 
 
 async def _restore_cached_usage_snapshots(

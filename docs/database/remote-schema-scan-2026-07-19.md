@@ -191,11 +191,19 @@ account_id, group_id, user_id, api_key_id, channel_id
 model, requested_model, upstream_model
 input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens
 input_cost, output_cost, cache_creation_cost, cache_read_cost
-total_cost, actual_cost, account_stats_cost
+total_cost, actual_cost, account_stats_cost, account_rate_multiplier
 duration_ms, first_token_ms, stream, request_type
 ```
 
 按账号、分组、用户和模型的精确历史统计可以直接从该表聚合。分组容量分析应使用 `group_id + created_at` 索引。
+
+账号窗口统计已按 Sub2API 服务端实现确认：
+
+- 5h/7d 官方使用率和重置时间来自 OpenAI/Codex 响应头，持久化在 `accounts.extra.codex_5h_*`、`accounts.extra.codex_7d_*`。
+- `primary`/`secondary` 按 `window_minutes` 归一化，较短窗口为 5h、较长窗口为 7d；单窗口 `<= 360` 分钟视为 5h。
+- 窗口未过期时，统计起点为 `reset_at - window_duration`；已过期或没有重置时间时，统计起点为当前时间减去窗口时长。
+- 请求和 Token 来自 `usage_logs`；账号口径成本为 `COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)`，标准成本为 `total_cost`，用户成本为 `actual_cost`。
+- Redis 仅保存调度账号快照副本；管理用量接口的持久化来源仍是 PostgreSQL，主动探测节流使用 Go 进程内缓存。
 
 #### `usage_dashboard_hourly` / `usage_dashboard_daily`
 
@@ -221,7 +229,7 @@ total_duration_ms, active_users, computed_at
 | 站点整体小时/日趋势 | 可以 | `usage_dashboard_hourly/daily` |
 | 分组历史趋势 | 可以，但需聚合 | `usage_logs(group_id, created_at)` |
 | 账号历史消耗 | 可以，但需聚合 | `usage_logs(account_id, created_at)` |
-| 5h/7d usage 窗口 | 暂不能直接替换 | 表结构存在原始数据，但窗口边界和重置公式尚未从服务端实现确认 |
+| 5h/7d usage 窗口 | 可以；缺失快照时回退 HTTP | 官方比例和重置时间读取 `accounts.extra`，窗口请求/Token/成本聚合 `usage_logs(account_id, created_at)` |
 | 账号测试、OAuth、recover-state | 不可以 | 属于远程动作，不是数据库读模型 |
 | 创建、更新、删除、调度开关 | 保留 HTTP | 写操作继续使用管理 API，避免绕过业务校验和事件处理 |
 
@@ -328,16 +336,16 @@ ttft_count, ttft_sum_ms, generation_ms
 
 ## 后续重构顺序
 
-1. 建立只读 `Sub2ApiPostgresRepository` 和 `NewApiMySqlRepository`，禁止业务模块直接拼 SQL。
-2. 先把 Sub2API `groups/accounts/account_groups` 读链路切到 PostgreSQL，保持现有 Mongo 缓存输出契约不变。
-3. 将站点整体 dashboard 趋势切到 `usage_dashboard_hourly/daily`。
-4. 为 group/account 历史聚合增加参数化 `usage_logs` 查询，并验证与现有 HTTP 响应误差。
-5. 将 NewAPI 模型/用户小时数据改为读取 `quota_data`，RPM/TPM 继续走已完成的分钟采样器。
-6. 最后处理 5h/7d 窗口。必须先通过并行双读比对确认窗口公式，不能直接用任意时间范围求和替代。
+1. 已完成：建立只读 PostgreSQL/MySQL 仓储边界，业务模块不直接拼接外部输入 SQL。
+2. 已完成：Sub2API `groups/accounts/account_groups` 读链路切到 PostgreSQL，Mongo 和前端契约保持不变。
+3. 已完成：站点整体 dashboard 趋势读取 `usage_dashboard_hourly/daily`。
+4. 已完成：账号 5h/7d 窗口统计批量聚合 `usage_logs`；数据库失败或官方窗口缺失时回退 HTTP。
+5. 待完成：按分组聚合 `usage_logs(group_id, created_at)`，替换分组 dashboard HTTP。
+6. 待完成：NewAPI 模型/用户小时数据读取 `quota_data`；RPM/TPM 继续使用分钟采样器。
 
 ## 明确风险
 
 - Sub2API `credentials`、`extra` 和 NewAPI 多个表包含密钥或认证信息。SQL 必须使用字段白名单；不得使用 `SELECT *`。
 - 数据库读路径绕过远程 API 的响应规范化，仓储层必须保持现有 Mongo 缓存字段契约，前端不应感知数据源变化。
 - 数据库版本升级可能改变表结构。上线前应比较结构摘要，不匹配时自动回退 HTTP 或阻止切换。
-- 本报告只证明结构可用，不证明 5h/7d 窗口、RPM/TPM 和计费公式。涉及这些指标时必须进行双读校验。
+- 5h/7d 窗口已通过 Sub2API 源码核对和真实站点双读验证；RPM/TPM 与后续分组/模型聚合仍需分别校验。
