@@ -66,6 +66,8 @@ created_at DESC, sub2api_account_id DESC
 
 `capacity_summary` 由后端使用当前分组完整账号集合计算，不能由前端当前分页重新计算。实时容量相关字段：
 
+容量资格先统一经过 `_is_capacity_account()`：`schedulable=false` 是硬排除条件，无论账号当前是 active、5h 429 还是 7d 429，都不能进入 5h/7d 美元总容量、动态容量或并发总容量。账号池概览的“正常账号”是状态统计口径，不等同于容量资格，调度关闭账号仍可按既有规则出现在概览计数中。
+
 | 字段 | 含义 |
 | --- | --- |
 | `realtime_risk_ready` | 分钟样本是否满足实时判断条件 |
@@ -391,3 +393,4 @@ npm.cmd run build
 6. 修改颜色阈值时同步更新悬浮说明和测试。
 7. 账号列表排序必须在数据库分页前执行。
 8. presence leave 必须携带 `session_id`，不能关闭同一浏览器的其他标签页。
+9. `schedulable=false` 的账号不能进入美元容量或并发容量，即使账号仍带有 5h/7d 429 状态。

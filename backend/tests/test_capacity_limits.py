@@ -160,6 +160,29 @@ class BugTeamCapacityTests(unittest.TestCase):
         self.assertAlmostEqual(summary["total"]["five_hour_capacity_usd"], 0)
         self.assertAlmostEqual(summary["total"]["seven_day_capacity_usd"], 0)
 
+    def test_schedulable_false_rate_limited_account_is_excluded_from_total_capacity(self) -> None:
+        account = {
+            "id": 9,
+            "status": "rate_limited",
+            "schedulable": False,
+            "plan_type": "plus",
+            "codex_5h_used_percent": 100,
+            "codex_5h_reset_after_seconds": 3600,
+            "codex_7d_used_percent": 40,
+        }
+
+        self.assertFalse(cache._is_capacity_account(account))
+
+        capacity_accounts = [item for item in [account] if cache._is_capacity_account(item)]
+        summary = cache._capacity_by_account_type(
+            capacity_accounts,
+            capacity_accounts,
+            normalize_capacity_limits({"plus": {"five_hour_usd": 110, "seven_day_usd": 110}}),
+        )
+        self.assertEqual(summary["plus"]["available_accounts"], 0)
+        self.assertEqual(summary["plus"]["five_hour_capacity_usd"], 0)
+        self.assertEqual(summary["plus"]["seven_day_capacity_usd"], 0)
+
     def test_regular_team_keeps_its_five_hour_window(self) -> None:
         account = {
             "id": 1,

@@ -2380,6 +2380,8 @@ def _uses_seven_day_as_primary_usage_window(account: dict[str, Any]) -> bool:
 
 
 def _is_capacity_account(account: dict[str, Any]) -> bool:
+    if account.get("schedulable") is False:
+        return False
     if is_bug_team_account(account) or _is_abnormal_account(account):
         return False
     status = str(account.get("status") or "").lower()
