@@ -54,6 +54,42 @@ def calculate(
 
 
 class CapacityRiskTests(unittest.TestCase):
+    def test_rpm_cost_channel_drives_realtime_burn_when_it_is_higher(self) -> None:
+        result = calculate(
+            samples([1000] * 20, rpm=120),
+            cost_per_request=0.01,
+        )
+
+        self.assertEqual(result["realtime_tpm_burn_usd_per_hour"], 1.0)
+        self.assertEqual(result["realtime_rpm_burn_usd_per_hour"], 72.0)
+        self.assertEqual(result["realtime_burn_usd_per_hour"], 72.0)
+        self.assertEqual(result["realtime_burn_source"], "rpm")
+
+    def test_request_cost_can_make_realtime_risk_ready_without_token_cost(self) -> None:
+        result = calculate(
+            samples([1000] * 20, rpm=60),
+            cost_per_token=None,
+            cost_per_request=0.01,
+        )
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["realtime_burn_source"], "rpm")
+        self.assertEqual(result["realtime_burn_usd_per_hour"], 36.0)
+
+    def test_request_cost_without_rpm_samples_stays_pending(self) -> None:
+        sample_items = samples([1000] * 20)
+        for item in sample_items:
+            item["rpm"] = None
+
+        result = calculate(
+            sample_items,
+            cost_per_token=None,
+            cost_per_request=0.01,
+        )
+
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["health_status"], "pending")
+
     def test_hourly_p90_forecast_replaces_tpm_runway_and_burn_rate(self) -> None:
         demand_forecast = ForecastResult(
             model="robust_seasonal_analog",

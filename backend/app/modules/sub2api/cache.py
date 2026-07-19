@@ -1167,6 +1167,7 @@ async def _capacity_summary_for_accounts(
         samples=tpm_samples,
         now=now_utc(),
         cost_per_token=_number_or_none(cost_summary.get("recent_6h_cost_per_token")),
+        cost_per_request=_number_or_none(cost_summary.get("recent_6h_cost_per_request")),
         actual_five_hour_remaining_usd=five_hour_actual_remaining_usd,
         dynamic_five_hour_remaining_usd=dynamic_five_hour_remaining_estimated_usd,
         actual_seven_day_remaining_usd=seven_day_actual_remaining_usd,
@@ -1780,7 +1781,9 @@ async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, gro
     recent_6h_docs = hourly_6h
     recent_6h_cost = sum(_capacity_cost(doc) for doc in recent_6h_docs)
     recent_6h_tokens = sum(_float_or_zero(doc.get("total_tokens")) for doc in recent_6h_docs)
+    recent_6h_requests = sum(_float_or_zero(doc.get("requests")) for doc in recent_6h_docs)
     recent_6h_cost_per_token = recent_6h_cost / recent_6h_tokens if recent_6h_tokens > 0 else None
+    recent_6h_cost_per_request = recent_6h_cost / recent_6h_requests if recent_6h_requests > 0 else None
     seven_day_cost = round(sum(_capacity_cost(doc) for doc in hourly_7d), 6)
     return {
         "five_hour_peak_cost": five_hour_peak_cost,
@@ -1792,7 +1795,9 @@ async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, gro
         "recent_5h_cost": recent_5h_cost,
         "recent_6h_cost": round(recent_6h_cost, 6),
         "recent_6h_tokens": round(recent_6h_tokens),
+        "recent_6h_requests": round(recent_6h_requests),
         "recent_6h_cost_per_token": recent_6h_cost_per_token,
+        "recent_6h_cost_per_request": recent_6h_cost_per_request,
         "seven_day_cost": seven_day_cost,
         "hourly_points": len(hourly),
         "daily_points": 0,

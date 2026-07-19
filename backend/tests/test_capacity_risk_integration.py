@@ -171,6 +171,7 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "cost": 100,
                         "actual_cost": 50,
                         "account_cost": 200,
+                        "requests": 100,
                         "total_tokens": 1_000,
                     }
                 ]
@@ -185,6 +186,7 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
             summary = await cache._dashboard_cost_summary(object(), "api-5001", group_id=3)
 
         self.assertEqual(summary["recent_6h_cost_per_token"], 0.2)
+        self.assertEqual(summary["recent_6h_cost_per_request"], 2.0)
         self.assertEqual(summary["burst_1h"]["current_hour_observed_cost"], 200)
 
 

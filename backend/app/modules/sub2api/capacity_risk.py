@@ -58,12 +58,15 @@ def calculate_capacity_risk(
     per_account_five_hour_usd: float,
     per_account_seven_day_usd: float,
     average_account_concurrency: float,
+    cost_per_request: float | None = None,
     refill_account_options: dict[str, dict[str, Any]] | None = None,
     primary_refill_account_type: str | None = None,
     demand_forecast: ForecastResult | None = None,
     current_hour_observed_cost_usd: float | None = None,
 ) -> dict[str, Any]:
     now = _as_utc(now)
+    normalized_cost_per_token = _positive(cost_per_token)
+    normalized_cost_per_request = _positive(cost_per_request)
     normalized = _normalized_samples(samples)
     latest_at = normalized[-1]["sampled_at"] if normalized else None
     recent_samples = normalized[-MIN_SAMPLE_COUNT:]
@@ -76,18 +79,23 @@ def calculate_capacity_risk(
         for item in recent_samples
         if item["current_concurrency"] is not None
     )
+    rpm_sample_count = sum(1 for item in recent_samples if item["rpm"] is not None)
+    cost_channel_ready = normalized_cost_per_token is not None or (
+        normalized_cost_per_request is not None and rpm_sample_count >= 5
+    )
     ready = (
         len(normalized) >= MIN_SAMPLE_COUNT
         and continuous_minutes
         and concurrency_sample_count >= 5
         and latest_at is not None
         and timedelta(0) <= now - latest_at <= MAX_SAMPLE_AGE
-        and _positive(cost_per_token) is not None
+        and cost_channel_ready
     )
     if not ready:
         return _pending_summary(
             sample_count=len(normalized),
             concurrency_sample_count=concurrency_sample_count,
+            rpm_sample_count=rpm_sample_count,
             latest_sampled_at=latest_at,
         )
 
@@ -128,7 +136,19 @@ def calculate_capacity_risk(
     concurrency_spare_coverage = _coverage(safe_concurrency_available, estimated_concurrency)
     concurrency_coverage = None if concurrency_spare_coverage is None else 1 + concurrency_spare_coverage
 
-    realtime_burn_usd_per_hour = pressure_tpm * 60 * float(cost_per_token)
+    realtime_tpm_burn_usd_per_hour = pressure_tpm * 60 * float(normalized_cost_per_token or 0)
+    realtime_rpm_burn_usd_per_hour = pressure_rpm * 60 * float(normalized_cost_per_request or 0)
+    realtime_burn_usd_per_hour = max(
+        realtime_tpm_burn_usd_per_hour,
+        realtime_rpm_burn_usd_per_hour,
+    )
+    realtime_burn_source = (
+        "rpm"
+        if realtime_rpm_burn_usd_per_hour > realtime_tpm_burn_usd_per_hour
+        else "tpm"
+        if realtime_tpm_burn_usd_per_hour > 0
+        else "rpm"
+    )
     burn_usd_per_hour = realtime_burn_usd_per_hour
     actual_remaining_usd = min(
         max(0.0, actual_five_hour_remaining_usd),
@@ -274,6 +294,7 @@ def calculate_capacity_risk(
         "ready": True,
         "sample_count": len(normalized),
         "concurrency_sample_count": len(concurrency_values),
+        "rpm_sample_count": len(rpm_values),
         "latest_sampled_at": latest_at,
         "tpm_ema_5": _rounded(tpm_ema_5),
         "tpm_ema_15": _rounded(tpm_ema_15),
@@ -291,6 +312,9 @@ def calculate_capacity_risk(
         "concurrency_coverage": _rounded(concurrency_coverage),
         "burn_usd_per_hour": _rounded(burn_usd_per_hour),
         "realtime_burn_usd_per_hour": _rounded(realtime_burn_usd_per_hour),
+        "realtime_tpm_burn_usd_per_hour": _rounded(realtime_tpm_burn_usd_per_hour),
+        "realtime_rpm_burn_usd_per_hour": _rounded(realtime_rpm_burn_usd_per_hour),
+        "realtime_burn_source": realtime_burn_source,
         "actual_runway_hours": _rounded(actual_runway_hours),
         "dynamic_runway_hours": _rounded(dynamic_runway_hours),
         "runway_source": runway_source,
@@ -328,6 +352,7 @@ def _pending_summary(
     *,
     sample_count: int,
     concurrency_sample_count: int,
+    rpm_sample_count: int,
     latest_sampled_at: datetime | None,
 ) -> dict[str, Any]:
     label, tone = HEALTH_META["pending"]
@@ -335,6 +360,7 @@ def _pending_summary(
         "ready": False,
         "sample_count": sample_count,
         "concurrency_sample_count": concurrency_sample_count,
+        "rpm_sample_count": rpm_sample_count,
         "latest_sampled_at": latest_sampled_at,
         "pressure_stage": "waiting_data",
         "pressure_stage_label": PRESSURE_STAGE_LABELS["waiting_data"],

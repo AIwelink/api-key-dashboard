@@ -161,6 +161,9 @@ type CapacitySummary = {
   pressure_stage_label?: string;
   pressure_tpm?: number;
   pressure_rpm?: number;
+  realtime_tpm_burn_usd_per_hour?: number;
+  realtime_rpm_burn_usd_per_hour?: number;
+  realtime_burn_source?: string;
   sample_count?: number;
   concurrency_sample_count?: number;
   actual_runway_hours?: number | null;
@@ -1595,7 +1598,7 @@ const METRIC_HELP_DETAILS: Record<string, MetricHelpDetail> = {
   },
   "实时可用时间": {
     purpose: "按未来每个自然小时的预测消耗逐段扣减账号池额度，用于判断未来几小时是否需要补号。",
-    formula: "当前小时Nowcast = max(P90整小时预测 - 当前小时已发生account_cost, 压力TPM对应成本速度 × 剩余时间)；后续完整小时继续使用P90预测，再逐段扣减 min(5h剩余额度, 7d剩余额度)。",
+    formula: "TPM成本速度, RPM成本速度分别按最近6小时account_cost的单Token和单请求成本换算；当前小时Nowcast = max(P90整小时预测 - 已发生account_cost, max(TPM成本速度, RPM成本速度) × 剩余时间)。",
     note: "成本统一使用账号额度侧account_cost。当前小时实耗缺失时保留原P90比例估算；预测窗口内耗尽时显示具体时长，超过24小时显示为 >24小时；预测不可用时回退到TPM实时估算。",
   },
   "压力阶段": {
