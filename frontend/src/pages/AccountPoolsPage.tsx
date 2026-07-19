@@ -831,7 +831,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                         >
                           <option value="tight">紧张及以下</option>
                           <option value="danger">危险及以下</option>
-                          <option value="exhausted">仅耗尽</option>
+                          <option value="exhausted">仅耗尽（实时&lt;1h仍告警）</option>
                         </select>
                         <div>
                           <input

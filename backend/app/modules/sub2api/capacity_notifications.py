@@ -22,7 +22,7 @@ HEALTH_RANK = {
 THRESHOLD_LABELS = {
     "tight": "紧张及以下",
     "danger": "危险及以下",
-    "exhausted": "仅耗尽",
+    "exhausted": "仅耗尽（实时<1h仍告警）",
 }
 HEALTH_LABELS = {
     "pending": "等待数据",
@@ -35,6 +35,7 @@ HEALTH_LABELS = {
 }
 TRIGGER_REASON_LABELS = {
     "threshold_crossed": "首次进入通知阈值",
+    "realtime_runway_below_one_hour": "实时可用时间低于1小时",
     "status_worsened": "容量状态继续恶化",
     "cooldown_elapsed": "危险状态持续，冷却时间已到",
 }
@@ -218,7 +219,10 @@ def capacity_notification_decision(
         threshold = "tight"
     enabled = setting.get("capacity_notification_enabled") is True
     active_alert = meta.get("active_alert") is True
-    below_threshold = enabled and HEALTH_RANK.get(health_status, -1) >= HEALTH_RANK[threshold]
+    hard_runway_alert = _realtime_runway_below_one_hour(summary)
+    below_threshold = enabled and (
+        hard_runway_alert or HEALTH_RANK.get(health_status, -1) >= HEALTH_RANK[threshold]
+    )
     if not enabled:
         return _decision_result(False, False, "disabled", health_status, threshold)
     if health_status == "pending":
@@ -232,7 +236,8 @@ def capacity_notification_decision(
 
     previous_status = str(meta.get("last_notified_status") or meta.get("last_observed_status") or "pending")
     if not active_alert:
-        return _decision_result(True, True, "threshold_crossed", health_status, threshold, notification_type="alert", keep_active_alert=True)
+        reason = "realtime_runway_below_one_hour" if hard_runway_alert else "threshold_crossed"
+        return _decision_result(True, True, reason, health_status, threshold, notification_type="alert", keep_active_alert=True)
     if HEALTH_RANK.get(health_status, -1) > HEALTH_RANK.get(previous_status, -1):
         return _decision_result(True, True, "status_worsened", health_status, threshold, notification_type="alert", keep_active_alert=True)
 
@@ -244,6 +249,16 @@ def capacity_notification_decision(
     if health_status == "tight":
         return _decision_result(False, True, "tight_repeat_suppressed", health_status, threshold, keep_active_alert=True)
     return _decision_result(True, True, "cooldown_elapsed", health_status, threshold, notification_type="alert", keep_active_alert=True)
+
+
+def _realtime_runway_below_one_hour(summary: dict[str, Any]) -> bool:
+    if summary.get("realtime_risk_ready") is not True:
+        return False
+    runway_values = (
+        _number(summary.get("actual_runway_hours")),
+        _number(summary.get("dynamic_runway_hours")),
+    )
+    return any(value is not None and value < 1.0 for value in runway_values)
 
 
 def _decision_result(

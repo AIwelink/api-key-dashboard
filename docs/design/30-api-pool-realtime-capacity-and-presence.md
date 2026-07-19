@@ -152,6 +152,17 @@ dynamic_runway_hours = dynamic_remaining_usd / burn_usd_per_hour
 
 阶段用于解释运营态势，不替代 `health_status`。等待数据不得触发容量预警或恢复通知；峰值保底优先于上涨阶段。
 
+### 4.2 一小时硬告警线
+
+分组容量通知启用后，只要 `realtime_risk_ready=true`，并且以下任一值低于 `1h`，必须发送危险告警：
+
+```text
+actual_runway_hours < 1
+dynamic_runway_hours < 1
+```
+
+这条硬告警线优先于分组配置的 `capacity_notification_threshold`，即使阈值选择“仅耗尽”也不能屏蔽。通知总开关、冷却时间、危险状态重复提醒和恢复通知规则仍然有效。`realtime_risk_ready=false` 时不得根据残留 runway 字段报警。
+
 ## 5. 并发覆盖：总覆盖与内部余量必须分开
 
 `concurrency_safe_available` 是尚未使用的安全并发余量。对外展示的“安全并发覆盖”必须包含已经承接的压力并发：

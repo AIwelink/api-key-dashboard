@@ -143,8 +143,44 @@ class CapacityNotificationDecisionTests(unittest.TestCase):
         self.assertFalse(decision["send"])
         self.assertEqual(decision["reason"], "above_threshold")
 
+    def test_sub_one_hour_realtime_runway_alerts_even_when_threshold_is_exhausted(self) -> None:
+        setting = {**self.setting, "capacity_notification_threshold": "exhausted"}
+        decision = capacity_notification_decision(
+            setting=setting,
+            summary={
+                "health_status": "danger",
+                "realtime_risk_ready": True,
+                "actual_runway_hours": 0.8,
+                "dynamic_runway_hours": 0.9,
+            },
+            meta={},
+            now=self.now,
+        )
+
+        self.assertTrue(decision["send"])
+        self.assertTrue(decision["below_threshold"])
+        self.assertEqual(decision["reason"], "realtime_runway_below_one_hour")
+
 
 class CapacityNotificationTextTests(unittest.TestCase):
+    def test_sub_one_hour_alert_explains_exhausted_threshold_override(self) -> None:
+        message = _capacity_notification_text(
+            site_id="api-5001",
+            group_id=3,
+            group_name="Plus 池",
+            threshold="exhausted",
+            trigger_reason="realtime_runway_below_one_hour",
+            summary={
+                "health_status": "danger",
+                "health_label": "危险",
+                "actual_runway_hours": 0.8,
+                "dynamic_runway_hours": 0.9,
+            },
+        )
+
+        self.assertIn("通知阈值：仅耗尽（实时<1h仍告警）", message)
+        self.assertIn("触发方式：实时可用时间低于1小时", message)
+
     def test_realtime_risk_fields_are_included(self) -> None:
         message = _capacity_notification_text(
             site_id="api-5001",
