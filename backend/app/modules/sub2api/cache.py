@@ -394,7 +394,13 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
             accounts = [_normalize_account_snapshot(account) for account in pool_snapshot["accounts"]]
             fetched_at = now_utc()
             dashboard_summary, runtime_fetched_at_by_account = await asyncio.gather(
-                _refresh_dashboard_for_cache(db, site_id=site_id, client=client, group_ids=group_ids),
+                _refresh_dashboard_for_cache(
+                    db,
+                    site_id=site_id,
+                    client=client,
+                    group_ids=group_ids,
+                    sql_dsn=str(site.get("sql_dsn") or "") or None,
+                ),
                 _apply_account_usage_windows(db, site_id, client, accounts, fetched_at),
             )
             group_capacity_summaries = await _group_capacity_summaries(db, site_id, accounts)
@@ -698,11 +704,18 @@ async def _refresh_dashboard_for_cache(
     site_id: str,
     client: Sub2ApiClient,
     group_ids: list[int],
+    sql_dsn: str | None,
 ) -> dict[str, Any]:
     try:
         from app.modules.sub2api.dashboard import refresh_dashboard_snapshots
 
-        return await refresh_dashboard_snapshots(db, site_id=site_id, client=client, group_ids=group_ids)
+        return await refresh_dashboard_snapshots(
+            db,
+            site_id=site_id,
+            client=client,
+            group_ids=group_ids,
+            sql_dsn=sql_dsn,
+        )
     except Exception as exc:  # noqa: BLE001 - account cache refresh should not fail only because dashboard stats failed.
         logger.warning("sub2api_dashboard_refresh_failed site_id=%s error=%s", site_id, exc)
         return {"ok": False, "message": str(exc)}

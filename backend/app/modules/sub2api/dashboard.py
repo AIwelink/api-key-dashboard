@@ -8,7 +8,11 @@ from typing import Any
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReplaceOne
 
+from app.modules.system.sql_dsn import redact_sql_error
 from app.modules.sub2api.client import Sub2ApiClient
+from app.modules.sub2api.dashboard_postgres_repository import (
+    fetch_site_dashboard_snapshot as fetch_postgres_dashboard_snapshot,
+)
 from app.utils import now_utc, serialize_doc
 
 
@@ -28,6 +32,7 @@ async def refresh_dashboard_snapshots(
     client: Sub2ApiClient,
     force: bool = False,
     group_ids: list[int] | None = None,
+    sql_dsn: str | None = None,
 ) -> dict[str, Any]:
     if not force:
         meta = await db.sub2api_dashboard_meta.find_one({"_id": site_id})
@@ -44,6 +49,7 @@ async def refresh_dashboard_snapshots(
                 }
             )
     ranges = dashboard_snapshot_ranges()
+    site_trend_sources: list[str] = []
 
     async def fetch_and_store(group_id: int | None, range_config: dict[str, Any]) -> dict[str, Any]:
         params = dict(range_config["params"])
@@ -56,14 +62,50 @@ async def refresh_dashboard_snapshots(
                 }
             )
         try:
-            snapshot = await client.get_dashboard_snapshot(**params)
-            return await store_dashboard_snapshot(
+            source = "http"
+            model_refresh_ok = True
+            if group_id is None and sql_dsn:
+                database_result, http_result = await asyncio.gather(
+                    fetch_postgres_dashboard_snapshot(
+                        sql_dsn,
+                        start_date=str(params["start_date"]),
+                        end_date=str(params["end_date"]),
+                        granularity=str(params["granularity"]),
+                    ),
+                    client.get_dashboard_snapshot(**params),
+                    return_exceptions=True,
+                )
+                if not isinstance(database_result, BaseException):
+                    snapshot = dict(database_result)
+                    snapshot["models"] = (
+                        http_result.get("models", [])
+                        if isinstance(http_result, dict) and isinstance(http_result.get("models"), list)
+                        else []
+                    )
+                    if isinstance(http_result, dict):
+                        snapshot["_models_generated_at"] = http_result.get("generated_at")
+                    source = "postgresql"
+                    if isinstance(http_result, BaseException):
+                        model_refresh_ok = False
+                        logger.warning("sub2api_site_dashboard_models_refresh_failed site_id=%s error=%s", site_id, http_result)
+                elif isinstance(http_result, dict):
+                    snapshot = http_result
+                    source = "http_fallback"
+                    reason = redact_sql_error(database_result, sql_dsn, "postgresql")
+                    logger.warning("sub2api_site_dashboard_database_failed site_id=%s fallback=http error=%s", site_id, reason)
+                else:
+                    raise http_result
+                site_trend_sources.append(source)
+            else:
+                snapshot = await client.get_dashboard_snapshot(**params)
+            stored = await store_dashboard_snapshot(
                 db,
                 site_id=site_id,
                 group_id=group_id,
                 range_type=range_config["range_type"],
-                snapshot=snapshot,
+                snapshot={**snapshot, "_data_source": source},
             )
+            return {**stored, "data_source": source, "model_refresh_ok": model_refresh_ok}
         except Exception as exc:
             if group_id is None:
                 raise
@@ -77,14 +119,20 @@ async def refresh_dashboard_snapshots(
             for range_config in ranges
         )
     )
+    model_refresh_failed_ranges = sum(1 for item in results if item.get("model_refresh_ok") is False)
+    completed_at = now_utc()
     summary = {
-        "ok": True,
+        "ok": model_refresh_failed_ranges == 0,
         "site_id": site_id,
+        "status": "partial" if model_refresh_failed_ranges else "succeeded",
         "ranges": results,
         "trend_points": sum(item.get("trend_points", 0) for item in results),
         "models": sum(item.get("models", 0) for item in results),
         "groups": len(group_ids or []),
-        "refreshed_at": now_utc(),
+        "site_trend_source": _combined_site_trend_source(site_trend_sources, sql_dsn=sql_dsn),
+        "model_refresh_failed_ranges": model_refresh_failed_ranges,
+        "trend_refreshed_at": completed_at,
+        "refreshed_at": completed_at if model_refresh_failed_ranges == 0 else None,
     }
     await db.sub2api_dashboard_meta.update_one(
         {"_id": site_id},
@@ -144,7 +192,16 @@ async def refresh_due_dashboard_snapshots_for_all_sites(db: AsyncIOMotorDatabase
                 async for doc in db.sub2api_groups_cache.find({"site_id": site_id}, {"group_id": 1})
                 if isinstance(doc.get("group_id"), int)
             ]
-            results.append(await refresh_dashboard_snapshots(db, site_id=site_id, client=client, force=force, group_ids=group_ids))
+            results.append(
+                await refresh_dashboard_snapshots(
+                    db,
+                    site_id=site_id,
+                    client=client,
+                    force=force,
+                    group_ids=group_ids,
+                    sql_dsn=str(site.get("sql_dsn") or "") or None,
+                )
+            )
         except Exception as exc:  # noqa: BLE001 - one site should not block other sites.
             logger.warning("sub2api_dashboard_startup_refresh_failed site_id=%s error=%s", site_id, exc)
             results.append({"ok": False, "site_id": site_id, "message": str(exc)})
@@ -219,6 +276,7 @@ async def store_dashboard_snapshot(
 ) -> dict[str, Any]:
     now = now_utc()
     generated_at = parse_remote_datetime(snapshot.get("generated_at"))
+    models_generated_at = parse_remote_datetime(snapshot.get("_models_generated_at")) or generated_at
     granularity = str(snapshot.get("granularity") or "")
     start_date = str(snapshot.get("start_date") or "")
     end_date = str(snapshot.get("end_date") or "")
@@ -276,7 +334,7 @@ async def store_dashboard_snapshot(
                 "cost": float_value(item.get("cost")),
                 "actual_cost": float_value(item.get("actual_cost")),
                 "account_cost": float_value(item.get("account_cost")),
-                "generated_at": generated_at,
+                "generated_at": models_generated_at,
                 "fetched_at": now,
             },
             upsert=True,
@@ -298,12 +356,24 @@ async def store_dashboard_snapshot(
         "start_date": start_date,
         "end_date": end_date,
         "generated_at": generated_at,
+        "models_generated_at": models_generated_at,
         "trend_points": len(trend_ops),
         "models": len(model_ops),
+        "data_source": snapshot.get("_data_source") or "http",
         "fetched_at": now,
     }
     await db.sub2api_dashboard_snapshots.replace_one({"_id": meta["_id"]}, meta, upsert=True)
     return serialize_doc(meta)
+
+
+def _combined_site_trend_source(sources: list[str], *, sql_dsn: str | None) -> str:
+    if not sql_dsn:
+        return "http"
+    if sources and all(source == "postgresql" for source in sources):
+        return "postgresql"
+    if "http_fallback" in sources:
+        return "http_fallback"
+    return sources[0] if sources else "unknown"
 
 
 def dashboard_snapshot_ranges(reference: datetime | None = None) -> list[dict[str, Any]]:

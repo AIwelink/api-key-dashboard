@@ -403,7 +403,8 @@ async def refresh_site_dashboard(
     _: dict = Depends(require_roles("owner", "admin", "maintainer")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
-    if not await get_site(db, site_id):
+    site = await get_site(db, site_id, include_token=True)
+    if not site:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
     client = await _client_for_site(db, site_id)
     group_ids = [
@@ -411,7 +412,14 @@ async def refresh_site_dashboard(
         async for doc in db.sub2api_groups_cache.find({"site_id": site_id}, {"group_id": 1})
         if isinstance(doc.get("group_id"), int)
     ]
-    return await refresh_dashboard_snapshots(db, site_id=site_id, client=client, force=True, group_ids=group_ids)
+    return await refresh_dashboard_snapshots(
+        db,
+        site_id=site_id,
+        client=client,
+        force=True,
+        group_ids=group_ids,
+        sql_dsn=str(site.get("sql_dsn") or "") or None,
+    )
 
 
 @router.get("/{site_id}/dashboard")

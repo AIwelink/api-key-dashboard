@@ -14,12 +14,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.database import close_mongo_connection, connect_to_mongo, get_db
 from app.modules.sub2api.cache import _extract_group_ids, _fetch_http_pool_snapshot, get_site
 from app.modules.sub2api.client import Sub2ApiClient
+from app.modules.sub2api.dashboard import dashboard_snapshot_ranges
+from app.modules.sub2api.dashboard_postgres_repository import fetch_site_dashboard_snapshot
 from app.modules.sub2api.postgres_repository import fetch_pool_snapshot
 
 
 COMPARE_ACCOUNT_FIELDS = ("status", "schedulable", "priority", "concurrency", "rate_limit_reset_at")
 COMPARE_GROUP_FIELDS = ("status", "account_count", "active_account_count", "rate_limited_account_count")
 MAX_DIFFERENCE_EXAMPLES = 20
+DASHBOARD_COMPARE_FIELDS = (
+    "requests",
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_tokens",
+    "cache_read_tokens",
+    "total_tokens",
+    "cost",
+    "actual_cost",
+)
 
 
 def compare_snapshots(database: dict[str, Any], http: dict[str, Any]) -> dict[str, Any]:
@@ -79,6 +91,49 @@ def compare_snapshots(database: dict[str, Any], http: dict[str, Any]) -> dict[st
             "extra": _nested_field_key_comparison(database_accounts.values(), http_accounts.values(), "extra"),
         },
     }
+
+
+def compare_dashboard_snapshots(database: dict[str, Any], http: dict[str, Any]) -> dict[str, Any]:
+    database_points = _trend_by_bucket(database.get("trend"))
+    http_points = _trend_by_bucket(http.get("trend"))
+    database_buckets = set(database_points)
+    http_buckets = set(http_points)
+    differences = []
+    for bucket in sorted(database_buckets & http_buckets):
+        database_point = database_points[bucket]
+        http_point = http_points[bucket]
+        metrics = {
+            field: {"database": database_point.get(field), "http": http_point.get(field)}
+            for field in DASHBOARD_COMPARE_FIELDS
+            if not _numeric_values_equal(database_point.get(field), http_point.get(field))
+        }
+        if metrics:
+            differences.append({"bucket": bucket, "metrics": metrics})
+    return {
+        "database_points": len(database_points),
+        "http_points": len(http_points),
+        "buckets_only_in_database": sorted(database_buckets - http_buckets)[:MAX_DIFFERENCE_EXAMPLES],
+        "buckets_only_in_http": sorted(http_buckets - database_buckets)[:MAX_DIFFERENCE_EXAMPLES],
+        "difference_count": len(differences),
+        "difference_examples": differences[:MAX_DIFFERENCE_EXAMPLES],
+    }
+
+
+def _trend_by_bucket(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, list):
+        return {}
+    return {
+        str(item["date"]): item
+        for item in value
+        if isinstance(item, dict) and item.get("date") is not None
+    }
+
+
+def _numeric_values_equal(left: Any, right: Any) -> bool:
+    try:
+        return abs(float(left or 0) - float(right or 0)) < 0.000001
+    except (TypeError, ValueError):
+        return left == right
 
 
 def _items_by_id(value: Any) -> dict[int, dict[str, Any]]:
@@ -176,7 +231,7 @@ def _as_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-async def main(site_id: str, *, http_contract_only: bool = False) -> None:
+async def main(site_id: str, *, http_contract_only: bool = False, dashboard_only: bool = False) -> None:
     await connect_to_mongo()
     try:
         site = await get_site(get_db(), site_id, include_token=True)
@@ -186,6 +241,28 @@ async def main(site_id: str, *, http_contract_only: bool = False) -> None:
         if not sql_dsn:
             raise ValueError("SQL_DSN is not configured")
         client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
+        if dashboard_only:
+            comparisons = []
+            for range_config in dashboard_snapshot_ranges():
+                params = range_config["params"]
+                database_snapshot, http_snapshot = await asyncio.gather(
+                    fetch_site_dashboard_snapshot(
+                        sql_dsn,
+                        start_date=str(params["start_date"]),
+                        end_date=str(params["end_date"]),
+                        granularity=str(params["granularity"]),
+                    ),
+                    client.get_dashboard_snapshot(**params),
+                )
+                comparisons.append(
+                    {
+                        "range_type": range_config["range_type"],
+                        "granularity": params["granularity"],
+                        **compare_dashboard_snapshots(database_snapshot, http_snapshot),
+                    }
+                )
+            print(json.dumps({"site_id": site_id, "ranges": comparisons}, ensure_ascii=False, indent=2, default=str))
+            return
         if http_contract_only:
             http_snapshot = await _fetch_http_pool_snapshot(client)
             http_accounts = _items_by_id(http_snapshot.get("accounts"))
@@ -215,5 +292,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compare non-sensitive Sub2API pool snapshot fields across PostgreSQL and HTTP")
     parser.add_argument("site_id", help="Configured account-pool site ID")
     parser.add_argument("--http-contract-only", action="store_true", help="Print only HTTP response field names")
+    parser.add_argument("--dashboard", action="store_true", help="Compare site-wide PostgreSQL and HTTP dashboard trends")
     arguments = parser.parse_args()
-    asyncio.run(main(arguments.site_id, http_contract_only=arguments.http_contract_only))
+    asyncio.run(
+        main(
+            arguments.site_id,
+            http_contract_only=arguments.http_contract_only,
+            dashboard_only=arguments.dashboard,
+        )
+    )
