@@ -1679,7 +1679,7 @@ const METRIC_HELP_DETAILS: Record<string, MetricHelpDetail> = {
   },
   "突发趋势：最近1h": {
     purpose: "判断近期消耗是在上涨、下降还是保持平稳。",
-    formula: "变化率 = (近3小时平均消耗 - 前3小时平均消耗) / 前3小时平均消耗。再按变化幅度标记趋势强度。",
+    formula: "每小时均值 = 对应时间段总消耗 / 有效小时数；变化率 = (近3小时每小时均值 - 前3小时每小时均值) / 前3小时每小时均值。再按变化幅度标记趋势强度。",
   },
   "预估天数：最近24h": {
     purpose: "按当前日常速度估算剩余额度还能维持多久。",
@@ -2291,10 +2291,10 @@ function burstTrendLabel(summary?: CapacitySummary): string {
 
 function burstTrendSubText(summary?: CapacitySummary): string {
   if (!summary) return "等待 dashboard cost 数据";
-  const recent = `近${formatHourCount(summary.burst_1h_trend_recent_hours)}均值 ${formatUsd(summary.burst_1h_trend_recent_avg_cost)}`;
+  const recent = `近${formatHourCount(summary.burst_1h_trend_recent_hours)}每小时均值 ${formatUsd(summary.burst_1h_trend_recent_avg_cost)}`;
   const baselineHours = optionalNumberValue(summary.burst_1h_trend_baseline_hours);
   if (!baselineHours || baselineHours <= 0) return `${recent}，等待更多历史小时数据`;
-  return `${recent}，前${formatHourCount(baselineHours)}均值 ${formatUsd(summary.burst_1h_trend_baseline_avg_cost)}，变化 ${formatPercentChange(summary.burst_1h_trend_change_percent)}`;
+  return `${recent}，前${formatHourCount(baselineHours)}每小时均值 ${formatUsd(summary.burst_1h_trend_baseline_avg_cost)}，变化 ${formatPercentChange(summary.burst_1h_trend_change_percent)}`;
 }
 
 function formatDays(value: unknown): string {
