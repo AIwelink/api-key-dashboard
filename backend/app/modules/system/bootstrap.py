@@ -35,6 +35,21 @@ async def ensure_capacity_sample_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.sub2api_capacity_samples.create_index([("site_id", 1), ("group_id", 1), ("sampled_at", -1)])
 
 
+async def ensure_forecast_evaluation_indexes(db: AsyncIOMotorDatabase) -> None:
+    await db.sub2api_forecast_evaluations.create_index(
+        [("site_id", 1), ("group_id", 1), ("kind", 1), ("status", 1), ("target_at", -1)]
+    )
+    await db.sub2api_forecast_evaluations.create_index(
+        [("model", 1), ("version", 1), ("status", 1), ("target_at", -1)]
+    )
+    await db.sub2api_forecast_evaluations.create_index("expires_at", expireAfterSeconds=0)
+    await db.sub2api_forecast_accuracy_summaries.create_index(
+        [("site_id", 1), ("group_id", 1)],
+        unique=True,
+    )
+    await db.sub2api_forecast_accuracy_summaries.create_index([("updated_at", -1)])
+
+
 async def ensure_account_history_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.remote_account_change_batches.create_index([("site_id", 1), ("observed_at", -1)])
     await db.remote_account_change_batches.create_index("expires_at", expireAfterSeconds=0)
@@ -151,6 +166,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.sub2api_hourly_forecasts.create_index("expires_at", expireAfterSeconds=0)
     await ensure_tpm_indexes(db)
     await ensure_capacity_sample_indexes(db)
+    await ensure_forecast_evaluation_indexes(db)
     await ensure_account_history_indexes(db)
     await db.sub2api_auto_refill_meta.create_index("last_finished_at")
     await db.group_observability_settings.create_index([("site_id", 1), ("group_id", 1)], unique=True)

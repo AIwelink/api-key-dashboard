@@ -100,6 +100,11 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
             patch.object(cache, "_dashboard_cost_summary", AsyncMock(return_value=cost_summary())),
             patch.object(cache, "_load_group_tpm_samples", AsyncMock(return_value=minute_samples())),
             patch.object(cache, "_load_group_hourly_demand_forecast", AsyncMock(return_value=forecast)),
+            patch.object(
+                cache,
+                "get_forecast_accuracy_summary",
+                AsyncMock(return_value={"status": "ready", "windows": {"24h": {"hourly_sample_count": 12}}}),
+            ),
         ):
             summary = await cache._capacity_summary_for_accounts(
                 object(),
@@ -112,6 +117,7 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["capacity_model"], "single_pool_hourly_forecast")
         self.assertEqual(summary["forecast_model"], "robust_seasonal_analog")
         self.assertEqual(summary["forecast_status"], "active")
+        self.assertEqual(summary["forecast_accuracy"]["windows"]["24h"]["hourly_sample_count"], 12)
 
     async def test_recent_derived_capacity_summary_avoids_requerying_postgres(self) -> None:
         cached_summary = {

@@ -38,8 +38,41 @@ type Group = {
   capacity_summary?: CapacitySummary;
 };
 
+type ForecastAccuracyHorizon = {
+  key: string;
+  label: string;
+  sample_count?: number;
+  p50_wape_percent?: number | null;
+  p50_bias_percent?: number | null;
+  p90_coverage_percent?: number | null;
+};
+
+type ForecastAccuracyWindow = {
+  hourly_sample_count?: number;
+  nowcast_sample_count?: number;
+  p50_wape_percent?: number | null;
+  p50_bias_percent?: number | null;
+  p50_mae_usd?: number | null;
+  p90_coverage_percent?: number | null;
+  p90_pinball_loss_usd?: number | null;
+  nowcast_selected_wape_percent?: number | null;
+  nowcast_model_wape_percent?: number | null;
+  nowcast_realtime_wape_percent?: number | null;
+  horizon_buckets?: ForecastAccuracyHorizon[];
+};
+
+type ForecastAccuracy = {
+  status?: "ready" | "waiting";
+  model?: string | null;
+  version?: string | null;
+  updated_at?: string | null;
+  last_finalized_at?: string | null;
+  windows?: Partial<Record<"24h" | "7d" | "28d", ForecastAccuracyWindow>>;
+};
+
 type CapacitySummary = {
   capacity_model?: string;
+  forecast_accuracy?: ForecastAccuracy | null;
   available_accounts?: number;
   available_5h_accounts?: number;
   pool_normal_accounts?: number;
@@ -1080,6 +1113,11 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
 
           <CapacityRunwaySummary summary={selectedGroup?.capacity_summary} loading={capacitySummaryLoading} />
 
+          <ForecastAccuracySummary
+            accuracy={selectedGroup?.capacity_summary?.forecast_accuracy}
+            loading={capacitySummaryLoading}
+          />
+
           <div className="list-toolbar">
             <label className="checkbox-line">
               <input
@@ -1542,6 +1580,119 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
   );
 }
 
+const ACCURACY_WINDOWS = ["24h", "7d", "28d"] as const;
+const ACCURACY_HORIZONS = ["1h", "2-3h", "4-6h", "7-12h", "13-24h"];
+
+function ForecastAccuracySummary({ accuracy, loading }: { accuracy?: ForecastAccuracy | null; loading: boolean }) {
+  const [windowKey, setWindowKey] = useState<(typeof ACCURACY_WINDOWS)[number]>("24h");
+  const window = accuracy?.windows?.[windowKey];
+  const ready = !loading && accuracy?.status === "ready" && numberValue(window?.hourly_sample_count) > 0;
+  const horizons = new Map((window?.horizon_buckets || []).map((item) => [item.key, item]));
+  return (
+    <section className="forecast-accuracy-band">
+      <div className="forecast-accuracy-head">
+        <div>
+          <span><MetricHelp helpKey="预测准确性">预测准确性</MetricHelp></span>
+          <strong>{ready ? `${windowKey} 滚动评估` : loading ? "加载中" : "等待最终结算样本"}</strong>
+          <em>
+            最终样本 <AnimatedValue value={ready ? numberValue(window?.hourly_sample_count) : 0} /> 个
+            {ready ? <> · Nowcast <AnimatedValue value={numberValue(window?.nowcast_sample_count)} /> 个</> : null}
+            {accuracy?.last_finalized_at ? <> · 最后结算 {formatDateTime(accuracy.last_finalized_at)}</> : null}
+          </em>
+        </div>
+        <div className="forecast-accuracy-window" aria-label="准确性统计窗口">
+          {ACCURACY_WINDOWS.map((item) => (
+            <button
+              className={windowKey === item ? "active" : ""}
+              key={item}
+              onClick={() => setWindowKey(item)}
+              type="button"
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {ready ? (
+        <>
+          <div className="forecast-accuracy-metrics">
+            <AccuracyMetric
+              label="P50 WAPE"
+              value={formatAccuracyPercent(window?.p50_wape_percent)}
+              tone={accuracyErrorTone(window?.p50_wape_percent)}
+              sub={`MAE ${formatUsd(window?.p50_mae_usd)}`}
+            />
+            <AccuracyMetric
+              label="P90 覆盖率"
+              value={formatAccuracyPercent(window?.p90_coverage_percent)}
+              tone={accuracyCoverageTone(window?.p90_coverage_percent)}
+              sub={`Pinball ${formatUsd(window?.p90_pinball_loss_usd)}`}
+            />
+            <AccuracyMetric
+              label="P50 偏差"
+              value={formatSignedPercent(window?.p50_bias_percent)}
+              tone={accuracyBiasTone(window?.p50_bias_percent)}
+              sub="正值偏高估，负值偏低估"
+            />
+            <AccuracyMetric
+              label="Nowcast WAPE"
+              value={formatAccuracyPercent(window?.nowcast_selected_wape_percent)}
+              tone={accuracyErrorTone(window?.nowcast_selected_wape_percent)}
+              sub={`模型 ${formatAccuracyPercent(window?.nowcast_model_wape_percent)} · 实时 ${formatAccuracyPercent(window?.nowcast_realtime_wape_percent)}`}
+            />
+          </div>
+
+          <div className="forecast-accuracy-horizon-wrap">
+            <div className="forecast-accuracy-horizon-title">
+              <strong>预测步长</strong>
+              <span>{accuracy?.model || "-"} · v{accuracy?.version || "-"}</span>
+            </div>
+            <div className="forecast-accuracy-horizons">
+              {ACCURACY_HORIZONS.map((key) => {
+                const item = horizons.get(key);
+                return (
+                  <div key={key}>
+                    <strong>{key}</strong>
+                    <span>WAPE <b>{formatAccuracyPercent(item?.p50_wape_percent)}</b></span>
+                    <span>P90 <b>{formatAccuracyPercent(item?.p90_coverage_percent)}</b></span>
+                    <em>{numberValue(item?.sample_count)} 样本</em>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="forecast-accuracy-empty">
+          <strong>{loading ? "正在读取预测结算记录" : "预测会在目标小时结束 90 分钟后计入最终准确性"}</strong>
+          <span>临时结果不会进入团队评估，避免上游用量日志延迟造成误判。</span>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AccuracyMetric({
+  label,
+  value,
+  tone,
+  sub,
+}: {
+  label: string;
+  value: string;
+  tone: CapacityMetricTone;
+  sub: string;
+}) {
+  return (
+    <div className="forecast-accuracy-metric">
+      <span><MetricHelp helpKey={label}>{label}</MetricHelp></span>
+      <strong className={tone}><AnimatedValue value={value} /></strong>
+      <em>{sub}</em>
+    </div>
+  );
+}
+
 type CapacityMetricTone = "excellent" | "info" | "success" | "warning" | "danger" | "muted";
 type CapacityMeterOverlay = {
   label: string;
@@ -1557,6 +1708,31 @@ type MetricHelpDetail = {
 };
 
 const METRIC_HELP_DETAILS: Record<string, MetricHelpDetail> = {
+  "预测准确性": {
+    purpose: "检查当前逐小时预测和当前小时 Nowcast 在真实流量上的误差，确认容量判断是否可信。",
+    formula: "目标小时结束 15 分钟后生成临时结果，90 分钟后按 PostgreSQL 最终 account_cost 结算；这里只统计 final 样本。",
+    note: "24h、7d、28d 都按当前模型版本独立滚动统计，旧版本记录保留但不会混入当前指标。",
+  },
+  "P50 WAPE": {
+    purpose: "衡量 P50 预测整体偏离真实消耗的幅度，数值越低越准确。",
+    formula: "所有样本绝对误差之和 / 所有样本真实 account_cost 之和。",
+    note: "使用 WAPE 而不是普通 MAPE，避免低流量和零流量小时放大误差。",
+  },
+  "P90 覆盖率": {
+    purpose: "检查真实消耗落在 P90 风险边界以内的频率。",
+    formula: "actual_account_cost <= predicted_p90 的最终样本数 / 最终样本总数。",
+    note: "长期明显低于 90% 表示风险边界过窄；长期接近 100% 可能表示预测过于保守。",
+  },
+  "P50 偏差": {
+    purpose: "判断模型是系统性高估还是低估消耗。",
+    formula: "所有 (P50预测 - 真实消耗) 之和 / 所有真实消耗之和。",
+    note: "正值表示高估，负值表示低估；容量维护更需要警惕持续负偏差。",
+  },
+  "Nowcast WAPE": {
+    purpose: "衡量当前小时中途结合 TPM/RPM 后，对剩余小时消耗的估计准确性。",
+    formula: "所有 selected remaining 绝对误差之和 / 所有真实 remaining 消耗之和。",
+    note: "下方同时列出原模型通道和实时通道，便于判断最终选择策略是否真正改善误差。",
+  },
   "账号池概览": {
     purpose: "快速判断当前分组中有多少账号正在工作，以及还有多少账号属于正常资产。",
     formula: "概览由 active、正常账号、5h 429、7d 429和异常数量共同组成。所有数字来自完整分组缓存，不受当前分页影响。",
@@ -2317,6 +2493,43 @@ function formatPercent(value: unknown): string {
   const number = optionalNumberValue(value);
   if (number === null) return "-";
   return `${Math.round(number)}%可用`;
+}
+
+function formatAccuracyPercent(value: unknown): string {
+  const number = optionalNumberValue(value);
+  if (number === null) return "-";
+  return `${number.toFixed(1)}%`;
+}
+
+function formatSignedPercent(value: unknown): string {
+  const number = optionalNumberValue(value);
+  if (number === null) return "-";
+  return `${number > 0 ? "+" : ""}${number.toFixed(1)}%`;
+}
+
+function accuracyErrorTone(value: unknown): CapacityMetricTone {
+  const number = optionalNumberValue(value);
+  if (number === null) return "muted";
+  if (number <= 15) return "success";
+  if (number <= 30) return "warning";
+  return "danger";
+}
+
+function accuracyCoverageTone(value: unknown): CapacityMetricTone {
+  const number = optionalNumberValue(value);
+  if (number === null) return "muted";
+  if (number >= 85 && number <= 95) return "success";
+  if (number >= 75 && number <= 98) return "warning";
+  return "danger";
+}
+
+function accuracyBiasTone(value: unknown): CapacityMetricTone {
+  const number = optionalNumberValue(value);
+  if (number === null) return "muted";
+  const absolute = Math.abs(number);
+  if (absolute <= 10) return "success";
+  if (absolute <= 25) return "warning";
+  return "danger";
 }
 
 function usagePercentTone(value: unknown): CapacityMetricTone {

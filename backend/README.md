@@ -102,6 +102,9 @@ sub2api_cache_meta
 sub2api_dashboard_trends
 sub2api_tpm_samples
 sub2api_capacity_samples
+sub2api_hourly_forecasts
+sub2api_forecast_evaluations
+sub2api_forecast_accuracy_summaries
 ```
 
 刷新语义：
@@ -111,6 +114,14 @@ sub2api_capacity_samples
 - 新站点默认刷新间隔 30 分钟，可按站点修改。
 - scheduler 每 30 秒检查到期站点；同站点刷新使用 3 秒任务防抖。
 - 前端 60 秒静默刷新只读缓存，不触发远端同步。
+
+预测准确性结算：
+
+- 后台每 10 分钟结算一次逐小时预测和 5 分钟 Nowcast 快照。
+- 目标自然小时结束 15 分钟后写入 `provisional`，结束 90 分钟后重新读取 PostgreSQL 并覆写为 `final`。
+- `sub2api_forecast_evaluations` 使用确定性 `_id`，重复执行不会产生重复样本；记录保留 180 天。
+- `sub2api_forecast_accuracy_summaries` 按站点和分组保存当前模型版本的 24h、7d、28d WAPE、Bias、P90 Coverage、Pinball Loss、MAE 和预测步长分段。
+- 状态页只把 `final` 样本计入准确性，预测缓存过期后评估记录仍可用于回测。
 
 参见 [API 账号池状态与缓存设计](../docs/design/15-api-pool-status-cache.md) 和 [实时容量契约](../docs/design/30-api-pool-realtime-capacity-and-presence.md)。
 

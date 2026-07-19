@@ -6118,6 +6118,176 @@ code {
   gap: 8px 14px;
 }
 
+.pool-status-page .forecast-accuracy-band {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 14px;
+  padding: 0 0 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 76%, transparent);
+}
+
+.pool-status-page .forecast-accuracy-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pool-status-page .forecast-accuracy-head > div:first-child {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  gap: 3px 10px;
+  min-width: 0;
+}
+
+.pool-status-page .forecast-accuracy-head span,
+.pool-status-page .forecast-accuracy-head em,
+.pool-status-page .forecast-accuracy-metric span,
+.pool-status-page .forecast-accuracy-metric em,
+.pool-status-page .forecast-accuracy-horizon-title span,
+.pool-status-page .forecast-accuracy-horizons span,
+.pool-status-page .forecast-accuracy-horizons em,
+.pool-status-page .forecast-accuracy-empty span {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.pool-status-page .forecast-accuracy-head > div:first-child > em {
+  grid-column: 1 / -1;
+}
+
+.pool-status-page .forecast-accuracy-head strong {
+  font-size: 20px;
+}
+
+.pool-status-page .forecast-accuracy-window {
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(48px, 1fr));
+  align-items: center;
+  min-width: 164px;
+  padding: 3px;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg) 72%, #fff);
+}
+
+.pool-status-page .forecast-accuracy-window button {
+  min-height: 30px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.pool-status-page .forecast-accuracy-window button.active {
+  background: #fff;
+  color: var(--text);
+  box-shadow: 0 1px 3px rgb(40 51 70 / 12%);
+}
+
+.pool-status-page .forecast-accuracy-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+.pool-status-page .forecast-accuracy-metric {
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  min-width: 0;
+  padding: 11px 14px;
+}
+
+.pool-status-page .forecast-accuracy-metric + .forecast-accuracy-metric {
+  border-left: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+
+.pool-status-page .forecast-accuracy-metric > strong {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.pool-status-page .forecast-accuracy-metric > strong.success {
+  color: var(--success);
+}
+
+.pool-status-page .forecast-accuracy-metric > strong.warning {
+  color: #c47a14;
+}
+
+.pool-status-page .forecast-accuracy-metric > strong.danger {
+  color: var(--danger);
+}
+
+.pool-status-page .forecast-accuracy-metric > strong.muted {
+  color: var(--muted);
+}
+
+.pool-status-page .forecast-accuracy-horizon-wrap {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.pool-status-page .forecast-accuracy-horizon-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pool-status-page .forecast-accuracy-horizon-title strong {
+  font-size: 13px;
+}
+
+.pool-status-page .forecast-accuracy-horizons {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(118px, 1fr));
+  min-width: 0;
+}
+
+.pool-status-page .forecast-accuracy-horizons > div {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 9px;
+  min-width: 0;
+  padding: 7px 12px;
+}
+
+.pool-status-page .forecast-accuracy-horizons > div + div {
+  border-left: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+
+.pool-status-page .forecast-accuracy-horizons > div > strong {
+  grid-row: 1 / 4;
+  align-self: center;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.pool-status-page .forecast-accuracy-horizons b {
+  color: var(--text);
+}
+
+.pool-status-page .forecast-accuracy-empty {
+  display: grid;
+  gap: 3px;
+  padding: 12px 0;
+  border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+.pool-status-page .forecast-accuracy-empty strong {
+  font-size: 14px;
+}
+
 .pool-status-page .list-toolbar {
   border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
@@ -6369,6 +6539,34 @@ code {
 
   .pool-status-page .capacity-runway-head {
     align-items: stretch;
+  }
+
+  .pool-status-page .forecast-accuracy-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .pool-status-page .forecast-accuracy-window {
+    width: 100%;
+  }
+
+  .pool-status-page .forecast-accuracy-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pool-status-page .forecast-accuracy-metric:nth-child(3) {
+    border-left: 0;
+  }
+
+  .pool-status-page .forecast-accuracy-metric:nth-child(n + 3) {
+    border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  }
+
+  .pool-status-page .forecast-accuracy-horizons {
+    grid-template-columns: repeat(5, minmax(136px, 1fr));
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
   }
 
   .pool-status-page .capacity-runway-grid {

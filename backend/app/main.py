@@ -17,6 +17,7 @@ from app.modules.agent.scheduler import start_agent_scheduler, stop_agent_schedu
 from app.modules.sub2api.account_probe import probe_scheduler_loop
 from app.modules.sub2api.cache import refresh_account_caches_for_all_sites, refresh_scheduler_loop
 from app.modules.sub2api.capacity_sampler import capacity_sampler_loop
+from app.modules.sub2api.hourly_forecast_evaluation_service import forecast_accuracy_evaluator_loop
 from app.modules.sub2api.long_7d_probe import long_7d_probe_scheduler_loop
 from app.modules.sub2api.tpm_sampler import tpm_sampler_loop
 
@@ -43,6 +44,7 @@ async def lifespan(app_instance: FastAPI):
     long_7d_probe_task = asyncio.create_task(long_7d_probe_scheduler_loop(db))
     tpm_sampler_task = asyncio.create_task(tpm_sampler_loop(db))
     capacity_sampler_task = asyncio.create_task(capacity_sampler_loop(db))
+    forecast_accuracy_task = asyncio.create_task(forecast_accuracy_evaluator_loop(db))
     client_metric_sampler_task = asyncio.create_task(client_metric_sampler_loop(db))
     cleanup_task = asyncio.create_task(log_cleanup_loop(settings_obj))
     await start_agent_scheduler(app_instance)
@@ -59,6 +61,7 @@ async def lifespan(app_instance: FastAPI):
             long_7d_probe_task,
             tpm_sampler_task,
             capacity_sampler_task,
+            forecast_accuracy_task,
             client_metric_sampler_task,
             cleanup_task,
         )

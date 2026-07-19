@@ -23,6 +23,7 @@ from app.modules.sub2api.dashboard_postgres_repository import (
 )
 from app.modules.sub2api.postgres_repository import fetch_pool_snapshot as fetch_postgres_pool_snapshot
 from app.modules.sub2api.hourly_forecast import ForecastInputError, ForecastResult
+from app.modules.sub2api.hourly_forecast_evaluation_service import get_forecast_accuracy_summary
 from app.modules.sub2api.hourly_forecast_service import get_or_create_group_hourly_forecast
 from app.utils import now_utc, serialize_doc
 
@@ -1166,9 +1167,15 @@ async def _capacity_summary_for_accounts(
     recent_5h_remaining_usd = max(0.0, five_hour_capacity_usd - recent_5h_cost)
     recent_24h_remaining_usd = max(0.0, twenty_four_hour_capacity_usd - recent_24h_cost)
     seven_day_remaining_usd = max(0.0, seven_day_capacity_usd - seven_day_cost)
-    tpm_samples, demand_forecast = await asyncio.gather(
+    accuracy_request = (
+        get_forecast_accuracy_summary(db, site_id=site_id, group_id=group_id)
+        if group_id is not None
+        else asyncio.sleep(0, result=None)
+    )
+    tpm_samples, demand_forecast, forecast_accuracy = await asyncio.gather(
         _load_group_tpm_samples(db, site_id=site_id, group_id=group_id),
         _load_group_hourly_demand_forecast(db, site_id=site_id, group_id=group_id),
+        accuracy_request,
     )
     concurrency_total = float(concurrency_summary.get("concurrency_total_capacity") or 0)
     concurrency_accounts = int(concurrency_summary.get("concurrency_eligible_accounts") or 0)
@@ -1209,6 +1216,7 @@ async def _capacity_summary_for_accounts(
             if realtime_risk.get("forecast_status") == "active"
             else "single_pool_realtime"
         ),
+        "forecast_accuracy": forecast_accuracy,
         "traffic_site_id": site_id,
         "traffic_group_id": group_id,
         "traffic_metric_source": "sub2api_group",
