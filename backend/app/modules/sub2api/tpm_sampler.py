@@ -8,7 +8,13 @@ from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.modules.sub2api.cache import _fetch_all_accounts, get_site, is_sub2api_site, list_sites
+from app.modules.sub2api.cache import (
+    _fetch_all_accounts,
+    get_site,
+    is_sub2api_site,
+    list_sites,
+    update_cached_account_runtime_fields,
+)
 from app.modules.sub2api.client import Sub2ApiClient, account_in_group
 from app.modules.sub2api.dashboard import parse_bucket_time, parse_remote_datetime
 from app.utils import now_utc
@@ -122,6 +128,10 @@ async def sample_site_tpm(db: AsyncIOMotorDatabase, *, site_id: str) -> dict[str
         client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
         try:
             accounts = await _fetch_all_accounts(client)
+            try:
+                await update_cached_account_runtime_fields(db, site_id, accounts)
+            except Exception as exc:  # noqa: BLE001 - runtime cache enrichment must not fail metric sampling.
+                logger.warning("sub2api_runtime_cache_update_failed site_id=%s error=%s", site_id, exc)
             concurrency_by_group = _group_current_concurrency(accounts, group_ids)
         except Exception as exc:  # noqa: BLE001 - dashboard sampling can continue without concurrency.
             logger.warning("sub2api_concurrency_sample_failed site_id=%s error=%s", site_id, exc)

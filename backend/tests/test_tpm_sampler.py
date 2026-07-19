@@ -229,11 +229,13 @@ class TpmSiteSamplingTests(unittest.IsolatedAsyncioTestCase):
                 AsyncMock(return_value={"id": "api-5001", "base_url": "http://127.0.0.1:5001", "token": "secret"}),
             ),
             patch.object(tpm_sampler, "_fetch_all_accounts", fetch_accounts),
+            patch.object(tpm_sampler, "update_cached_account_runtime_fields", AsyncMock(return_value={"updated": 4})) as update_runtime,
             patch.object(tpm_sampler, "sample_group_tpm", sample_group),
         ):
             result = await tpm_sampler.sample_site_tpm(db, site_id="api-5001")
 
         fetch_accounts.assert_awaited_once()
+        update_runtime.assert_awaited_once_with(db, "api-5001", accounts)
         concurrency_by_group = {
             call_item.kwargs["group_id"]: call_item.kwargs["current_concurrency"]
             for call_item in sample_group.await_args_list

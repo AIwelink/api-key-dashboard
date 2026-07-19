@@ -9,6 +9,7 @@ from app.modules.system.client_site_database import (
     probe_database_connection,
     run_client_site_database_test,
 )
+from app.modules.system.sql_dsn import parse_sql_dsn, redact_sql_error
 
 
 class FakeResult:
@@ -43,6 +44,16 @@ class FakeEngine:
 
 
 class ClientSiteDatabaseTests(unittest.IsolatedAsyncioTestCase):
+    def test_sql_error_redaction_removes_url_encoded_password(self) -> None:
+        dsn = "host=postgres.internal user=reader password=pa@ss dbname=sub2api sslmode=disable"
+        driver_url = parse_sql_dsn(dsn, "postgresql").driver_url()
+
+        result = redact_sql_error(RuntimeError(f"failed to connect to {driver_url}"), dsn, "postgresql")
+
+        self.assertNotIn("pa@ss", result)
+        self.assertNotIn("pa%40ss", result)
+        self.assertNotIn(driver_url, result)
+
     def test_driver_database_url_uses_fixed_async_driver(self) -> None:
         self.assertEqual(
             driver_database_url("reader:secret@tcp(mysql.internal:3306)/newapi", "newapi"),

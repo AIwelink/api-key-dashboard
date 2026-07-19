@@ -4,7 +4,7 @@ import re
 import shlex
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import parse_qsl, unquote, urlsplit
+from urllib.parse import parse_qsl, quote, quote_plus, unquote, urlsplit
 
 from sqlalchemy.engine import URL
 
@@ -88,7 +88,15 @@ def redact_sql_error(exc: Exception, sql_dsn: str, database_type: str, *, max_le
     secrets = {sql_dsn}
     try:
         parsed = parse_sql_dsn(sql_dsn, database_type)
-        secrets.update({parsed.username, parsed.password})
+        secrets.update(
+            {
+                parsed.username,
+                parsed.password,
+                quote(parsed.password, safe=""),
+                quote_plus(parsed.password),
+                parsed.driver_url(),
+            }
+        )
     except ValueError:
         pass
     for secret in sorted((item for item in secrets if item), key=len, reverse=True):

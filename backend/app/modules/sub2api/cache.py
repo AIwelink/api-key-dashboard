@@ -12,9 +12,10 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReplaceOne, UpdateOne
 
 from app.modules.api_pools.capacity_limits import DEFAULT_CAPACITY_ACCOUNT_LIMITS, get_capacity_account_limits
-from app.modules.system.sql_dsn import sql_dsn_endpoint, validate_optional_sql_dsn
+from app.modules.system.sql_dsn import redact_sql_error, sql_dsn_endpoint, validate_optional_sql_dsn
 from app.modules.sub2api.capacity_risk import calculate_capacity_risk
 from app.modules.sub2api.client import Sub2ApiClient
+from app.modules.sub2api.postgres_repository import fetch_pool_snapshot as fetch_postgres_pool_snapshot
 from app.utils import now_utc, serialize_doc
 
 
@@ -74,6 +75,31 @@ ACCOUNT_USAGE_FIELDS = (
     "codex_usage_synced_at",
     "codex_usage_snapshot",
 )
+HTTP_RUNTIME_ACCOUNT_FIELDS = (
+    "active_sessions",
+    "base_rpm",
+    "credentials_status",
+    "current_concurrency",
+    "current_rpm",
+    "current_window_cost",
+    "enable_tls_fingerprint",
+    "max_sessions",
+    "parent_chatgpt_account_id",
+    "parent_email",
+    "parent_plan_type",
+    "parent_privacy_mode",
+    "parent_subscription_expires_at",
+    "proxy",
+    "rpm_sticky_buffer",
+    "rpm_strategy",
+    "session_id_masking_enabled",
+    "session_idle_timeout_minutes",
+    "tls_fingerprint_profile_id",
+    "user_msg_queue_mode",
+    "window_cost_limit",
+    "window_cost_sticky_reserve",
+)
+HTTP_RUNTIME_CACHE_MAX_AGE_SECONDS = 3 * 60
 
 _refresh_tasks: dict[str, asyncio.Task] = {}
 _refresh_tasks_lock = asyncio.Lock()
@@ -361,16 +387,13 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
             )
 
             client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
-            groups_data, raw_accounts = await asyncio.gather(
-                client.list_groups(page=1, page_size=500),
-                _fetch_all_accounts(client),
-            )
-            groups = groups_data.get("items", [])
+            pool_snapshot = await _fetch_pool_snapshot(site, client)
+            groups = pool_snapshot["groups"]
             group_ids = [_int_group_id(group.get("id")) for group in groups if isinstance(group, dict)]
             group_ids = [group_id for group_id in group_ids if group_id is not None]
-            accounts = [_normalize_account_snapshot(account) for account in raw_accounts]
+            accounts = [_normalize_account_snapshot(account) for account in pool_snapshot["accounts"]]
             fetched_at = now_utc()
-            dashboard_summary, _ = await asyncio.gather(
+            dashboard_summary, runtime_fetched_at_by_account = await asyncio.gather(
                 _refresh_dashboard_for_cache(db, site_id=site_id, client=client, group_ids=group_ids),
                 _apply_account_usage_windows(db, site_id, client, accounts, fetched_at),
             )
@@ -412,6 +435,12 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                         "group_ids": _extract_group_ids(account),
                         "status": account.get("status"),
                         "schedulable": account.get("schedulable"),
+                        "runtime_fetched_at": _runtime_fetched_at_for_snapshot(
+                            pool_snapshot["source"],
+                            account.get("id"),
+                            fetched_at,
+                            runtime_fetched_at_by_account,
+                        ),
                         **_account_cache_fields(account),
                         "account": account,
                         "fetched_at": fetched_at,
@@ -466,6 +495,8 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                 "status": "succeeded",
                 "groups": len(groups),
                 "accounts": len(accounts),
+                "account_snapshot_source": pool_snapshot["source"],
+                "account_snapshot_fallback_reason": pool_snapshot.get("fallback_reason"),
                 "auto_removed_abnormal_accounts": auto_remove_summary.get("removed", 0) if auto_remove_summary else 0,
                 "auto_remove_abnormal_failed": auto_remove_summary.get("failed", 0) if auto_remove_summary else 0,
                 "dashboard": dashboard_summary,
@@ -479,10 +510,11 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                 upsert=True,
             )
             logger.info(
-                "sub2api_refresh_finished site_id=%s groups=%s accounts=%s",
+                "sub2api_refresh_finished site_id=%s groups=%s accounts=%s source=%s",
                 site_id,
                 len(groups),
                 len(accounts),
+                pool_snapshot["source"],
             )
             return serialize_doc(summary)
         except asyncio.CancelledError:
@@ -623,6 +655,43 @@ async def _fetch_all_accounts(client: Sub2ApiClient) -> list[dict[str, Any]]:
     return accounts
 
 
+async def _fetch_pool_snapshot(site: dict[str, Any], client: Sub2ApiClient) -> dict[str, Any]:
+    sql_dsn = str(site.get("sql_dsn") or "").strip()
+    if sql_dsn:
+        try:
+            snapshot = await fetch_postgres_pool_snapshot(sql_dsn)
+            return {**snapshot, "source": "postgresql"}
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the established HTTP path is the read fallback.
+            fallback_reason = redact_sql_error(exc, sql_dsn, "postgresql")
+            logger.warning("sub2api_database_snapshot_failed fallback=http error=%s", fallback_reason)
+            snapshot = await _fetch_http_pool_snapshot(client)
+            return {**snapshot, "source": "http_fallback", "fallback_reason": fallback_reason}
+    snapshot = await _fetch_http_pool_snapshot(client)
+    return {**snapshot, "source": "http"}
+
+
+async def _fetch_http_pool_snapshot(client: Sub2ApiClient) -> dict[str, list[dict[str, Any]]]:
+    groups_data, accounts = await asyncio.gather(
+        client.list_groups(page=1, page_size=500),
+        _fetch_all_accounts(client),
+    )
+    groups = [group for group in groups_data.get("items", []) if isinstance(group, dict)]
+    return {"groups": groups, "accounts": accounts}
+
+
+def _runtime_fetched_at_for_snapshot(
+    source: str,
+    account_id: Any,
+    fetched_at: datetime,
+    restored_runtime_fetched_at: dict[Any, datetime],
+) -> datetime | None:
+    if source in {"http", "http_fallback"}:
+        return fetched_at
+    return restored_runtime_fetched_at.get(account_id)
+
+
 async def _refresh_dashboard_for_cache(
     db: AsyncIOMotorDatabase,
     *,
@@ -645,11 +714,11 @@ async def _apply_account_usage_windows(
     client: Sub2ApiClient,
     accounts: list[dict[str, Any]],
     synced_at: datetime,
-) -> None:
-    await _restore_cached_usage_snapshots(db, site_id, accounts)
+) -> dict[Any, datetime]:
+    runtime_fetched_at_by_account = await _restore_cached_usage_snapshots(db, site_id, accounts)
     selected_accounts = [account for account in accounts if account.get("id") is not None]
     if not selected_accounts:
-        return
+        return runtime_fetched_at_by_account
     logger.info(
         "sub2api_account_usage_refresh_start site_id=%s selected=%s total=%s throttled=false",
         site_id,
@@ -671,12 +740,17 @@ async def _apply_account_usage_windows(
     limits = httpx.Limits(max_connections=None, max_keepalive_connections=200)
     async with httpx.AsyncClient(timeout=15, limits=limits) as http_client:
         await asyncio.gather(*(fetch_and_apply(account, http_client) for account in selected_accounts))
+    return runtime_fetched_at_by_account
 
 
-async def _restore_cached_usage_snapshots(db: AsyncIOMotorDatabase, site_id: str, accounts: list[dict[str, Any]]) -> None:
+async def _restore_cached_usage_snapshots(
+    db: AsyncIOMotorDatabase,
+    site_id: str,
+    accounts: list[dict[str, Any]],
+) -> dict[Any, datetime]:
     account_ids = [account.get("id") for account in accounts if account.get("id") is not None]
     if not account_ids:
-        return
+        return {}
     cached_by_remote_id: dict[Any, dict[str, Any]] = {}
     cursor = db.sub2api_accounts_cache.find(
         {"site_id": site_id, "sub2api_account_id": {"$in": account_ids}},
@@ -689,17 +763,80 @@ async def _restore_cached_usage_snapshots(db: AsyncIOMotorDatabase, site_id: str
             "remote_test_response_preview": 1,
             "remote_test_latency_ms": 1,
             "remote_test_error": 1,
+            "runtime_fetched_at": 1,
+            "fetched_at": 1,
         },
     )
     async for doc in cursor:
         cached_by_remote_id[doc.get("sub2api_account_id")] = doc
+    runtime_fetched_at_by_account: dict[Any, datetime] = {}
     for account in accounts:
         cached = cached_by_remote_id.get(account.get("id"))
         if isinstance(cached, dict):
             cached_account = cached.get("account", {}) if isinstance(cached.get("account"), dict) else {}
+            runtime_fetched_at = _copy_cached_http_runtime_fields(
+                account,
+                cached_account,
+                runtime_fetched_at=cached.get("runtime_fetched_at") or cached.get("fetched_at"),
+            )
+            if runtime_fetched_at is not None:
+                runtime_fetched_at_by_account[account.get("id")] = runtime_fetched_at
             _copy_cached_plan_type(account, cached_account)
             _copy_cached_usage(account, cached_account)
             _copy_cached_remote_test(account, cached)
+    return runtime_fetched_at_by_account
+
+
+def _copy_cached_http_runtime_fields(
+    account: dict[str, Any],
+    cached: dict[str, Any],
+    *,
+    runtime_fetched_at: Any,
+) -> datetime | None:
+    fetched_at = _parse_datetime(runtime_fetched_at)
+    if fetched_at is None or (now_utc() - fetched_at).total_seconds() > HTTP_RUNTIME_CACHE_MAX_AGE_SECONDS:
+        return None
+    for field in HTTP_RUNTIME_ACCOUNT_FIELDS:
+        if account.get(field) is None and cached.get(field) is not None:
+            account[field] = cached[field]
+    return fetched_at
+
+
+async def update_cached_account_runtime_fields(
+    db: AsyncIOMotorDatabase,
+    site_id: str,
+    accounts: list[dict[str, Any]],
+    *,
+    observed_at: datetime | None = None,
+) -> dict[str, Any]:
+    observed_at = observed_at or now_utc()
+    operations = []
+    for account in accounts:
+        account_id = account.get("id")
+        if account_id is None:
+            continue
+        updates = {
+            f"account.{field}": account[field]
+            for field in HTTP_RUNTIME_ACCOUNT_FIELDS
+            if field in account and account.get(field) is not None
+        }
+        unset_fields = {
+            f"account.{field}": ""
+            for field in HTTP_RUNTIME_ACCOUNT_FIELDS
+            if field not in account or account.get(field) is None
+        }
+        updates["runtime_fetched_at"] = observed_at
+        operations.append(
+            UpdateOne(
+                {"site_id": site_id, "sub2api_account_id": account_id},
+                {"$set": updates, "$unset": unset_fields},
+            )
+        )
+    if operations:
+        lock = _site_locks.setdefault(site_id, asyncio.Lock())
+        async with lock:
+            await db.sub2api_accounts_cache.bulk_write(operations, ordered=False)
+    return {"updated": len(operations), "observed_at": observed_at}
 
 
 def _copy_cached_plan_type(account: dict[str, Any], cached: dict[str, Any]) -> None:
