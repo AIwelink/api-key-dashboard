@@ -10,16 +10,18 @@ from app.modules.api_pools.capacity_limits import normalize_capacity_limits
 from app.modules.sub2api import auto_refill, cache
 
 
-def bug_team_account(*, used_percent: float = 54) -> dict:
+def bug_team_account(*, used_percent: float = 54, reset_after_seconds: float = 2_607_895) -> dict:
     return {
         "id": 1779,
+        "status": "active",
+        "schedulable": True,
         "plan_type": "team",
         "credentials": {"plan_type": "team"},
         "extra": {
             "codex_5h_reset_after_seconds": 0,
             "codex_5h_used_percent": 0,
             "codex_5h_window_minutes": 0,
-            "codex_7d_reset_after_seconds": 2_607_895,
+            "codex_7d_reset_after_seconds": reset_after_seconds,
             "codex_7d_used_percent": used_percent,
             "codex_7d_window_minutes": 43_800,
         },
@@ -199,21 +201,68 @@ class BugTeamCapacityTests(unittest.TestCase):
         self.assertEqual(capacity["plus"]["available_5h_accounts"], 0)
         self.assertEqual(capacity["plus"]["five_hour_dynamic_capacity_usd"], 0)
 
-    def test_bug_team_is_excluded_from_capacity_summary(self) -> None:
+    def test_bug_team_below_seven_day_limit_participates_in_capacity_summary(self) -> None:
         limits = normalize_capacity_limits(None)
+        account = bug_team_account(used_percent=54)
 
         summary = cache._capacity_by_account_type(
-            [bug_team_account(used_percent=54)],
-            [bug_team_account(used_percent=54)],
+            [account],
+            [account],
             limits,
         )
 
-        self.assertFalse(cache._is_capacity_account(bug_team_account()))
-        self.assertEqual(cache._primary_capacity_type(summary), "total")
-        self.assertEqual(summary["bug_team"]["available_accounts"], 0)
-        self.assertEqual(summary["total"]["available_accounts"], 0)
-        self.assertAlmostEqual(summary["total"]["five_hour_capacity_usd"], 0)
-        self.assertAlmostEqual(summary["total"]["seven_day_capacity_usd"], 0)
+        self.assertTrue(cache._is_capacity_account(account))
+        self.assertEqual(cache._primary_capacity_type(summary), "bug_team")
+        self.assertEqual(summary["bug_team"]["available_accounts"], 1)
+        self.assertEqual(summary["total"]["available_accounts"], 1)
+        self.assertAlmostEqual(summary["total"]["five_hour_capacity_usd"], 230)
+        self.assertAlmostEqual(summary["total"]["seven_day_capacity_usd"], 230)
+
+    def test_bug_team_temporary_403_is_not_treated_as_seven_day_exhaustion(self) -> None:
+        current_time = datetime(2026, 7, 20, 20, 20, tzinfo=timezone.utc)
+        account = bug_team_account(used_percent=1)
+        account["temp_unschedulable_until"] = current_time + timedelta(minutes=10)
+        account["temp_unschedulable_reason"] = "OpenAI 403 temporary cooldown"
+
+        with patch.object(cache, "now_utc", return_value=current_time):
+            status = cache._pool_account_status_summary([account])
+
+            self.assertFalse(cache._is_bug_team_seven_day_exhausted(account))
+            self.assertFalse(cache._is_excluded_bug_team_account(account))
+            self.assertTrue(cache._is_dynamic_capacity_account(account))
+
+        self.assertEqual(status["pool_normal_accounts"], 1)
+        self.assertEqual(status["pool_active_normal_accounts"], 1)
+        self.assertEqual(status["pool_seven_day_rate_limited_accounts"], 0)
+        self.assertEqual(status["pool_excluded_bug_team_accounts"], 0)
+
+    def test_exhausted_bug_team_over_two_days_from_reset_is_excluded(self) -> None:
+        account = bug_team_account(used_percent=100, reset_after_seconds=3 * 24 * 60 * 60)
+        status = cache._pool_account_status_summary([account])
+
+        self.assertTrue(cache._is_excluded_bug_team_account(account))
+        self.assertFalse(cache._is_capacity_account(account))
+        self.assertEqual(status["pool_normal_accounts"], 0)
+        self.assertEqual(status["pool_excluded_bug_team_accounts"], 1)
+
+    def test_exhausted_bug_team_within_two_days_participates_in_dynamic_capacity(self) -> None:
+        account = bug_team_account(used_percent=100, reset_after_seconds=24 * 60 * 60)
+        limits = normalize_capacity_limits(None)
+        status = cache._pool_account_status_summary([account])
+        capacity_accounts = [item for item in [account] if cache._is_capacity_account(item)]
+        dynamic_accounts = [item for item in capacity_accounts if cache._is_dynamic_capacity_account(item)]
+        summary = cache._capacity_by_account_type(capacity_accounts, dynamic_accounts, limits)
+
+        self.assertFalse(cache._is_excluded_bug_team_account(account))
+        self.assertTrue(cache._is_capacity_account(account))
+        self.assertEqual(status["pool_normal_accounts"], 1)
+        self.assertEqual(status["pool_seven_day_rate_limited_accounts"], 1)
+        self.assertEqual(status["pool_excluded_bug_team_accounts"], 0)
+        self.assertEqual(summary["bug_team"]["available_accounts"], 1)
+        self.assertEqual(summary["bug_team"]["available_5h_accounts"], 1)
+        self.assertEqual(summary["bug_team"]["five_hour_dynamic_capacity_usd"], 230)
+        self.assertGreater(summary["bug_team"]["five_hour_dynamic_remaining_usd"], 0)
+        self.assertGreater(summary["bug_team"]["seven_day_dynamic_remaining_usd"], 0)
 
     def test_schedulable_false_rate_limited_account_is_excluded_from_total_capacity(self) -> None:
         account = {
@@ -544,7 +593,7 @@ class FiveHourCapacityPercentageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["available_7d_percent"], 91)
         self.assertEqual(summary["actual_available_7d_percent"], 70)
 
-    async def test_plus_dynamic_capacity_uses_site_specific_five_hour_limit(self) -> None:
+    async def test_plus_dynamic_capacity_includes_seven_day_reset_within_two_days(self) -> None:
         limits = normalize_capacity_limits({"plus": {"five_hour_usd": 120, "seven_day_usd": 600}})
         accounts = [
             {
@@ -629,7 +678,7 @@ class FiveHourCapacityPercentageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["account_type"], "plus")
         self.assertEqual(summary["capacity_limits"]["plus"]["five_hour_usd"], 120)
         self.assertEqual(summary["active_five_hour_capacity_usd"], 360)
-        self.assertEqual(summary["dynamic_five_hour_capacity_usd"], 240)
+        self.assertEqual(summary["dynamic_five_hour_capacity_usd"], 360)
 
 
 if __name__ == "__main__":

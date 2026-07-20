@@ -1100,7 +1100,7 @@ async def _capacity_summary_for_accounts(
     capacity_accounts_all = [account for account in accounts if _is_capacity_account(account)]
     capacity_accounts, duplicate_capacity_accounts = _collapse_capacity_accounts_by_email(capacity_accounts_all)
     concurrency_summary = _concurrency_capacity_summary(capacity_accounts)
-    five_hour_capacity_accounts = [account for account in capacity_accounts if not _is_7d_exhausted(account)]
+    five_hour_capacity_accounts = [account for account in capacity_accounts if _is_dynamic_capacity_account(account)]
     used_5h = _average_percent(_usage_number(account, "codex_5h_used_percent") for account in capacity_accounts)
     capacity_limits = (await get_capacity_account_limits(db, site_id))["limits"]
     type_summary = _capacity_by_account_type(capacity_accounts, five_hour_capacity_accounts, capacity_limits)
@@ -1448,7 +1448,7 @@ def _merge_capacity_duplicate_account(left: dict[str, Any], right: dict[str, Any
     merged["duplicate_capacity_account_ids"] = [*_capacity_duplicate_ids(left), right.get("id")]
     merged["duplicate_capacity_account_count"] = len([item for item in merged["duplicate_capacity_account_ids"] if item is not None])
     merged["extra"] = merged_extra
-    if _is_7d_exhausted(left) or _is_7d_exhausted(right):
+    if _is_effective_seven_day_exhausted(left) or _is_effective_seven_day_exhausted(right):
         merged["codex_7d_used_percent"] = 100
         merged_extra["codex_7d_used_percent"] = 100
     return merged
@@ -1552,7 +1552,7 @@ def _add_capacity_account(
     capacity_limits: dict[str, dict[str, float]] | None = None,
 ) -> None:
     limits_by_type = capacity_limits or CAPACITY_ACCOUNT_LIMITS
-    if account_type == "bug_team" or account_type not in limits_by_type:
+    if account_type not in limits_by_type:
         return
     limits = limits_by_type[account_type]
     dynamic_five_hour = _dynamic_five_hour_usage(account, limits["five_hour_usd"], limits["seven_day_usd"], five_hour_available=five_hour_available)
@@ -1611,8 +1611,14 @@ def _dynamic_five_hour_usage(account: dict[str, Any] | None, five_hour_limit_usd
             "seven_day_actual_remaining_usd": seven_day_limit_usd,
         }
 
-    use_seven_day_percent = math.isclose(five_hour_limit_usd, seven_day_limit_usd, rel_tol=1e-9, abs_tol=1e-9)
+    use_seven_day_percent = _is_effective_seven_day_exhausted(account) or math.isclose(
+        five_hour_limit_usd,
+        seven_day_limit_usd,
+        rel_tol=1e-9,
+        abs_tol=1e-9,
+    )
     five_hour_prefix = "codex_7d" if use_seven_day_percent else "codex_5h"
+    dynamic_max_wait_seconds = SEVEN_DAY_DYNAMIC_MAX_WAIT_SECONDS if use_seven_day_percent else FIVE_HOUR_DYNAMIC_MAX_WAIT_SECONDS
     used_percent = _usage_number(account, f"{five_hour_prefix}_used_percent")
     used_percent = _clamp_percent(used_percent if isinstance(used_percent, (int, float)) else 0)
     seven_day_used_percent = _usage_number(account, "codex_7d_used_percent")
@@ -1638,7 +1644,7 @@ def _dynamic_five_hour_usage(account: dict[str, Any] | None, five_hour_limit_usd
     else:
         seven_day_dynamic_used_usd = seven_day_limit_usd * seven_day_used_percent / 100 * seven_day_reset_factor
         seven_day_dynamic_used_usd = max(0.0, min(seven_day_limit_usd, seven_day_dynamic_used_usd))
-    if float(reset_after_seconds) > FIVE_HOUR_DYNAMIC_MAX_WAIT_SECONDS:
+    if float(reset_after_seconds) > dynamic_max_wait_seconds:
         return {
             "capacity_usd": five_hour_limit_usd,
             "used_usd": actual_used_usd,
@@ -2219,14 +2225,14 @@ def _pool_account_status_summary(accounts: list[dict[str, Any]]) -> dict[str, in
     excluded_bug_team_accounts = 0
 
     for account in accounts:
-        if is_bug_team_account(account):
+        if _is_excluded_bug_team_account(account):
             excluded_bug_team_accounts += 1
             continue
         if _is_abnormal_account(account):
             abnormal_accounts += 1
             continue
         normal_accounts += 1
-        is_seven_day_rate_limited = _is_7d_exhausted(account)
+        is_seven_day_rate_limited = _is_effective_seven_day_exhausted(account)
         is_five_hour_rate_limited = not is_seven_day_rate_limited and _is_five_hour_rate_limited(account)
         if is_seven_day_rate_limited:
             seven_day_rate_limited_accounts += 1
@@ -2301,7 +2307,7 @@ def _is_five_hour_rate_limited(account: dict[str, Any]) -> bool:
     used_5h = _usage_number(account, "codex_5h_used_percent")
     if isinstance(used_5h, (int, float)) and used_5h >= 100:
         return True
-    return _is_temporary_rate_limit(account) and not _is_7d_exhausted(account)
+    return _is_temporary_rate_limit(account) and not _is_effective_seven_day_exhausted(account)
 
 
 def _concurrency_capacity_summary(accounts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2385,7 +2391,7 @@ def _concurrency_number(value: float) -> int | float:
 
 
 def _current_concurrency_unavailable_kind(account: dict[str, Any]) -> str | None:
-    if _is_7d_exhausted(account):
+    if _is_effective_seven_day_exhausted(account):
         return "short_seven_day"
     if _is_five_hour_rate_limited(account):
         return "five_hour"
@@ -2410,7 +2416,7 @@ def _is_long_seven_day_concurrency_limit(account: dict[str, Any]) -> bool:
         reset_at = _parse_datetime(_first_present(account, extra, "codex_7d_reset_at", "7d_reset_at"))
         reset_after = max(0.0, (reset_at - now_utc()).total_seconds()) if reset_at is not None else None
     has_long_reset = isinstance(reset_after, (int, float)) and reset_after > 24 * 60 * 60
-    return _is_7d_exhausted(account) and has_long_reset
+    return _is_effective_seven_day_exhausted(account) and has_long_reset
 
 
 def _is_7d_exhausted(account: dict[str, Any]) -> bool:
@@ -2418,6 +2424,34 @@ def _is_7d_exhausted(account: dict[str, Any]) -> bool:
     if isinstance(used_7d, (int, float)) and used_7d >= 100:
         return True
     return _uses_seven_day_as_primary_usage_window(account) and _is_temporary_rate_limit(account)
+
+
+def _is_bug_team_seven_day_exhausted(account: dict[str, Any]) -> bool:
+    used_percent = _usage_number(account, "codex_7d_used_percent")
+    return isinstance(used_percent, (int, float)) and used_percent >= 100
+
+
+def _is_effective_seven_day_exhausted(account: dict[str, Any]) -> bool:
+    if is_bug_team_account(account):
+        return _is_bug_team_seven_day_exhausted(account)
+    return _is_7d_exhausted(account)
+
+
+def _seven_day_recovers_within_dynamic_window(account: dict[str, Any]) -> bool:
+    reset_after = _usage_number(account, "codex_7d_reset_after_seconds")
+    if not isinstance(reset_after, (int, float)):
+        extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+        reset_at = _parse_datetime(_first_present(account, extra, "codex_7d_reset_at", "7d_reset_at"))
+        reset_after = max(0.0, (reset_at - now_utc()).total_seconds()) if reset_at is not None else None
+    return isinstance(reset_after, (int, float)) and 0 <= reset_after <= SEVEN_DAY_DYNAMIC_MAX_WAIT_SECONDS
+
+
+def _is_dynamic_capacity_account(account: dict[str, Any]) -> bool:
+    return not _is_effective_seven_day_exhausted(account) or _seven_day_recovers_within_dynamic_window(account)
+
+
+def _is_excluded_bug_team_account(account: dict[str, Any]) -> bool:
+    return is_bug_team_account(account) and _is_bug_team_seven_day_exhausted(account) and not _seven_day_recovers_within_dynamic_window(account)
 
 
 def _uses_seven_day_as_primary_usage_window(account: dict[str, Any]) -> bool:
@@ -2434,10 +2468,10 @@ def _uses_seven_day_as_primary_usage_window(account: dict[str, Any]) -> bool:
 def _is_capacity_account(account: dict[str, Any]) -> bool:
     if account.get("schedulable") is False:
         return False
-    if is_bug_team_account(account) or _is_abnormal_account(account):
+    if _is_excluded_bug_team_account(account) or _is_abnormal_account(account):
         return False
     status = str(account.get("status") or "").lower()
-    if _is_7d_exhausted(account) or _is_five_hour_rate_limited(account):
+    if _is_effective_seven_day_exhausted(account) or _is_five_hour_rate_limited(account):
         return True
     return status == "active" and account.get("schedulable") is not False
 

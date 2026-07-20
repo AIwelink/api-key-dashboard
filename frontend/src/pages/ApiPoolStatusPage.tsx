@@ -1107,7 +1107,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
               <MiniMetric label="7d 429" value={numberValue(selectedGroup?.capacity_summary?.pool_seven_day_rate_limited_accounts)} />
               <MiniMetric label="异常数量" value={numberValue(selectedGroup?.capacity_summary?.pool_abnormal_accounts)} />
             </div>
-            <p>已排除 Bug Team <AnimatedValue value={numberValue(selectedGroup?.capacity_summary?.pool_excluded_bug_team_accounts)} /> 个，不参与概览与容量计算。</p>
+            <p>已排除长期 7d 429 Bug Team <AnimatedValue value={numberValue(selectedGroup?.capacity_summary?.pool_excluded_bug_team_accounts)} /> 个（恢复超过 2 天或时间未知），不参与概览与容量计算。</p>
           </section>
 
           <ConcurrencyCapacitySummary summary={selectedGroup?.capacity_summary} loading={capacitySummaryLoading} />
