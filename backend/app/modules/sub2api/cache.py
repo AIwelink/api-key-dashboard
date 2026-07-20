@@ -1898,6 +1898,10 @@ async def _load_group_tpm_samples(
             "rpm": 1,
             "average_duration_ms": 1,
             "current_concurrency": 1,
+            "total_account_cost": 1,
+            "account_cost_delta": 1,
+            "account_cost_per_minute": 1,
+            "account_cost_per_hour": 1,
         },
     ).sort("sampled_at", 1).limit(400)
     return [doc async for doc in cursor]

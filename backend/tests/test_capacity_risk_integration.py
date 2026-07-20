@@ -196,10 +196,17 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["burst_1h"]["current_hour_observed_cost"], 200)
 
 
-    async def test_group_sample_loader_includes_recorded_concurrency(self) -> None:
+    async def test_group_sample_loader_includes_concurrency_and_direct_cost(self) -> None:
         class Cursor:
             def __init__(self) -> None:
-                self.items = [{"sampled_at": NOW, "tpm": 1000, "current_concurrency": 7}]
+                self.items = [
+                    {
+                        "sampled_at": NOW,
+                        "tpm": 1000,
+                        "current_concurrency": 7,
+                        "account_cost_per_minute": 2.5,
+                    }
+                ]
 
             def sort(self, *_args):
                 return self
@@ -232,6 +239,10 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(collection.query["group_id"], 3)
         self.assertEqual(collection.query["schema_version"], 2)
         self.assertEqual(collection.projection["current_concurrency"], 1)
+        self.assertEqual(collection.projection["total_account_cost"], 1)
+        self.assertEqual(collection.projection["account_cost_delta"], 1)
+        self.assertEqual(collection.projection["account_cost_per_minute"], 1)
+        self.assertEqual(collection.projection["account_cost_per_hour"], 1)
 
     async def test_reserve_pool_is_not_queried_or_included(self) -> None:
         limits = normalize_capacity_limits({"plus": {"five_hour_usd": 2, "seven_day_usd": 10}})
