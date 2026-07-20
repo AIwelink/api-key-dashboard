@@ -18,7 +18,7 @@ describe("app navigation", () => {
     expect(groups.every((group) => group.length > 0)).toBe(true);
     expect(groups.map((group) => group.map(([key]) => key))).toEqual([
       ["api-pools"],
-      ["operations-management"],
+      ["traffic-analysis", "operations-management"],
       ["event-records", "alert-center", "pool-lifecycle", "client-sites"],
       ["agent-analysis", "agent-workbench", "api-tokens", "presence", "users", "logs"],
     ]);
@@ -33,7 +33,7 @@ describe("app navigation", () => {
     expect(groups.every((group) => group.length > 0)).toBe(true);
     expect(groups.map((group) => group.map(([key]) => key))).toEqual([
       ["api-pools"],
-      ["operations-management"],
+      ["traffic-analysis", "operations-management"],
       ["event-records", "alert-center", "pool-lifecycle", "client-sites"],
       ["agent-analysis", "agent-workbench", "api-tokens", "users", "logs"],
     ]);
@@ -51,6 +51,7 @@ describe("app navigation", () => {
   });
 
   it("uses the API pools page for root and unknown paths", () => {
+    expect(viewFromPath("/traffic-analysis")).toBe("traffic-analysis");
     expect(viewFromPath("/operations-management")).toBe("operations-management");
     expect(viewFromPath("/")).toBe("api-pools");
     expect(viewFromPath("/unknown-page")).toBe("api-pools");

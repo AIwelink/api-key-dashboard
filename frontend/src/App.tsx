@@ -16,6 +16,7 @@ import { PushErrorTodoPage, TodoPage } from "./pages/TodoPage";
 import { LoginPage } from "./pages/LoginPage";
 import { OperationsManagementPage } from "./pages/OperationsManagementPage";
 import { PresencePage } from "./pages/PresencePage";
+import { TrafficAnalysisPage } from "./pages/TrafficAnalysisPage";
 import { UploadPage } from "./pages/UploadPage";
 import { UsersPage } from "./pages/UsersPage";
 import { useForegroundPresence } from "./hooks/useForegroundPresence";
@@ -50,6 +51,7 @@ const poolOperationsNavItems: Array<[ViewName, string]> = [
 ];
 
 const operationsManagementNavItems: Array<[ViewName, string]> = [
+  ["traffic-analysis", "访问流量分析"],
   ["operations-management", "运营管理"],
 ];
 
@@ -92,6 +94,7 @@ const navShortLabels: Record<ViewName, string> = {
   "available-pool": "可",
   "reserve-pool": "备",
   "api-pools": "池",
+  "traffic-analysis": "流",
   "operations-management": "运",
   "event-records": "事",
   "alert-center": "警",
@@ -113,6 +116,7 @@ const viewPaths: Record<ViewName, string> = {
   "available-pool": "/available-pool",
   "reserve-pool": "/reserve-pool",
   "api-pools": "/api-pool-status",
+  "traffic-analysis": "/traffic-analysis",
   "operations-management": "/operations-management",
   "event-records": "/event-records",
   "alert-center": "/alert-center",
@@ -289,6 +293,7 @@ function App() {
             {view === "available-pool" && <AvailablePoolPage token={token} showToast={showToast} />}
             {view === "reserve-pool" && <ReservePoolPage token={token} showToast={showToast} />}
             {view === "api-pools" && <ApiPoolStatusPage token={token} showToast={showToast} />}
+            {view === "traffic-analysis" && <TrafficAnalysisPage />}
             {view === "operations-management" && <OperationsManagementPage />}
             {view === "event-records" && <EventRecordsPage token={token} showToast={showToast} />}
             {view === "alert-center" && <AlertCenterPage token={token} showToast={showToast} />}
@@ -311,7 +316,7 @@ function App() {
 function navigationGroupClass(group: Array<[ViewName, string]>) {
   const firstKey = group[0]?.[0];
   if (firstKey === "api-pools") return "nav-group pool-status-nav-group";
-  if (firstKey === "operations-management") return "nav-group operations-management-nav-group";
+  if (firstKey === "traffic-analysis") return "nav-group operations-management-nav-group";
   if (firstKey === "event-records") return "nav-group pool-operations-nav-group";
   return "nav-group";
 }
