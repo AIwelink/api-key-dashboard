@@ -14,6 +14,7 @@ import { IntroPage } from "./pages/IntroPage";
 import { AvailablePoolPage, ReservePoolPage } from "./pages/ManualPoolPage";
 import { PushErrorTodoPage, TodoPage } from "./pages/TodoPage";
 import { LoginPage } from "./pages/LoginPage";
+import { OperationsManagementPage } from "./pages/OperationsManagementPage";
 import { PresencePage } from "./pages/PresencePage";
 import { UploadPage } from "./pages/UploadPage";
 import { UsersPage } from "./pages/UsersPage";
@@ -39,10 +40,17 @@ const poolNavItems: Array<[ViewName, string]> = [
   ["available-pool", "可用池"],
   ["reserve-pool", "使用备选池"],
   ["api-pools", "API 账号池状态"],
+];
+
+const poolOperationsNavItems: Array<[ViewName, string]> = [
   ["event-records", "事件记录"],
   ["alert-center", "异常告警"],
   ["pool-lifecycle", "账号池管理"],
   ["client-sites", "客户站点"],
+];
+
+const operationsManagementNavItems: Array<[ViewName, string]> = [
+  ["operations-management", "运营管理"],
 ];
 
 const adminNavItems: Array<[ViewName, string]> = [
@@ -68,6 +76,8 @@ export function getVisibleNavigationGroups(canViewPresence: boolean): Array<Arra
     navItems,
     accountNavItems,
     poolNavItems,
+    operationsManagementNavItems,
+    poolOperationsNavItems,
     adminNavItems.filter(([key]) => key !== "presence" || canViewPresence),
   ]
     .map((group) => group.filter(([key]) => !hiddenNavItems.has(key)))
@@ -82,6 +92,7 @@ const navShortLabels: Record<ViewName, string> = {
   "available-pool": "可",
   "reserve-pool": "备",
   "api-pools": "池",
+  "operations-management": "运",
   "event-records": "事",
   "alert-center": "警",
   "pool-lifecycle": "站",
@@ -102,6 +113,7 @@ const viewPaths: Record<ViewName, string> = {
   "available-pool": "/available-pool",
   "reserve-pool": "/reserve-pool",
   "api-pools": "/api-pool-status",
+  "operations-management": "/operations-management",
   "event-records": "/event-records",
   "alert-center": "/alert-center",
   "pool-lifecycle": "/account-pool-management",
@@ -226,7 +238,7 @@ function App() {
 
         <nav className="nav">
           {getVisibleNavigationGroups(user?.role === "owner").map((group, index) => (
-            <div className="nav-group" key={index}>
+            <div className={navigationGroupClass(group)} key={index}>
               {group.map(([key, label]) => (
                 <button
                   className={`nav-item ${view === key ? "active" : ""}`}
@@ -277,6 +289,7 @@ function App() {
             {view === "available-pool" && <AvailablePoolPage token={token} showToast={showToast} />}
             {view === "reserve-pool" && <ReservePoolPage token={token} showToast={showToast} />}
             {view === "api-pools" && <ApiPoolStatusPage token={token} showToast={showToast} />}
+            {view === "operations-management" && <OperationsManagementPage />}
             {view === "event-records" && <EventRecordsPage token={token} showToast={showToast} />}
             {view === "alert-center" && <AlertCenterPage token={token} showToast={showToast} />}
             {view === "pool-lifecycle" && <AccountPoolsPage token={token} showToast={showToast} />}
@@ -293,6 +306,14 @@ function App() {
       </main>
     </div>
   );
+}
+
+function navigationGroupClass(group: Array<[ViewName, string]>) {
+  const firstKey = group[0]?.[0];
+  if (firstKey === "api-pools") return "nav-group pool-status-nav-group";
+  if (firstKey === "operations-management") return "nav-group operations-management-nav-group";
+  if (firstKey === "event-records") return "nav-group pool-operations-nav-group";
+  return "nav-group";
 }
 
 export default App;

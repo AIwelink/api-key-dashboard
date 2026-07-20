@@ -17,7 +17,9 @@ describe("app navigation", () => {
 
     expect(groups.every((group) => group.length > 0)).toBe(true);
     expect(groups.map((group) => group.map(([key]) => key))).toEqual([
-      ["api-pools", "event-records", "alert-center", "pool-lifecycle", "client-sites"],
+      ["api-pools"],
+      ["operations-management"],
+      ["event-records", "alert-center", "pool-lifecycle", "client-sites"],
       ["agent-analysis", "agent-workbench", "api-tokens", "presence", "users", "logs"],
     ]);
     expect(visibleKeys).toContain("presence");
@@ -30,7 +32,9 @@ describe("app navigation", () => {
 
     expect(groups.every((group) => group.length > 0)).toBe(true);
     expect(groups.map((group) => group.map(([key]) => key))).toEqual([
-      ["api-pools", "event-records", "alert-center", "pool-lifecycle", "client-sites"],
+      ["api-pools"],
+      ["operations-management"],
+      ["event-records", "alert-center", "pool-lifecycle", "client-sites"],
       ["agent-analysis", "agent-workbench", "api-tokens", "users", "logs"],
     ]);
     expect(visibleKeys).not.toContain("presence");
@@ -47,6 +51,7 @@ describe("app navigation", () => {
   });
 
   it("uses the API pools page for root and unknown paths", () => {
+    expect(viewFromPath("/operations-management")).toBe("operations-management");
     expect(viewFromPath("/")).toBe("api-pools");
     expect(viewFromPath("/unknown-page")).toBe("api-pools");
   });

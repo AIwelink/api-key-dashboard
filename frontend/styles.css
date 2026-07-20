@@ -418,6 +418,11 @@ p {
   padding-top: 8px;
 }
 
+.operations-management-nav-group,
+.pool-operations-nav-group {
+  margin-top: 10px;
+}
+
 .nav-item {
   display: flex;
   align-items: center;
@@ -4820,13 +4825,24 @@ code {
     border-left: 1px solid var(--line);
   }
 
-  .nav .nav-group:nth-child(3) {
-    order: -1;
+  .nav .pool-status-nav-group {
+    order: -3;
     padding-left: 0;
     border-left: 0;
   }
 
-  .nav .nav-group:nth-child(1) {
+  .nav .operations-management-nav-group {
+    order: -2;
+    margin-top: 0;
+    padding-top: 0;
+    padding-left: 8px;
+    border-left: 1px solid var(--line);
+  }
+
+  .nav .pool-operations-nav-group {
+    order: -1;
+    margin-top: 0;
+    padding-top: 0;
     padding-left: 8px;
     border-left: 1px solid var(--line);
   }
