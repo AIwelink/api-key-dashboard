@@ -242,36 +242,36 @@ def calculate_capacity_risk(
                 effective_forecast,
                 remaining_usd=actual_remaining_usd,
                 now=now,
-                quantile="p90",
+                quantile="p50",
                 max_hours=FORECAST_RUNWAY_HOURS,
             )
             dynamic_forecast = forecast_runway(
                 effective_forecast,
                 remaining_usd=dynamic_remaining_usd,
                 now=now,
-                quantile="p90",
+                quantile="p50",
                 max_hours=FORECAST_RUNWAY_HOURS,
             )
-            p50_forecast = forecast_runway(
+            p90_forecast = forecast_runway(
                 effective_forecast,
                 remaining_usd=dynamic_remaining_usd,
                 now=now,
-                quantile="p50",
+                quantile="p90",
                 max_hours=FORECAST_RUNWAY_HOURS,
             )
             burn_usd_per_hour = forecast_cost_over_window(
                 effective_forecast,
                 now=now,
                 hours=FORECAST_BURN_WINDOW_HOURS,
-                quantile="p90",
+                quantile="p50",
             ) / FORECAST_BURN_WINDOW_HOURS
             actual_runway_hours = actual_forecast.hours
             dynamic_runway_hours = dynamic_forecast.hours
-            forecast_p50_runway_hours = p50_forecast.hours
-            forecast_p90_runway_hours = dynamic_forecast.hours
+            forecast_p50_runway_hours = dynamic_forecast.hours
+            forecast_p90_runway_hours = p90_forecast.hours
             forecast_actual_runway_capped = actual_forecast.capped
             forecast_dynamic_runway_capped = dynamic_forecast.capped
-            runway_source = "hourly_forecast_p90_nowcast" if forecast_nowcast_applied else "hourly_forecast_p90"
+            runway_source = "hourly_forecast_p50_nowcast" if forecast_nowcast_applied else "hourly_forecast_p50"
             forecast_status = "active"
             forecast_fallback_reason = None
             forecast_meta = {

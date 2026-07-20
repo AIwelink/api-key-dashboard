@@ -76,7 +76,7 @@ class HourlyForecastTests(unittest.TestCase):
             10.0,
         )
 
-    def test_current_hour_nowcast_uses_model_residual_after_observed_cost(self) -> None:
+    def test_current_hour_nowcast_uses_realtime_rate_for_p50_and_model_guard_for_p90(self) -> None:
         forecast = ForecastResult(
             model="test",
             version="1",
@@ -100,6 +100,15 @@ class HourlyForecastTests(unittest.TestCase):
         self.assertEqual(nowcast.model_p90_remaining_usd, 2.0)
         self.assertEqual(nowcast.realtime_remaining_usd, 1.0)
         self.assertEqual(nowcast.selected_p90_remaining_usd, 2.0)
+        self.assertEqual(
+            forecast_cost_over_window(
+                nowcast.forecast,
+                now=AS_OF + timedelta(minutes=30),
+                hours=0.5,
+                quantile="p50",
+            ),
+            1.0,
+        )
         self.assertEqual(
             forecast_cost_over_window(
                 nowcast.forecast,

@@ -110,7 +110,7 @@ class CapacityRiskTests(unittest.TestCase):
         self.assertFalse(result["ready"])
         self.assertEqual(result["health_status"], "pending")
 
-    def test_hourly_p90_forecast_replaces_tpm_runway_and_burn_rate(self) -> None:
+    def test_hourly_p50_forecast_drives_runway_while_p90_remains_risk_reference(self) -> None:
         demand_forecast = ForecastResult(
             model="robust_seasonal_analog",
             version="1",
@@ -126,14 +126,46 @@ class CapacityRiskTests(unittest.TestCase):
 
         result = calculate(samples([1000] * 20), demand_forecast=demand_forecast)
 
-        self.assertEqual(result["runway_source"], "hourly_forecast_p90")
+        self.assertEqual(result["runway_source"], "hourly_forecast_p50")
         self.assertEqual(result["forecast_status"], "active")
         self.assertEqual(result["forecast_readiness"], "provisional")
-        self.assertEqual(result["burn_usd_per_hour"], 2.0)
-        self.assertEqual(result["actual_runway_hours"], 0.75)
-        self.assertEqual(result["dynamic_runway_hours"], 2.0)
+        self.assertEqual(result["burn_usd_per_hour"], 0.5)
+        self.assertEqual(result["actual_runway_hours"], 3.0)
+        self.assertEqual(result["dynamic_runway_hours"], 8.0)
         self.assertEqual(result["forecast_p50_runway_hours"], 8.0)
         self.assertEqual(result["forecast_p90_runway_hours"], 2.0)
+
+    def test_expected_runway_is_not_collapsed_by_an_extreme_p90_current_hour(self) -> None:
+        now = NOW + timedelta(minutes=30)
+        demand_forecast = ForecastResult(
+            model="robust_seasonal_analog",
+            version="1",
+            as_of=NOW,
+            readiness="provisional",
+            history_hours=21 * 24,
+            completeness_ratio=1.0,
+            points=tuple(
+                ForecastPoint(index + 1, NOW + timedelta(hours=index), 600, 3000, 14, "analog")
+                for index in range(25)
+            ),
+        )
+
+        result = calculate(
+            samples([10.0] * 20, latest_at=now, account_cost_per_minute=[10.0] * 20),
+            now=now,
+            demand_forecast=demand_forecast,
+            actual_five_hour_remaining_usd=1000,
+            dynamic_five_hour_remaining_usd=1000,
+            actual_seven_day_remaining_usd=2000,
+            dynamic_seven_day_remaining_usd=2000,
+            current_hour_observed_cost_usd=300,
+        )
+
+        self.assertEqual(result["realtime_burn_usd_per_hour"], 600.0)
+        self.assertAlmostEqual(result["actual_runway_hours"], 1000 / 600, places=4)
+        self.assertAlmostEqual(result["dynamic_runway_hours"], 1000 / 600, places=4)
+        self.assertLess(result["forecast_p90_runway_hours"], 0.2)
+        self.assertEqual(result["runway_source"], "hourly_forecast_p50_nowcast")
 
     def test_incomplete_hourly_forecast_falls_back_to_tpm_runway(self) -> None:
         incomplete_forecast = ForecastResult(

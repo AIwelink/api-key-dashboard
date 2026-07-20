@@ -7,9 +7,10 @@ describe("API pool metric help", () => {
   it("documents realtime runway and safe concurrency coverage", () => {
     expect(source).toContain('"实时可用时间": {');
     expect(source).toContain('"安全并发覆盖": {');
-    expect(source).toContain("P90逐小时预测");
+    expect(source).toContain("P50逐小时预测");
+    expect(source).toContain("P90风险参考");
     expect(source).toContain("当前小时Nowcast");
-    expect(source).toContain("TPM成本速度, RPM成本速度");
+    expect(source).toContain("account_cost分钟速率");
     expect(source).toContain("超过24小时显示为 >24小时");
     expect(source).toContain("10x及以上为紫色顶级");
   });

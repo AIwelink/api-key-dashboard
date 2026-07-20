@@ -175,7 +175,7 @@ def apply_current_hour_nowcast(
     )
     adjusted_point = replace(
         current_point,
-        p50=round(model_p50_remaining / remaining_fraction, 6),
+        p50=round(realtime_remaining / remaining_fraction, 6),
         p90=round(selected_p90_remaining / remaining_fraction, 6),
         source=f"{current_point.source}+nowcast",
     )
