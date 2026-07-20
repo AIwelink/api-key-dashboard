@@ -115,7 +115,7 @@ fetched_at
 - `schedulable` 是调度开关，不能替代 `status`。
 - 调度关闭但状态正常的账号仍可计入“正常账号”；401、token revoked、authentication failed 等错误即使调度关闭也必须计入异常。
 - 5h/7d 429 必须按各自窗口和恢复时间判断，不能仅凭历史 `rate_limited_at` 永久标记。
-- Bug Team 等业务排除类型不参与容量和并发计算；具体归一化与排除规则以文档 `30` 和后端测试为准。
+- Bug Team 等业务排除类型不参与容量和并发计算。显式 `account_type/plan_type=bug_team` 优先级最高；否则仅把 `plan_type=team`、没有有效 5h 窗口且 7d 窗口不少于 28 天的账号推断为 Bug Team。普通 7 天 Team，或仍有有效 5h 窗口的 Team，保持“Team 子号”。
 
 ## 5. 远端刷新流程
 

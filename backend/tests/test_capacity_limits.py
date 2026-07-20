@@ -83,6 +83,61 @@ class BugTeamCapacityTests(unittest.TestCase):
     def test_bug_team_is_detected_before_regular_team(self) -> None:
         self.assertEqual(cache._capacity_account_type(bug_team_account()), "bug_team")
 
+    def test_explicit_bug_team_account_type_wins_over_remote_team_plan(self) -> None:
+        account = {
+            "id": 1781,
+            "plan_type": "team",
+            "credentials": {"plan_type": "team"},
+            "extra": {"account_type": "bug_team"},
+        }
+
+        self.assertTrue(cache.is_bug_team_account(account))
+        self.assertEqual(cache._capacity_account_type(account), "bug_team")
+
+    def test_team_with_long_seven_day_window_and_missing_five_hour_window_is_bug_team(self) -> None:
+        account = {
+            "id": 1782,
+            "plan_type": "team",
+            "credentials": {"plan_type": "team"},
+            "extra": {
+                "codex_7d_window_minutes": 43_800,
+                "codex_7d_used_percent": 35,
+            },
+        }
+
+        self.assertTrue(cache.is_bug_team_account(account))
+        self.assertEqual(cache._capacity_account_type(account), "bug_team")
+
+    def test_regular_team_without_five_hour_data_keeps_team_type(self) -> None:
+        account = {
+            "id": 1783,
+            "plan_type": "team",
+            "credentials": {"plan_type": "team"},
+            "extra": {"codex_7d_window_minutes": 10_080},
+        }
+
+        self.assertFalse(cache.is_bug_team_account(account))
+        self.assertEqual(cache._capacity_account_type(account), "team")
+
+    def test_team_with_valid_five_hour_window_is_not_bug_team_even_if_seven_day_window_is_long(self) -> None:
+        account = {
+            "id": 1784,
+            "plan_type": "team",
+            "credentials": {"plan_type": "team"},
+            "extra": {
+                "codex_5h_window_minutes": 300,
+                "codex_7d_window_minutes": 43_800,
+            },
+        }
+
+        self.assertFalse(cache.is_bug_team_account(account))
+        self.assertEqual(cache._capacity_account_type(account), "team")
+
+    def test_bug_team_label_variants_normalize_to_bug_team(self) -> None:
+        for label in ("bug_team", "Bug Team", "bug-team"):
+            with self.subTest(label=label):
+                self.assertEqual(cache._normalize_capacity_account_type(label), "bug_team")
+
     def test_plus_without_an_independent_five_hour_window_is_not_bug_team(self) -> None:
         account = {
             "id": 1780,

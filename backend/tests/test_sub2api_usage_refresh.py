@@ -209,5 +209,31 @@ class Sub2ApiRefreshRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refresh.await_count, 2)
 
 
+class Sub2ApiQuotaDetectionHookTests(unittest.IsolatedAsyncioTestCase):
+    async def test_hook_passes_normalized_accounts_and_resolver(self) -> None:
+        observed_at = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
+        accounts = [{"id": 1, "plan_type": "plus"}]
+        detector = AsyncMock(return_value={"status": "ok", "accepted": 1})
+        with patch.object(cache, "observe_account_quota_limits", detector):
+            result = await cache._observe_quota_limits_after_usage_refresh(
+                object(), site_id="api-5001", accounts=accounts, observed_at=observed_at
+            )
+        self.assertEqual(result["accepted"], 1)
+        detector.assert_awaited_once_with(
+            unittest.mock.ANY,
+            site_id="api-5001",
+            accounts=accounts,
+            observed_at=observed_at,
+            account_type_for=cache._capacity_account_type,
+        )
+
+    async def test_hook_failure_is_best_effort(self) -> None:
+        with patch.object(cache, "observe_account_quota_limits", AsyncMock(side_effect=RuntimeError("mongo unavailable"))):
+            result = await cache._observe_quota_limits_after_usage_refresh(
+                object(), site_id="api-5001", accounts=[], observed_at=datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
+            )
+        self.assertEqual(result, {"ok": False, "site_id": "api-5001", "status": "failed", "error_type": "RuntimeError"})
+
+
 if __name__ == "__main__":
     unittest.main()

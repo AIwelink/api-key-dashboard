@@ -22,6 +22,7 @@ from app.modules.sub2api.dashboard_postgres_repository import (
     fetch_site_dashboard_snapshot as fetch_postgres_dashboard_snapshot,
 )
 from app.modules.sub2api.postgres_repository import fetch_pool_snapshot as fetch_postgres_pool_snapshot
+from app.modules.sub2api.quota_detection import observe_account_quota_limits
 from app.modules.sub2api.hourly_forecast import ForecastInputError, ForecastResult
 from app.modules.sub2api.hourly_forecast_evaluation_service import get_forecast_accuracy_summary
 from app.modules.sub2api.hourly_forecast_service import get_or_create_group_hourly_forecast
@@ -422,6 +423,12 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                 sql_dsn=str(site.get("sql_dsn") or "") or None,
                 pool_snapshot_source=str(pool_snapshot["source"]),
             )
+            quota_detection_summary = await _observe_quota_limits_after_usage_refresh(
+                db,
+                site_id=site_id,
+                accounts=accounts,
+                observed_at=fetched_at,
+            )
             runtime_fetched_at_by_account = usage_refresh_summary["runtime_fetched_at_by_account"]
             group_capacity_summaries = await _group_capacity_summaries(db, site_id, accounts)
 
@@ -532,6 +539,7 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
                 "auto_remove_abnormal_failed": auto_remove_summary.get("failed", 0) if auto_remove_summary else 0,
                 "dashboard": dashboard_summary,
                 "capacity_notifications": capacity_notification_summary,
+                "quota_detection": quota_detection_summary,
                 "started_at": started_at,
                 "finished_at": now_utc(),
             }
@@ -752,6 +760,30 @@ async def _apply_account_usage_windows(
         "http_accounts": 0,
         "http_failures": 0,
     }
+
+
+async def _observe_quota_limits_after_usage_refresh(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    accounts: list[dict[str, Any]],
+    observed_at: datetime,
+) -> dict[str, Any]:
+    try:
+        return await observe_account_quota_limits(
+            db,
+            site_id=site_id,
+            accounts=accounts,
+            observed_at=observed_at,
+            account_type_for=_capacity_account_type,
+        )
+    except Exception as exc:  # noqa: BLE001 - quota sampling must not fail the pool refresh.
+        logger.warning(
+            "sub2api_quota_detection_failed site_id=%s error_type=%s",
+            site_id,
+            type(exc).__name__,
+        )
+        return {"ok": False, "site_id": site_id, "status": "failed", "error_type": type(exc).__name__}
 
 
 async def _restore_cached_usage_snapshots(
@@ -1710,12 +1742,18 @@ def _capacity_account_type(account: dict[str, Any]) -> str:
 def is_bug_team_account(account: dict[str, Any]) -> bool:
     credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
     extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+    explicit_type = _normalize_capacity_account_type(
+        account.get("account_type") or credentials.get("account_type") or extra.get("account_type")
+    )
     plan_type = _normalize_capacity_account_type(account.get("plan_type") or credentials.get("plan_type") or extra.get("plan_type"))
-    if plan_type not in {"team", "bug_team"}:
+    if explicit_type == "bug_team" or plan_type == "bug_team":
+        return True
+    if plan_type != "team" and explicit_type != "team":
         return False
     five_hour_window = _usage_number(account, "codex_5h_window_minutes")
     seven_day_window = _usage_number(account, "codex_7d_window_minutes")
-    return five_hour_window == 0 and isinstance(seven_day_window, (int, float)) and seven_day_window >= BUG_TEAM_MIN_WINDOW_MINUTES
+    has_no_five_hour_window = five_hour_window is None or five_hour_window <= 0
+    return has_no_five_hour_window and isinstance(seven_day_window, (int, float)) and seven_day_window >= BUG_TEAM_MIN_WINDOW_MINUTES
 
 
 def _local_capacity_account_type(account: dict[str, Any]) -> str:
@@ -1728,7 +1766,7 @@ def _local_capacity_account_type(account: dict[str, Any]) -> str:
     seven_day_window = _number_or_none(_first_present(account_json, extra, "codex_7d_window_minutes"))
     if normalized == "bug_team" or (
         normalized == "team"
-        and five_hour_window == 0
+        and (five_hour_window is None or five_hour_window <= 0)
         and isinstance(seven_day_window, (int, float))
         and seven_day_window >= BUG_TEAM_MIN_WINDOW_MINUTES
     ):
@@ -1748,6 +1786,8 @@ def _local_capacity_account_type(account: dict[str, Any]) -> str:
 
 def _normalize_capacity_account_type(value: Any) -> str:
     normalized = str(value or "").strip().lower()
+    if normalized in {"bug_team", "bug team", "bug-team"}:
+        return "bug_team"
     if normalized in {"team", "team_sub", "team-sub", "team_child", "team_child_account", "team子号", "team 子号", "team瀛愬彿", "team 瀛愬彿"}:
         return "team"
     if "k12" in normalized:

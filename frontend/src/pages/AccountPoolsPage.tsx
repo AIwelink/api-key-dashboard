@@ -47,6 +47,27 @@ type CapacityLimitsResponse = {
   updated_by_name?: string | null;
 };
 
+type QuotaDetectionWindow = {
+  average_usd: number | null;
+  minimum_usd: number | null;
+  maximum_usd: number | null;
+  sample_count: number;
+  generation: number | null;
+  generation_started_at?: string | null;
+};
+
+type QuotaDetectionItem = {
+  account_type: CapacityLimitKey | "unknown";
+  five_hour: QuotaDetectionWindow;
+  seven_day: QuotaDetectionWindow;
+};
+
+type QuotaDetectionResponse = {
+  site_id: string;
+  items: QuotaDetectionItem[];
+  last_evaluated_at?: string | null;
+};
+
 type GroupObservabilitySetting = {
   id?: string;
   site_id: string;
@@ -167,6 +188,9 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   const [loadingCapacityLimits, setLoadingCapacityLimits] = useState(false);
   const [savingCapacityLimits, setSavingCapacityLimits] = useState(false);
   const capacityLimitsRequestRef = useRef(0);
+  const [quotaDetection, setQuotaDetection] = useState<QuotaDetectionResponse | null>(null);
+  const [loadingQuotaDetection, setLoadingQuotaDetection] = useState(false);
+  const quotaDetectionRequestRef = useRef(0);
   const [observabilitySettings, setObservabilitySettings] = useState<GroupObservabilitySetting[]>([]);
   const [savingObservabilityKey, setSavingObservabilityKey] = useState<string | null>(null);
   const [probing, setProbing] = useState(false);
@@ -314,8 +338,25 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     setObservabilitySettings(data.items);
   };
 
+  const loadQuotaDetection = async (siteId = selectedSiteId, clear = false) => {
+    const requestId = ++quotaDetectionRequestRef.current;
+    if (clear) setQuotaDetection(null);
+    if (!siteId) {
+      setQuotaDetection(null);
+      setLoadingQuotaDetection(false);
+      return;
+    }
+    setLoadingQuotaDetection(true);
+    try {
+      const data = await api<QuotaDetectionResponse>(`/api-pools/quota-detection?site_id=${encodeURIComponent(siteId)}`, token);
+      if (requestId === quotaDetectionRequestRef.current) setQuotaDetection(data);
+    } finally {
+      if (requestId === quotaDetectionRequestRef.current) setLoadingQuotaDetection(false);
+    }
+  };
+
   usePageAutoRefresh(
-    () => loadObservabilitySettings(selectedSiteId),
+    () => Promise.all([loadObservabilitySettings(selectedSiteId), loadQuotaDetection(selectedSiteId)]).then(() => undefined),
     {
       enabled: Boolean(selectedSiteId),
       paused: Boolean(refreshing || savingSite || savingCapacityLimits || savingObservabilityKey || probing || confirmState),
@@ -387,7 +428,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     setRefreshing(true);
     try {
       const result = await api<RefreshResponse>(`/sub2api-sites/${selectedSiteId}/refresh`, token, { method: "POST" });
-      await loadObservabilitySettings(selectedSiteId);
+      await Promise.all([loadObservabilitySettings(selectedSiteId), loadQuotaDetection(selectedSiteId)]);
       showToast(
         typeof result.groups === "number" || typeof result.accounts === "number"
           ? `同步完成：${result.groups || 0} 个分组，${result.accounts || 0} 个账号`
@@ -411,6 +452,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
         return;
       }
       loadObservabilitySettings(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
+      loadQuotaDetection(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
     };
     window.addEventListener("sub2api-cache-updated", handleCacheUpdated);
     return () => window.removeEventListener("sub2api-cache-updated", handleCacheUpdated);
@@ -420,6 +462,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     if (!selectedSiteId) {
       setObservabilitySettings([]);
       loadCapacityLimits("").catch((error) => showToast(errorMessage(error), true));
+      loadQuotaDetection("").catch((error) => showToast(errorMessage(error), true));
       return;
     }
     const site = sites.find((item) => item.id === selectedSiteId);
@@ -429,6 +472,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     }
     loadObservabilitySettings(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
     loadCapacityLimits(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
+    loadQuotaDetection(selectedSiteId, true).catch((error) => showToast(errorMessage(error), true));
   }, [selectedSiteId, sites]);
 
   return (
@@ -709,6 +753,38 @@ export function AccountPoolsPage({ token, showToast }: Props) {
         </div>
       </section>
 
+      <section className="panel quota-detection-panel">
+        <div className="panel-header">
+          <div>
+            <h3>实际额度检测</h3>
+            <p>
+              {quotaDetection?.last_evaluated_at
+                ? `最近检测：${formatDateTime(quotaDetection.last_evaluated_at)}`
+                : loadingQuotaDetection
+                  ? "正在读取检测结果"
+                  : "等待账号首次在有效窗口达到 100%"}
+            </p>
+          </div>
+        </div>
+        <div className="quota-detection-table" aria-busy={loadingQuotaDetection}>
+          <div className="quota-detection-heading" aria-hidden="true">
+            <span>账号类型</span>
+            <span>5h 实际额度</span>
+            <span>7d 实际额度</span>
+          </div>
+          {(quotaDetection?.items || []).map((item) => (
+            <div className="quota-detection-row" key={item.account_type}>
+              <strong>{capacityLimitLabels[item.account_type as CapacityLimitKey] || item.account_type}</strong>
+              <QuotaWindowResult label="5h" value={item.five_hour} />
+              <QuotaWindowResult label="7d" value={item.seven_day} />
+            </div>
+          ))}
+          {!loadingQuotaDetection && !quotaDetection?.items.length && (
+            <div className="quota-detection-empty">暂无有效样本</div>
+          )}
+        </div>
+      </section>
+
       <section className="panel observability-config-panel">
         <div className="panel-header">
           <div>
@@ -946,6 +1022,23 @@ export function AccountPoolsPage({ token, showToast }: Props) {
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function QuotaWindowResult({ label, value }: { label: string; value: QuotaDetectionWindow }) {
+  const hasSamples = value.sample_count > 0 && value.average_usd !== null;
+  return (
+    <div className={`quota-window-result${hasSamples ? "" : " is-empty"}`}>
+      <span className="quota-window-mobile-label">{label}</span>
+      <strong>{formatQuotaUsd(value.average_usd)}</strong>
+      <span>
+        最低 {formatQuotaUsd(value.minimum_usd)} · 最高 {formatQuotaUsd(value.maximum_usd)} · {value.sample_count} 个样本
+      </span>
+    </div>
+  );
+}
+
+function formatQuotaUsd(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(2)}` : "-";
 }
 
 function clampInt(value: unknown, min: number, max: number, fallback: number) {

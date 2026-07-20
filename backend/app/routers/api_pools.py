@@ -11,6 +11,8 @@ from app.modules.api_pools.capacity_limits import capacity_limits_setting_id, ge
 from app.modules.accounts.pool_lifecycle import capacity_check
 from app.modules.sub2api.account_probe import list_duplicate_email_alerts, list_group_observability_settings, mark_duplicate_email_alert_read, probe_site_accounts, update_group_observability_setting
 from app.modules.sub2api.auto_refill import list_auto_refill_logs
+from app.modules.sub2api.cache import get_site
+from app.modules.sub2api.quota_detection import get_quota_detection_summary
 
 
 router = APIRouter(prefix="/api-pools", tags=["api-pools"])
@@ -72,6 +74,17 @@ async def patch_capacity_limits(
         after=updated,
     )
     return updated
+
+
+@router.get("/quota-detection")
+async def get_quota_detection(
+    site_id: str,
+    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    if not await get_site(db, site_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
+    return await get_quota_detection_summary(db, site_id)
 
 
 @router.get("/status-preferences")

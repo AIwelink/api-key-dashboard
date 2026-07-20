@@ -50,6 +50,22 @@ async def ensure_forecast_evaluation_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.sub2api_forecast_accuracy_summaries.create_index([("updated_at", -1)])
 
 
+async def ensure_quota_detection_indexes(db: AsyncIOMotorDatabase) -> None:
+    await db.sub2api_quota_detection_states.create_index("expires_at", expireAfterSeconds=0)
+    await db.sub2api_quota_detection_states.create_index([("site_id", 1), ("remote_account_id", 1), ("window_type", 1)])
+    await db.sub2api_quota_limit_samples.create_index("expires_at", expireAfterSeconds=0)
+    await db.sub2api_quota_limit_samples.create_index([("site_id", 1), ("account_type", 1), ("window_type", 1), ("hit_at", -1)])
+    await db.sub2api_quota_limit_samples.create_index([("site_id", 1), ("account_type", 1), ("window_type", 1), ("generation", 1), ("classification", 1), ("hit_at", -1)])
+    await db.sub2api_quota_limit_daily_rollups.create_index(
+        [("site_id", 1), ("account_type", 1), ("window_type", 1), ("generation", 1), ("local_date", 1)],
+        unique=True,
+    )
+    await db.sub2api_quota_limit_profiles.create_index(
+        [("site_id", 1), ("account_type", 1), ("window_type", 1)],
+        unique=True,
+    )
+
+
 async def ensure_account_history_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.remote_account_change_batches.create_index([("site_id", 1), ("observed_at", -1)])
     await db.remote_account_change_batches.create_index("expires_at", expireAfterSeconds=0)
@@ -167,6 +183,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await ensure_tpm_indexes(db)
     await ensure_capacity_sample_indexes(db)
     await ensure_forecast_evaluation_indexes(db)
+    await ensure_quota_detection_indexes(db)
     await ensure_account_history_indexes(db)
     await db.sub2api_auto_refill_meta.create_index("last_finished_at")
     await db.group_observability_settings.create_index([("site_id", 1), ("group_id", 1)], unique=True)
