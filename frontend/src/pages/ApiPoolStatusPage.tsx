@@ -267,6 +267,7 @@ type RemoteAccount = {
   credentials_status?: Record<string, unknown>;
   extra?: Record<string, unknown>;
   email?: string;
+  account_type?: string;
   plan_type?: string;
   privacy_mode?: string;
   notes?: string | null;
@@ -1249,7 +1250,7 @@ function RemoteAccountRow({
   const extra = account.extra || {};
   const email = text(account.email) || text(credentials.email) || text(account.extra?.email) || text(account.name);
   const accountName = text(account.name) || email || `#${account.id}`;
-  const planType = text(account.plan_type) || text(credentials.plan_type);
+  const planType = text(account.account_type) || text(account.plan_type) || text(credentials.plan_type);
   const privacyMode = text(account.privacy_mode) || text(extra.privacy_mode);
   const credentialExpiresAt = account.credential_expires_at ?? account.expires_at ?? credentials.expires_at;
   const subscriptionExpiresAt = account.subscription_expires_at ?? credentials.subscription_expires_at;

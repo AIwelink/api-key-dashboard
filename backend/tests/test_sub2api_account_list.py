@@ -35,6 +35,24 @@ class AccountListCursor:
 
 
 class CachedGroupAccountListTests(unittest.IsolatedAsyncioTestCase):
+    def test_account_response_exposes_bug_team_without_overwriting_remote_plan_type(self) -> None:
+        snapshot = cache._account_snapshot_with_cache_sync(
+            {
+                "account": {
+                    "id": 3798,
+                    "platform": "openai",
+                    "credentials": {"plan_type": "team"},
+                    "extra": {
+                        "codex_5h_window_minutes": 0,
+                        "codex_7d_window_minutes": 43_800,
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(snapshot["plan_type"], "team")
+        self.assertEqual(snapshot["account_type"], "bug_team")
+
     async def test_sorts_new_cache_documents_by_remote_creation_time_descending(self) -> None:
         cursor = AccountListCursor([])
         accounts_cache = SimpleNamespace(

@@ -4,6 +4,10 @@ import { describe, expect, it } from "vitest";
 const source = readFileSync(new URL("./ApiPoolStatusPage.tsx", import.meta.url), "utf8");
 
 describe("API pool metric help", () => {
+  it("prefers the derived account type over the raw remote plan type", () => {
+    expect(source).toContain("text(account.account_type) || text(account.plan_type) || text(credentials.plan_type)");
+  });
+
   it("documents realtime runway and safe concurrency coverage", () => {
     expect(source).toContain('"实时可用时间": {');
     expect(source).toContain('"安全并发覆盖": {');

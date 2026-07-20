@@ -2509,6 +2509,7 @@ def _int_group_id(value: Any) -> int | None:
 
 def _account_snapshot_with_cache_sync(doc: dict[str, Any]) -> dict[str, Any]:
     account = _normalize_account_snapshot(doc.get("account", {}))
+    account["account_type"] = _capacity_account_type(account)
     _copy_cached_remote_test(account, doc)
     return account
 
