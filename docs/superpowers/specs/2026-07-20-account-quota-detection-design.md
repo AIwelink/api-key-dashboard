@@ -192,6 +192,24 @@ site_id + remote_account_id + window_type + normalized_reset_at
 
 当某天样本变化时，从该日样本确定性重算并 replace 当日汇总，避免重试导致 `$inc` 重复。长期统计通过聚合每日 `count/sum/min/max` 得到，不需要永久保存全部账号窗口样本。
 
+### `sub2api_quota_limit_profiles`
+
+每个站点、账号类型和窗口类型一个控制文档，保存当前统计代次和切代状态：
+
+```json
+{
+  "_id": "us06-5001:plus:five_hour",
+  "site_id": "us06-5001",
+  "account_type": "plus",
+  "window_type": "five_hour",
+  "current_generation": 1,
+  "generation_started_at": "2026-07-20T09:59:00Z",
+  "last_evaluated_at": "2026-07-20T12:00:00Z"
+}
+```
+
+该文档不保存账号快照。切代使用当前代次作为条件进行原子更新，避免并发刷新重复建立新代次。
+
 ## 查询接口
 
 新增只读接口：
@@ -256,6 +274,7 @@ Free, Plus, Team 子号, Bug Team, K12, Pro 20x
 - detection state：唯一 `_id`，`site_id + updated_at`，`expires_at` TTL。
 - limit sample：唯一 `_id`，`site_id + account_type + window_type + hit_at`，`classification + hit_at`，`expires_at` TTL。
 - daily rollup：唯一 `_id`，`site_id + account_type + window_type + generation + local_date`。
+- profile：唯一 `_id`，`site_id + account_type + window_type`。
 - 不保存完整 credentials、extra、usage snapshot 或账号名称。
 - 不恢复 `remote_account_change_batches`。
 
