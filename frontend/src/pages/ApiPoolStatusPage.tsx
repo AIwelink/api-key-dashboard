@@ -1448,6 +1448,9 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
   const actualSevenDayRemainingPercent = summary?.actual_available_7d_percent
     ?? availabilityPercent(summary?.seven_day_actual_remaining_usd, summary?.seven_day_capacity_usd);
   const traffic = poolTrafficMetrics(summary);
+  const hasP90Runway = summary?.forecast_status === "active" && optionalNumberValue(summary?.forecast_p90_runway_hours) !== null;
+  const primaryRunwayHours = hasP90Runway ? summary?.forecast_p90_runway_hours : summary?.actual_runway_hours;
+  const primaryRunwayTarget = hasP90Runway ? summary?.target_runway_hours ?? 3 : summary?.actual_target_hours ?? 1;
   return (
     <section className={`capacity-runway-card ${tone} ${summary?.health_status || ""}`}>
       <div className="capacity-runway-head">
@@ -1500,13 +1503,21 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           reverse
         />
         <CapacityMetric
-          label="实时可用时间"
-          value={formatRunwayHours(summary?.actual_runway_hours)}
-          sub={`当前速度${summary?.forecast_status === "active" ? ` · 未来P50 ${formatRunwayHours(summary?.dynamic_runway_hours, summary?.forecast_dynamic_runway_capped)} · P90风险参考 ${formatRunwayHours(summary?.forecast_p90_runway_hours)}` : " · TPM/RPM实时估算"} · 动态目标 ${formatRunwayHours(summary?.target_runway_hours ?? 3)}`}
-          percent={runwayScalePercent(summary?.actual_runway_hours, summary?.actual_target_hours ?? 1)}
-          tone={runwayTone(summary?.actual_runway_hours, summary?.realtime_risk_ready)}
-          meterLegendLabel="当前速度覆盖"
-          meterValue={formatRunwayHours(summary?.actual_runway_hours)}
+          label={hasP90Runway ? "P90 保守可用时间" : "当前速度可用时间"}
+          value={formatRunwayHours(primaryRunwayHours)}
+          sub={
+            <>
+              <MetricHelp helpKey="当前速度">当前速度</MetricHelp>{" "}
+              <AnimatedValue value={formatRunwayHours(summary?.actual_runway_hours)} />
+              {" · "}
+              <MetricHelp helpKey="P50 期望">P50 期望</MetricHelp>{" "}
+              <AnimatedValue value={formatRunwayHours(summary?.dynamic_runway_hours, summary?.forecast_dynamic_runway_capped)} />
+            </>
+          }
+          percent={runwayScalePercent(primaryRunwayHours, primaryRunwayTarget)}
+          tone={runwayTone(primaryRunwayHours, summary?.realtime_risk_ready)}
+          meterLegendLabel={hasP90Runway ? "P90 保守覆盖" : "当前速度覆盖"}
+          meterValue={formatRunwayHours(primaryRunwayHours)}
           meterTiered
         />
         <CapacityMetric
@@ -1791,10 +1802,20 @@ const METRIC_HELP_DETAILS: Record<string, MetricHelpDetail> = {
     formula: "预计可用时间使用未来24小时P50逐小时预测，P90单独保留为风险参考；当前小时结合已发生account_cost与分钟直接成本速度进行Nowcast。流量阶段和并发仍读取每分钟TPM/RPM。",
     note: "耗尽：账号 <=2或动态不足30分钟；危险：实际不足1小时、动态不足1小时或并发<1x；需要补号：动态不足3小时或并发<1.2x。预测不可用时自动降级到TPM实时估算。",
   },
-  "实时可用时间": {
-    purpose: "主数字按当前消耗速度计算可用时间，同时展示未来逐小时预测，用于区分眼前压力和季节性流量变化。",
-    formula: "当前速度可用时间 = min(5h实际可用, 7d实际可用) / account_cost分钟速率；未来P50按逐小时预测扣减动态额度，P90作为独立风险参考。",
-    note: "当前速度不会因为预计夜间低谷而被放大。未来P50仍保留昼夜周期信息；预测窗口内耗尽时显示具体时长，超过24小时显示为 >24小时。",
+  "P90 保守可用时间": {
+    purpose: "按高消耗风险边界估算账号池还能支撑多久，作为容量告警和补号判断的主要显示。",
+    formula: "使用未来逐小时P90消耗依次扣减动态可用额度；当前小时同时保留模型风险上界和实时消耗速度中的较高值。",
+    note: "P90追求约90%的真实消耗不超过该边界，因此比P50更保守；它不是最可能发生的时长，也不代表预测误差一定更小。",
+  },
+  "当前速度": {
+    purpose: "显示保持当前分钟消耗速度不变时，实际可用额度还能支撑多久。",
+    formula: "当前速度可用时间 = min(5h实际可用, 7d实际可用) / account_cost分钟速率。",
+    note: "该值响应当前压力最快，但不考虑未来昼夜周期、流量回落或继续上涨。",
+  },
+  "P50 期望": {
+    purpose: "显示按最可能的季节性需求路径，动态可用额度预计还能支撑多久。",
+    formula: "使用未来逐小时P50中位需求路径依次扣减动态可用额度；当前小时使用实时account_cost速度进行Nowcast。",
+    note: "P50是中位需求路径，约一半情况下真实消耗可能高于它，适合观察正常昼夜变化，不作为单独的保底线；超过24小时显示为 >24小时。",
   },
   "压力阶段": {
     purpose: "把流量变化和当前容量风险归纳为一个运营阶段，用于判断继续观察、准备补号、峰值保底还是关注库存风险。",
