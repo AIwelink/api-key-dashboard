@@ -126,11 +126,11 @@ class CapacityRiskTests(unittest.TestCase):
 
         result = calculate(samples([1000] * 20), demand_forecast=demand_forecast)
 
-        self.assertEqual(result["runway_source"], "hourly_forecast_p50")
+        self.assertEqual(result["runway_source"], "realtime_pressure+hourly_forecast_p50")
         self.assertEqual(result["forecast_status"], "active")
         self.assertEqual(result["forecast_readiness"], "provisional")
         self.assertEqual(result["burn_usd_per_hour"], 0.5)
-        self.assertEqual(result["actual_runway_hours"], 3.0)
+        self.assertEqual(result["actual_runway_hours"], 1.5)
         self.assertEqual(result["dynamic_runway_hours"], 8.0)
         self.assertEqual(result["forecast_p50_runway_hours"], 8.0)
         self.assertEqual(result["forecast_p90_runway_hours"], 2.0)
@@ -145,7 +145,7 @@ class CapacityRiskTests(unittest.TestCase):
             history_hours=21 * 24,
             completeness_ratio=1.0,
             points=tuple(
-                ForecastPoint(index + 1, NOW + timedelta(hours=index), 600, 3000, 14, "analog")
+                ForecastPoint(index + 1, NOW + timedelta(hours=index), 100, 3000, 14, "analog")
                 for index in range(25)
             ),
         )
@@ -163,9 +163,9 @@ class CapacityRiskTests(unittest.TestCase):
 
         self.assertEqual(result["realtime_burn_usd_per_hour"], 600.0)
         self.assertAlmostEqual(result["actual_runway_hours"], 1000 / 600, places=4)
-        self.assertAlmostEqual(result["dynamic_runway_hours"], 1000 / 600, places=4)
+        self.assertAlmostEqual(result["dynamic_runway_hours"], 7.5, places=4)
         self.assertLess(result["forecast_p90_runway_hours"], 0.2)
-        self.assertEqual(result["runway_source"], "hourly_forecast_p50_nowcast")
+        self.assertEqual(result["runway_source"], "realtime_pressure+hourly_forecast_p50_nowcast")
 
     def test_incomplete_hourly_forecast_falls_back_to_tpm_runway(self) -> None:
         incomplete_forecast = ForecastResult(

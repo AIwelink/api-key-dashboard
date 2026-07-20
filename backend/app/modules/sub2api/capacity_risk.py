@@ -265,13 +265,13 @@ def calculate_capacity_risk(
                 hours=FORECAST_BURN_WINDOW_HOURS,
                 quantile="p50",
             ) / FORECAST_BURN_WINDOW_HOURS
-            actual_runway_hours = actual_forecast.hours
             dynamic_runway_hours = dynamic_forecast.hours
             forecast_p50_runway_hours = dynamic_forecast.hours
             forecast_p90_runway_hours = p90_forecast.hours
             forecast_actual_runway_capped = actual_forecast.capped
             forecast_dynamic_runway_capped = dynamic_forecast.capped
-            runway_source = "hourly_forecast_p50_nowcast" if forecast_nowcast_applied else "hourly_forecast_p50"
+            forecast_source = "hourly_forecast_p50_nowcast" if forecast_nowcast_applied else "hourly_forecast_p50"
+            runway_source = f"realtime_pressure+{forecast_source}"
             forecast_status = "active"
             forecast_fallback_reason = None
             forecast_meta = {

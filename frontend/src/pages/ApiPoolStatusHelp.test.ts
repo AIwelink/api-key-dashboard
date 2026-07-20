@@ -13,7 +13,8 @@ describe("API pool metric help", () => {
     expect(source).toContain('"安全并发覆盖": {');
     expect(source).toContain("P50逐小时预测");
     expect(source).toContain("P90风险参考");
-    expect(source).toContain("当前小时Nowcast");
+    expect(source).toContain("当前速度");
+    expect(source).toContain("未来P50");
     expect(source).toContain("account_cost分钟速率");
     expect(source).toContain("超过24小时显示为 >24小时");
     expect(source).toContain("10x及以上为紫色顶级");

@@ -113,7 +113,7 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 group_id=3,
             )
 
-        self.assertEqual(summary["runway_source"], "hourly_forecast_p50")
+        self.assertEqual(summary["runway_source"], "realtime_pressure+hourly_forecast_p50")
         self.assertEqual(summary["capacity_model"], "single_pool_hourly_forecast")
         self.assertEqual(summary["forecast_model"], "robust_seasonal_analog")
         self.assertEqual(summary["forecast_status"], "active")
