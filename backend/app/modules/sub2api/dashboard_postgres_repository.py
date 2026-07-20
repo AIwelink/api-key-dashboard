@@ -112,6 +112,10 @@ SELECT group_id,
            + COALESCE(cache_creation_tokens, 0)
            + COALESCE(cache_read_tokens, 0)
        ), 0) AS total_tokens,
+       COALESCE(SUM(
+           COALESCE(account_stats_cost, total_cost)
+           * COALESCE(account_rate_multiplier, 1)
+       ), 0) AS total_account_cost,
        MAX(created_at) AS source_updated_at
 FROM usage_logs
 WHERE group_id = ANY(CAST(:group_ids AS bigint[]))
@@ -235,6 +239,7 @@ async def fetch_group_hour_counters(
         group_id: {
             "total_requests": 0,
             "total_tokens": 0,
+            "total_account_cost": 0.0,
             "source_updated_at": None,
         }
         for group_id in normalized_group_ids
@@ -246,6 +251,7 @@ async def fetch_group_hour_counters(
         result[group_id] = {
             "total_requests": _integer(row.get("total_requests")),
             "total_tokens": _integer(row.get("total_tokens")),
+            "total_account_cost": _number(row.get("total_account_cost")),
             "source_updated_at": _as_utc(row.get("source_updated_at")),
         }
     return result

@@ -22,7 +22,7 @@ from app.utils import now_utc
 
 logger = logging.getLogger("app.sub2api_tpm_sampler")
 
-TPM_SAMPLE_RETENTION_DAYS = 14
+TPM_SAMPLE_RETENTION_DAYS = 60
 TPM_SAMPLE_INTERVAL_SECONDS = 60
 TPM_SAMPLE_SCHEMA_VERSION = 2
 TPM_COUNTER_SOURCE = "postgresql_usage_logs"
@@ -54,6 +54,7 @@ async def sample_group_tpm(
 
     total_tokens = _nonnegative_integer(counters.get("total_tokens")) or 0
     total_requests = _nonnegative_integer(counters.get("total_requests")) or 0
+    total_account_cost = _nonnegative_number(counters.get("total_account_cost")) or 0.0
     calculated_tpm, token_delta, elapsed_seconds = _calculate_tpm_from_previous(
         previous=previous,
         current_total_tokens=total_tokens,
@@ -63,6 +64,11 @@ async def sample_group_tpm(
         previous=previous,
         previous_field="total_requests",
         current_value=total_requests,
+        sampled_at=sampled_at,
+    )
+    account_cost_per_minute, account_cost_delta, _ = _calculate_cost_rate(
+        previous=previous,
+        current_total_account_cost=total_account_cost,
         sampled_at=sampled_at,
     )
     sample_id = f"{site_id}:{group_id}:{bucket_at.isoformat().replace('+00:00', 'Z')}"
@@ -87,6 +93,10 @@ async def sample_group_tpm(
         "total_requests": total_requests,
         "token_delta": token_delta,
         "request_delta": request_delta,
+        "total_account_cost": total_account_cost,
+        "account_cost_delta": account_cost_delta,
+        "account_cost_per_minute": account_cost_per_minute,
+        "account_cost_per_hour": account_cost_per_minute * 60 if account_cost_per_minute is not None else None,
         "elapsed_seconds": elapsed_seconds,
         "source": "postgresql_group_counter_delta" if calculated_tpm is not None else "unavailable",
         "expires_at": sampled_at + timedelta(days=TPM_SAMPLE_RETENTION_DAYS),
@@ -288,6 +298,29 @@ def _calculate_counter_rate(
         return None, None, elapsed_seconds
     calculated_rate = delta / (elapsed_seconds / 60)
     return calculated_rate, delta, elapsed_seconds
+
+
+def _calculate_cost_rate(
+    *,
+    previous: dict[str, Any] | None,
+    current_total_account_cost: float | None,
+    sampled_at: datetime,
+) -> tuple[float | None, float | None, float | None]:
+    if not previous:
+        return None, None, None
+    previous_sampled_at = _datetime_value(previous.get("sampled_at"))
+    if previous_sampled_at is None:
+        return None, None, None
+    elapsed_seconds = (sampled_at - previous_sampled_at).total_seconds()
+    if elapsed_seconds <= 0:
+        return None, None, elapsed_seconds
+    previous_value = _nonnegative_number(previous.get("total_account_cost"))
+    if previous_value is None or current_total_account_cost is None:
+        return None, None, elapsed_seconds
+    delta = current_total_account_cost - previous_value
+    if delta < 0:
+        return None, None, elapsed_seconds
+    return delta / (elapsed_seconds / 60), delta, elapsed_seconds
 
 
 def _datetime_value(value: Any) -> datetime | None:

@@ -252,6 +252,7 @@ class Sub2ApiDashboardPostgresRepositoryTests(unittest.IsolatedAsyncioTestCase):
                     "group_id": 3,
                     "total_requests": 12,
                     "total_tokens": 345,
+                    "total_account_cost": 27.5,
                     "source_updated_at": datetime(2026, 7, 18, 1, 14, tzinfo=UTC),
                 },
                 {
@@ -272,11 +273,13 @@ class Sub2ApiDashboardPostgresRepositoryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(counters[3]["total_tokens"], 345)
+        self.assertEqual(counters[3]["total_account_cost"], 27.5)
         self.assertEqual(counters[5]["total_requests"], 7)
         self.assertEqual(counters[7]["total_tokens"], 0)
         self.assertEqual(len(connection.executed), 1)
         sql, parameters = connection.executed[0]
         self.assertIn("group_id = ANY", sql)
+        self.assertIn("account_stats_cost", sql)
         self.assertEqual(parameters["group_ids"], [3, 5, 7])
         engine.dispose.assert_awaited_once()
 

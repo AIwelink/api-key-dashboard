@@ -11,9 +11,15 @@ from app.modules.sub2api.hourly_forecast import (
     forecast_cost_over_window,
     forecast_runway,
 )
+from app.modules.sub2api.regime_nowcast import (
+    detect_demand_regime,
+    estimate_direct_cost_per_minute,
+    select_nowcast_remaining,
+)
 
 
 MIN_SAMPLE_COUNT = 15
+REGIME_NOWCAST_V2_ENABLED = False
 MAX_SAMPLE_AGE = timedelta(minutes=3)
 ACTUAL_RUNWAY_TARGET_HOURS = 1.0
 DYNAMIC_RUNWAY_TARGET_HOURS = 3.0
@@ -68,6 +74,7 @@ def calculate_capacity_risk(
     normalized_cost_per_token = _positive(cost_per_token)
     normalized_cost_per_request = _positive(cost_per_request)
     normalized = _normalized_samples(samples)
+    demand_regime = detect_demand_regime(samples)
     latest_at = normalized[-1]["sampled_at"] if normalized else None
     latest_tpm = normalized[-1]["tpm"] if normalized else None
     latest_rpm = normalized[-1]["rpm"] if normalized else None
@@ -82,7 +89,13 @@ def calculate_capacity_risk(
         if item["current_concurrency"] is not None
     )
     rpm_sample_count = sum(1 for item in recent_samples if item["rpm"] is not None)
-    cost_channel_ready = normalized_cost_per_token is not None or (
+    direct_cost_values = [
+        item["account_cost_per_minute"]
+        for item in normalized[-15:]
+        if item["account_cost_per_minute"] is not None
+    ]
+    direct_cost_ready = len(direct_cost_values) >= 5
+    cost_channel_ready = direct_cost_ready or normalized_cost_per_token is not None or (
         normalized_cost_per_request is not None and rpm_sample_count >= 5
     )
     ready = (
@@ -142,17 +155,26 @@ def calculate_capacity_risk(
 
     realtime_tpm_burn_usd_per_hour = pressure_tpm * 60 * float(normalized_cost_per_token or 0)
     realtime_rpm_burn_usd_per_hour = pressure_rpm * 60 * float(normalized_cost_per_request or 0)
-    realtime_burn_usd_per_hour = max(
-        realtime_tpm_burn_usd_per_hour,
-        realtime_rpm_burn_usd_per_hour,
-    )
-    realtime_burn_source = (
-        "rpm"
-        if realtime_rpm_burn_usd_per_hour > realtime_tpm_burn_usd_per_hour
-        else "tpm"
-        if realtime_tpm_burn_usd_per_hour > 0
-        else "rpm"
-    )
+    direct_pressure_per_minute = estimate_direct_cost_per_minute(
+        samples,
+        stage=demand_regime.stage,
+    ) or 0.0
+    realtime_direct_burn_usd_per_hour = direct_pressure_per_minute * 60
+    if direct_cost_ready:
+        realtime_burn_usd_per_hour = realtime_direct_burn_usd_per_hour
+        realtime_burn_source = "direct_account_cost"
+    else:
+        realtime_burn_usd_per_hour = max(
+            realtime_tpm_burn_usd_per_hour,
+            realtime_rpm_burn_usd_per_hour,
+        )
+        realtime_burn_source = (
+            "rpm"
+            if realtime_rpm_burn_usd_per_hour > realtime_tpm_burn_usd_per_hour
+            else "tpm"
+            if realtime_tpm_burn_usd_per_hour > 0
+            else "rpm"
+        )
     burn_usd_per_hour = realtime_burn_usd_per_hour
     actual_remaining_usd = min(
         max(0.0, actual_five_hour_remaining_usd),
@@ -176,17 +198,37 @@ def calculate_capacity_risk(
     forecast_current_hour_model_remaining_usd = None
     forecast_current_hour_realtime_remaining_usd = None
     forecast_current_hour_selected_remaining_usd = None
+    forecast_current_hour_candidate_remaining_usd = None
+    forecast_nowcast_realtime_weight = None
     forecast_meta: dict[str, Any] = {}
     if demand_forecast is not None:
         try:
             effective_forecast = demand_forecast
             observed_cost = _nonnegative(current_hour_observed_cost_usd)
             if observed_cost is not None:
+                base_nowcast = apply_current_hour_nowcast(
+                    demand_forecast,
+                    now=now,
+                    observed_current_hour_cost_usd=observed_cost,
+                    realtime_cost_per_hour=realtime_burn_usd_per_hour,
+                )
+                selection = select_nowcast_remaining(
+                    model_remaining=base_nowcast.model_p90_remaining_usd,
+                    realtime_remaining=base_nowcast.realtime_remaining_usd,
+                    minute=now.minute,
+                    stage=demand_regime.stage,
+                    surge_strength=demand_regime.strength,
+                )
                 nowcast = apply_current_hour_nowcast(
                     demand_forecast,
                     now=now,
                     observed_current_hour_cost_usd=observed_cost,
                     realtime_cost_per_hour=realtime_burn_usd_per_hour,
+                    selected_remaining_usd=(
+                        selection.selected_remaining
+                        if REGIME_NOWCAST_V2_ENABLED
+                        else None
+                    ),
                 )
                 effective_forecast = nowcast.forecast
                 forecast_nowcast_applied = nowcast.applied
@@ -194,6 +236,8 @@ def calculate_capacity_risk(
                 forecast_current_hour_model_remaining_usd = nowcast.model_p90_remaining_usd
                 forecast_current_hour_realtime_remaining_usd = nowcast.realtime_remaining_usd
                 forecast_current_hour_selected_remaining_usd = nowcast.selected_p90_remaining_usd
+                forecast_current_hour_candidate_remaining_usd = selection.selected_remaining
+                forecast_nowcast_realtime_weight = selection.realtime_weight
             actual_forecast = forecast_runway(
                 effective_forecast,
                 remaining_usd=actual_remaining_usd,
@@ -255,6 +299,7 @@ def calculate_capacity_risk(
         tpm_momentum=tpm_momentum,
         falling=falling,
         inventory_risk=inventory_risk,
+        regime_stage=demand_regime.stage,
     )
 
     quota_refill_accounts = _quota_refill_accounts(
@@ -320,7 +365,17 @@ def calculate_capacity_risk(
         "realtime_burn_usd_per_hour": _rounded(realtime_burn_usd_per_hour),
         "realtime_tpm_burn_usd_per_hour": _rounded(realtime_tpm_burn_usd_per_hour),
         "realtime_rpm_burn_usd_per_hour": _rounded(realtime_rpm_burn_usd_per_hour),
+        "realtime_direct_burn_usd_per_hour": _rounded(realtime_direct_burn_usd_per_hour),
         "realtime_burn_source": realtime_burn_source,
+        "demand_regime_stage": demand_regime.stage,
+        "demand_regime_strength": _rounded(demand_regime.strength),
+        "demand_regime_confidence": _rounded(demand_regime.confidence),
+        "demand_regime_signal_count": demand_regime.signal_count,
+        "demand_regime_cost_source": demand_regime.cost_source,
+        "demand_regime_short_ratio": _rounded(demand_regime.short_ratio),
+        "demand_regime_medium_ratio": _rounded(demand_regime.medium_ratio),
+        "demand_regime_robust_z": _rounded(demand_regime.robust_z),
+        "demand_regime_positive_cusum": _rounded(demand_regime.positive_cusum),
         "actual_runway_hours": _rounded(actual_runway_hours),
         "dynamic_runway_hours": _rounded(dynamic_runway_hours),
         "runway_source": runway_source,
@@ -335,6 +390,9 @@ def calculate_capacity_risk(
         "forecast_current_hour_model_remaining_usd": _rounded(forecast_current_hour_model_remaining_usd),
         "forecast_current_hour_realtime_remaining_usd": _rounded(forecast_current_hour_realtime_remaining_usd),
         "forecast_current_hour_selected_remaining_usd": _rounded(forecast_current_hour_selected_remaining_usd),
+        "forecast_current_hour_candidate_remaining_usd": _rounded(forecast_current_hour_candidate_remaining_usd),
+        "forecast_nowcast_realtime_weight": _rounded(forecast_nowcast_realtime_weight),
+        "forecast_nowcast_selector": "regime_aware_v2" if REGIME_NOWCAST_V2_ENABLED else "current_max_v1",
         "target_runway_hours": DYNAMIC_RUNWAY_TARGET_HOURS,
         "actual_target_hours": ACTUAL_RUNWAY_TARGET_HOURS,
         "concurrency_target_coverage": TOTAL_CONCURRENCY_TARGET,
@@ -424,16 +482,17 @@ def _pressure_stage(
     tpm_momentum: float,
     falling: bool,
     inventory_risk: bool,
+    regime_stage: str,
 ) -> str:
     if inventory_risk:
         return "inventory_risk"
     if health_status in {"exhausted", "danger"}:
         return "peak_guard"
-    if falling:
+    if regime_stage == "cooling" or falling:
         return "recovering"
-    if demand_ratio >= 1.5 or tpm_momentum >= 1.2:
+    if regime_stage == "surge" or demand_ratio >= 1.5 or tpm_momentum >= 1.2:
         return "accelerating"
-    if demand_ratio >= 1.2:
+    if regime_stage == "warming" or demand_ratio >= 1.2:
         return "transmission"
     return "stable"
 
@@ -524,6 +583,7 @@ def _normalized_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "rpm": _nonnegative(sample.get("rpm")),
                 "average_duration_ms": _nonnegative(sample.get("average_duration_ms")),
                 "current_concurrency": _nonnegative(sample.get("current_concurrency")),
+                "account_cost_per_minute": _nonnegative(sample.get("account_cost_per_minute")),
             }
         )
     return sorted(normalized, key=lambda item: item["sampled_at"])

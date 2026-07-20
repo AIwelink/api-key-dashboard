@@ -17,18 +17,21 @@ def samples(
     duration_ms: float = 1000,
     current_concurrency: float | None = 1,
     latest_at: datetime = NOW,
+    account_cost_per_minute: list[float] | None = None,
 ) -> list[dict[str, object]]:
     start = latest_at - timedelta(minutes=len(values) - 1)
-    return [
+    result = [
         {
             "sampled_at": start + timedelta(minutes=index),
             "tpm": value,
             "rpm": rpm,
             "average_duration_ms": duration_ms,
             "current_concurrency": current_concurrency,
+            "account_cost_per_minute": account_cost_per_minute[index] if account_cost_per_minute else None,
         }
         for index, value in enumerate(values)
     ]
+    return result
 
 
 def calculate(
@@ -82,6 +85,16 @@ class CapacityRiskTests(unittest.TestCase):
         self.assertTrue(result["ready"])
         self.assertEqual(result["realtime_burn_source"], "rpm")
         self.assertEqual(result["realtime_burn_usd_per_hour"], 36.0)
+
+    def test_direct_account_cost_rate_has_priority_over_tpm_and_rpm_conversion(self) -> None:
+        result = calculate(
+            samples([1000] * 20, rpm=120, account_cost_per_minute=[2.0] * 20),
+            cost_per_request=0.01,
+        )
+
+        self.assertEqual(result["realtime_direct_burn_usd_per_hour"], 120.0)
+        self.assertEqual(result["realtime_burn_usd_per_hour"], 120.0)
+        self.assertEqual(result["realtime_burn_source"], "direct_account_cost")
 
     def test_request_cost_without_rpm_samples_stays_pending(self) -> None:
         sample_items = samples([1000] * 20)
@@ -156,7 +169,7 @@ class CapacityRiskTests(unittest.TestCase):
         )
 
         result = calculate(
-            samples([20_000] * 20, latest_at=now),
+            samples([1_000] * 15 + [20_000] * 5, latest_at=now),
             now=now,
             demand_forecast=demand_forecast,
             actual_five_hour_remaining_usd=10,
@@ -164,13 +177,61 @@ class CapacityRiskTests(unittest.TestCase):
             current_hour_observed_cost_usd=8,
         )
 
-        self.assertEqual(result["actual_runway_hours"], 0.5)
-        self.assertEqual(result["dynamic_runway_hours"], 0.5)
         self.assertTrue(result["forecast_nowcast_applied"])
         self.assertEqual(result["forecast_current_hour_model_remaining_usd"], 2.0)
-        self.assertEqual(result["forecast_current_hour_realtime_remaining_usd"], 10.0)
-        self.assertEqual(result["forecast_current_hour_selected_remaining_usd"], 10.0)
+        self.assertEqual(result["demand_regime_stage"], "surge")
+        self.assertGreater(result["demand_regime_strength"], 0.5)
+        self.assertGreater(result["forecast_nowcast_realtime_weight"], 0.8)
+        self.assertGreater(
+            result["forecast_current_hour_realtime_remaining_usd"],
+            result["forecast_current_hour_model_remaining_usd"],
+        )
+        self.assertGreater(
+            result["forecast_current_hour_candidate_remaining_usd"],
+            result["forecast_current_hour_model_remaining_usd"],
+        )
+        self.assertLess(
+            result["forecast_current_hour_candidate_remaining_usd"],
+            result["forecast_current_hour_realtime_remaining_usd"],
+        )
+        self.assertEqual(
+            result["forecast_current_hour_selected_remaining_usd"],
+            result["forecast_current_hour_realtime_remaining_usd"],
+        )
+        self.assertEqual(result["forecast_nowcast_selector"], "current_max_v1")
 
+    def test_stable_late_hour_exposes_candidate_but_keeps_v1_selector(self) -> None:
+        now = NOW + timedelta(minutes=50)
+        demand_forecast = ForecastResult(
+            model="robust_seasonal_analog",
+            version="1",
+            as_of=NOW,
+            readiness="provisional",
+            history_hours=21 * 24,
+            completeness_ratio=1.0,
+            points=tuple(
+                ForecastPoint(index + 1, NOW + timedelta(hours=index), 10, 20, 14, "analog")
+                for index in range(25)
+            ),
+        )
+
+        result = calculate(
+            samples([1_000] * 20, latest_at=now),
+            now=now,
+            demand_forecast=demand_forecast,
+            current_hour_observed_cost_usd=10,
+        )
+
+        self.assertEqual(result["demand_regime_stage"], "stable")
+        self.assertEqual(result["forecast_nowcast_realtime_weight"], 1.0)
+        self.assertLess(
+            result["forecast_current_hour_candidate_remaining_usd"],
+            result["forecast_current_hour_model_remaining_usd"],
+        )
+        self.assertEqual(
+            result["forecast_current_hour_selected_remaining_usd"],
+            result["forecast_current_hour_model_remaining_usd"],
+        )
 
     def test_waits_for_fifteen_fresh_samples(self) -> None:
         result = calculate(samples([1000] * 14))

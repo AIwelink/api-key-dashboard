@@ -31,6 +31,7 @@ class TpmSampleTests(unittest.IsolatedAsyncioTestCase):
                     "sampled_at": datetime(2026, 7, 16, 6, 52, 42, tzinfo=UTC),
                     "total_tokens": 1_000,
                     "total_requests": 10,
+                    "total_account_cost": 20.0,
                 }
             ),
             replace_one=AsyncMock(),
@@ -46,6 +47,7 @@ class TpmSampleTests(unittest.IsolatedAsyncioTestCase):
             counters={
                 "total_tokens": 1_600,
                 "total_requests": 18,
+                "total_account_cost": 25.0,
                 "source_updated_at": datetime(2026, 7, 16, 6, 53, 30, tzinfo=UTC),
             },
             current_concurrency=17,
@@ -65,11 +67,14 @@ class TpmSampleTests(unittest.IsolatedAsyncioTestCase):
         document = samples.replace_one.await_args.args[1]
         self.assertEqual(document["tpm"], 600.0)
         self.assertEqual(document["rpm"], 8.0)
+        self.assertEqual(document["account_cost_delta"], 5.0)
+        self.assertEqual(document["account_cost_per_minute"], 5.0)
+        self.assertEqual(document["account_cost_per_hour"], 300.0)
         self.assertEqual(document["current_concurrency"], 17.0)
         self.assertEqual(document["source"], "postgresql_group_counter_delta")
         self.assertEqual(document["counter_source"], "postgresql_usage_logs")
         self.assertEqual(document["stats_updated_at"], datetime(2026, 7, 16, 6, 53, 30, tzinfo=UTC))
-        self.assertEqual(document["expires_at"], sampled_at + timedelta(days=14))
+        self.assertEqual(document["expires_at"], sampled_at + timedelta(days=60))
         self.assertEqual(result["sample"]["_id"], document["_id"])
 
     async def test_counter_reset_does_not_create_negative_tpm(self) -> None:

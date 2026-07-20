@@ -110,6 +110,30 @@ class HourlyForecastTests(unittest.TestCase):
             2.0,
         )
 
+    def test_current_hour_nowcast_accepts_calibrated_selected_remaining(self) -> None:
+        forecast = ForecastResult(
+            model="test",
+            version="1",
+            as_of=AS_OF,
+            readiness="eligible",
+            history_hours=56 * 24,
+            completeness_ratio=1.0,
+            points=tuple(
+                ForecastPoint(index + 1, AS_OF + timedelta(hours=index), 6, 10, 1, "test")
+                for index in range(25)
+            ),
+        )
+
+        nowcast = apply_current_hour_nowcast(
+            forecast,
+            now=AS_OF + timedelta(minutes=30),
+            observed_current_hour_cost_usd=8,
+            realtime_cost_per_hour=20,
+            selected_remaining_usd=7,
+        )
+
+        self.assertEqual(nowcast.selected_p90_remaining_usd, 7)
+
     def test_runway_prorates_partial_natural_hours(self) -> None:
         forecast = ForecastResult(
             model="test",

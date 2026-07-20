@@ -144,6 +144,7 @@ def apply_current_hour_nowcast(
     now: datetime,
     observed_current_hour_cost_usd: float,
     realtime_cost_per_hour: float,
+    selected_remaining_usd: float | None = None,
 ) -> CurrentHourNowcast:
     current_at = _aware_utc(now, field_name="now")
     observed_cost = _nonnegative(observed_current_hour_cost_usd, field_name="observed_current_hour_cost_usd")
@@ -167,7 +168,11 @@ def apply_current_hour_nowcast(
     model_p50_remaining = max(0.0, current_point.p50 - observed_cost)
     model_p90_remaining = max(model_p50_remaining, current_point.p90 - observed_cost, 0.0)
     realtime_remaining = realtime_rate * remaining_fraction
-    selected_p90_remaining = max(model_p90_remaining, realtime_remaining, model_p50_remaining)
+    selected_p90_remaining = (
+        max(model_p90_remaining, realtime_remaining, model_p50_remaining)
+        if selected_remaining_usd is None
+        else max(model_p50_remaining, _nonnegative(selected_remaining_usd, field_name="selected_remaining_usd"))
+    )
     adjusted_point = replace(
         current_point,
         p50=round(model_p50_remaining / remaining_fraction, 6),
