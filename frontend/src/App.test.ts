@@ -2,17 +2,39 @@ import { describe, expect, it } from "vitest";
 import { getVisibleNavigationGroups, viewFromPath } from "./App";
 
 describe("app navigation", () => {
-  it("hides account workflow pages without leaving empty navigation groups", () => {
+  const hiddenViews = [
+    "upload",
+    "todos",
+    "push-error-todos",
+    "accounts",
+    "available-pool",
+    "reserve-pool",
+  ];
+
+  it("shows owners the retained navigation groups without hidden account workflow pages", () => {
     const groups = getVisibleNavigationGroups(true);
     const visibleKeys = groups.flat().map(([key]) => key);
 
     expect(groups.every((group) => group.length > 0)).toBe(true);
-    expect(visibleKeys).not.toContain("upload");
-    expect(visibleKeys).not.toContain("todos");
-    expect(visibleKeys).not.toContain("push-error-todos");
-    expect(visibleKeys).not.toContain("accounts");
-    expect(visibleKeys).not.toContain("available-pool");
-    expect(visibleKeys).not.toContain("reserve-pool");
+    expect(groups.map((group) => group.map(([key]) => key))).toEqual([
+      ["api-pools", "event-records", "alert-center", "pool-lifecycle", "client-sites"],
+      ["agent-analysis", "agent-workbench", "api-tokens", "presence", "users", "logs"],
+    ]);
+    expect(visibleKeys).toContain("presence");
+    hiddenViews.forEach((view) => expect(visibleKeys).not.toContain(view));
+  });
+
+  it("keeps presence owner-only while retaining general navigation for non-owners", () => {
+    const groups = getVisibleNavigationGroups(false);
+    const visibleKeys = groups.flat().map(([key]) => key);
+
+    expect(groups.every((group) => group.length > 0)).toBe(true);
+    expect(groups.map((group) => group.map(([key]) => key))).toEqual([
+      ["api-pools", "event-records", "alert-center", "pool-lifecycle", "client-sites"],
+      ["agent-analysis", "agent-workbench", "api-tokens", "users", "logs"],
+    ]);
+    expect(visibleKeys).not.toContain("presence");
+    hiddenViews.forEach((view) => expect(visibleKeys).not.toContain(view));
   });
 
   it("keeps hidden account workflow pages directly addressable", () => {
