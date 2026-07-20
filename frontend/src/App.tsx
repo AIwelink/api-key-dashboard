@@ -54,6 +54,26 @@ const adminNavItems: Array<[ViewName, string]> = [
   ["logs", "日志"],
 ];
 
+const hiddenNavItems = new Set<ViewName>([
+  "upload",
+  "todos",
+  "push-error-todos",
+  "accounts",
+  "available-pool",
+  "reserve-pool",
+]);
+
+export function getVisibleNavigationGroups(canViewPresence: boolean): Array<Array<[ViewName, string]>> {
+  return [
+    navItems,
+    accountNavItems,
+    poolNavItems,
+    adminNavItems.filter(([key]) => key !== "presence" || canViewPresence),
+  ]
+    .map((group) => group.filter(([key]) => !hiddenNavItems.has(key)))
+    .filter((group) => group.length > 0);
+}
+
 const navShortLabels: Record<ViewName, string> = {
   upload: "传",
   todos: "办",
@@ -109,10 +129,10 @@ function isMobileMenuLayout() {
 }
 
 function defaultViewForLayout(): ViewName {
-  return isMobileMenuLayout() ? "api-pools" : "upload";
+  return "api-pools";
 }
 
-function viewFromPath(pathname: string): ViewName {
+export function viewFromPath(pathname: string): ViewName {
   const normalized = pathname.replace(/\/+$/, "") || "/";
   if (normalized === "/") return defaultViewForLayout();
   const matched = Object.entries(viewPaths).find(([, path]) => path === normalized);
@@ -180,7 +200,7 @@ function App() {
     const handleAuthExpired = () => {
       setToken("");
       setUser(null);
-      navigateToView("upload");
+      navigateToView("api-pools");
       localStorage.removeItem("token");
       localStorage.removeItem("user");
       showToast("登录过期", true);
@@ -205,7 +225,7 @@ function App() {
         </button>
 
         <nav className="nav">
-          {[navItems, accountNavItems, poolNavItems, adminNavItems.filter(([key]) => key !== "presence" || user?.role === "owner")].map((group, index) => (
+          {getVisibleNavigationGroups(user?.role === "owner").map((group, index) => (
             <div className="nav-group" key={index}>
               {group.map(([key, label]) => (
                 <button
