@@ -49,6 +49,7 @@ describe("growth database config form", () => {
 
     expect(html).toContain("访问流量分析配置");
     expect(html).toContain("PostgreSQL");
+    expect(html).toContain("postgresql://");
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>测试数据库连接<\/button>/);
   });
 

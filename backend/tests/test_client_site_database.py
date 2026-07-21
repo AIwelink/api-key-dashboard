@@ -45,6 +45,35 @@ class FakeEngine:
 
 
 class ClientSiteDatabaseTests(unittest.IsolatedAsyncioTestCase):
+    def test_postgresql_url_dsn_uses_fixed_async_driver(self) -> None:
+        dsn = "postgresql://growth_user:pa%40ss@growth.internal:6543/aiwelink_growth?sslmode=require"
+
+        parsed = parse_sql_dsn(dsn, "postgresql")
+
+        self.assertEqual(parsed.username, "growth_user")
+        self.assertEqual(parsed.password, "pa@ss")
+        self.assertEqual(parsed.endpoint, "growth.internal:6543/aiwelink_growth")
+        self.assertEqual(parsed.connect_args(10), {"timeout": 10, "ssl": "require"})
+        self.assertEqual(
+            parsed.driver_url(),
+            "postgresql+asyncpg://growth_user:pa%40ss@growth.internal:6543/aiwelink_growth",
+        )
+
+    def test_postgresql_url_error_redaction_removes_credentials(self) -> None:
+        dsn = "postgresql://growth_user:pa%40ss@growth.internal/aiwelink_growth?sslmode=disable"
+        driver_url = parse_sql_dsn(dsn, "postgresql").driver_url()
+
+        result = redact_sql_error(
+            RuntimeError(f"failed for {dsn}; driver={driver_url}; password=pa@ss"),
+            dsn,
+            "postgresql",
+        )
+
+        self.assertNotIn("growth_user", result)
+        self.assertNotIn("pa@ss", result)
+        self.assertNotIn("pa%40ss", result)
+        self.assertNotIn(dsn, result)
+
     async def test_generic_database_probe_uses_explicit_postgresql_type(self) -> None:
         connection = MagicMock()
         connection.execute = AsyncMock(side_effect=[FakeResult(1), FakeResult("PostgreSQL 17.5")])

@@ -131,6 +131,8 @@ def _parse_mysql_sql_dsn(sql_dsn: str) -> ParsedSqlDsn:
 
 
 def _parse_postgresql_sql_dsn(sql_dsn: str) -> ParsedSqlDsn:
+    if "://" in sql_dsn:
+        return _parse_postgresql_url_dsn(sql_dsn)
     try:
         tokens = shlex.split(sql_dsn)
     except ValueError as exc:
@@ -155,6 +157,40 @@ def _parse_postgresql_sql_dsn(sql_dsn: str) -> ParsedSqlDsn:
         port = int(options.get("port") or 5432)
     except ValueError as exc:
         raise ValueError("PostgreSQL SQL_DSN contains an invalid port") from exc
+    sslmode = options.get("sslmode", "prefer").lower()
+    if sslmode not in POSTGRES_SSL_MODES:
+        raise ValueError(f"unsupported PostgreSQL sslmode: {sslmode}")
+    options["sslmode"] = sslmode
+    return ParsedSqlDsn(
+        database_type="postgresql",
+        username=required["user"],
+        password=required["password"],
+        host=required["host"],
+        port=_valid_port(port, "PostgreSQL"),
+        database=database,
+        options=options,
+    )
+
+
+def _parse_postgresql_url_dsn(sql_dsn: str) -> ParsedSqlDsn:
+    try:
+        url = urlsplit(sql_dsn)
+        port = url.port or 5432
+    except ValueError as exc:
+        raise ValueError("PostgreSQL SQL_DSN URL is invalid") from exc
+    if url.scheme.lower() != "postgresql":
+        raise ValueError("PostgreSQL SQL_DSN URL must use postgresql://")
+    database = unquote(url.path.removeprefix("/"))
+    required = {
+        "host": url.hostname or "",
+        "user": unquote(url.username or ""),
+        "password": unquote(url.password or ""),
+        "dbname": database,
+    }
+    missing = [key for key, value in required.items() if not value]
+    if missing:
+        raise ValueError(f"PostgreSQL SQL_DSN is missing: {', '.join(missing)}")
+    options = dict(parse_qsl(url.query, keep_blank_values=True))
     sslmode = options.get("sslmode", "prefer").lower()
     if sslmode not in POSTGRES_SSL_MODES:
         raise ValueError(f"unsupported PostgreSQL sslmode: {sslmode}")

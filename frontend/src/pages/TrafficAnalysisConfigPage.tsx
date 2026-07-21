@@ -145,7 +145,7 @@ export function GrowthDatabaseConfigForm({
             <textarea
               value={sqlDsn}
               onChange={(event) => onSqlDsnChange(event.target.value)}
-              placeholder={configured ? "已配置，留空不修改" : "host=postgres.example.com port=5432 user=growth_app password=secret dbname=aiwelink_growth sslmode=require"}
+              placeholder={configured ? "已配置，留空不修改" : "postgresql://growth_app:password@postgres.example.com:5432/aiwelink_growth?sslmode=require"}
               autoComplete="new-password"
               className="sql-dsn-input"
               rows={5}

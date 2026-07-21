@@ -66,13 +66,23 @@ app_settings._id = "growth_database"
 
 ## DSN 格式
 
-只支持项目现有 PostgreSQL DSN 解析器已经支持的两种输入：
+支持以下三种 PostgreSQL DSN 输入。
+
+URL 格式：
+
+```text
+postgresql://growth_app:secret@postgres.example.com:5432/aiwelink_growth?sslmode=require
+```
+
+URL 必须使用 `postgresql://` scheme，用户名、密码和数据库名中的特殊字符使用 percent-encoding。
+
+key/value 格式：
 
 ```text
 host=postgres.example.com port=5432 user=growth_app password=secret dbname=aiwelink_growth sslmode=require
 ```
 
-或：
+`DATABASE_*` 环境变量块：
 
 ```text
 DATABASE_HOST=postgres.example.com
@@ -83,7 +93,7 @@ DATABASE_PASSWORD=secret
 DATABASE_SSLMODE=require
 ```
 
-本阶段不新增 `postgresql://` URL 格式。端口默认 `5432`，`sslmode` 沿用现有允许值和默认行为。
+三种格式的端口均默认 `5432`，`sslmode` 沿用现有允许值和默认行为。
 
 ## 后端接口
 
