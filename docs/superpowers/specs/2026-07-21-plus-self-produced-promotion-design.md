@@ -41,7 +41,7 @@ One run performs these steps:
 2. Fetch the live remote accounts belonging to group `4`.
 3. Test each account serially with model `gpt-5.4`, an empty prompt, and default mode.
 4. Classify the result using the precedence above.
-5. For successful classifications, build an idempotent name: preserve the current name when it already starts with `plus `, otherwise prepend exactly `plus `.
+5. For successful classifications, build an idempotent name: compare the beginning of the current name case-insensitively and preserve it unchanged whenever it already starts with `plus`, whether or not a space follows the prefix. Otherwise prepend exactly `plus `.
 6. Update the remote account in one PATCH-compatible call with the new name, `group_id=6`, and `group_ids=[6]`, while preserving its current status and schedulable values.
 7. Count an account as promoted only after the remote update succeeds. Refresh or upsert the account cache from the returned remote snapshot.
 8. Store the latest per-account result and the run summary. Continue after individual test or update failures.
@@ -89,7 +89,7 @@ The page refreshes its status and results after settings changes and manual runs
 - Test requests and account updates remain serial to reduce load and avoid generating avoidable rate limits.
 - One account failure does not abort the rest of the run.
 - A missing site or missing group fails the run before any account mutation.
-- Account names are changed idempotently and never gain repeated `plus ` prefixes.
+- Account names are changed idempotently and never gain repeated prefixes. Existing forms such as `plus account@example.com` and `plusaccount@example.com` are both preserved and moved directly.
 - Only accounts currently returned from source group `4` are eligible.
 - Destination changes always replace group membership with `[6]`; the workflow does not leave the account in both groups.
 - No credential fields, tokens, or full SSE event bodies are persisted or returned by the new API.
@@ -101,7 +101,7 @@ Backend tests cover:
 
 - Classification of `success=true`, HTTP 429, the ChatGPT-account unsupported-model error, and unrelated errors.
 - Unsupported-model classification precedence.
-- Idempotent `plus ` name construction.
+- Idempotent name construction for names with no prefix, `plus ` with a space, and `plus` without a space.
 - Serial processing and continuation after one account failure.
 - Exact remote update payload and no mutation for failed tests.
 - Promotion-update failure remaining retryable.
