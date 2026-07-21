@@ -12,6 +12,7 @@ export type ViewName =
   | "alert-center"
   | "pool-lifecycle"
   | "client-sites"
+  | "traffic-analysis-config"
   | "agent-analysis"
   | "agent-workbench"
   | "api-tokens"

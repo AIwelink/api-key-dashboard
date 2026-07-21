@@ -17,10 +17,11 @@ import { LoginPage } from "./pages/LoginPage";
 import { OperationsManagementPage } from "./pages/OperationsManagementPage";
 import { PresencePage } from "./pages/PresencePage";
 import { TrafficAnalysisPage } from "./pages/TrafficAnalysisPage";
+import { TrafficAnalysisConfigPage } from "./pages/TrafficAnalysisConfigPage";
 import { UploadPage } from "./pages/UploadPage";
 import { UsersPage } from "./pages/UsersPage";
 import { useForegroundPresence } from "./hooks/useForegroundPresence";
-import type { User, ViewName } from "./types";
+import type { User, UserRole, ViewName } from "./types";
 
 type ToastState = {
   message: string;
@@ -48,6 +49,7 @@ const poolOperationsNavItems: Array<[ViewName, string]> = [
   ["alert-center", "异常告警"],
   ["pool-lifecycle", "账号池管理"],
   ["client-sites", "客户站点"],
+  ["traffic-analysis-config", "访问流量分析配置"],
 ];
 
 const operationsManagementNavItems: Array<[ViewName, string]> = [
@@ -73,14 +75,18 @@ const hiddenNavItems = new Set<ViewName>([
   "reserve-pool",
 ]);
 
-export function getVisibleNavigationGroups(canViewPresence: boolean): Array<Array<[ViewName, string]>> {
+export function canAccessTrafficAnalysisConfig(role?: UserRole) {
+  return role === "owner" || role === "admin";
+}
+
+export function getVisibleNavigationGroups(role?: UserRole): Array<Array<[ViewName, string]>> {
   return [
     navItems,
     accountNavItems,
     poolNavItems,
     operationsManagementNavItems,
-    poolOperationsNavItems,
-    adminNavItems.filter(([key]) => key !== "presence" || canViewPresence),
+    poolOperationsNavItems.filter(([key]) => key !== "traffic-analysis-config" || canAccessTrafficAnalysisConfig(role)),
+    adminNavItems.filter(([key]) => key !== "presence" || role === "owner"),
   ]
     .map((group) => group.filter(([key]) => !hiddenNavItems.has(key)))
     .filter((group) => group.length > 0);
@@ -100,6 +106,7 @@ const navShortLabels: Record<ViewName, string> = {
   "alert-center": "警",
   "pool-lifecycle": "站",
   "client-sites": "客",
+  "traffic-analysis-config": "配",
   "agent-analysis": "析",
   "agent-workbench": "台",
   "api-tokens": "管",
@@ -122,6 +129,7 @@ const viewPaths: Record<ViewName, string> = {
   "alert-center": "/alert-center",
   "pool-lifecycle": "/account-pool-management",
   "client-sites": "/client-sites",
+  "traffic-analysis-config": "/traffic-analysis-config",
   "agent-analysis": "/agent-analysis",
   "agent-workbench": "/agent-workbench",
   "api-tokens": "/system-management",
@@ -207,7 +215,9 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (token && user && view === "presence" && user.role !== "owner") {
+    const presenceDenied = view === "presence" && user?.role !== "owner";
+    const growthConfigDenied = view === "traffic-analysis-config" && !canAccessTrafficAnalysisConfig(user?.role);
+    if (token && user && (presenceDenied || growthConfigDenied)) {
       navigateToView(defaultViewForLayout());
     }
   }, [token, user, view]);
@@ -241,7 +251,7 @@ function App() {
         </button>
 
         <nav className="nav">
-          {getVisibleNavigationGroups(user?.role === "owner").map((group, index) => (
+          {getVisibleNavigationGroups(user?.role).map((group, index) => (
             <div className={navigationGroupClass(group)} key={index}>
               {group.map(([key, label]) => (
                 <button
@@ -299,6 +309,9 @@ function App() {
             {view === "alert-center" && <AlertCenterPage token={token} showToast={showToast} />}
             {view === "pool-lifecycle" && <AccountPoolsPage token={token} showToast={showToast} />}
             {view === "client-sites" && <ClientSitesPage token={token} showToast={showToast} />}
+            {view === "traffic-analysis-config" && canAccessTrafficAnalysisConfig(user?.role) && (
+              <TrafficAnalysisConfigPage token={token} showToast={showToast} />
+            )}
             {view === "agent-analysis" && <AgentAnalysisPage token={token} showToast={showToast} />}
             {view === "agent-workbench" && <AgentWorkbenchPage token={token} showToast={showToast} />}
             {view === "api-tokens" && <ApiTokensPage token={token} showToast={showToast} />}

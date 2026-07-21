@@ -97,6 +97,10 @@ class NotificationChannelUpdate(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+class GrowthDatabaseSettingsUpdate(BaseModel):
+    sql_dsn: str = ""
+
+
 class AgentLlmSettingsUpdate(BaseModel):
     enabled: bool = False
     base_url: str | None = Field(default=None, max_length=1000)

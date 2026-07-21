@@ -7,6 +7,7 @@ from app.routers import client_sites as client_sites_router
 from app.modules.system.client_site_database import (
     driver_database_url,
     probe_database_connection,
+    probe_sql_database_connection,
     run_client_site_database_test,
 )
 from app.modules.system.sql_dsn import parse_sql_dsn, redact_sql_error
@@ -44,6 +45,24 @@ class FakeEngine:
 
 
 class ClientSiteDatabaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_generic_database_probe_uses_explicit_postgresql_type(self) -> None:
+        connection = MagicMock()
+        connection.execute = AsyncMock(side_effect=[FakeResult(1), FakeResult("PostgreSQL 17.5")])
+        engine = FakeEngine(FakeConnectionContext(connection=connection))
+        engine_factory = MagicMock(return_value=engine)
+
+        result = await probe_sql_database_connection(
+            "host=growth.internal user=growth_app password=secret dbname=aiwelink_growth sslmode=disable",
+            "postgresql",
+            engine_factory=engine_factory,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["database_endpoint"], "growth.internal:5432/aiwelink_growth")
+        self.assertEqual(result["server_version"], "PostgreSQL 17.5")
+        self.assertTrue(engine_factory.call_args.args[0].startswith("postgresql+asyncpg://"))
+        engine.dispose.assert_awaited_once()
+
     def test_sql_error_redaction_removes_url_encoded_password(self) -> None:
         dsn = "host=postgres.internal user=reader password=pa@ss dbname=sub2api sslmode=disable"
         driver_url = parse_sql_dsn(dsn, "postgresql").driver_url()

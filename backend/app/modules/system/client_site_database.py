@@ -30,6 +30,19 @@ async def probe_database_connection(
     client_type = _client_type(site.get("client_type"))
     database_type = DATABASE_TYPE_BY_CLIENT_TYPE[client_type]
     sql_dsn = str(site.get("sql_dsn") or "").strip()
+    return await probe_sql_database_connection(
+        sql_dsn,
+        database_type,
+        engine_factory=engine_factory,
+    )
+
+
+async def probe_sql_database_connection(
+    sql_dsn: str,
+    database_type: str,
+    *,
+    engine_factory: Callable[..., Any] = create_async_engine,
+) -> dict[str, Any]:
     parsed_dsn = parse_sql_dsn(sql_dsn, database_type)
     engine = None
     started = perf_counter()

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.schemas import AgentLlmSettingsUpdate
+from app.schemas import AgentLlmSettingsUpdate, GrowthDatabaseSettingsUpdate
 from app.security import require_roles
 from app.modules.agent.llm_client import AgentLlmConfigError, test_agent_llm_connection
 from app.modules.agent.settings import (
@@ -13,9 +13,77 @@ from app.modules.agent.settings import (
     update_agent_llm_test_result,
 )
 from app.modules.system.audit import write_audit_log
+from app.modules.system.growth_database_settings import (
+    get_growth_database_settings,
+    run_growth_database_test,
+    update_growth_database_settings,
+)
 
 
 router = APIRouter(prefix="/settings", tags=["settings"])
+
+
+@router.get("/growth-database")
+async def get_growth_database_settings_route(
+    _: dict = Depends(require_roles("owner", "admin")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    return await get_growth_database_settings(db)
+
+
+@router.put("/growth-database")
+async def put_growth_database_settings(
+    payload: GrowthDatabaseSettingsUpdate,
+    actor: dict = Depends(require_roles("owner", "admin")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    before = await get_growth_database_settings(db)
+    try:
+        updated = await update_growth_database_settings(
+            db,
+            sql_dsn=payload.sql_dsn,
+            actor=actor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="settings.growth_database.update",
+        resource_type="setting",
+        resource_id="growth_database",
+        before=before,
+        after=updated,
+    )
+    return updated
+
+
+@router.post("/growth-database/test")
+async def post_growth_database_test(
+    actor: dict = Depends(require_roles("owner", "admin")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    try:
+        result = await run_growth_database_test(db)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="settings.growth_database.test",
+        resource_type="setting",
+        resource_id="growth_database",
+        after={
+            "ok": result.get("ok"),
+            "database_type": result.get("database_type"),
+            "database_endpoint": result.get("database_endpoint"),
+            "latency_ms": result.get("latency_ms"),
+            "server_version": result.get("server_version"),
+            "error": result.get("error"),
+            "tested_at": result.get("tested_at"),
+        },
+    )
+    return result
 
 
 @router.get("/sync-policy")
