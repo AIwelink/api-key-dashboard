@@ -33,14 +33,14 @@ HTTP 429 counts as success because it proves the account can reach the requested
 
 ## Backend Architecture
 
-Create a focused `plus_self_produced` Sub2API module. It owns settings, due-time calculation, result classification, serial probing, remote promotion, run history, and the scheduler loop. It reads groups, accounts, and group membership from the site's configured PostgreSQL database using the existing repeatable-read pool snapshot repository. `Sub2ApiClient` is reserved for operations that require the Admin API: model tests and account updates.
+Create a focused `plus_self_produced` Sub2API module. It owns settings, due-time calculation, result classification, serial probing, remote promotion, run history, and the scheduler loop. It reads groups, accounts, group membership, and `settings.admin_api_key` from the site's configured PostgreSQL database. `Sub2ApiClient` is reserved for operations that require the Admin API: model tests and account updates.
 
 The application lifespan starts one scheduler task. The scheduler wakes on a short polling cadence, reads the persisted setting, and starts a run only when the workflow is enabled and the configured interval has elapsed. An in-process lock prevents manual and scheduled runs from overlapping. The persisted last-run timestamps also make due-time behavior explicit after a restart.
 
 One run performs these steps:
 
-1. Load the configured Sub2API site with its Admin API Key and PostgreSQL `sql_dsn`.
-2. Read a repeatable PostgreSQL snapshot, validate that groups `4`, `6`, and `7` exist, and select accounts belonging to group `4`.
+1. Load the configured Sub2API site's Base URL and PostgreSQL `sql_dsn` from MongoDB.
+2. Read `settings.admin_api_key` and a repeatable pool snapshot from PostgreSQL, validate that groups `4`, `6`, and `7` exist, and select accounts belonging to group `4`.
 3. Test each account serially with model `gpt-5.4`, an empty prompt, and default mode.
 4. Classify the result using the precedence above.
 5. For `unauthorized_banned`, preserve the account name and update only its group membership to `group_id=7` and `group_ids=[7]`.
@@ -98,7 +98,7 @@ The page refreshes its status and results after settings changes and manual runs
 - Destination changes always replace group membership with `[6]`; the workflow does not leave the account in both groups.
 - HTTP 401 changes always replace group membership with `[7]`.
 - No credential fields, tokens, or full SSE event bodies are persisted or returned by the new API.
-- Admin API Keys must contain only ASCII characters and no whitespace. Invalid stored values fail the run with a readable configuration error before any remote mutation.
+- The workflow reads the Admin API Key from PostgreSQL `settings.admin_api_key`; it must contain only ASCII characters and no whitespace. Missing or invalid values fail the run before any remote mutation.
 - A MongoDB lease prevents multiple workers or replicas from running the workflow concurrently.
 - Scheduler shutdown follows the existing FastAPI lifespan cancellation pattern.
 

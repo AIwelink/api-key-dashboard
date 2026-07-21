@@ -15,7 +15,10 @@ from pymongo.errors import DuplicateKeyError
 
 from app.modules.sub2api.cache import get_site, upsert_cached_account_snapshot
 from app.modules.sub2api.client import InvalidAdminApiKeyError, Sub2ApiClient, account_in_group
-from app.modules.sub2api.postgres_repository import fetch_pool_snapshot as fetch_postgres_pool_snapshot
+from app.modules.sub2api.postgres_repository import (
+    fetch_admin_api_key as fetch_postgres_admin_api_key,
+    fetch_pool_snapshot as fetch_postgres_pool_snapshot,
+)
 from app.modules.system.sql_dsn import redact_sql_error
 from app.utils import now_utc, serialize_doc
 
@@ -338,16 +341,17 @@ async def _run_probe_locked(
         site = await get_site(db, SITE_ID, include_token=True)
         if not site:
             raise RuntimeError(f"Sub2API site {SITE_ID} not found")
-        client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
         sql_dsn = str(site.get("sql_dsn") or "").strip()
         if not sql_dsn:
             raise RuntimeError(f"Sub2API site {SITE_ID} PostgreSQL SQL_DSN is not configured")
         try:
             pool_snapshot = await fetch_postgres_pool_snapshot(sql_dsn)
+            admin_api_key = await fetch_postgres_admin_api_key(sql_dsn)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - persisted run errors must not expose database credentials.
             raise RuntimeError(redact_sql_error(exc, sql_dsn, "postgresql")) from exc
+        client = Sub2ApiClient(base_url=site.get("base_url"), token=admin_api_key)
         _ensure_probe_lease(lease_lost)
         group_ids = {
             group.get("id")

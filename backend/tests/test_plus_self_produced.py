@@ -4,7 +4,7 @@ import asyncio
 import unittest
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
@@ -167,6 +167,15 @@ class PlusSelfProducedIndexTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.admin_key_patcher = patch.object(
+            plus_self_produced,
+            "fetch_postgres_admin_api_key",
+            AsyncMock(return_value="postgres-admin-key"),
+        )
+        self.fetch_admin_key = self.admin_key_patcher.start()
+        self.addCleanup(self.admin_key_patcher.stop)
+
     def build_db(self) -> SimpleNamespace:
         async def acquire_lock(_query: object, update: dict[str, object], **_kwargs: object) -> dict[str, object]:
             return {"_id": "plus-self-produced-probe", **update["$set"]}
@@ -296,8 +305,9 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.test_account.await_count, 1)
         self.assertEqual(client.update_account.await_count, 1)
 
-    async def test_reads_groups_and_source_accounts_from_postgresql(self) -> None:
+    async def test_reads_groups_accounts_and_admin_key_from_postgresql(self) -> None:
         db = self.build_db()
+        sql_dsn = "postgresql://reader:secret@postgres/sub2api"
         snapshot = {
             "groups": [{"id": 4}, {"id": 6}, {"id": 7}],
             "accounts": [
@@ -309,6 +319,8 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
             test_account=AsyncMock(return_value={"success": True, "error": None}),
             update_account=AsyncMock(return_value={"id": 40, "group_ids": [6]}),
         )
+        client_factory = MagicMock(return_value=client)
+        fetch_admin_key = AsyncMock(return_value="postgres-admin-key")
 
         with (
             patch.object(
@@ -318,18 +330,24 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
                     return_value={
                         "id": "US06-5002",
                         "base_url": "https://sub2.example.com",
-                        "token": "secret",
-                        "sql_dsn": "postgresql://reader:secret@postgres/sub2api",
+                        "token": "错误 mongo key",
+                        "sql_dsn": sql_dsn,
                     }
                 ),
             ),
-            patch.object(plus_self_produced, "Sub2ApiClient", return_value=client),
+            patch.object(plus_self_produced, "Sub2ApiClient", client_factory),
             patch.object(plus_self_produced, "fetch_postgres_pool_snapshot", AsyncMock(return_value=snapshot), create=True) as fetch_snapshot,
+            patch.object(plus_self_produced, "fetch_postgres_admin_api_key", fetch_admin_key, create=True),
             patch.object(plus_self_produced, "upsert_cached_account_snapshot", AsyncMock()),
         ):
             result = await plus_self_produced.run_probe(db, trigger="manual")
 
-        fetch_snapshot.assert_awaited_once_with("postgresql://reader:secret@postgres/sub2api")
+        fetch_snapshot.assert_awaited_once_with(sql_dsn)
+        fetch_admin_key.assert_awaited_once_with(sql_dsn)
+        client_factory.assert_called_once_with(
+            base_url="https://sub2.example.com",
+            token="postgres-admin-key",
+        )
         client.test_account.assert_awaited_once()
         self.assertEqual(client.test_account.await_args.args[0], 40)
         self.assertEqual(result["candidates"], 1)

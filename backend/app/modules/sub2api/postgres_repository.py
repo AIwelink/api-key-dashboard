@@ -14,6 +14,7 @@ from app.modules.system.sql_dsn import parse_sql_dsn
 
 
 DATABASE_READ_TIMEOUT_SECONDS = 20
+ADMIN_API_KEY_QUERY = "SELECT value FROM settings WHERE key = 'admin_api_key' LIMIT 1"
 
 GROUP_COLUMNS = (
     "id",
@@ -325,6 +326,32 @@ JOIN accounts AS a ON a.id = ag.account_id AND a.deleted_at IS NULL
 JOIN groups AS g ON g.id = ag.group_id AND g.deleted_at IS NULL
 ORDER BY ag.account_id ASC, ag.group_id ASC
 """
+
+
+async def fetch_admin_api_key(
+    sql_dsn: str,
+    *,
+    engine_factory: Callable[..., Any] = create_async_engine,
+) -> str:
+    parsed = parse_sql_dsn(sql_dsn, "postgresql")
+    engine = None
+    try:
+        engine = engine_factory(
+            parsed.driver_url(),
+            poolclass=NullPool,
+            connect_args=parsed.connect_args(DATABASE_READ_TIMEOUT_SECONDS),
+        )
+        async with asyncio.timeout(DATABASE_READ_TIMEOUT_SECONDS):
+            async with engine.connect() as connection:
+                result = await connection.execute(text(ADMIN_API_KEY_QUERY))
+                value = result.scalar_one_or_none()
+        admin_api_key = str(value or "").strip()
+        if not admin_api_key:
+            raise ValueError("Sub2API PostgreSQL settings.admin_api_key is not configured")
+        return admin_api_key
+    finally:
+        if engine is not None:
+            await engine.dispose()
 
 
 async def fetch_pool_snapshot(

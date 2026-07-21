@@ -58,7 +58,57 @@ class FakeEngine:
         return AsyncContext(self.connection, self.error)
 
 
+class FakeScalarResult:
+    def __init__(self, value: object | None) -> None:
+        self.value = value
+
+    def scalar_one_or_none(self) -> object | None:
+        return self.value
+
+
+class FakeSettingConnection:
+    def __init__(self, value: object | None) -> None:
+        self.value = value
+        self.executed: list[str] = []
+
+    async def execute(self, statement) -> FakeScalarResult:
+        self.executed.append(str(statement))
+        return FakeScalarResult(self.value)
+
+
 class Sub2ApiPostgresRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_admin_api_key_is_read_from_settings(self) -> None:
+        fetch_admin_api_key = getattr(postgres_repository, "fetch_admin_api_key", None)
+        self.assertTrue(callable(fetch_admin_api_key), "fetch_admin_api_key is not implemented")
+        if not callable(fetch_admin_api_key):
+            return
+        connection = FakeSettingConnection("postgres-admin-key")
+        engine = FakeEngine(connection)
+        engine_factory = MagicMock(return_value=engine)
+
+        result = await fetch_admin_api_key(
+            "host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
+            engine_factory=engine_factory,
+        )
+
+        self.assertEqual(result, "postgres-admin-key")
+        self.assertEqual(len(connection.executed), 1)
+        self.assertIn("FROM settings", connection.executed[0])
+        self.assertIn("admin_api_key", connection.executed[0])
+        engine.dispose.assert_awaited_once()
+
+    async def test_missing_admin_api_key_is_reported_as_configuration_error(self) -> None:
+        connection = FakeSettingConnection(None)
+        engine = FakeEngine(connection)
+
+        with self.assertRaisesRegex(ValueError, "settings.admin_api_key"):
+            await postgres_repository.fetch_admin_api_key(
+                "host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
+                engine_factory=lambda *_args, **_kwargs: engine,
+            )
+
+        engine.dispose.assert_awaited_once()
+
     async def test_pool_snapshot_merges_relations_and_calculates_group_counts(self) -> None:
         created_at = datetime(2026, 7, 19, 8, 0, tzinfo=UTC)
         connection = FakeConnection(

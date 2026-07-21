@@ -91,7 +91,7 @@ Run the same unittest command. Expected: all decision tests pass.
 
 - [ ] **Step 1: Write failing settings and execution tests**
 
-Use lightweight async collection doubles, a patched PostgreSQL pool snapshot, and a patched `Sub2ApiClient`. The snapshot supplies groups/accounts; the client supplies only model-test and account-update operations. Assert:
+Use lightweight async collection doubles, patched PostgreSQL pool snapshot/Admin Key reads, and a patched `Sub2ApiClient`. PostgreSQL supplies groups/accounts and `settings.admin_api_key`; the client supplies only model-test and account-update operations. Assert:
 
 ```python
 settings = await get_settings(db)
@@ -126,7 +126,7 @@ async def get_status(db) -> dict[str, Any]: ...
 async def list_results(db, *, page: int, page_size: int, classification: str | None) -> dict[str, Any]: ...
 ```
 
-Use one module-level `asyncio.Lock`. Before tests, load the active site with token, list groups and require IDs 4/6/7, then fetch all group-4 accounts. Await every test and update inside a normal `for` loop. Merge the update response with the original account and force the expected name/group fields before calling `upsert_cached_account_snapshot`.
+Use one module-level `asyncio.Lock`. Before tests, load the active site's Base URL and SQL_DSN, read the Admin Key plus pool snapshot from PostgreSQL, require group IDs 4/6/7, then select all group-4 accounts. Await every test and update inside a normal `for` loop. Merge the update response with the original account and force the expected name/group fields before calling `upsert_cached_account_snapshot`.
 
 Persist one run summary and latest per-account results without credentials or raw SSE events. Final counters include `candidates`, `tested`, `eligible`, `promoted`, `banned`, and `failed`.
 
