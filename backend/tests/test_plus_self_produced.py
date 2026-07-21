@@ -52,6 +52,18 @@ class PlusProbeDecisionTests(unittest.TestCase):
         self.assertEqual(plus_account_name("plususer@example.com"), "plususer@example.com")
         self.assertEqual(plus_account_name("PLUS user@example.com"), "PLUS user@example.com")
 
+    def test_move_payload_only_contains_requested_name_and_group(self) -> None:
+        account = {"status": "active", "schedulable": True}
+
+        self.assertEqual(
+            plus_self_produced._move_payload(account, group_id=6, name="plus user@example.com"),
+            {"name": "plus user@example.com", "group_id": 6, "group_ids": [6]},
+        )
+        self.assertEqual(
+            plus_self_produced._move_payload(account, group_id=7),
+            {"group_id": 7, "group_ids": [7]},
+        )
+
     def test_non_ascii_admin_key_is_rejected_before_building_http_headers(self) -> None:
         client = plus_self_produced.Sub2ApiClient(
             base_url="https://sub2.example.com",
@@ -411,19 +423,19 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
             client.update_account.await_args_list[0].args,
             (
                 10,
-                {"name": "plus user@example.com", "group_id": 6, "group_ids": [6], "status": "active", "schedulable": True},
+                {"name": "plus user@example.com", "group_id": 6, "group_ids": [6]},
             ),
         )
         self.assertEqual(
             client.update_account.await_args_list[1].args,
             (
                 11,
-                {"name": "plusready@example.com", "group_id": 6, "group_ids": [6], "status": "active", "schedulable": True},
+                {"name": "plusready@example.com", "group_id": 6, "group_ids": [6]},
             ),
         )
         self.assertEqual(
             client.update_account.await_args_list[2].args,
-            (12, {"group_id": 7, "group_ids": [7], "status": "active", "schedulable": True}),
+            (12, {"group_id": 7, "group_ids": [7]}),
         )
         self.assertEqual(upsert_cache.await_count, 3)
         stored = [call.args[1]["$set"] for call in db.plus_self_produced_account_results.update_one.await_args_list]

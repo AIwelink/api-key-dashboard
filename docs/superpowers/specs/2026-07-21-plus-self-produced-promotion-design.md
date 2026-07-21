@@ -45,11 +45,13 @@ One run performs these steps:
 4. Classify the result using the precedence above.
 5. For `unauthorized_banned`, preserve the account name and update only its group membership to `group_id=7` and `group_ids=[7]`.
 6. For successful Plus classifications, build an idempotent name: compare the beginning of the current name case-insensitively and preserve it unchanged whenever it already starts with `plus`, whether or not a space follows the prefix. Otherwise prepend exactly `plus `.
-7. Update a successful Plus account in one PATCH-compatible call with the new name, `group_id=6`, and `group_ids=[6]`, while preserving its current status and schedulable values.
+7. Update a successful Plus account with only the intended name, `group_id=6`, and `group_ids=[6]`; do not send status or schedulable values captured before the model test.
 8. Count an account as promoted or banned only after its remote update succeeds. Refresh or upsert the account cache from the returned remote snapshot.
 9. Store the latest per-account result and the run summary. Continue after individual test or update failures.
 
 If model testing qualifies an account but the remote update fails, record `promotion_failed`; do not report it as promoted. If a 401 move fails, record `ban_move_failed`; do not report it as banned. The next scheduled run can retry either account because it remains in source group `4`.
+
+Account updates prefer PATCH. Sub2API versions that do not expose PATCH return 404 or 405; in that case the client reads the current account, overlays only the requested name/group changes, and sends the complete editable payload with PUT. The temporary GET payload is never persisted by this workflow.
 
 ## Persistence
 

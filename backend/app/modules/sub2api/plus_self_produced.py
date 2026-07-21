@@ -518,12 +518,8 @@ async def _test_account(client: Sub2ApiClient, remote_account_id: int | str) -> 
 
 
 def _move_payload(account: dict[str, Any], *, group_id: int, name: str | None = None) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "group_id": group_id,
-        "group_ids": [group_id],
-        "status": account.get("status") or "active",
-        "schedulable": account.get("schedulable", True),
-    }
+    del account
+    payload: dict[str, Any] = {"group_id": group_id, "group_ids": [group_id]}
     if name is not None:
         payload = {"name": name, **payload}
     return payload

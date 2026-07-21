@@ -17,6 +17,10 @@ REQUEST_RETRY_ATTEMPTS = 3
 REQUEST_RETRY_BASE_DELAY_SECONDS = 0.8
 SERVER_ERROR_STATUS_CODES = {500, 502, 503, 504}
 ADMIN_AUTH_FAILURE_STATUS_CODES = {401, 403}
+ACCOUNT_UPDATE_FALLBACK_STATUS_CODES = {
+    status.HTTP_404_NOT_FOUND,
+    status.HTTP_405_METHOD_NOT_ALLOWED,
+}
 
 
 class InvalidAdminApiKeyError(ValueError):
@@ -149,11 +153,12 @@ class Sub2ApiClient:
             json=payload,
             timeout=15,
         )
-        if response.status_code == status.HTTP_405_METHOD_NOT_ALLOWED:
+        if response.status_code in ACCOUNT_UPDATE_FALLBACK_STATUS_CODES:
+            current_account = await self.get_account(account_id)
             response = await self._request_admin_response_with_retries(
                 "PUT",
                 f"/accounts/{account_id}",
-                json=payload,
+                json=build_account_put_payload(current_account, payload),
                 timeout=15,
             )
         return self._admin_response_payload(response, operation="update")
@@ -512,6 +517,36 @@ class Sub2ApiClient:
         except ValueError:
             result["message"] = response.text[:300]
         return result
+
+
+def build_account_put_payload(current: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+    merged = {**current, **updates}
+    group_ids = updates.get("group_ids")
+    if not isinstance(group_ids, list):
+        group_id = updates.get("group_id")
+        group_ids = [group_id] if group_id is not None else current.get("group_ids")
+    if not isinstance(group_ids, list):
+        group_ids = []
+
+    def value_or_default(field: str, default: Any) -> Any:
+        value = merged.get(field)
+        return default if value is None else value
+
+    return {
+        "name": value_or_default("name", ""),
+        "notes": value_or_default("notes", ""),
+        "proxy_id": value_or_default("proxy_id", 0),
+        "concurrency": value_or_default("concurrency", 10),
+        "load_factor": value_or_default("load_factor", 0),
+        "priority": value_or_default("priority", 1),
+        "rate_multiplier": value_or_default("rate_multiplier", 1),
+        "status": value_or_default("status", "active"),
+        "group_ids": group_ids,
+        "expires_at": value_or_default("expires_at", 0),
+        "auto_pause_on_expired": value_or_default("auto_pause_on_expired", True),
+        "credentials": merged.get("credentials") if isinstance(merged.get("credentials"), dict) else {},
+        "extra": merged.get("extra") if isinstance(merged.get("extra"), dict) else {},
+    }
 
 
 def _extract_test_error_text(events: list[dict[str, Any]], complete_event: dict[str, Any] | None) -> str | None:

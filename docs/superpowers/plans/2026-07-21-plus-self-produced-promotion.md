@@ -130,6 +130,8 @@ Use one module-level `asyncio.Lock`. Before tests, load the active site's Base U
 
 Persist one run summary and latest per-account results without credentials or raw SSE events. Final counters include `candidates`, `tested`, `eligible`, `promoted`, `banned`, and `failed`.
 
+For account update compatibility, test PATCH first. On HTTP 404 or 405, GET the current remote account, merge only the intended name/group change into the editable account fields, and retry with PUT. Do not persist the GET credentials or extra payload.
+
 - [ ] **Step 4: Run execution tests and verify GREEN**
 
 Run the same unittest command. Expected: settings and execution tests pass.
