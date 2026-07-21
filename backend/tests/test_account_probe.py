@@ -79,6 +79,40 @@ class AccountProbeDatabaseSourceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AccountProbePlanTypeTests(unittest.TestCase):
+    def test_standard_plus_name_supplies_missing_remote_plan_type(self) -> None:
+        account = account_probe._normalize_probe_account(
+            {
+                "id": 3585,
+                "name": "plus +56959278873---taftaubertine14500@outlook.com",
+                "credentials": {
+                    "chatgpt_account_id": "account-3585",
+                    "email": "taftaubertine14500@outlook.com",
+                    "plan_type": "   ",
+                },
+                "extra": {
+                    "codex_5h_window_minutes": 0,
+                    "codex_7d_window_minutes": 10_080,
+                },
+            }
+        )
+
+        self.assertEqual(account["plan_type"], "plus")
+        self.assertEqual(account["plan_type_source"], "name_prefix")
+        self.assertEqual(
+            account_probe._resolved_probe_plan_type(
+                account["plan_type"],
+                None,
+                current_source=account["plan_type_source"],
+            ),
+            ("plus", "name_prefix"),
+        )
+
+    def test_cached_effective_plan_type_wins_over_name_inference(self) -> None:
+        self.assertEqual(
+            account_probe._resolved_probe_plan_type("plus", "pro", current_source="name_prefix"),
+            ("pro", "cached"),
+        )
+
     def test_empty_remote_plan_type_keeps_previous_value(self) -> None:
         self.assertEqual(account_probe._resolved_probe_plan_type("", "plus"), ("plus", "cached"))
 

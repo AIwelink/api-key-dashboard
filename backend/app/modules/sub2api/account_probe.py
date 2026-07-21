@@ -19,7 +19,14 @@ from app.modules.sub2api.account_history import (
     persist_history_changes,
     snapshot_hash,
 )
-from app.modules.sub2api.cache import _get_or_update_group_capacity_summary, get_site, is_bug_team_account, is_sub2api_site, list_sites
+from app.modules.sub2api.cache import (
+    _get_or_update_group_capacity_summary,
+    _plan_type_from_standard_name,
+    get_site,
+    is_bug_team_account,
+    is_sub2api_site,
+    list_sites,
+)
 from app.modules.sub2api.postgres_repository import fetch_pool_snapshot
 from app.utils import now_utc, serialize_doc
 
@@ -439,6 +446,7 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
             account["plan_type"], account["plan_type_source"] = _resolved_probe_plan_type(
                 account.get("plan_type"),
                 (previous_identity or {}).get("plan_type"),
+                current_source=account.get("plan_type_source"),
             )
             history_change, history_baseline_override = _prepare_history_change(
                 site_id=site_id,
@@ -612,6 +620,8 @@ def _normalize_probe_account(account: dict[str, Any]) -> dict[str, Any]:
     extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
     email = _first_present(account, credentials, extra, "email")
     group_ids = _extract_group_ids(account)
+    remote_plan_type = str(_first_present(account, credentials, extra, "plan_type") or "").strip()
+    inferred_plan_type = None if remote_plan_type else _plan_type_from_standard_name(account.get("name"))
     normalized = {
         "remote_account_id": account.get("id"),
         "email": str(email).strip() if email else "",
@@ -621,7 +631,8 @@ def _normalize_probe_account(account: dict[str, Any]) -> dict[str, Any]:
         "schedulable": _bool_or_none(_first_present(account, extra, "schedulable", "is_schedulable", "sub2api_schedulable")),
         "error_message": _first_present(account, extra, "error_message", "last_error", "error", "message"),
         "group_ids": group_ids,
-        "plan_type": "bug_team" if is_bug_team_account(account) else _first_present(account, credentials, extra, "plan_type"),
+        "plan_type": "bug_team" if is_bug_team_account(account) else remote_plan_type or inferred_plan_type,
+        "plan_type_source": "name_prefix" if inferred_plan_type else None,
         "last_used_at": _first_present(account, extra, "last_used_at"),
         "updated_at": _first_present(account, extra, "updated_at"),
         "usage_snapshot": _usage_snapshot(account, extra),
@@ -851,11 +862,14 @@ def _official_refresh_account_type(account: dict[str, Any]) -> str:
     return str(account.get("plan_type") or "unknown").strip().lower() or "unknown"
 
 
-def _resolved_probe_plan_type(current: Any, previous: Any) -> tuple[str, str]:
+def _resolved_probe_plan_type(current: Any, previous: Any, *, current_source: Any = None) -> tuple[str, str]:
     current_value = str(current or "").strip()
-    if current_value:
-        return current_value, "remote"
     previous_value = str(previous or "").strip()
+    source = str(current_source or "").strip()
+    if current_value and source == "name_prefix" and previous_value:
+        return previous_value, "cached"
+    if current_value:
+        return current_value, source or "remote"
     if previous_value:
         return previous_value, "cached"
     return "k12", "fallback_k12"

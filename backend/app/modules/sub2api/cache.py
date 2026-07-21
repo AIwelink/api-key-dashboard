@@ -885,7 +885,7 @@ async def update_cached_account_runtime_fields(
 def _copy_cached_plan_type(account: dict[str, Any], cached: dict[str, Any]) -> None:
     extra = dict(account.get("extra") if isinstance(account.get("extra"), dict) else {})
     source = str(account.get("codex_plan_type_source") or extra.get("codex_plan_type_source") or "")
-    if source != "fallback_k12":
+    if source not in {"fallback_k12", "name_prefix"}:
         return
 
     cached_credentials = cached.get("credentials") if isinstance(cached.get("credentials"), dict) else {}
@@ -898,6 +898,8 @@ def _copy_cached_plan_type(account: dict[str, Any], cached: dict[str, Any]) -> N
         return
 
     cached_source = str(cached.get("codex_plan_type_source") or cached_extra.get("codex_plan_type_source") or "")
+    if source == "name_prefix" and cached_source in {"fallback_k12", "name_prefix"}:
+        return
     resolved_source = "fallback_k12" if cached_source == "fallback_k12" else "cached"
     account["plan_type"] = cached_plan_type
     account["codex_plan_type_source"] = resolved_source
@@ -2712,6 +2714,11 @@ def _normalize_account_snapshot(account: dict[str, Any]) -> dict[str, Any]:
     plan_type = str(_first_present(normalized, credentials, extra, "plan_type") or "").strip()
     if plan_type:
         normalized["plan_type"] = plan_type
+    elif inferred_plan_type := _plan_type_from_standard_name(normalized.get("name")):
+        normalized["plan_type"] = inferred_plan_type
+        normalized["codex_plan_type_source"] = "name_prefix"
+        extra["plan_type"] = inferred_plan_type
+        extra["codex_plan_type_source"] = "name_prefix"
     else:
         normalized["plan_type"] = "k12"
         normalized["codex_plan_type_source"] = "fallback_k12"
@@ -2835,6 +2842,13 @@ def _normalize_account_snapshot(account: dict[str, Any]) -> dict[str, Any]:
 
     normalized["extra"] = extra
     return normalized
+
+
+def _plan_type_from_standard_name(value: Any) -> str | None:
+    name = str(value or "").strip().lower()
+    if re.match(r"^plus(?:\s|[+_-])", name):
+        return "plus"
+    return None
 
 
 def _clear_expired_transient_limits(account: dict[str, Any], extra: dict[str, Any]) -> None:

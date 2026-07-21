@@ -61,6 +61,63 @@ class BugTeamCapacityTests(unittest.TestCase):
         self.assertEqual(account["codex_plan_type_source"], "fallback_k12")
         self.assertEqual(cache._capacity_account_type(account), "k12")
 
+    def test_missing_remote_plan_type_uses_standard_plus_name_prefix(self) -> None:
+        account = cache._normalize_account_snapshot(
+            {
+                "id": 3585,
+                "name": "plus +56959278873---taftaubertine14500@outlook.com",
+                "credentials": {
+                    "chatgpt_account_id": "account-3585",
+                    "email": "taftaubertine14500@outlook.com",
+                },
+                "extra": {
+                    "codex_5h_window_minutes": 0,
+                    "codex_7d_window_minutes": 10_080,
+                },
+                "status": "active",
+            }
+        )
+
+        self.assertEqual(account["plan_type"], "plus")
+        self.assertEqual(account["codex_plan_type_source"], "name_prefix")
+        self.assertEqual(cache._capacity_account_type(account), "plus")
+
+    def test_missing_remote_plan_type_does_not_treat_email_local_part_as_plus_prefix(self) -> None:
+        account = cache._normalize_account_snapshot(
+            {
+                "id": 3586,
+                "name": "plususer@example.com",
+                "credentials": {"email": "plususer@example.com"},
+                "status": "active",
+            }
+        )
+
+        self.assertEqual(account["plan_type"], "k12")
+        self.assertEqual(account["codex_plan_type_source"], "fallback_k12")
+
+    def test_cached_effective_plan_type_wins_over_standard_plus_name(self) -> None:
+        account = cache._normalize_account_snapshot({"id": 3587, "name": "plus person@example.com"})
+
+        cache._copy_cached_plan_type(account, {"id": 3587, "plan_type": "pro"})
+
+        self.assertEqual(account["plan_type"], "pro")
+        self.assertEqual(account["codex_plan_type_source"], "cached")
+
+    def test_cached_k12_fallback_does_not_replace_standard_plus_name(self) -> None:
+        account = cache._normalize_account_snapshot({"id": 3588, "name": "plus person@example.com"})
+
+        cache._copy_cached_plan_type(
+            account,
+            {
+                "id": 3588,
+                "plan_type": "k12",
+                "codex_plan_type_source": "fallback_k12",
+            },
+        )
+
+        self.assertEqual(account["plan_type"], "plus")
+        self.assertEqual(account["codex_plan_type_source"], "name_prefix")
+
     def test_cached_plan_type_replaces_temporary_k12_fallback(self) -> None:
         account = cache._normalize_account_snapshot({"id": 1, "plan_type": "", "status": "error"})
 
