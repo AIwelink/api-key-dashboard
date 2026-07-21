@@ -110,6 +110,30 @@ class BugTeamCapacityTests(unittest.TestCase):
         self.assertTrue(cache.is_bug_team_account(account))
         self.assertEqual(cache._capacity_account_type(account), "bug_team")
 
+    def test_team_with_false_privacy_mode_is_bug_team_before_usage_windows_exist(self) -> None:
+        for privacy_mode in (False, "false"):
+            with self.subTest(privacy_mode=privacy_mode):
+                account = {
+                    "id": 1785,
+                    "plan_type": "team",
+                    "privacy_mode": privacy_mode,
+                    "credentials": {"plan_type": "team"},
+                }
+
+                self.assertTrue(cache.is_bug_team_account(account))
+                self.assertEqual(cache._capacity_account_type(account), "bug_team")
+
+    def test_regular_team_with_true_privacy_mode_keeps_team_type(self) -> None:
+        account = {
+            "id": 1786,
+            "plan_type": "team",
+            "privacy_mode": True,
+            "credentials": {"plan_type": "team"},
+        }
+
+        self.assertFalse(cache.is_bug_team_account(account))
+        self.assertEqual(cache._capacity_account_type(account), "team")
+
     def test_regular_team_without_five_hour_data_keeps_team_type(self) -> None:
         account = {
             "id": 1783,

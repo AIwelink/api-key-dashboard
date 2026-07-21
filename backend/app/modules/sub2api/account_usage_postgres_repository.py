@@ -105,8 +105,10 @@ def _account_window(account: dict[str, Any], observed_at: datetime) -> dict[str,
     extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
     five_hour_reset_at = _as_utc(account.get("codex_5h_reset_at") or extra.get("codex_5h_reset_at"))
     seven_day_reset_at = _as_utc(account.get("codex_7d_reset_at") or extra.get("codex_7d_reset_at"))
-    five_hour_start = _window_start(five_hour_reset_at, FIVE_HOUR_WINDOW, observed_at)
-    seven_day_start = _window_start(seven_day_reset_at, SEVEN_DAY_WINDOW, observed_at)
+    five_hour_window = _window_duration(account, extra, "codex_5h_window_minutes", FIVE_HOUR_WINDOW)
+    seven_day_window = _window_duration(account, extra, "codex_7d_window_minutes", SEVEN_DAY_WINDOW)
+    five_hour_start = _window_start(five_hour_reset_at, five_hour_window, observed_at)
+    seven_day_start = _window_start(seven_day_reset_at, seven_day_window, observed_at)
     return {
         "account_id": account_id,
         "five_hour": _window_metadata(account, extra, "5h", five_hour_reset_at, observed_at),
@@ -123,6 +125,23 @@ def _window_start(reset_at: datetime | None, window: timedelta, observed_at: dat
     if reset_at is not None and reset_at > observed_at:
         return reset_at - window
     return observed_at - window
+
+
+def _window_duration(
+    account: dict[str, Any],
+    extra: dict[str, Any],
+    field: str,
+    default: timedelta,
+) -> timedelta:
+    minutes = _number_or_none(account.get(field))
+    if minutes is None:
+        minutes = _number_or_none(extra.get(field))
+    if minutes is None or minutes <= 0:
+        return default
+    try:
+        return timedelta(minutes=minutes)
+    except OverflowError:
+        return default
 
 
 def _window_metadata(

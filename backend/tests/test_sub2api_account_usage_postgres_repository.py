@@ -193,6 +193,52 @@ class Sub2ApiAccountUsagePostgresRepositoryTests(unittest.IsolatedAsyncioTestCas
 
         engine.dispose.assert_awaited_once()
 
+    async def test_account_window_uses_remote_window_minutes_for_bug_team(self) -> None:
+        observed_at = datetime(2026, 7, 21, 4, 30, tzinfo=UTC)
+        reset_at = datetime(2026, 8, 20, 14, 15, 36, tzinfo=UTC)
+        connection = FakeConnection(
+            [
+                {
+                    "account_id": 1668,
+                    "five_hour_requests": 0,
+                    "five_hour_tokens": 0,
+                    "five_hour_cost": Decimal("0"),
+                    "five_hour_standard_cost": Decimal("0"),
+                    "five_hour_user_cost": Decimal("0"),
+                    "seven_day_requests": 1200,
+                    "seven_day_tokens": 5000,
+                    "seven_day_cost": Decimal("230"),
+                    "seven_day_standard_cost": Decimal("230"),
+                    "seven_day_user_cost": Decimal("230"),
+                }
+            ]
+        )
+        engine = FakeEngine(connection)
+
+        result = await account_usage_postgres_repository.fetch_account_usage_snapshots(
+            "host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
+            accounts=[
+                {
+                    "id": 1668,
+                    "plan_type": "team",
+                    "privacy_mode": "training_set_failed",
+                    "codex_7d_used_percent": 100,
+                    "codex_7d_reset_at": reset_at,
+                    "codex_7d_window_minutes": 43800,
+                }
+            ],
+            observed_at=observed_at,
+            engine_factory=lambda *_args, **_kwargs: engine,
+        )
+
+        self.assertEqual(result[1668]["seven_day"]["window_stats"]["cost"], 230.0)
+        _, parameters = connection.executed[0]
+        windows = json.loads(str(parameters["windows"]))
+        self.assertEqual(
+            windows[0]["seven_day_start"],
+            (reset_at - timedelta(minutes=43800)).isoformat(),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -154,7 +154,15 @@ def evaluate_transition(
     if _identity_changed(state, observation):
         return {"action": "invalid", "reason": "observation_identity_changed", "state": state}
 
-    if state.get("account_type") != observation.get("account_type"):
+    previous_account_type = state.get("account_type")
+    observed_account_type = observation.get("account_type")
+    if previous_account_type == "team" and observed_account_type == "bug_team":
+        return {
+            "action": "baseline",
+            "reason": "account_type_reclassified",
+            "state": state_from_observation(observation),
+        }
+    if previous_account_type != observed_account_type:
         return {"action": "invalid", "reason": "account_type_changed", "state": state}
 
     state_reset_at = _utc_datetime(state.get("window_reset_at"))

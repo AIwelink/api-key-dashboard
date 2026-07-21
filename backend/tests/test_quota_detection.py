@@ -750,6 +750,24 @@ class QuotaTransitionTests(unittest.TestCase):
         self.assertEqual(decision["reason"], "account_type_changed")
         self.assertIs(decision["state"], previous)
 
+    def test_team_to_bug_team_reclassification_starts_clean_baseline(self) -> None:
+        previous = quota_detection.state_from_observation(
+            valid_observation(percent=94, cost=107.2, account_type="team")
+        )
+        observation = valid_observation(
+            percent=25,
+            cost=30,
+            account_type="bug_team",
+            observed_at=NOW + timedelta(minutes=1),
+        )
+
+        decision = quota_detection.evaluate_transition(previous, observation)
+
+        self.assertEqual(decision["action"], "baseline")
+        self.assertEqual(decision["reason"], "account_type_reclassified")
+        self.assertEqual(decision["state"]["account_type"], "bug_team")
+        self.assertEqual(decision["state"]["last_under_limit_cost_usd"], 30)
+
     def test_window_first_seen_full_never_becomes_sample_eligible(self) -> None:
         first = quota_detection.evaluate_transition(
             None,

@@ -1754,8 +1754,11 @@ def is_bug_team_account(account: dict[str, Any]) -> bool:
     plan_type = _normalize_capacity_account_type(account.get("plan_type") or credentials.get("plan_type") or extra.get("plan_type"))
     if explicit_type == "bug_team" or plan_type == "bug_team":
         return True
-    if plan_type != "team" and explicit_type != "team":
+    is_team = plan_type == "team" or explicit_type == "team"
+    if not is_team:
         return False
+    if _privacy_mode_is_false(account, credentials, extra):
+        return True
     five_hour_window = _usage_number(account, "codex_5h_window_minutes")
     seven_day_window = _usage_number(account, "codex_7d_window_minutes")
     has_no_five_hour_window = five_hour_window is None or five_hour_window <= 0
@@ -1772,9 +1775,14 @@ def _local_capacity_account_type(account: dict[str, Any]) -> str:
     seven_day_window = _number_or_none(_first_present(account_json, extra, "codex_7d_window_minutes"))
     if normalized == "bug_team" or (
         normalized == "team"
-        and (five_hour_window is None or five_hour_window <= 0)
-        and isinstance(seven_day_window, (int, float))
-        and seven_day_window >= BUG_TEAM_MIN_WINDOW_MINUTES
+        and (
+            _privacy_mode_is_false(account_json, credentials, extra)
+            or (
+                (five_hour_window is None or five_hour_window <= 0)
+                and isinstance(seven_day_window, (int, float))
+                and seven_day_window >= BUG_TEAM_MIN_WINDOW_MINUTES
+            )
+        )
     ):
         return "bug_team"
     if normalized == "team":
@@ -1803,6 +1811,13 @@ def _normalize_capacity_account_type(value: Any) -> str:
     if "plus" in normalized:
         return "plus"
     return normalized
+
+
+def _privacy_mode_is_false(*containers: dict[str, Any]) -> bool:
+    value = _first_present(*containers, "privacy_mode")
+    if value is False or value == 0:
+        return True
+    return isinstance(value, str) and value.strip().lower() in {"false", "0"}
 
 
 async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, group_id: int | None = None) -> dict[str, Any]:
