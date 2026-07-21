@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import PROJECT_ROOT, get_settings
 from app.database import close_mongo_connection, connect_to_mongo, get_db
 from app.logging_config import RequestLoggingMiddleware, cleanup_old_logs, log_cleanup_loop, setup_logging
-from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, client_metrics, client_sites, event_records, import_batches, imports, notifications, presence, settings, sub2api_sites, sync, todo_items, users
+from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, client_metrics, client_sites, event_records, import_batches, imports, notifications, plus_self_produced, presence, settings, sub2api_sites, sync, todo_items, users
 from app.modules.client_metrics.sampler import client_metric_sampler_loop
 from app.modules.system.bootstrap import ensure_bootstrap_data, ensure_indexes
 from app.modules.agent.scheduler import start_agent_scheduler, stop_agent_scheduler
@@ -19,6 +19,7 @@ from app.modules.sub2api.cache import refresh_account_caches_for_all_sites, refr
 from app.modules.sub2api.capacity_sampler import capacity_sampler_loop
 from app.modules.sub2api.hourly_forecast_evaluation_service import forecast_accuracy_evaluator_loop
 from app.modules.sub2api.long_7d_probe import long_7d_probe_scheduler_loop
+from app.modules.sub2api.plus_self_produced import scheduler_loop as plus_self_produced_scheduler_loop
 from app.modules.sub2api.tpm_sampler import tpm_sampler_loop
 
 
@@ -42,6 +43,7 @@ async def lifespan(app_instance: FastAPI):
     refresh_task = asyncio.create_task(refresh_scheduler_loop(db))
     account_probe_task = asyncio.create_task(probe_scheduler_loop(db))
     long_7d_probe_task = asyncio.create_task(long_7d_probe_scheduler_loop(db))
+    plus_self_produced_task = asyncio.create_task(plus_self_produced_scheduler_loop(db))
     tpm_sampler_task = asyncio.create_task(tpm_sampler_loop(db))
     capacity_sampler_task = asyncio.create_task(capacity_sampler_loop(db))
     forecast_accuracy_task = asyncio.create_task(forecast_accuracy_evaluator_loop(db))
@@ -59,6 +61,7 @@ async def lifespan(app_instance: FastAPI):
             refresh_task,
             account_probe_task,
             long_7d_probe_task,
+            plus_self_produced_task,
             tpm_sampler_task,
             capacity_sampler_task,
             forecast_accuracy_task,
@@ -94,6 +97,7 @@ app.include_router(accounts.router, prefix="/api")
 app.include_router(import_batches.router, prefix="/api")
 app.include_router(imports.router, prefix="/api")
 app.include_router(api_pools.router, prefix="/api")
+app.include_router(plus_self_produced.router, prefix="/api")
 app.include_router(api_tokens.router, prefix="/api")
 app.include_router(client_sites.router, prefix="/api")
 app.include_router(client_metrics.router, prefix="/api")

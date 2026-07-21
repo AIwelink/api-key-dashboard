@@ -222,6 +222,11 @@ class ApiPoolStatusPreferenceUpdate(BaseModel):
     pinned_group_id: int | None = None
 
 
+class PlusSelfProducedSettingsUpdate(BaseModel):
+    enabled: bool | None = None
+    interval_minutes: int | None = Field(default=None, ge=1, le=1440)
+
+
 class GroupObservabilitySettingUpdate(BaseModel):
     enabled: bool | None = None
     detailed_enabled: bool | None = None

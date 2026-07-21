@@ -66,6 +66,15 @@ async def ensure_quota_detection_indexes(db: AsyncIOMotorDatabase) -> None:
     )
 
 
+async def ensure_plus_self_produced_indexes(db: AsyncIOMotorDatabase) -> None:
+    await db.plus_self_produced_runs.create_index([("started_at", -1)])
+    await db.plus_self_produced_account_results.create_index(
+        [("site_id", 1), ("remote_account_id", 1)],
+        unique=True,
+    )
+    await db.plus_self_produced_account_results.create_index([("tested_at", -1)])
+
+
 async def ensure_account_history_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.remote_account_change_batches.create_index([("site_id", 1), ("observed_at", -1)])
     await db.remote_account_change_batches.create_index("expires_at", expireAfterSeconds=0)
@@ -184,6 +193,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await ensure_capacity_sample_indexes(db)
     await ensure_forecast_evaluation_indexes(db)
     await ensure_quota_detection_indexes(db)
+    await ensure_plus_self_produced_indexes(db)
     await ensure_account_history_indexes(db)
     await db.sub2api_auto_refill_meta.create_index("last_finished_at")
     await db.group_observability_settings.create_index([("site_id", 1), ("group_id", 1)], unique=True)

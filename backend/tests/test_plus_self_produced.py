@@ -1,0 +1,290 @@
+from __future__ import annotations
+
+import asyncio
+import unittest
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+from app.modules.system import bootstrap
+from app.modules.sub2api import plus_self_produced
+from app.modules.sub2api.plus_self_produced import classify_probe_result, plus_account_name
+
+
+class PlusProbeDecisionTests(unittest.TestCase):
+    def test_classifies_passed_rate_limited_unauthorized_and_failed_results(self) -> None:
+        self.assertEqual(classify_probe_result({"success": True}), "passed")
+        self.assertEqual(
+            classify_probe_result({"success": False, "error": "API returned 429: rate limited"}),
+            "rate_limited_but_eligible",
+        )
+        self.assertEqual(
+            classify_probe_result({"success": False, "error": "API returned 401: token invalidated"}),
+            "unauthorized_banned",
+        )
+        self.assertEqual(
+            classify_probe_result({"success": False, "error": "API returned 403: forbidden"}),
+            "failed",
+        )
+
+    def test_direct_http_status_errors_are_classified(self) -> None:
+        self.assertEqual(classify_probe_result(error="sub2api account test failed with status 401"), "unauthorized_banned")
+        self.assertEqual(classify_probe_result(error="sub2api account test failed with status 429"), "rate_limited_but_eligible")
+
+    def test_chatgpt_model_unsupported_error_has_highest_precedence(self) -> None:
+        error = (
+            "API returned 400: {\"detail\":\"The 'gpt-5.6-sol' model is not supported "
+            "when using Codex with a ChatGPT account.\"}"
+        )
+
+        self.assertEqual(classify_probe_result({"success": True, "error": error}), "model_not_supported")
+
+    def test_only_bounded_http_status_codes_match(self) -> None:
+        self.assertEqual(classify_probe_result(error="account 4012 failed"), "failed")
+        self.assertEqual(classify_probe_result(error="wait 4290 milliseconds"), "failed")
+
+    def test_plus_prefix_is_added_once_with_or_without_existing_space(self) -> None:
+        self.assertEqual(plus_account_name("user@example.com"), "plus user@example.com")
+        self.assertEqual(plus_account_name("plus user@example.com"), "plus user@example.com")
+        self.assertEqual(plus_account_name("plususer@example.com"), "plususer@example.com")
+        self.assertEqual(plus_account_name("PLUS user@example.com"), "PLUS user@example.com")
+
+
+class PlusSelfProducedSettingsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_setting_uses_enabled_fifteen_minute_default(self) -> None:
+        db = SimpleNamespace(
+            plus_self_produced_settings=SimpleNamespace(find_one=AsyncMock(return_value=None)),
+        )
+
+        settings = await plus_self_produced.get_settings(db)
+
+        self.assertTrue(settings["enabled"])
+        self.assertEqual(settings["interval_minutes"], 15)
+        self.assertEqual(settings["site_id"], "US06-5002")
+        self.assertEqual(settings["source_group_id"], 4)
+        self.assertEqual(settings["plus_group_id"], 6)
+        self.assertEqual(settings["banned_group_id"], 7)
+
+    async def test_update_persists_enabled_and_interval_minutes(self) -> None:
+        stored = {
+            "_id": "plus-self-produced",
+            "enabled": False,
+            "interval_seconds": 1_200,
+        }
+        settings_collection = SimpleNamespace(
+            update_one=AsyncMock(),
+            find_one=AsyncMock(return_value=stored),
+        )
+        db = SimpleNamespace(plus_self_produced_settings=settings_collection)
+
+        result = await plus_self_produced.update_settings(
+            db,
+            {"enabled": False, "interval_minutes": 20},
+            {"_id": "admin@example.com"},
+        )
+
+        updates = settings_collection.update_one.await_args.args[1]["$set"]
+        self.assertFalse(updates["enabled"])
+        self.assertEqual(updates["interval_seconds"], 1_200)
+        self.assertEqual(updates["updated_by"], "admin@example.com")
+        self.assertFalse(result["enabled"])
+        self.assertEqual(result["interval_minutes"], 20)
+
+    async def test_stored_document_cannot_override_fixed_workflow_targets(self) -> None:
+        db = SimpleNamespace(
+            plus_self_produced_settings=SimpleNamespace(
+                find_one=AsyncMock(
+                    return_value={
+                        "site_id": "wrong-site",
+                        "source_group_id": 99,
+                        "plus_group_id": 98,
+                        "banned_group_id": 97,
+                        "model": "wrong-model",
+                    }
+                )
+            ),
+        )
+
+        settings = await plus_self_produced.get_settings(db)
+
+        self.assertEqual(settings["site_id"], "US06-5002")
+        self.assertEqual(settings["source_group_id"], 4)
+        self.assertEqual(settings["plus_group_id"], 6)
+        self.assertEqual(settings["banned_group_id"], 7)
+        self.assertEqual(settings["model"], "gpt-5.4")
+
+    def test_due_time_uses_last_finish_and_enabled_state(self) -> None:
+        now = datetime(2026, 7, 21, 12, 0, tzinfo=UTC)
+
+        self.assertTrue(plus_self_produced.is_probe_due({"enabled": True, "interval_seconds": 900}, now=now))
+        self.assertFalse(
+            plus_self_produced.is_probe_due(
+                {"enabled": False, "interval_seconds": 900, "last_finished_at": now - timedelta(hours=1)},
+                now=now,
+            )
+        )
+        self.assertFalse(
+            plus_self_produced.is_probe_due(
+                {"enabled": True, "interval_seconds": 900, "last_finished_at": now - timedelta(minutes=14)},
+                now=now,
+            )
+        )
+        self.assertTrue(
+            plus_self_produced.is_probe_due(
+                {"enabled": True, "interval_seconds": 900, "last_finished_at": now - timedelta(minutes=15)},
+                now=now,
+            )
+        )
+
+
+class PlusSelfProducedIndexTests(unittest.IsolatedAsyncioTestCase):
+    async def test_indexes_support_latest_runs_and_unique_account_results(self) -> None:
+        db = SimpleNamespace(
+            plus_self_produced_runs=SimpleNamespace(create_index=AsyncMock()),
+            plus_self_produced_account_results=SimpleNamespace(create_index=AsyncMock()),
+        )
+
+        await bootstrap.ensure_plus_self_produced_indexes(db)
+
+        db.plus_self_produced_runs.create_index.assert_awaited_once_with([("started_at", -1)])
+        db.plus_self_produced_account_results.create_index.assert_any_await(
+            [("site_id", 1), ("remote_account_id", 1)],
+            unique=True,
+        )
+        db.plus_self_produced_account_results.create_index.assert_any_await([("tested_at", -1)])
+
+
+class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
+    def build_db(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            plus_self_produced_settings=SimpleNamespace(
+                find_one=AsyncMock(return_value=None),
+                update_one=AsyncMock(),
+            ),
+            plus_self_produced_runs=SimpleNamespace(
+                insert_one=AsyncMock(),
+                update_one=AsyncMock(),
+            ),
+            plus_self_produced_account_results=SimpleNamespace(update_one=AsyncMock()),
+        )
+
+    async def test_serially_routes_pass_429_and_401_while_leaving_other_failures(self) -> None:
+        db = self.build_db()
+        accounts = [
+            {"id": 10, "name": "user@example.com", "status": "active", "schedulable": True, "group_ids": [4]},
+            {"id": 11, "name": "plusready@example.com", "status": "active", "schedulable": True, "group_ids": [4]},
+            {"id": 12, "name": "blocked@example.com", "status": "active", "schedulable": True, "group_ids": [4]},
+            {"id": 13, "name": "free@example.com", "status": "active", "schedulable": True, "group_ids": [4]},
+        ]
+        verifications = {
+            10: {"success": True, "model": "gpt-5.4", "latency_ms": 10, "error": None},
+            11: {"success": False, "model": "gpt-5.4", "latency_ms": 11, "error": "API returned 429"},
+            12: {"success": False, "model": "gpt-5.4", "latency_ms": 12, "error": "API returned 401"},
+            13: {
+                "success": False,
+                "model": "gpt-5.4",
+                "latency_ms": 13,
+                "error": "API returned 400: model is not supported when using Codex with a ChatGPT account",
+            },
+        }
+        active = 0
+        max_active = 0
+
+        async def test_account(account_id: int, **_kwargs: object) -> dict[str, object]:
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0)
+            active -= 1
+            return verifications[account_id]
+
+        client = SimpleNamespace(
+            list_groups=AsyncMock(return_value={"items": [{"id": 4}, {"id": 6}, {"id": 7}]}),
+            list_group_accounts=AsyncMock(return_value={"items": accounts, "total": 4}),
+            test_account=AsyncMock(side_effect=test_account),
+            update_account=AsyncMock(
+                side_effect=lambda account_id, payload: {"id": account_id, **payload}
+            ),
+        )
+
+        with (
+            patch.object(plus_self_produced, "get_site", AsyncMock(return_value={"id": "US06-5002", "base_url": "https://sub2.example.com", "token": "secret"})),
+            patch.object(plus_self_produced, "Sub2ApiClient", return_value=client),
+            patch.object(plus_self_produced, "upsert_cached_account_snapshot", AsyncMock()) as upsert_cache,
+        ):
+            result = await plus_self_produced.run_probe(db, trigger="manual")
+
+        self.assertEqual(max_active, 1)
+        self.assertEqual(result["candidates"], 4)
+        self.assertEqual(result["eligible"], 2)
+        self.assertEqual(result["promoted"], 2)
+        self.assertEqual(result["banned"], 1)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(client.test_account.await_count, 4)
+        for call in client.test_account.await_args_list:
+            self.assertEqual(call.kwargs, {"model_id": "gpt-5.4", "prompt": "", "mode": "default"})
+        self.assertEqual(
+            client.update_account.await_args_list[0].args,
+            (
+                10,
+                {"name": "plus user@example.com", "group_id": 6, "group_ids": [6], "status": "active", "schedulable": True},
+            ),
+        )
+        self.assertEqual(
+            client.update_account.await_args_list[1].args,
+            (
+                11,
+                {"name": "plusready@example.com", "group_id": 6, "group_ids": [6], "status": "active", "schedulable": True},
+            ),
+        )
+        self.assertEqual(
+            client.update_account.await_args_list[2].args,
+            (12, {"group_id": 7, "group_ids": [7], "status": "active", "schedulable": True}),
+        )
+        self.assertEqual(upsert_cache.await_count, 3)
+        stored = [call.args[1]["$set"] for call in db.plus_self_produced_account_results.update_one.await_args_list]
+        self.assertEqual(
+            [item["classification"] for item in stored],
+            ["passed", "rate_limited_but_eligible", "unauthorized_banned", "model_not_supported"],
+        )
+
+    async def test_move_failure_is_recorded_and_later_accounts_continue(self) -> None:
+        db = self.build_db()
+        accounts = [
+            {"id": 20, "name": "first@example.com", "status": "active", "schedulable": True},
+            {"id": 21, "name": "second@example.com", "status": "active", "schedulable": True},
+        ]
+        client = SimpleNamespace(
+            list_groups=AsyncMock(return_value={"items": [{"id": 4}, {"id": 6}, {"id": 7}]}),
+            list_group_accounts=AsyncMock(return_value={"items": accounts, "total": 2}),
+            test_account=AsyncMock(
+                side_effect=[
+                    {"success": True, "error": None},
+                    {"success": False, "error": "API returned 401"},
+                ]
+            ),
+            update_account=AsyncMock(
+                side_effect=[RuntimeError("remote update failed"), {"id": 21, "group_ids": [7]}]
+            ),
+        )
+
+        with (
+            patch.object(plus_self_produced, "get_site", AsyncMock(return_value={"id": "US06-5002", "base_url": "https://sub2.example.com", "token": "secret"})),
+            patch.object(plus_self_produced, "Sub2ApiClient", return_value=client),
+            patch.object(plus_self_produced, "upsert_cached_account_snapshot", AsyncMock()),
+        ):
+            result = await plus_self_produced.run_probe(db, trigger="manual")
+
+        self.assertEqual(client.test_account.await_count, 2)
+        self.assertEqual(client.update_account.await_count, 2)
+        self.assertEqual(result["promoted"], 0)
+        self.assertEqual(result["banned"], 1)
+        self.assertEqual(result["failed"], 1)
+        stored = [call.args[1]["$set"] for call in db.plus_self_produced_account_results.update_one.await_args_list]
+        self.assertEqual(stored[0]["action_status"], "promotion_failed")
+        self.assertIn("remote update failed", stored[0]["error"])
+        self.assertEqual(stored[1]["action_status"], "banned")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,505 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+from datetime import UTC, datetime, timedelta
+from typing import Any
+from uuid import uuid4
+
+from fastapi import HTTPException
+from motor.motor_asyncio import AsyncIOMotorDatabase
+
+from app.modules.sub2api.cache import get_site, upsert_cached_account_snapshot
+from app.modules.sub2api.client import Sub2ApiClient
+from app.utils import now_utc, serialize_doc
+
+
+SITE_ID = "US06-5002"
+SOURCE_GROUP_ID = 4
+PLUS_GROUP_ID = 6
+BANNED_GROUP_ID = 7
+PROBE_MODEL = "gpt-5.4"
+DEFAULT_INTERVAL_SECONDS = 15 * 60
+SCHEDULER_POLL_SECONDS = 30
+SETTINGS_ID = "plus-self-produced"
+
+MODEL_NOT_SUPPORTED_TEXT = "model is not supported when using codex with a chatgpt account"
+
+_run_lock = asyncio.Lock()
+logger = logging.getLogger("app.sub2api_plus_self_produced")
+
+
+def classify_probe_result(
+    verification: dict[str, Any] | None = None,
+    *,
+    error: str | None = None,
+) -> str:
+    verification = verification or {}
+    error_text = " ".join(
+        str(value).strip()
+        for value in (verification.get("error"), error)
+        if value is not None and str(value).strip()
+    )
+    normalized_error = error_text.lower()
+    if MODEL_NOT_SUPPORTED_TEXT in normalized_error:
+        return "model_not_supported"
+    if _has_http_status(normalized_error, 401):
+        return "unauthorized_banned"
+    if verification.get("success") is True:
+        return "passed"
+    if _has_http_status(normalized_error, 429):
+        return "rate_limited_but_eligible"
+    return "failed"
+
+
+def plus_account_name(name: Any) -> str:
+    current_name = str(name or "").strip()
+    if current_name.lower().startswith("plus"):
+        return current_name
+    return f"plus {current_name}".rstrip()
+
+
+async def get_settings(db: AsyncIOMotorDatabase) -> dict[str, Any]:
+    stored = await db.plus_self_produced_settings.find_one({"_id": SETTINGS_ID})
+    settings = {
+        "enabled": True,
+        "interval_seconds": DEFAULT_INTERVAL_SECONDS,
+        **(stored or {}),
+        "_id": SETTINGS_ID,
+        "site_id": SITE_ID,
+        "source_group_id": SOURCE_GROUP_ID,
+        "plus_group_id": PLUS_GROUP_ID,
+        "banned_group_id": BANNED_GROUP_ID,
+        "model": PROBE_MODEL,
+    }
+    interval_seconds = max(60, int(settings.get("interval_seconds") or DEFAULT_INTERVAL_SECONDS))
+    settings["interval_seconds"] = interval_seconds
+    settings["interval_minutes"] = interval_seconds // 60
+    settings["running"] = _run_lock.locked()
+    return serialize_doc(settings)
+
+
+async def update_settings(
+    db: AsyncIOMotorDatabase,
+    payload: dict[str, Any],
+    actor: dict[str, Any],
+) -> dict[str, Any]:
+    now = now_utc()
+    updates: dict[str, Any] = {
+        "site_id": SITE_ID,
+        "updated_at": now,
+        "updated_by": actor.get("_id"),
+    }
+    if "enabled" in payload and payload["enabled"] is not None:
+        updates["enabled"] = bool(payload["enabled"])
+    if "interval_minutes" in payload and payload["interval_minutes"] is not None:
+        updates["interval_seconds"] = int(payload["interval_minutes"]) * 60
+    await db.plus_self_produced_settings.update_one(
+        {"_id": SETTINGS_ID},
+        {
+            "$set": updates,
+            "$setOnInsert": {"created_at": now},
+        },
+        upsert=True,
+    )
+    return await get_settings(db)
+
+
+def is_probe_due(settings: dict[str, Any], *, now: datetime | None = None) -> bool:
+    if settings.get("enabled") is False:
+        return False
+    current_time = _as_utc(now or now_utc())
+    last_finished_at = _parse_datetime(settings.get("last_finished_at"))
+    if last_finished_at is None:
+        return True
+    interval_seconds = max(60, int(settings.get("interval_seconds") or DEFAULT_INTERVAL_SECONDS))
+    return last_finished_at <= current_time - timedelta(seconds=interval_seconds)
+
+
+async def get_status(db: AsyncIOMotorDatabase) -> dict[str, Any]:
+    settings = await get_settings(db)
+    last_run = await db.plus_self_produced_runs.find_one(
+        {"site_id": SITE_ID},
+        sort=[("started_at", -1)],
+    )
+    return {
+        "site_id": SITE_ID,
+        "source_group_id": SOURCE_GROUP_ID,
+        "plus_group_id": PLUS_GROUP_ID,
+        "banned_group_id": BANNED_GROUP_ID,
+        "model": PROBE_MODEL,
+        "running": _run_lock.locked(),
+        "settings": settings,
+        "last_run": serialize_doc(last_run) if last_run else None,
+    }
+
+
+async def list_results(
+    db: AsyncIOMotorDatabase,
+    *,
+    page: int,
+    page_size: int,
+    classification: str | None = None,
+) -> dict[str, Any]:
+    query: dict[str, Any] = {"site_id": SITE_ID}
+    if classification:
+        query["classification"] = classification
+    total = await db.plus_self_produced_account_results.count_documents(query)
+    cursor = (
+        db.plus_self_produced_account_results.find(query)
+        .sort("tested_at", -1)
+        .skip((page - 1) * page_size)
+        .limit(page_size)
+    )
+    items = [serialize_doc(item) async for item in cursor]
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": max(1, (total + page_size - 1) // page_size),
+    }
+
+
+async def run_due_probe(
+    db: AsyncIOMotorDatabase,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    settings = await get_settings(db)
+    if not is_probe_due(settings, now=now):
+        return {"ok": True, "skipped": True, "reason": "not due"}
+    return await run_probe(db, trigger="scheduled")
+
+
+async def scheduler_loop(db: AsyncIOMotorDatabase) -> None:
+    while True:
+        try:
+            await run_due_probe(db)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - keep the scheduler alive after infrastructure failures.
+            logger.exception("plus_self_produced_scheduler_failed")
+        await asyncio.sleep(SCHEDULER_POLL_SECONDS)
+
+
+async def run_probe(
+    db: AsyncIOMotorDatabase,
+    *,
+    trigger: str,
+) -> dict[str, Any]:
+    if _run_lock.locked():
+        return {"ok": False, "conflict": True, "status": "running", "message": "plus self-produced probe is already running"}
+
+    async with _run_lock:
+        return await _run_probe_locked(db, trigger=trigger)
+
+
+async def _run_probe_locked(db: AsyncIOMotorDatabase, *, trigger: str) -> dict[str, Any]:
+    started_at = now_utc()
+    run_id = uuid4().hex
+    counters = {
+        "candidates": 0,
+        "tested": 0,
+        "eligible": 0,
+        "promoted": 0,
+        "banned": 0,
+        "failed": 0,
+    }
+    await db.plus_self_produced_runs.insert_one(
+        {
+            "_id": run_id,
+            "site_id": SITE_ID,
+            "trigger": trigger,
+            "status": "running",
+            "started_at": started_at,
+            "created_at": started_at,
+            **counters,
+        }
+    )
+    await db.plus_self_produced_settings.update_one(
+        {"_id": SETTINGS_ID},
+        {
+            "$set": {"last_started_at": started_at, "last_run_id": run_id, "updated_at": started_at},
+            "$setOnInsert": {"enabled": True, "interval_seconds": DEFAULT_INTERVAL_SECONDS, "created_at": started_at},
+        },
+        upsert=True,
+    )
+
+    try:
+        site = await get_site(db, SITE_ID, include_token=True)
+        if not site:
+            raise RuntimeError(f"Sub2API site {SITE_ID} not found")
+        client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
+        groups_payload = await client.list_groups(page=1, page_size=100)
+        group_ids = {
+            group.get("id")
+            for group in _payload_items(groups_payload)
+            if isinstance(group, dict) and isinstance(group.get("id"), int)
+        }
+        missing_groups = {SOURCE_GROUP_ID, PLUS_GROUP_ID, BANNED_GROUP_ID} - group_ids
+        if missing_groups:
+            missing_text = ", ".join(str(group_id) for group_id in sorted(missing_groups))
+            raise RuntimeError(f"Sub2API groups not found: {missing_text}")
+
+        accounts_payload = await client.list_group_accounts(
+            group_id=SOURCE_GROUP_ID,
+            page=1,
+            page_size=10_000,
+        )
+        accounts = [item for item in _payload_items(accounts_payload) if isinstance(item, dict)]
+        counters["candidates"] = len(accounts)
+
+        for account in accounts:
+            remote_account_id = account.get("id")
+            if remote_account_id is None:
+                counters["failed"] += 1
+                continue
+
+            tested_at = now_utc()
+            verification = await _test_account(client, remote_account_id)
+            counters["tested"] += 1
+            classification = classify_probe_result(verification)
+            test_error = _short_error(verification.get("error"))
+            action_status = "not_moved"
+            action_error: str | None = None
+            resulting_name = _account_name(account)
+            destination_group_id: int | None = None
+
+            if classification in {"passed", "rate_limited_but_eligible"}:
+                counters["eligible"] += 1
+                destination_group_id = PLUS_GROUP_ID
+                resulting_name = plus_account_name(_account_name(account))
+                payload = _move_payload(account, group_id=PLUS_GROUP_ID, name=resulting_name)
+                action_status = "promoted"
+            elif classification == "unauthorized_banned":
+                destination_group_id = BANNED_GROUP_ID
+                payload = _move_payload(account, group_id=BANNED_GROUP_ID)
+                action_status = "banned"
+            else:
+                payload = None
+                counters["failed"] += 1
+
+            if payload is not None:
+                try:
+                    updated = await client.update_account(remote_account_id, payload)
+                    remote_snapshot = {**account, **(updated if isinstance(updated, dict) else {})}
+                    remote_snapshot["id"] = remote_account_id
+                    remote_snapshot["group_id"] = destination_group_id
+                    remote_snapshot["group_ids"] = [destination_group_id]
+                    if classification in {"passed", "rate_limited_but_eligible"}:
+                        remote_snapshot["name"] = resulting_name
+                        counters["promoted"] += 1
+                    else:
+                        remote_snapshot["name"] = _account_name(account)
+                        counters["banned"] += 1
+                    await upsert_cached_account_snapshot(db, SITE_ID, remote_snapshot)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - one remote update must not stop the queue.
+                    action_error = _exception_error(exc)
+                    action_status = "promotion_failed" if destination_group_id == PLUS_GROUP_ID else "ban_move_failed"
+                    counters["failed"] += 1
+
+            await _write_account_result(
+                db,
+                run_id=run_id,
+                account=account,
+                verification=verification,
+                classification=classification,
+                action_status=action_status,
+                error=action_error or test_error,
+                resulting_name=resulting_name,
+                destination_group_id=destination_group_id,
+                tested_at=tested_at,
+            )
+
+        finished_at = now_utc()
+        run_status = "completed_with_errors" if counters["failed"] else "succeeded"
+        result = {
+            "ok": True,
+            "run_id": run_id,
+            "site_id": SITE_ID,
+            "trigger": trigger,
+            "status": run_status,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            **counters,
+        }
+        await _finish_run(db, result)
+        return serialize_doc(result)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - expose a recorded run failure to the scheduler and API.
+        finished_at = now_utc()
+        result = {
+            "ok": False,
+            "run_id": run_id,
+            "site_id": SITE_ID,
+            "trigger": trigger,
+            "status": "failed",
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "error": _exception_error(exc),
+            **counters,
+        }
+        await _finish_run(db, result)
+        return serialize_doc(result)
+
+
+async def _test_account(client: Sub2ApiClient, remote_account_id: int | str) -> dict[str, Any]:
+    try:
+        return await client.test_account(
+            remote_account_id,
+            model_id=PROBE_MODEL,
+            prompt="",
+            mode="default",
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - transport failures are account-level probe results.
+        return {
+            "success": False,
+            "model": PROBE_MODEL,
+            "latency_ms": None,
+            "error": _exception_error(exc),
+        }
+
+
+def _move_payload(account: dict[str, Any], *, group_id: int, name: str | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "group_id": group_id,
+        "group_ids": [group_id],
+        "status": account.get("status") or "active",
+        "schedulable": account.get("schedulable", True),
+    }
+    if name is not None:
+        payload = {"name": name, **payload}
+    return payload
+
+
+async def _write_account_result(
+    db: AsyncIOMotorDatabase,
+    *,
+    run_id: str,
+    account: dict[str, Any],
+    verification: dict[str, Any],
+    classification: str,
+    action_status: str,
+    error: str | None,
+    resulting_name: str,
+    destination_group_id: int | None,
+    tested_at: datetime,
+) -> None:
+    remote_account_id = account.get("id")
+    result_id = f"{SITE_ID}:{remote_account_id}"
+    await db.plus_self_produced_account_results.update_one(
+        {"_id": result_id},
+        {
+            "$set": {
+                "site_id": SITE_ID,
+                "remote_account_id": remote_account_id,
+                "run_id": run_id,
+                "account_name": _account_name(account),
+                "email": _account_email(account),
+                "classification": classification,
+                "action_status": action_status,
+                "error": _short_error(error),
+                "model": verification.get("model") or PROBE_MODEL,
+                "latency_ms": verification.get("latency_ms"),
+                "source_group_id": SOURCE_GROUP_ID,
+                "destination_group_id": destination_group_id,
+                "resulting_name": resulting_name,
+                "tested_at": tested_at,
+                "updated_at": tested_at,
+            },
+            "$setOnInsert": {"created_at": tested_at},
+        },
+        upsert=True,
+    )
+
+
+async def _finish_run(db: AsyncIOMotorDatabase, result: dict[str, Any]) -> None:
+    finished_at = result["finished_at"]
+    run_updates = {key: value for key, value in result.items() if key not in {"run_id", "ok"}}
+    run_updates["ok"] = result["ok"]
+    await db.plus_self_produced_runs.update_one(
+        {"_id": result["run_id"]},
+        {"$set": run_updates},
+    )
+    await db.plus_self_produced_settings.update_one(
+        {"_id": SETTINGS_ID},
+        {
+            "$set": {
+                "last_finished_at": finished_at,
+                "last_run_id": result["run_id"],
+                "last_status": result["status"],
+                "updated_at": finished_at,
+            }
+        },
+        upsert=True,
+    )
+
+
+def _payload_items(payload: Any) -> list[Any]:
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data", payload)
+    return data.get("items", []) if isinstance(data, dict) and isinstance(data.get("items"), list) else []
+
+
+def _account_name(account: dict[str, Any]) -> str:
+    value = account.get("name") or account.get("email") or account.get("id") or ""
+    return str(value).strip()
+
+
+def _account_email(account: dict[str, Any]) -> str | None:
+    for value in (
+        account.get("email"),
+        (account.get("credentials") or {}).get("email") if isinstance(account.get("credentials"), dict) else None,
+    ):
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def _exception_error(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        return str(exc.detail)
+    return str(exc) or exc.__class__.__name__
+
+
+def _short_error(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text[:500] if text else None
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return _as_utc(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return _as_utc(datetime.fromisoformat(value.strip().replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _has_http_status(error_text: str, status_code: int) -> bool:
+    patterns = (
+        rf"\bapi\s+returned\s+{status_code}\b",
+        rf"\bstatus(?:_code)?\s*[:=]?\s*{status_code}\b",
+        rf"\bhttp(?:/\d(?:\.\d)?)?\s+{status_code}\b",
+    )
+    return any(re.search(pattern, error_text, flags=re.IGNORECASE) for pattern in patterns)
