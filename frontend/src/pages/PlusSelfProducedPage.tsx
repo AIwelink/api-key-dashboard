@@ -58,9 +58,14 @@ type ResultsResponse = {
   page_size: number;
 };
 
+const RESULTS_PAGE_SIZE = 100;
+
 type ViewProps = {
   status: PlusSelfProducedStatus | null;
   results: PlusSelfProducedResult[];
+  resultsTotal: number;
+  resultsPage: number;
+  resultsPageSize: number;
   enabled: boolean;
   intervalMinutes: number;
   loading: boolean;
@@ -70,24 +75,29 @@ type ViewProps = {
   onIntervalChange: (minutes: number) => void;
   onSave: () => void;
   onRun: () => void;
+  onPageChange: (page: number) => void;
 };
 
 export function PlusSelfProducedPage({ token, showToast }: Props) {
   const [status, setStatus] = useState<PlusSelfProducedStatus | null>(null);
   const [results, setResults] = useState<PlusSelfProducedResult[]>([]);
+  const [resultsTotal, setResultsTotal] = useState(0);
+  const [resultsPage, setResultsPage] = useState(1);
   const [enabled, setEnabled] = useState(true);
   const [intervalMinutes, setIntervalMinutes] = useState(15);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
 
-  const load = async (syncForm = false) => {
+  const load = async (syncForm = false, page = resultsPage) => {
     const [nextStatus, nextResults] = await Promise.all([
       api<PlusSelfProducedStatus>("/plus-self-produced/status", token),
-      api<ResultsResponse>("/plus-self-produced/results?page=1&page_size=100", token),
+      api<ResultsResponse>(`/plus-self-produced/results?page=${page}&page_size=${RESULTS_PAGE_SIZE}`, token),
     ]);
     setStatus(nextStatus);
     setResults(nextResults.items);
+    setResultsTotal(nextResults.total);
+    setResultsPage(nextResults.page);
     if (syncForm) {
       setEnabled(nextStatus.settings.enabled);
       setIntervalMinutes(nextStatus.settings.interval_minutes);
@@ -99,12 +109,14 @@ export function PlusSelfProducedPage({ token, showToast }: Props) {
     setLoading(true);
     Promise.all([
       api<PlusSelfProducedStatus>("/plus-self-produced/status", token),
-      api<ResultsResponse>("/plus-self-produced/results?page=1&page_size=100", token),
+      api<ResultsResponse>(`/plus-self-produced/results?page=1&page_size=${RESULTS_PAGE_SIZE}`, token),
     ])
       .then(([nextStatus, nextResults]) => {
         if (cancelled) return;
         setStatus(nextStatus);
         setResults(nextResults.items);
+        setResultsTotal(nextResults.total);
+        setResultsPage(nextResults.page);
         setEnabled(nextStatus.settings.enabled);
         setIntervalMinutes(nextStatus.settings.interval_minutes);
       })
@@ -165,11 +177,31 @@ export function PlusSelfProducedPage({ token, showToast }: Props) {
     }
   };
 
+  const changePage = async (page: number) => {
+    setLoading(true);
+    try {
+      const nextResults = await api<ResultsResponse>(
+        `/plus-self-produced/results?page=${page}&page_size=${RESULTS_PAGE_SIZE}`,
+        token,
+      );
+      setResults(nextResults.items);
+      setResultsTotal(nextResults.total);
+      setResultsPage(nextResults.page);
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const workflowRunning = running || status?.running === true;
   return (
     <PlusSelfProducedView
       status={status}
       results={results}
+      resultsTotal={resultsTotal}
+      resultsPage={resultsPage}
+      resultsPageSize={RESULTS_PAGE_SIZE}
       enabled={enabled}
       intervalMinutes={intervalMinutes}
       loading={loading}
@@ -179,6 +211,7 @@ export function PlusSelfProducedPage({ token, showToast }: Props) {
       onIntervalChange={setIntervalMinutes}
       onSave={save}
       onRun={run}
+      onPageChange={changePage}
     />
   );
 }
@@ -186,6 +219,9 @@ export function PlusSelfProducedPage({ token, showToast }: Props) {
 export function PlusSelfProducedView({
   status,
   results,
+  resultsTotal,
+  resultsPage,
+  resultsPageSize,
   enabled,
   intervalMinutes,
   loading,
@@ -195,6 +231,7 @@ export function PlusSelfProducedView({
   onIntervalChange,
   onSave,
   onRun,
+  onPageChange,
 }: ViewProps) {
   const siteId = status?.site_id || "US06-5002";
   const sourceGroupId = status?.source_group_id ?? 4;
@@ -203,6 +240,7 @@ export function PlusSelfProducedView({
   const model = status?.model || "gpt-5.4";
   const lastRun = status?.last_run;
   const invalidInterval = !Number.isFinite(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 1440;
+  const resultsPages = Math.max(1, Math.ceil(resultsTotal / resultsPageSize));
 
   return (
     <section className="view plus-self-produced-page">
@@ -283,7 +321,7 @@ export function PlusSelfProducedView({
         <div className="panel-header">
           <div>
             <h3>探测结果</h3>
-            <span className="muted">{loading ? "加载中..." : `${results.length} 条`}</span>
+            <span className="muted">{loading ? "加载中..." : `${resultsTotal} 条`}</span>
           </div>
         </div>
         <div className="table-wrap plus-results-table-wrap">
@@ -322,6 +360,27 @@ export function PlusSelfProducedView({
             </tbody>
           </table>
         </div>
+        {resultsTotal > resultsPageSize && (
+          <div className="pagination plus-results-pagination">
+            <button
+              className="ghost"
+              type="button"
+              disabled={loading || resultsPage <= 1}
+              onClick={() => onPageChange(resultsPage - 1)}
+            >
+              上一页
+            </button>
+            <span>第 {resultsPage} / {resultsPages} 页</span>
+            <button
+              className="ghost"
+              type="button"
+              disabled={loading || resultsPage >= resultsPages}
+              onClick={() => onPageChange(resultsPage + 1)}
+            >
+              下一页
+            </button>
+          </div>
+        )}
       </section>
     </section>
   );

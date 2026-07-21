@@ -4833,6 +4833,16 @@ code {
   padding: 28px;
 }
 
+.plus-results-pagination {
+  padding: 0 0 4px;
+}
+
+.plus-results-pagination span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 @media (max-width: 1120px) {
   .plus-settings-band {
     grid-template-columns: 1fr;

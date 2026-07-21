@@ -16,7 +16,7 @@ from app.modules.sub2api.account_usage_postgres_repository import (
     fetch_account_usage_snapshots as fetch_postgres_account_usage_snapshots,
 )
 from app.modules.sub2api.capacity_risk import calculate_capacity_risk
-from app.modules.sub2api.client import Sub2ApiClient
+from app.modules.sub2api.client import Sub2ApiClient, validate_admin_api_key
 from app.modules.sub2api.dashboard_postgres_repository import (
     fetch_group_dashboard_snapshot as fetch_postgres_group_dashboard_snapshot,
     fetch_site_dashboard_snapshot as fetch_postgres_dashboard_snapshot,
@@ -183,7 +183,7 @@ async def update_site_config(db: AsyncIOMotorDatabase, site_id: str, payload: di
     if "base_url" in payload:
         updates["base_url"] = str(payload["base_url"] or "").strip().rstrip("/")
     if "token" in payload:
-        updates["token"] = str(payload["token"] or "").strip()
+        updates["token"] = validate_admin_api_key(payload["token"])
     if "status" in payload:
         updates["status"] = str(payload["status"] or "active")
     if "refresh_interval_minutes" in payload:
@@ -221,7 +221,7 @@ async def create_site_config(db: AsyncIOMotorDatabase, payload: dict[str, Any]) 
         "base_url": base_url,
         "site_type": "sub2api",
         "admin_user_id": "",
-        "token": str(payload.get("token") or "").strip(),
+        "token": validate_admin_api_key(payload.get("token")),
         "status": str(payload.get("status") or "active"),
         "refresh_interval_minutes": _site_refresh_interval_minutes(payload),
         "long_7d_probe_model": _site_long_7d_probe_model(payload),

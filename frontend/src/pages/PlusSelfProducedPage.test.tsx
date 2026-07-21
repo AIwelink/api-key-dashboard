@@ -83,6 +83,7 @@ const callbacks = {
   onIntervalChange: () => undefined,
   onSave: () => undefined,
   onRun: () => undefined,
+  onPageChange: () => undefined,
 };
 
 describe("plus self-produced page", () => {
@@ -96,6 +97,9 @@ describe("plus self-produced page", () => {
         loading={false}
         saving={false}
         running={false}
+        resultsTotal={205}
+        resultsPage={1}
+        resultsPageSize={100}
         {...callbacks}
       />,
     );
@@ -113,6 +117,9 @@ describe("plus self-produced page", () => {
     expect(html).toContain("失败");
     expect(html).toContain("已晋级");
     expect(html).toContain("已转封禁");
+    expect(html).toContain("205 条");
+    expect(html).toContain("第 1 / 3 页");
+    expect(html).toContain("下一页");
   });
 
   it("disables commands while a probe is running", () => {
@@ -125,6 +132,9 @@ describe("plus self-produced page", () => {
         loading={false}
         saving={false}
         running
+        resultsTotal={0}
+        resultsPage={1}
+        resultsPageSize={100}
         {...callbacks}
       />,
     );

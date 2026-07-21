@@ -30,6 +30,25 @@ class Sub2ApiSiteRefreshIntervalTests(unittest.TestCase):
         self.assertEqual(site["long_7d_probe_model"], "gpt-5.5")
 
 
+class Sub2ApiAdminTokenValidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_create_rejects_non_ascii_or_whitespace_admin_token(self) -> None:
+        sites = SimpleNamespace(replace_one=AsyncMock(), find_one=AsyncMock(return_value=None))
+        db = SimpleNamespace(sub2api_sites=sites)
+
+        with self.assertRaisesRegex(ValueError, "ASCII"):
+            await cache.create_site_config(
+                db,
+                {
+                    "id": "api-5002",
+                    "base_url": "https://sub2api.example.com",
+                    "site_type": "sub2api",
+                    "token": "key-中文 value",
+                },
+            )
+
+        sites.replace_one.assert_not_awaited()
+
+
 class LongSevenDayProbeModelSiteSettingsTests(unittest.IsolatedAsyncioTestCase):
     async def test_create_persists_trimmed_probe_model(self) -> None:
         stored = {

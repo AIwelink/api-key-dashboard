@@ -16,6 +16,27 @@ TRANSIENT_STATUS_CODES = {500, 502, 503, 504}
 REQUEST_RETRY_ATTEMPTS = 3
 REQUEST_RETRY_BASE_DELAY_SECONDS = 0.8
 SERVER_ERROR_STATUS_CODES = {500, 502, 503, 504}
+ADMIN_AUTH_FAILURE_STATUS_CODES = {401, 403}
+
+
+class InvalidAdminApiKeyError(ValueError):
+    pass
+
+
+def validate_admin_api_key(value: Any) -> str:
+    token = str(value or "").strip()
+    if token and (not token.isascii() or any(character.isspace() for character in token)):
+        raise InvalidAdminApiKeyError(
+            "Sub2API Admin API Key must contain only ASCII characters and no whitespace"
+        )
+    return token
+
+
+def raise_for_admin_auth_failure(response: httpx.Response) -> None:
+    if response.status_code in ADMIN_AUTH_FAILURE_STATUS_CODES:
+        raise InvalidAdminApiKeyError(
+            f"Sub2API Admin API Key was rejected with status {response.status_code}"
+        )
 
 
 class Sub2ApiClient:
@@ -30,7 +51,7 @@ class Sub2ApiClient:
     def headers(self) -> dict[str, str]:
         if not self.token:
             return {}
-        return {"x-api-key": self.token}
+        return {"x-api-key": validate_admin_api_key(self.token)}
 
     def admin_url(self, path: str) -> str:
         normalized_path = path if path.startswith("/") else f"/{path}"
@@ -95,6 +116,7 @@ class Sub2ApiClient:
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"sub2api {method} {target_url} did not return a response",
             )
+        raise_for_admin_auth_failure(response)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -333,6 +355,7 @@ class Sub2ApiClient:
                     )
                     last_error = None
                     if response.status_code not in TRANSIENT_STATUS_CODES:
+                        raise_for_admin_auth_failure(response)
                         return response
                 except httpx.RequestError as exc:
                     last_error = exc

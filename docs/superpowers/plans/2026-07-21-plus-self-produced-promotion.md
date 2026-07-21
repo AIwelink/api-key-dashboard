@@ -91,7 +91,7 @@ Run the same unittest command. Expected: all decision tests pass.
 
 - [ ] **Step 1: Write failing settings and execution tests**
 
-Use lightweight async collection doubles and a patched `Sub2ApiClient`. Assert:
+Use lightweight async collection doubles, a patched PostgreSQL pool snapshot, and a patched `Sub2ApiClient`. The snapshot supplies groups/accounts; the client supplies only model-test and account-update operations. Assert:
 
 ```python
 settings = await get_settings(db)

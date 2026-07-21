@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 from datetime import UTC, datetime, timedelta
@@ -9,9 +10,13 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from app.modules.sub2api.cache import get_site, upsert_cached_account_snapshot
-from app.modules.sub2api.client import Sub2ApiClient
+from app.modules.sub2api.client import InvalidAdminApiKeyError, Sub2ApiClient, account_in_group
+from app.modules.sub2api.postgres_repository import fetch_pool_snapshot as fetch_postgres_pool_snapshot
+from app.modules.system.sql_dsn import redact_sql_error
 from app.utils import now_utc, serialize_doc
 
 
@@ -23,6 +28,9 @@ PROBE_MODEL = "gpt-5.4"
 DEFAULT_INTERVAL_SECONDS = 15 * 60
 SCHEDULER_POLL_SECONDS = 30
 SETTINGS_ID = "plus-self-produced"
+PROBE_LOCK_ID = "plus-self-produced-probe"
+PROBE_LEASE_SECONDS = 5 * 60
+PROBE_LEASE_RENEW_SECONDS = 60
 
 MODEL_NOT_SUPPORTED_TEXT = "model is not supported when using codex with a chatgpt account"
 
@@ -193,10 +201,109 @@ async def run_probe(
         return {"ok": False, "conflict": True, "status": "running", "message": "plus self-produced probe is already running"}
 
     async with _run_lock:
-        return await _run_probe_locked(db, trigger=trigger)
+        lease_owner = uuid4().hex
+        lease = await acquire_probe_lease(db, owner=lease_owner)
+        if not lease["acquired"]:
+            return {"ok": False, "conflict": True, "status": "running", "message": "plus self-produced probe is already running"}
+        lease_lost = asyncio.Event()
+        heartbeat_task = asyncio.create_task(_probe_lease_heartbeat(db, owner=lease_owner, lease_lost=lease_lost))
+        try:
+            return await _run_probe_locked(db, trigger=trigger, lease_lost=lease_lost)
+        finally:
+            heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat_task
+            try:
+                await asyncio.shield(release_probe_lease(db, owner=lease_owner))
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - lease expiry recovers cleanup failures.
+                logger.exception("plus_self_produced_lease_release_failed")
 
 
-async def _run_probe_locked(db: AsyncIOMotorDatabase, *, trigger: str) -> dict[str, Any]:
+async def acquire_probe_lease(
+    db: AsyncIOMotorDatabase,
+    *,
+    owner: str,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    locked_at = _as_utc(now or now_utc())
+    expires_at = locked_at + timedelta(seconds=PROBE_LEASE_SECONDS)
+    try:
+        document = await db.operation_locks.find_one_and_update(
+            {
+                "_id": PROBE_LOCK_ID,
+                "$or": [
+                    {"expires_at": {"$lte": locked_at}},
+                    {"expires_at": {"$exists": False}},
+                    {"owner": owner},
+                ],
+            },
+            {
+                "$set": {
+                    "lock_type": "plus_self_produced_probe",
+                    "owner": owner,
+                    "locked_at": locked_at,
+                    "expires_at": expires_at,
+                    "updated_at": locked_at,
+                },
+                "$setOnInsert": {"created_at": locked_at},
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        document = None
+    acquired = bool(document and document.get("owner") == owner)
+    return {"acquired": acquired, "owner": owner if acquired else None}
+
+
+async def renew_probe_lease(db: AsyncIOMotorDatabase, *, owner: str) -> bool:
+    now = now_utc()
+    result = await db.operation_locks.update_one(
+        {"_id": PROBE_LOCK_ID, "owner": owner},
+        {"$set": {"expires_at": now + timedelta(seconds=PROBE_LEASE_SECONDS), "updated_at": now}},
+    )
+    return result.matched_count > 0
+
+
+async def release_probe_lease(db: AsyncIOMotorDatabase, *, owner: str) -> bool:
+    result = await db.operation_locks.delete_one({"_id": PROBE_LOCK_ID, "owner": owner})
+    return result.deleted_count > 0
+
+
+async def _probe_lease_heartbeat(
+    db: AsyncIOMotorDatabase,
+    *,
+    owner: str,
+    lease_lost: asyncio.Event,
+) -> None:
+    while True:
+        await asyncio.sleep(PROBE_LEASE_RENEW_SECONDS)
+        try:
+            renewed = await renew_probe_lease(db, owner=owner)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a lost lease must stop further remote mutations.
+            logger.exception("plus_self_produced_lease_renew_failed")
+            lease_lost.set()
+            return
+        if not renewed:
+            lease_lost.set()
+            return
+
+
+def _ensure_probe_lease(lease_lost: asyncio.Event | None) -> None:
+    if lease_lost is not None and lease_lost.is_set():
+        raise RuntimeError("plus self-produced probe lease was lost")
+
+
+async def _run_probe_locked(
+    db: AsyncIOMotorDatabase,
+    *,
+    trigger: str,
+    lease_lost: asyncio.Event | None = None,
+) -> dict[str, Any]:
     started_at = now_utc()
     run_id = uuid4().hex
     counters = {
@@ -232,10 +339,19 @@ async def _run_probe_locked(db: AsyncIOMotorDatabase, *, trigger: str) -> dict[s
         if not site:
             raise RuntimeError(f"Sub2API site {SITE_ID} not found")
         client = Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
-        groups_payload = await client.list_groups(page=1, page_size=100)
+        sql_dsn = str(site.get("sql_dsn") or "").strip()
+        if not sql_dsn:
+            raise RuntimeError(f"Sub2API site {SITE_ID} PostgreSQL SQL_DSN is not configured")
+        try:
+            pool_snapshot = await fetch_postgres_pool_snapshot(sql_dsn)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - persisted run errors must not expose database credentials.
+            raise RuntimeError(redact_sql_error(exc, sql_dsn, "postgresql")) from exc
+        _ensure_probe_lease(lease_lost)
         group_ids = {
             group.get("id")
-            for group in _payload_items(groups_payload)
+            for group in pool_snapshot.get("groups", [])
             if isinstance(group, dict) and isinstance(group.get("id"), int)
         }
         missing_groups = {SOURCE_GROUP_ID, PLUS_GROUP_ID, BANNED_GROUP_ID} - group_ids
@@ -243,15 +359,15 @@ async def _run_probe_locked(db: AsyncIOMotorDatabase, *, trigger: str) -> dict[s
             missing_text = ", ".join(str(group_id) for group_id in sorted(missing_groups))
             raise RuntimeError(f"Sub2API groups not found: {missing_text}")
 
-        accounts_payload = await client.list_group_accounts(
-            group_id=SOURCE_GROUP_ID,
-            page=1,
-            page_size=10_000,
-        )
-        accounts = [item for item in _payload_items(accounts_payload) if isinstance(item, dict)]
+        accounts = [
+            item
+            for item in pool_snapshot.get("accounts", [])
+            if isinstance(item, dict) and account_in_group(item, SOURCE_GROUP_ID)
+        ]
         counters["candidates"] = len(accounts)
 
         for account in accounts:
+            _ensure_probe_lease(lease_lost)
             remote_account_id = account.get("id")
             if remote_account_id is None:
                 counters["failed"] += 1
@@ -259,6 +375,7 @@ async def _run_probe_locked(db: AsyncIOMotorDatabase, *, trigger: str) -> dict[s
 
             tested_at = now_utc()
             verification = await _test_account(client, remote_account_id)
+            _ensure_probe_lease(lease_lost)
             counters["tested"] += 1
             classification = classify_probe_result(verification)
             test_error = _short_error(verification.get("error"))
@@ -294,13 +411,26 @@ async def _run_probe_locked(db: AsyncIOMotorDatabase, *, trigger: str) -> dict[s
                     else:
                         remote_snapshot["name"] = _account_name(account)
                         counters["banned"] += 1
-                    await upsert_cached_account_snapshot(db, SITE_ID, remote_snapshot)
                 except asyncio.CancelledError:
+                    raise
+                except InvalidAdminApiKeyError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - one remote update must not stop the queue.
                     action_error = _exception_error(exc)
                     action_status = "promotion_failed" if destination_group_id == PLUS_GROUP_ID else "ban_move_failed"
                     counters["failed"] += 1
+                else:
+                    try:
+                        await upsert_cached_account_snapshot(db, SITE_ID, remote_snapshot)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - cache lag must not rewrite a successful remote result.
+                        logger.warning(
+                            "plus_self_produced_cache_update_failed site_id=%s account_id=%s error_type=%s",
+                            SITE_ID,
+                            remote_account_id,
+                            exc.__class__.__name__,
+                        )
 
             await _write_account_result(
                 db,
@@ -330,6 +460,19 @@ async def _run_probe_locked(db: AsyncIOMotorDatabase, *, trigger: str) -> dict[s
         await _finish_run(db, result)
         return serialize_doc(result)
     except asyncio.CancelledError:
+        finished_at = now_utc()
+        result = {
+            "ok": False,
+            "run_id": run_id,
+            "site_id": SITE_ID,
+            "trigger": trigger,
+            "status": "cancelled",
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "error": "probe cancelled during application shutdown",
+            **counters,
+        }
+        await asyncio.shield(_finish_run(db, result))
         raise
     except Exception as exc:  # noqa: BLE001 - expose a recorded run failure to the scheduler and API.
         finished_at = now_utc()
@@ -358,12 +501,15 @@ async def _test_account(client: Sub2ApiClient, remote_account_id: int | str) -> 
         )
     except asyncio.CancelledError:
         raise
+    except InvalidAdminApiKeyError:
+        raise
     except Exception as exc:  # noqa: BLE001 - transport failures are account-level probe results.
+        error = _exception_error(exc)
         return {
             "success": False,
             "model": PROBE_MODEL,
             "latency_ms": None,
-            "error": _exception_error(exc),
+            "error": error,
         }
 
 
@@ -442,15 +588,6 @@ async def _finish_run(db: AsyncIOMotorDatabase, result: dict[str, Any]) -> None:
     )
 
 
-def _payload_items(payload: Any) -> list[Any]:
-    if isinstance(payload, list):
-        return payload
-    if not isinstance(payload, dict):
-        return []
-    data = payload.get("data", payload)
-    return data.get("items", []) if isinstance(data, dict) and isinstance(data.get("items"), list) else []
-
-
 def _account_name(account: dict[str, Any]) -> str:
     value = account.get("name") or account.get("email") or account.get("id") or ""
     return str(value).strip()
@@ -468,15 +605,31 @@ def _account_email(account: dict[str, Any]) -> str | None:
 
 def _exception_error(exc: Exception) -> str:
     if isinstance(exc, HTTPException):
-        return str(exc.detail)
-    return str(exc) or exc.__class__.__name__
+        return _redact_error_text(str(exc.detail))
+    return _redact_error_text(str(exc) or exc.__class__.__name__)
 
 
 def _short_error(value: Any) -> str | None:
     if value is None:
         return None
-    text = str(value).strip()
+    text = _redact_error_text(str(value)).strip()
     return text[:500] if text else None
+
+
+def _redact_error_text(value: str) -> str:
+    text = str(value or "")
+    text = re.sub(r"(?i)(\bBearer\s+)[^\s,;\"'}]+", r"\1***", text)
+    text = re.sub(
+        r"(?i)([\"'](?:access_token|refresh_token|id_token|(?:x[-_])?api[-_]?key|authorization|token)[\"']\s*:\s*[\"'])([^\"']*)([\"'])",
+        r"\1***\3",
+        text,
+    )
+    text = re.sub(
+        r"(?i)(\b(?:access_token|refresh_token|id_token|(?:x[-_])?api[-_]?key|authorization|token)\b\s*[=:]\s*)([^\s,;&}\]]+)",
+        r"\1***",
+        text,
+    )
+    return re.sub(r"(?i)\bsk-[A-Za-z0-9_-]{8,}", "sk-***", text)
 
 
 def _parse_datetime(value: Any) -> datetime | None:
