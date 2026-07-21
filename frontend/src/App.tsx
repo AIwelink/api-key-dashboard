@@ -16,6 +16,7 @@ import { PushErrorTodoPage, TodoPage } from "./pages/TodoPage";
 import { LoginPage } from "./pages/LoginPage";
 import { OperationsManagementPage } from "./pages/OperationsManagementPage";
 import { PresencePage } from "./pages/PresencePage";
+import { PlusSelfProducedPage } from "./pages/PlusSelfProducedPage";
 import { TrafficAnalysisPage } from "./pages/TrafficAnalysisPage";
 import { TrafficAnalysisConfigPage } from "./pages/TrafficAnalysisConfigPage";
 import { UploadPage } from "./pages/UploadPage";
@@ -42,6 +43,7 @@ const poolNavItems: Array<[ViewName, string]> = [
   ["available-pool", "可用池"],
   ["reserve-pool", "使用备选池"],
   ["api-pools", "API 账号池状态"],
+  ["plus-self-produced", "plus自产"],
 ];
 
 const poolOperationsNavItems: Array<[ViewName, string]> = [
@@ -100,6 +102,7 @@ const navShortLabels: Record<ViewName, string> = {
   "available-pool": "可",
   "reserve-pool": "备",
   "api-pools": "池",
+  "plus-self-produced": "产",
   "traffic-analysis": "流",
   "operations-management": "运",
   "event-records": "事",
@@ -123,6 +126,7 @@ const viewPaths: Record<ViewName, string> = {
   "available-pool": "/available-pool",
   "reserve-pool": "/reserve-pool",
   "api-pools": "/api-pool-status",
+  "plus-self-produced": "/plus-self-produced",
   "traffic-analysis": "/traffic-analysis",
   "operations-management": "/operations-management",
   "event-records": "/event-records",
@@ -303,6 +307,7 @@ function App() {
             {view === "available-pool" && <AvailablePoolPage token={token} showToast={showToast} />}
             {view === "reserve-pool" && <ReservePoolPage token={token} showToast={showToast} />}
             {view === "api-pools" && <ApiPoolStatusPage token={token} showToast={showToast} />}
+            {view === "plus-self-produced" && <PlusSelfProducedPage token={token} showToast={showToast} />}
             {view === "traffic-analysis" && <TrafficAnalysisPage />}
             {view === "operations-management" && <OperationsManagementPage />}
             {view === "event-records" && <EventRecordsPage token={token} showToast={showToast} />}

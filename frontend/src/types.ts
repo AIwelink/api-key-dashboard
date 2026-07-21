@@ -6,6 +6,7 @@ export type ViewName =
   | "available-pool"
   | "reserve-pool"
   | "api-pools"
+  | "plus-self-produced"
   | "traffic-analysis"
   | "operations-management"
   | "event-records"

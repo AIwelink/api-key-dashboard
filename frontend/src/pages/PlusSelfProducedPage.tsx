@@ -1,0 +1,358 @@
+import { useEffect, useState } from "react";
+
+import { api } from "../api/client";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
+import { errorMessage, formatDateTime } from "../utils/format";
+
+
+type Props = {
+  token: string;
+  showToast: (message: string, isError?: boolean) => void;
+};
+
+export type PlusSelfProducedStatus = {
+  site_id: string;
+  source_group_id: number;
+  plus_group_id: number;
+  banned_group_id: number;
+  model: string;
+  running: boolean;
+  settings: {
+    enabled: boolean;
+    interval_minutes: number;
+    last_finished_at?: string | null;
+    last_status?: string | null;
+  };
+  last_run: {
+    status: string;
+    candidates?: number;
+    tested?: number;
+    eligible?: number;
+    promoted?: number;
+    banned?: number;
+    failed?: number;
+    started_at?: string | null;
+    finished_at?: string | null;
+    error?: string | null;
+  } | null;
+};
+
+export type PlusSelfProducedResult = {
+  id: string;
+  remote_account_id: number | string;
+  account_name: string;
+  email?: string | null;
+  classification: string;
+  action_status: string;
+  error?: string | null;
+  model?: string;
+  latency_ms?: number | null;
+  resulting_name?: string;
+  tested_at: string;
+};
+
+type ResultsResponse = {
+  items: PlusSelfProducedResult[];
+  total: number;
+  page: number;
+  page_size: number;
+};
+
+type ViewProps = {
+  status: PlusSelfProducedStatus | null;
+  results: PlusSelfProducedResult[];
+  enabled: boolean;
+  intervalMinutes: number;
+  loading: boolean;
+  saving: boolean;
+  running: boolean;
+  onEnabledChange: (enabled: boolean) => void;
+  onIntervalChange: (minutes: number) => void;
+  onSave: () => void;
+  onRun: () => void;
+};
+
+export function PlusSelfProducedPage({ token, showToast }: Props) {
+  const [status, setStatus] = useState<PlusSelfProducedStatus | null>(null);
+  const [results, setResults] = useState<PlusSelfProducedResult[]>([]);
+  const [enabled, setEnabled] = useState(true);
+  const [intervalMinutes, setIntervalMinutes] = useState(15);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [running, setRunning] = useState(false);
+
+  const load = async (syncForm = false) => {
+    const [nextStatus, nextResults] = await Promise.all([
+      api<PlusSelfProducedStatus>("/plus-self-produced/status", token),
+      api<ResultsResponse>("/plus-self-produced/results?page=1&page_size=100", token),
+    ]);
+    setStatus(nextStatus);
+    setResults(nextResults.items);
+    if (syncForm) {
+      setEnabled(nextStatus.settings.enabled);
+      setIntervalMinutes(nextStatus.settings.interval_minutes);
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    Promise.all([
+      api<PlusSelfProducedStatus>("/plus-self-produced/status", token),
+      api<ResultsResponse>("/plus-self-produced/results?page=1&page_size=100", token),
+    ])
+      .then(([nextStatus, nextResults]) => {
+        if (cancelled) return;
+        setStatus(nextStatus);
+        setResults(nextResults.items);
+        setEnabled(nextStatus.settings.enabled);
+        setIntervalMinutes(nextStatus.settings.interval_minutes);
+      })
+      .catch((error) => {
+        if (!cancelled) showToast(errorMessage(error), true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  usePageAutoRefresh(
+    () => load(false),
+    {
+      paused: saving || running,
+      onError: (error) => showToast(errorMessage(error), true),
+    },
+  );
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const settings = await api<PlusSelfProducedStatus["settings"]>("/plus-self-produced/settings", token, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled, interval_minutes: intervalMinutes }),
+      });
+      setStatus((current) => current ? { ...current, settings } : current);
+      setEnabled(settings.enabled);
+      setIntervalMinutes(settings.interval_minutes);
+      showToast("plus自产探测设置已保存");
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const run = async () => {
+    setRunning(true);
+    try {
+      const result = await api<{ ok: boolean; promoted?: number; banned?: number; error?: string }>("/plus-self-produced/run", token, {
+        method: "POST",
+      });
+      if (result.ok) {
+        showToast(`探测完成：晋级 ${result.promoted || 0}，转封禁 ${result.banned || 0}`);
+      } else {
+        showToast(result.error || "探测失败", true);
+      }
+      await load(true);
+    } catch (error) {
+      showToast(errorMessage(error), true);
+      await load(true).catch(() => undefined);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const workflowRunning = running || status?.running === true;
+  return (
+    <PlusSelfProducedView
+      status={status}
+      results={results}
+      enabled={enabled}
+      intervalMinutes={intervalMinutes}
+      loading={loading}
+      saving={saving}
+      running={workflowRunning}
+      onEnabledChange={setEnabled}
+      onIntervalChange={setIntervalMinutes}
+      onSave={save}
+      onRun={run}
+    />
+  );
+}
+
+export function PlusSelfProducedView({
+  status,
+  results,
+  enabled,
+  intervalMinutes,
+  loading,
+  saving,
+  running,
+  onEnabledChange,
+  onIntervalChange,
+  onSave,
+  onRun,
+}: ViewProps) {
+  const siteId = status?.site_id || "US06-5002";
+  const sourceGroupId = status?.source_group_id ?? 4;
+  const plusGroupId = status?.plus_group_id ?? 6;
+  const bannedGroupId = status?.banned_group_id ?? 7;
+  const model = status?.model || "gpt-5.4";
+  const lastRun = status?.last_run;
+  const invalidInterval = !Number.isFinite(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 1440;
+
+  return (
+    <section className="view plus-self-produced-page">
+      <div className="topbar plus-self-produced-topbar">
+        <div>
+          <h2>plus自产</h2>
+          <span className={`status-pill ${running ? "warning" : enabled ? "success" : ""}`}>
+            {running ? "正在探测" : enabled ? "自动探测已启用" : "自动探测已停用"}
+          </span>
+        </div>
+        <button type="button" onClick={onRun} disabled={loading || saving || running}>
+          {running ? "探测中..." : "立即探测"}
+        </button>
+      </div>
+
+      <section className="plus-workflow-band plus-settings-band">
+        <div className="plus-workflow-facts" aria-label="探测目标">
+          <WorkflowFact label="站点" value={siteId} />
+          <WorkflowFact label="Plus 流向" value={`${sourceGroupId} → ${plusGroupId}`} />
+          <WorkflowFact label="401 流向" value={`${sourceGroupId} → ${bannedGroupId}`} />
+          <WorkflowFact label="模型" value={model} />
+        </div>
+        <div className="plus-settings-controls">
+          <label className="switch-field">
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(event) => onEnabledChange(event.target.checked)}
+              disabled={loading || saving || running}
+            />
+            <span className="switch-track" aria-hidden="true"><span className="switch-thumb" /></span>
+            <span className="switch-copy">
+              <strong>自动探测</strong>
+              <em>{enabled ? "已启用" : "已停用"}</em>
+            </span>
+          </label>
+          <label className="plus-interval-field">
+            <span>探测间隔</span>
+            <span className="plus-interval-input">
+              <input
+                type="number"
+                min={1}
+                max={1440}
+                value={intervalMinutes}
+                onChange={(event) => onIntervalChange(Number(event.target.value))}
+                disabled={loading || saving || running}
+                aria-label="探测间隔分钟"
+              />
+              <b>分钟</b>
+            </span>
+          </label>
+          <div className="plus-setting-summary">{intervalMinutes} 分钟</div>
+          <button
+            className="ghost"
+            type="button"
+            onClick={onSave}
+            disabled={loading || saving || running || invalidInterval}
+          >
+            {saving ? "保存中..." : "保存设置"}
+          </button>
+        </div>
+      </section>
+
+      <section className="plus-run-band" aria-label="最近运行">
+        <RunMetric label="候选" value={lastRun?.candidates} />
+        <RunMetric label="已测试" value={lastRun?.tested} />
+        <RunMetric label="Plus 可用" value={lastRun?.eligible} />
+        <RunMetric label="已晋级" value={lastRun?.promoted} tone="success" />
+        <RunMetric label="已转封禁" value={lastRun?.banned} tone="danger" />
+        <RunMetric label="失败" value={lastRun?.failed} tone="warning" />
+        <div className="plus-run-time">
+          <span>最近完成</span>
+          <strong>{formatDateTime(lastRun?.finished_at)}</strong>
+        </div>
+      </section>
+
+      <section className="plus-results-section">
+        <div className="panel-header">
+          <div>
+            <h3>探测结果</h3>
+            <span className="muted">{loading ? "加载中..." : `${results.length} 条`}</span>
+          </div>
+        </div>
+        <div className="table-wrap plus-results-table-wrap">
+          <table className="plus-results-table">
+            <thead>
+              <tr>
+                <th>账号</th>
+                <th>探测结果</th>
+                <th>处理</th>
+                <th>延迟</th>
+                <th>错误</th>
+                <th>时间</th>
+              </tr>
+            </thead>
+            <tbody>
+              {results.map((result) => {
+                const classification = classificationDisplay(result.classification);
+                const action = actionDisplay(result.action_status);
+                return (
+                  <tr key={result.id || `${result.remote_account_id}:${result.tested_at}`}>
+                    <td className="plus-account-cell">
+                      <strong>{result.account_name || result.email || `#${result.remote_account_id}`}</strong>
+                      <span>#{result.remote_account_id}</span>
+                    </td>
+                    <td><span className={`status-pill ${classification.tone}`}>{classification.label}</span></td>
+                    <td><span className={`status-pill ${action.tone}`}>{action.label}</span></td>
+                    <td>{result.latency_ms === null || result.latency_ms === undefined ? "-" : `${result.latency_ms} ms`}</td>
+                    <td className="plus-error-cell" title={result.error || ""}>{result.error || "-"}</td>
+                    <td>{formatDateTime(result.tested_at)}</td>
+                  </tr>
+                );
+              })}
+              {!loading && results.length === 0 && (
+                <tr><td colSpan={6} className="plus-empty-row">暂无探测结果</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function WorkflowFact({ label, value }: { label: string; value: string }) {
+  return <div><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function RunMetric({ label, value, tone = "" }: { label: string; value?: number; tone?: string }) {
+  return <div className={`plus-run-metric ${tone}`}><span>{label}</span><strong>{value ?? 0}</strong></div>;
+}
+
+function classificationDisplay(classification: string) {
+  const displays: Record<string, { label: string; tone: string }> = {
+    passed: { label: "测试通过", tone: "success" },
+    rate_limited_but_eligible: { label: "429 可用", tone: "warning" },
+    unauthorized_banned: { label: "401 封禁", tone: "danger" },
+    model_not_supported: { label: "模型不支持", tone: "" },
+    failed: { label: "失败", tone: "danger" },
+  };
+  return displays[classification] || { label: classification || "未知", tone: "" };
+}
+
+function actionDisplay(actionStatus: string) {
+  const displays: Record<string, { label: string; tone: string }> = {
+    promoted: { label: "已晋级", tone: "success" },
+    banned: { label: "已转封禁", tone: "danger" },
+    promotion_failed: { label: "晋级失败", tone: "danger" },
+    ban_move_failed: { label: "转封禁失败", tone: "danger" },
+    not_moved: { label: "未移动", tone: "" },
+  };
+  return displays[actionStatus] || { label: actionStatus || "-", tone: "" };
+}

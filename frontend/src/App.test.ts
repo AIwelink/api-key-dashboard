@@ -20,7 +20,7 @@ describe("app navigation", () => {
 
     expect(groups.every((group) => group.length > 0)).toBe(true);
     expect(groups.map((group) => group.map(([key]) => key))).toEqual([
-      ["api-pools"],
+      ["api-pools", "plus-self-produced"],
       ["traffic-analysis", "operations-management"],
       ["event-records", "alert-center", "pool-lifecycle", "client-sites", "traffic-analysis-config"],
       ["agent-analysis", "agent-workbench", "api-tokens", "presence", "users", "logs"],
@@ -35,7 +35,7 @@ describe("app navigation", () => {
 
     expect(groups.every((group) => group.length > 0)).toBe(true);
     expect(groups.map((group) => group.map(([key]) => key))).toEqual([
-      ["api-pools"],
+      ["api-pools", "plus-self-produced"],
       ["traffic-analysis", "operations-management"],
       ["event-records", "alert-center", "pool-lifecycle", "client-sites", "traffic-analysis-config"],
       ["agent-analysis", "agent-workbench", "api-tokens", "users", "logs"],
@@ -62,6 +62,7 @@ describe("app navigation", () => {
     expect(viewFromPath("/traffic-analysis")).toBe("traffic-analysis");
     expect(viewFromPath("/traffic-analysis-config")).toBe("traffic-analysis-config");
     expect(viewFromPath("/operations-management")).toBe("operations-management");
+    expect(viewFromPath("/plus-self-produced")).toBe("plus-self-produced");
     expect(viewFromPath("/")).toBe("api-pools");
     expect(viewFromPath("/unknown-page")).toBe("api-pools");
   });
