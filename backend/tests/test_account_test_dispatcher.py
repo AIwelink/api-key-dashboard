@@ -67,13 +67,13 @@ class SchedulingHandlerTests(unittest.IsolatedAsyncioTestCase):
         update = db.sub2api_accounts_cache.update_one.await_args.args[1]["$set"]
         self.assertEqual(update, {"schedulable": True, "account.schedulable": True})
 
-    async def test_confirmed_account_failures_disable_scheduling(self) -> None:
+    async def test_confirmed_account_failures_do_not_auto_disable_while_disabled(self) -> None:
         for outcome in ("unauthorized", "payment_required", "inactive_owner"):
             with self.subTest(outcome=outcome):
                 db = _db({"schedulable": True})
                 client = SimpleNamespace(set_account_schedulable=AsyncMock(return_value={}))
                 await handle_scheduling(db, _event(outcome), site={}, client=client)
-                client.set_account_schedulable.assert_awaited_once_with(4072, False)
+                client.set_account_schedulable.assert_not_awaited()
 
     async def test_rate_limit_and_unconfirmed_failures_do_not_change_scheduling(self) -> None:
         for outcome in (
@@ -90,13 +90,13 @@ class SchedulingHandlerTests(unittest.IsolatedAsyncioTestCase):
                 client.set_account_schedulable.assert_not_awaited()
 
     async def test_stale_event_cannot_override_newer_scheduling_judgment(self) -> None:
-        db = _db({"schedulable": True})
+        db = _db({"schedulable": False})
         db.sub2api_account_test_states.find_one.return_value = {
             "last_event_id": "newer-event"
         }
         client = SimpleNamespace(set_account_schedulable=AsyncMock())
 
-        await handle_scheduling(db, _event("unauthorized"), site={}, client=client)
+        await handle_scheduling(db, _event("passed"), site={}, client=client)
 
         client.set_account_schedulable.assert_not_awaited()
 
@@ -104,7 +104,11 @@ class SchedulingHandlerTests(unittest.IsolatedAsyncioTestCase):
         db = _db(None)
         client = SimpleNamespace(set_account_schedulable=AsyncMock())
 
-        await handle_scheduling(db, _event("unauthorized"), site={}, client=client)
+        with patch(
+            "app.modules.sub2api.account_test_dispatcher.AUTO_DISABLE_CONFIRMED_FAILURES",
+            True,
+        ):
+            await handle_scheduling(db, _event("unauthorized"), site={}, client=client)
 
         client.set_account_schedulable.assert_not_awaited()
 

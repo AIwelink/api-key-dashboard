@@ -77,17 +77,19 @@ const hiddenNavItems = new Set<ViewName>([
   "reserve-pool",
 ]);
 
-export function canAccessTrafficAnalysisConfig(role?: UserRole) {
+export function canAccessTrafficAnalysis(role?: UserRole) {
   return role === "owner" || role === "admin";
 }
+
+export const canAccessTrafficAnalysisConfig = canAccessTrafficAnalysis;
 
 export function getVisibleNavigationGroups(role?: UserRole): Array<Array<[ViewName, string]>> {
   return [
     navItems,
     accountNavItems,
     poolNavItems,
-    operationsManagementNavItems,
-    poolOperationsNavItems.filter(([key]) => key !== "traffic-analysis-config" || canAccessTrafficAnalysisConfig(role)),
+    operationsManagementNavItems.filter(([key]) => key !== "traffic-analysis" || canAccessTrafficAnalysis(role)),
+    poolOperationsNavItems.filter(([key]) => key !== "traffic-analysis-config" || canAccessTrafficAnalysis(role)),
     adminNavItems.filter(([key]) => key !== "presence" || role === "owner"),
   ]
     .map((group) => group.filter(([key]) => !hiddenNavItems.has(key)))
@@ -220,8 +222,8 @@ function App() {
 
   useEffect(() => {
     const presenceDenied = view === "presence" && user?.role !== "owner";
-    const growthConfigDenied = view === "traffic-analysis-config" && !canAccessTrafficAnalysisConfig(user?.role);
-    if (token && user && (presenceDenied || growthConfigDenied)) {
+    const growthDenied = (view === "traffic-analysis" || view === "traffic-analysis-config") && !canAccessTrafficAnalysis(user?.role);
+    if (token && user && (presenceDenied || growthDenied)) {
       navigateToView(defaultViewForLayout());
     }
   }, [token, user, view]);
@@ -308,13 +310,15 @@ function App() {
             {view === "reserve-pool" && <ReservePoolPage token={token} showToast={showToast} />}
             {view === "api-pools" && <ApiPoolStatusPage token={token} showToast={showToast} />}
             {view === "plus-self-produced" && <PlusSelfProducedPage token={token} showToast={showToast} />}
-            {view === "traffic-analysis" && <TrafficAnalysisPage />}
+            {view === "traffic-analysis" && canAccessTrafficAnalysis(user?.role) && (
+              <TrafficAnalysisPage token={token} showToast={showToast} />
+            )}
             {view === "operations-management" && <OperationsManagementPage />}
             {view === "event-records" && <EventRecordsPage token={token} showToast={showToast} />}
             {view === "alert-center" && <AlertCenterPage token={token} showToast={showToast} />}
             {view === "pool-lifecycle" && <AccountPoolsPage token={token} showToast={showToast} />}
             {view === "client-sites" && <ClientSitesPage token={token} showToast={showToast} />}
-            {view === "traffic-analysis-config" && canAccessTrafficAnalysisConfig(user?.role) && (
+            {view === "traffic-analysis-config" && canAccessTrafficAnalysis(user?.role) && (
               <TrafficAnalysisConfigPage token={token} showToast={showToast} />
             )}
             {view === "agent-analysis" && <AgentAnalysisPage token={token} showToast={showToast} />}

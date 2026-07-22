@@ -22,6 +22,7 @@ logger = logging.getLogger("app.sub2api_account_test_dispatcher")
 HANDLER_RETRY_DELAY = timedelta(minutes=5)
 HANDLER_PROCESSING_TIMEOUT = timedelta(minutes=10)
 MAX_HANDLER_ERROR_LENGTH = 1_000
+AUTO_DISABLE_CONFIRMED_FAILURES = False
 
 Handler = Callable[[AsyncIOMotorDatabase, dict[str, Any]], Awaitable[None]]
 
@@ -39,7 +40,7 @@ async def handle_scheduling(
     desired: bool | None = None
     if outcome == "passed":
         desired = True
-    elif disable_reason(outcome) is not None:
+    elif AUTO_DISABLE_CONFIRMED_FAILURES and disable_reason(outcome) is not None:
         desired = False
     if desired is None:
         return

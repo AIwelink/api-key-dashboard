@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   GrowthDatabaseConfigForm,
   type GrowthDatabaseSettings,
+  type GrowthSchemaStatus,
 } from "./TrafficAnalysisConfigPage";
 
 
@@ -32,6 +33,23 @@ const callbacks = {
   onSqlDsnChange: () => undefined,
   onSave: () => undefined,
   onTest: () => undefined,
+  onInitialize: () => undefined,
+};
+
+const uninitializedSchema: GrowthSchemaStatus = {
+  initialized: false,
+  current_version: null,
+  latest_version: "0001_initial",
+  pending_versions: ["0001_initial"],
+  domain_table_count: 0,
+};
+
+const initializedSchema: GrowthSchemaStatus = {
+  initialized: true,
+  current_version: "0001_initial",
+  latest_version: "0001_initial",
+  pending_versions: [],
+  domain_table_count: 12,
 };
 
 describe("growth database config form", () => {
@@ -43,6 +61,8 @@ describe("growth database config form", () => {
         loading={false}
         saving={false}
         testing={false}
+        initializing={false}
+        schemaStatus={null}
         {...callbacks}
       />,
     );
@@ -61,6 +81,8 @@ describe("growth database config form", () => {
         loading={false}
         saving={false}
         testing={false}
+        initializing={false}
+        schemaStatus={initializedSchema}
         {...callbacks}
       />,
     );
@@ -68,5 +90,45 @@ describe("growth database config form", () => {
     expect(html).toContain("growth.internal:5432/aiwelink_growth");
     expect(html).toContain("PostgreSQL 17.5");
     expect(html).not.toContain("topsecret");
+  });
+
+  it("offers initialization when the configured database has no growth schema", () => {
+    const html = renderToStaticMarkup(
+      <GrowthDatabaseConfigForm
+        settings={configured}
+        schemaStatus={uninitializedSchema}
+        sqlDsn=""
+        loading={false}
+        saving={false}
+        testing={false}
+        initializing={false}
+        {...callbacks}
+      />,
+    );
+
+    expect(html).toContain("数据库结构");
+    expect(html).toContain("未初始化");
+    expect(html).toContain("初始化数据库");
+    expect(html).toContain("0001_initial");
+  });
+
+  it("shows the current schema version and table count after initialization", () => {
+    const html = renderToStaticMarkup(
+      <GrowthDatabaseConfigForm
+        settings={configured}
+        schemaStatus={initializedSchema}
+        sqlDsn=""
+        loading={false}
+        saving={false}
+        testing={false}
+        initializing={false}
+        {...callbacks}
+      />,
+    );
+
+    expect(html).toContain("结构已就绪");
+    expect(html).toContain("0001_initial");
+    expect(html).toContain("12 张业务表");
+    expect(html).not.toContain(">初始化数据库<");
   });
 });

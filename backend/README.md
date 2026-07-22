@@ -89,6 +89,25 @@ app/modules/agent/       Agent 运维能力
 
 具体 method 和 payload 以 router、Pydantic schema 和自动生成的 OpenAPI 为准。开发环境启动后可查看 `/docs`。
 
+## Growth PostgreSQL
+
+Growth PostgreSQL 的 DSN 在管理面板“客户站点 > 访问流量分析配置”中保存，只有 `owner/admin` 可以查看和操作。保存配置只会更新管理配置，不会自动修改 Growth 数据库。
+
+需要建库时，可以在页面中显式点击初始化，也可以在 `backend` 目录执行：
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.init_growth_database
+```
+
+初始化会创建 `growth.schema_migrations` 和 12 张业务表；迁移可幂等执行，重复初始化不会重复创建已存在的结构。
+
+Growth API 基础路径：
+
+```text
+/api/settings/growth-database
+/api/growth
+```
+
 ## sub2api 缓存
 
 核心集合：

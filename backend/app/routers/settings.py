@@ -14,7 +14,10 @@ from app.modules.agent.settings import (
 )
 from app.modules.system.audit import write_audit_log
 from app.modules.system.growth_database_settings import (
+    GrowthDatabaseOperationError,
     get_growth_database_settings,
+    get_growth_schema_status,
+    initialize_growth_database,
     run_growth_database_test,
     update_growth_database_settings,
 )
@@ -82,6 +85,42 @@ async def post_growth_database_test(
             "error": result.get("error"),
             "tested_at": result.get("tested_at"),
         },
+    )
+    return result
+
+
+@router.get("/growth-database/schema")
+async def get_growth_database_schema(
+    actor: dict = Depends(require_roles("owner", "admin")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    del actor
+    try:
+        return await get_growth_schema_status(db)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except GrowthDatabaseOperationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@router.post("/growth-database/initialize")
+async def post_growth_database_initialize(
+    actor: dict = Depends(require_roles("owner", "admin")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    try:
+        result = await initialize_growth_database(db, actor=actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except GrowthDatabaseOperationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="settings.growth_database.initialize",
+        resource_type="setting",
+        resource_id="growth_database",
+        after=result,
     )
     return result
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getVisibleNavigationGroups, viewFromPath } from "./App";
+import { canAccessTrafficAnalysis, getVisibleNavigationGroups, viewFromPath } from "./App";
 
 describe("app navigation", () => {
   const hiddenViews = [
@@ -44,9 +44,16 @@ describe("app navigation", () => {
     hiddenViews.forEach((view) => expect(visibleKeys).not.toContain(view));
   });
 
-  it("hides growth database configuration from maintainers and viewers", () => {
+  it("allows only owners and admins to access growth operations", () => {
+    expect(canAccessTrafficAnalysis("owner")).toBe(true);
+    expect(canAccessTrafficAnalysis("admin")).toBe(true);
+    expect(canAccessTrafficAnalysis("maintainer")).toBe(false);
+    expect(canAccessTrafficAnalysis("viewer")).toBe(false);
+
     expect(visibleGroups("maintainer").flat()).not.toContain("traffic-analysis-config");
+    expect(visibleGroups("maintainer").flat()).not.toContain("traffic-analysis");
     expect(visibleGroups("viewer").flat()).not.toContain("traffic-analysis-config");
+    expect(visibleGroups("viewer").flat()).not.toContain("traffic-analysis");
   });
 
   it("keeps hidden account workflow pages directly addressable", () => {

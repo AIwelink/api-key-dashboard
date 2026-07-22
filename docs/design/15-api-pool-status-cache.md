@@ -139,7 +139,7 @@ fetched_at
 - `account_test_scheduler_loop` 覆盖所有启用 Sub2API 站点中仍存在于账号缓存的全部账号，包括 `schedulable=false`；每个账号每 24 小时测试一次，未测试账号优先。
 - 所有站点共用 MongoDB 租约，全局严格串行调用 `/accounts/{id}/test`。请求固定为 `gpt-5.4`、空 prompt、`default` 模式。
 - 每次结果先写入 `sub2api_account_test_events` 和 `sub2api_account_test_states`，之后才调用内部 dispatcher。判断程序只读取已保存事件，不得再次请求远端测试接口。
-- `passed` 会重新开启关闭的调度；401、402 和确认账号失效的 403 会关闭调度；429、普通 403、模型不支持和传输错误不改变调度。
+- `passed` 会重新开启关闭的调度。自动禁用开关当前关闭：401、402 和确认账号失效的 403 仍保存标准结果，但暂不调用 `schedulable=false`；429、普通 403、模型不支持和传输错误同样不改变调度。
 - handler 状态保存在事件中，支持 `pending` / `processing` / `completed` / `failed` 幂等重放。机器人通知不属于该 dispatcher。
 - 管理 API Key 认证失败是站点级故障，只写 `sub2api_account_test_site_meta` 退避，不得生成账号 401 事件。
 - 旧 `long_7d_probe_scheduler_loop` 不再随应用启动，但旧模块和历史集合保留。US06-5002 自产 Plus 测试、改名和转组流程继续独立运行，不复用本次类型或调度 handler。

@@ -5,13 +5,19 @@ from typing import Any, Callable
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.modules.growth.database import create_growth_engine
+from app.modules.growth.migrations import inspect_growth_database, run_growth_migrations
 from app.modules.system.client_site_database import probe_sql_database_connection
-from app.modules.system.sql_dsn import parse_sql_dsn
+from app.modules.system.sql_dsn import parse_sql_dsn, redact_sql_error
 from app.utils import now_utc
 
 
 SETTINGS_ID = "growth_database"
 DATABASE_TYPE = "postgresql"
+
+
+class GrowthDatabaseOperationError(RuntimeError):
+    pass
 
 
 def _default_private_settings() -> dict[str, Any]:
@@ -108,6 +114,56 @@ async def run_growth_database_test(
         upsert=True,
     )
     return {**result, "settings": _public_settings({**current, **updates})}
+
+
+async def get_growth_schema_status(
+    db: AsyncIOMotorDatabase,
+    *,
+    engine_factory: Callable[..., Any] = create_async_engine,
+) -> dict[str, Any]:
+    current = await get_growth_database_settings_private(db)
+    sql_dsn = str(current.get("sql_dsn") or "").strip()
+    if not sql_dsn:
+        raise ValueError("PostgreSQL SQL_DSN is not configured")
+    engine = create_growth_engine(sql_dsn, engine_factory=engine_factory)
+    try:
+        return await inspect_growth_database(engine)
+    except Exception as exc:  # noqa: BLE001 - normalize and redact infrastructure failures.
+        raise GrowthDatabaseOperationError(redact_sql_error(exc, sql_dsn, DATABASE_TYPE)) from exc
+    finally:
+        await engine.dispose()
+
+
+async def initialize_growth_database(
+    db: AsyncIOMotorDatabase,
+    *,
+    actor: dict[str, Any],
+    engine_factory: Callable[..., Any] = create_async_engine,
+) -> dict[str, Any]:
+    current = await get_growth_database_settings_private(db)
+    sql_dsn = str(current.get("sql_dsn") or "").strip()
+    if not sql_dsn:
+        raise ValueError("PostgreSQL SQL_DSN is not configured")
+    engine = create_growth_engine(sql_dsn, engine_factory=engine_factory)
+    try:
+        result = await run_growth_migrations(engine)
+    except Exception as exc:  # noqa: BLE001 - normalize and redact infrastructure failures.
+        raise GrowthDatabaseOperationError(redact_sql_error(exc, sql_dsn, DATABASE_TYPE)) from exc
+    finally:
+        await engine.dispose()
+
+    await db.app_settings.update_one(
+        {"_id": SETTINGS_ID},
+        {
+            "$set": {
+                "last_schema_version": result.get("current_version"),
+                "last_schema_initialized_at": now_utc(),
+                "last_schema_initialized_by": _actor_id(actor),
+            }
+        },
+        upsert=True,
+    )
+    return result
 
 
 def _actor_id(actor: dict[str, Any]) -> str:
