@@ -631,7 +631,7 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
           <button type="button" onClick={onRetry}>重新加载</button>
         </div>
       ) : activeTab === "links" ? (
-        <div className="growth-links-layout">
+        <div className="growth-stacked-flow">
           <form className="panel growth-editor" onSubmit={(event) => submit(event, onCreateLink)}>
             <div className="growth-section-head">
               <div><strong>新建推广链接</strong><span>先选择承接访问的站点，再补充来源信息</span></div>
@@ -797,40 +797,37 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
         </div>
       ) : activeTab === "sources" ? (
         <div className="panel growth-sources-panel">
-          <div className="growth-source-editors">
-            <form onSubmit={(event) => submit(event, onCreateChannel)}>
-              <div className="growth-section-head"><div><strong>新建渠道</strong><span>管理来源平台或合作入口</span></div></div>
-              <div className="growth-form-grid compact">
-                <label><span className="field-label"><strong>渠道编码</strong></span><input value={channelForm.code} onChange={(event) => onChannelFormChange({ ...channelForm, code: event.target.value })} placeholder="xiaohongshu" required /></label>
-                <label><span className="field-label"><strong>渠道名称</strong></span><input value={channelForm.name} onChange={(event) => onChannelFormChange({ ...channelForm, name: event.target.value })} placeholder="小红书" required /></label>
-                <label className="span-2"><span className="field-label"><strong>说明</strong><span>（可选）</span></span><input value={channelForm.description} onChange={(event) => onChannelFormChange({ ...channelForm, description: event.target.value })} /></label>
-              </div>
-              <button type="submit" disabled={saving || !channelForm.code.trim() || !channelForm.name.trim()}>{saving ? "保存中..." : "创建渠道"}</button>
-            </form>
+          <form className="growth-source-stage" data-growth-section="channel-form" onSubmit={(event) => submit(event, onCreateChannel)}>
+            <div className="growth-section-head"><div><strong>新建渠道</strong><span>管理来源平台或合作入口</span></div></div>
+            <div className="growth-form-grid compact">
+              <label><span className="field-label"><strong>渠道编码</strong></span><input value={channelForm.code} onChange={(event) => onChannelFormChange({ ...channelForm, code: event.target.value })} placeholder="xiaohongshu" required /></label>
+              <label><span className="field-label"><strong>渠道名称</strong></span><input value={channelForm.name} onChange={(event) => onChannelFormChange({ ...channelForm, name: event.target.value })} placeholder="小红书" required /></label>
+              <label className="span-2"><span className="field-label"><strong>说明</strong><span>（可选）</span></span><input value={channelForm.description} onChange={(event) => onChannelFormChange({ ...channelForm, description: event.target.value })} /></label>
+            </div>
+            <button type="submit" disabled={saving || !channelForm.code.trim() || !channelForm.name.trim()}>{saving ? "保存中..." : "创建渠道"}</button>
+          </form>
 
-            <form onSubmit={(event) => submit(event, onCreateCampaign)}>
-              <div className="growth-section-head"><div><strong>新建活动</strong><span>活动归属于具体站点与渠道</span></div></div>
-              <div className="growth-form-grid compact">
-                <SiteSelect sites={sites} value={campaignForm.site_id} disabled={saving} onChange={(siteId) => onCampaignFormChange({ ...campaignForm, site_id: siteId })} />
-                <label><span className="field-label"><strong>渠道</strong></span><select value={campaignForm.channel_id} onChange={(event) => onCampaignFormChange({ ...campaignForm, channel_id: event.target.value })} required><option value="">选择渠道</option>{channels.map((channel) => <option value={channel.channel_id} key={channel.channel_id}>{channel.name}</option>)}</select></label>
-                <label><span className="field-label"><strong>活动编码</strong></span><input value={campaignForm.code} onChange={(event) => onCampaignFormChange({ ...campaignForm, code: event.target.value })} placeholder="summer-2026" required /></label>
-                <label><span className="field-label"><strong>活动名称</strong></span><input value={campaignForm.name} onChange={(event) => onCampaignFormChange({ ...campaignForm, name: event.target.value })} placeholder="2026 夏季推广" required /></label>
-                <label className="span-2"><span className="field-label"><strong>说明</strong><span>（可选）</span></span><input value={campaignForm.description} onChange={(event) => onCampaignFormChange({ ...campaignForm, description: event.target.value })} /></label>
-              </div>
-              <button type="submit" disabled={saving || !campaignForm.site_id || !campaignForm.channel_id || !campaignForm.code.trim() || !campaignForm.name.trim()}>{saving ? "保存中..." : "创建活动"}</button>
-            </form>
-          </div>
+          <section className="growth-source-stage" data-growth-section="channel-list">
+            <div className="growth-list-heading"><strong>渠道列表</strong><span>{channels.length} 个</span></div>
+            {channels.length ? channels.map((channel) => <div className="growth-source-row" key={channel.channel_id}><strong>{channel.name}</strong><code>{channel.code}</code><span>{channel.description || "无说明"}</span></div>) : <div className="growth-workspace-empty">尚未创建渠道</div>}
+          </section>
 
-          <div className="growth-source-lists">
-            <section>
-              <div className="growth-list-heading"><strong>渠道</strong><span>{channels.length} 个</span></div>
-              {channels.length ? channels.map((channel) => <div className="growth-source-row" key={channel.channel_id}><strong>{channel.name}</strong><code>{channel.code}</code><span>{channel.description || "无说明"}</span></div>) : <div className="growth-workspace-empty">尚未创建渠道</div>}
-            </section>
-            <section>
-              <div className="growth-list-heading"><strong>活动</strong><span>{campaigns.length} 个</span></div>
-              {campaigns.length ? campaigns.map((campaign) => <div className="growth-source-row" key={campaign.campaign_id}><strong>{campaign.name}</strong><code>{campaign.code}</code><span>{campaign.site_name || campaign.site_id} · {campaign.channel_name || channels.find((item) => item.channel_id === campaign.channel_id)?.name}</span></div>) : <div className="growth-workspace-empty">尚未创建活动</div>}
-            </section>
-          </div>
+          <form className="growth-source-stage" data-growth-section="campaign-form" onSubmit={(event) => submit(event, onCreateCampaign)}>
+            <div className="growth-section-head"><div><strong>新建活动</strong><span>活动归属于具体站点与渠道</span></div></div>
+            <div className="growth-form-grid compact">
+              <SiteSelect sites={sites} value={campaignForm.site_id} disabled={saving} onChange={(siteId) => onCampaignFormChange({ ...campaignForm, site_id: siteId })} />
+              <label><span className="field-label"><strong>渠道</strong></span><select value={campaignForm.channel_id} onChange={(event) => onCampaignFormChange({ ...campaignForm, channel_id: event.target.value })} required><option value="">选择渠道</option>{channels.map((channel) => <option value={channel.channel_id} key={channel.channel_id}>{channel.name}</option>)}</select></label>
+              <label><span className="field-label"><strong>活动编码</strong></span><input value={campaignForm.code} onChange={(event) => onCampaignFormChange({ ...campaignForm, code: event.target.value })} placeholder="summer-2026" required /></label>
+              <label><span className="field-label"><strong>活动名称</strong></span><input value={campaignForm.name} onChange={(event) => onCampaignFormChange({ ...campaignForm, name: event.target.value })} placeholder="2026 夏季推广" required /></label>
+              <label className="span-2"><span className="field-label"><strong>说明</strong><span>（可选）</span></span><input value={campaignForm.description} onChange={(event) => onCampaignFormChange({ ...campaignForm, description: event.target.value })} /></label>
+            </div>
+            <button type="submit" disabled={saving || !campaignForm.site_id || !campaignForm.channel_id || !campaignForm.code.trim() || !campaignForm.name.trim()}>{saving ? "保存中..." : "创建活动"}</button>
+          </form>
+
+          <section className="growth-source-stage" data-growth-section="campaign-list">
+            <div className="growth-list-heading"><strong>活动列表</strong><span>{campaigns.length} 个</span></div>
+            {campaigns.length ? campaigns.map((campaign) => <div className="growth-source-row" key={campaign.campaign_id}><strong>{campaign.name}</strong><code>{campaign.code}</code><span>{campaign.site_name || campaign.site_id} · {campaign.channel_name || channels.find((item) => item.channel_id === campaign.channel_id)?.name}</span></div>) : <div className="growth-workspace-empty">尚未创建活动</div>}
+          </section>
         </div>
       ) : (
         <form className="panel growth-site-panel" onSubmit={(event) => submit(event, onSaveSite)}>

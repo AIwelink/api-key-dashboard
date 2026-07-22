@@ -115,6 +115,8 @@ describe("traffic analysis configuration workspace", () => {
   it("renders real promotion-link configuration without fake analytics", () => {
     const html = renderWorkspace("links");
 
+    expect(html).toContain('class="growth-stacked-flow"');
+    expect(html).not.toContain("growth-links-layout");
     expect(html).toContain("推广链接");
     expect(html).toContain("渠道与活动");
     expect(html).toContain("站点接入");
@@ -127,7 +129,15 @@ describe("traffic analysis configuration workspace", () => {
 
   it("renders channel and campaign configuration together", () => {
     const html = renderWorkspace("sources");
+    const channelForm = html.indexOf('data-growth-section="channel-form"');
+    const channelList = html.indexOf('data-growth-section="channel-list"');
+    const campaignForm = html.indexOf('data-growth-section="campaign-form"');
+    const campaignList = html.indexOf('data-growth-section="campaign-list"');
 
+    expect(channelForm).toBeGreaterThan(-1);
+    expect(channelList).toBeGreaterThan(channelForm);
+    expect(campaignForm).toBeGreaterThan(channelList);
+    expect(campaignList).toBeGreaterThan(campaignForm);
     expect(html).toContain("新建渠道");
     expect(html).toContain("新建活动");
     expect(html).toContain("小红书");
