@@ -224,7 +224,7 @@ class Sub2ApiQuotaDetectionHookTests(unittest.IsolatedAsyncioTestCase):
             site_id="api-5001",
             accounts=accounts,
             observed_at=observed_at,
-            account_type_for=cache._capacity_account_type,
+            account_type_for=cache._quota_detection_account_type,
         )
 
     async def test_hook_failure_is_best_effort(self) -> None:

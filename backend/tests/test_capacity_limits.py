@@ -323,6 +323,35 @@ class BugTeamCapacityTests(unittest.TestCase):
             with self.subTest(label=label):
                 self.assertEqual(cache._normalize_capacity_account_type(label), "bug_team")
 
+    def test_special_plus_and_team_keep_separate_quota_detection_dimensions(self) -> None:
+        cases = (
+            (
+                {"plan_type": "plus", "extra": {"account_type": "特殊plus"}},
+                "special_plus",
+            ),
+            (
+                {
+                    "plan_type": "team",
+                    "privacy_mode": False,
+                    "name": "special-team-directed",
+                    "extra": {"codex_7d_window_minutes": 43_800},
+                },
+                "special_team",
+            ),
+            (
+                {"plan_type": "plus", "quota_dimension": "customer-a"},
+                "special_plus",
+            ),
+            (
+                {"plan_type": "team", "quota_dimension": "global"},
+                "team",
+            ),
+        )
+
+        for account, expected in cases:
+            with self.subTest(expected=expected, account=account):
+                self.assertEqual(cache._quota_detection_account_type(account), expected)
+
     def test_plus_without_an_independent_five_hour_window_is_not_bug_team(self) -> None:
         account = {
             "id": 1780,

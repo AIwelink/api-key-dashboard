@@ -36,6 +36,7 @@ type SitesResponse = {
 };
 
 type CapacityLimitKey = "free" | "plus" | "team" | "bug_team" | "k12" | "pro";
+type QuotaDetectionAccountType = CapacityLimitKey | "special_plus" | "special_team" | "unknown";
 
 type CapacityLimitForm = Record<CapacityLimitKey, { five_hour_usd: string; seven_day_usd: string }>;
 
@@ -57,7 +58,7 @@ type QuotaDetectionWindow = {
 };
 
 type QuotaDetectionItem = {
-  account_type: CapacityLimitKey | "unknown";
+  account_type: QuotaDetectionAccountType;
   five_hour: QuotaDetectionWindow;
   seven_day: QuotaDetectionWindow;
 };
@@ -164,6 +165,13 @@ const capacityLimitLabels: Record<CapacityLimitKey, string> = {
   bug_team: "bug team",
   k12: "k12",
   pro: "pro 20x",
+};
+
+const quotaDetectionLabels: Record<QuotaDetectionAccountType, string> = {
+  ...capacityLimitLabels,
+  special_plus: "特殊 plus",
+  special_team: "特殊 team",
+  unknown: "unknown",
 };
 
 const defaultCapacityLimitForm: CapacityLimitForm = {
@@ -774,7 +782,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
           </div>
           {(quotaDetection?.items || []).map((item) => (
             <div className="quota-detection-row" key={item.account_type}>
-              <strong>{capacityLimitLabels[item.account_type as CapacityLimitKey] || item.account_type}</strong>
+              <strong>{quotaDetectionLabels[item.account_type] || item.account_type}</strong>
               <QuotaWindowResult label="5h" value={item.five_hour} />
               <QuotaWindowResult label="7d" value={item.seven_day} />
             </div>

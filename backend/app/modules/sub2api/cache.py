@@ -44,6 +44,8 @@ SEVEN_DAY_DYNAMIC_MAX_WAIT_SECONDS = 2 * 24 * 60 * 60
 CONCURRENCY_SAFE_FIVE_HOUR_USAGE_PERCENT = 80
 CONCURRENCY_SAFE_SEVEN_DAY_USAGE_PERCENT = 80
 BUG_TEAM_MIN_WINDOW_MINUTES = 28 * 24 * 60
+STANDARD_QUOTA_DIMENSIONS = {"", "global", "default"}
+SPECIAL_QUOTA_MARKERS = ("special", "directed", "dedicated", "exclusive", "特殊", "定向", "专用")
 CAPACITY_ACCOUNT_LIMITS = DEFAULT_CAPACITY_ACCOUNT_LIMITS
 REFILL_ACCOUNT_TYPES_BY_POOL = {
     "plus": ("plus", "k12"),
@@ -796,7 +798,7 @@ async def _observe_quota_limits_after_usage_refresh(
             site_id=site_id,
             accounts=accounts,
             observed_at=observed_at,
-            account_type_for=_capacity_account_type,
+            account_type_for=_quota_detection_account_type,
         )
     except Exception as exc:  # noqa: BLE001 - quota sampling must not fail the pool refresh.
         logger.warning(
@@ -1769,6 +1771,62 @@ def _capacity_account_type(account: dict[str, Any]) -> str:
     if str(account.get("platform") or "").lower() == "openai":
         return "free"
     return "other"
+
+
+def _quota_detection_account_type(account: dict[str, Any]) -> str:
+    credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
+    extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+    explicit_values = (
+        account.get("account_type"),
+        credentials.get("account_type"),
+        extra.get("account_type"),
+    )
+    plan_type = _normalize_capacity_account_type(
+        account.get("plan_type") or credentials.get("plan_type") or extra.get("plan_type")
+    )
+    text_values = [
+        *explicit_values,
+        account.get("name"),
+        account.get("notes"),
+        extra.get("name"),
+        extra.get("notes"),
+    ]
+    groups = account.get("groups") if isinstance(account.get("groups"), list) else []
+    text_values.extend(group.get("name") for group in groups if isinstance(group, dict))
+    account_groups = account.get("account_groups") if isinstance(account.get("account_groups"), list) else []
+    text_values.extend(
+        item["group"].get("name")
+        for item in account_groups
+        if isinstance(item, dict) and isinstance(item.get("group"), dict)
+    )
+
+    special_type = _special_quota_type_from_values(text_values)
+    if special_type is not None:
+        return special_type
+
+    quota_dimension = str(account.get("quota_dimension") or extra.get("quota_dimension") or "").strip().lower()
+    has_special_marker = any(
+        marker in str(value or "").strip().lower()
+        for value in text_values
+        for marker in SPECIAL_QUOTA_MARKERS
+    )
+    if plan_type in {"plus", "team"} and (
+        quota_dimension not in STANDARD_QUOTA_DIMENSIONS or has_special_marker
+    ):
+        return f"special_{plan_type}"
+    return _capacity_account_type(account)
+
+
+def _special_quota_type_from_values(values: Any) -> str | None:
+    for value in values:
+        normalized = str(value or "").strip().lower()
+        if not normalized or not any(marker in normalized for marker in SPECIAL_QUOTA_MARKERS):
+            continue
+        if "plus" in normalized:
+            return "special_plus"
+        if "team" in normalized or "团队" in normalized:
+            return "special_team"
+    return None
 
 
 def is_bug_team_account(account: dict[str, Any]) -> bool:

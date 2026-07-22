@@ -27,8 +27,14 @@ WINDOW_FIELDS = {
 MAX_SOURCE_AGE = timedelta(minutes=5)
 RESET_JITTER = timedelta(minutes=2)
 MAX_WINDOW_MINUTES = 31 * 24 * 60
-ACCOUNT_TYPES = {"free", "plus", "team", "bug_team", "k12", "pro", "unknown"}
-KNOWN_ACCOUNT_TYPES = ("free", "plus", "team", "bug_team", "k12", "pro")
+ACCOUNT_TYPES = {"free", "plus", "special_plus", "team", "special_team", "bug_team", "k12", "pro", "unknown"}
+KNOWN_ACCOUNT_TYPES = ("free", "plus", "special_plus", "team", "special_team", "bug_team", "k12", "pro")
+ACCOUNT_TYPE_RECLASSIFICATIONS = {
+    ("team", "bug_team"),
+    ("plus", "special_plus"),
+    ("team", "special_team"),
+    ("bug_team", "special_team"),
+}
 STATE_RETENTION = timedelta(days=30)
 SAMPLE_RETENTION = timedelta(days=90)
 RECENT_SAMPLE_LIMIT = 100
@@ -156,7 +162,7 @@ def evaluate_transition(
 
     previous_account_type = state.get("account_type")
     observed_account_type = observation.get("account_type")
-    if previous_account_type == "team" and observed_account_type == "bug_team":
+    if (previous_account_type, observed_account_type) in ACCOUNT_TYPE_RECLASSIFICATIONS:
         return {
             "action": "baseline",
             "reason": "account_type_reclassified",

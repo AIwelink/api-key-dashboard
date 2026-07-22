@@ -317,6 +317,19 @@ class QuotaObservationTests(unittest.TestCase):
         self.assertEqual(observation["usage_synced_at"], NOW - timedelta(minutes=1))
         self.assertEqual(observation["observed_at"], NOW)
 
+    def test_accepts_special_plus_and_team_account_types(self) -> None:
+        for account_type in ("special_plus", "special_team"):
+            with self.subTest(account_type=account_type):
+                observation = quota_detection.build_window_observation(
+                    account_snapshot(),
+                    window_type="five_hour",
+                    account_type=account_type,
+                    observed_at=NOW,
+                )
+
+                self.assertEqual(observation["quality"], "valid")
+                self.assertEqual(observation["account_type"], account_type)
+
     def test_rejects_missing_and_non_active_reset_windows(self) -> None:
         cases = (
             (account_snapshot(codex_5h_reset_at=None), "missing_window"),
@@ -767,6 +780,29 @@ class QuotaTransitionTests(unittest.TestCase):
         self.assertEqual(decision["reason"], "account_type_reclassified")
         self.assertEqual(decision["state"]["account_type"], "bug_team")
         self.assertEqual(decision["state"]["last_under_limit_cost_usd"], 30)
+
+    def test_standard_to_special_reclassification_starts_clean_baseline(self) -> None:
+        for previous_type, special_type in (
+            ("plus", "special_plus"),
+            ("team", "special_team"),
+            ("bug_team", "special_team"),
+        ):
+            with self.subTest(previous_type=previous_type, special_type=special_type):
+                previous = quota_detection.state_from_observation(
+                    valid_observation(percent=94, cost=107.2, account_type=previous_type)
+                )
+                observation = valid_observation(
+                    percent=25,
+                    cost=30,
+                    account_type=special_type,
+                    observed_at=NOW + timedelta(minutes=1),
+                )
+
+                decision = quota_detection.evaluate_transition(previous, observation)
+
+                self.assertEqual(decision["action"], "baseline")
+                self.assertEqual(decision["reason"], "account_type_reclassified")
+                self.assertEqual(decision["state"]["account_type"], special_type)
 
     def test_window_first_seen_full_never_becomes_sample_eligible(self) -> None:
         first = quota_detection.evaluate_transition(
@@ -1896,6 +1932,15 @@ class QuotaDetectionSummaryTests(unittest.IsolatedAsyncioTestCase):
                     "generation_started_at": NOW,
                     "last_evaluated_at": NOW + timedelta(minutes=1),
                 },
+                "api-5001:special_plus:five_hour": {
+                    "_id": "api-5001:special_plus:five_hour",
+                    "site_id": "api-5001",
+                    "account_type": "special_plus",
+                    "window_type": "five_hour",
+                    "current_generation": 1,
+                    "generation_started_at": NOW,
+                    "last_evaluated_at": NOW + timedelta(minutes=3),
+                },
             }
         )
         db.sub2api_quota_limit_daily_rollups.documents.update(
@@ -1918,12 +1963,21 @@ class QuotaDetectionSummaryTests(unittest.IsolatedAsyncioTestCase):
                     "sample_count": 50, "sample_sum_usd": 5000.0,
                     "sample_min_usd": 90.0, "sample_max_usd": 110.0,
                 },
+                "special": {
+                    "_id": "special", "site_id": "api-5001", "account_type": "special_plus",
+                    "window_type": "five_hour", "generation": 1,
+                    "sample_count": 2, "sample_sum_usd": 360.0,
+                    "sample_min_usd": 175.0, "sample_max_usd": 185.0,
+                },
             }
         )
 
         result = await quota_detection.get_quota_detection_summary(db, "api-5001")
 
-        self.assertEqual([item["account_type"] for item in result["items"][:6]], ["free", "plus", "team", "bug_team", "k12", "pro"])
+        self.assertEqual(
+            [item["account_type"] for item in result["items"][:8]],
+            ["free", "plus", "special_plus", "team", "special_team", "bug_team", "k12", "pro"],
+        )
         plus = result["items"][1]
         self.assertEqual(plus["five_hour"]["sample_count"], 3)
         self.assertEqual(plus["five_hour"]["average_usd"], 110.0)
@@ -1931,7 +1985,10 @@ class QuotaDetectionSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plus["five_hour"]["maximum_usd"], 120.0)
         self.assertEqual(plus["five_hour"]["generation"], 2)
         self.assertEqual(plus["seven_day"]["sample_count"], 0)
-        self.assertEqual(result["last_evaluated_at"], NOW + timedelta(minutes=2))
+        special_plus = result["items"][2]
+        self.assertEqual(special_plus["five_hour"]["sample_count"], 2)
+        self.assertEqual(special_plus["five_hour"]["average_usd"], 180.0)
+        self.assertEqual(result["last_evaluated_at"], NOW + timedelta(minutes=3))
 
 
 if __name__ == "__main__":
