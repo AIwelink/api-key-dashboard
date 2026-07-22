@@ -885,7 +885,8 @@ async def update_cached_account_runtime_fields(
 def _copy_cached_plan_type(account: dict[str, Any], cached: dict[str, Any]) -> None:
     extra = dict(account.get("extra") if isinstance(account.get("extra"), dict) else {})
     source = str(account.get("codex_plan_type_source") or extra.get("codex_plan_type_source") or "")
-    if source not in {"fallback_k12", "name_prefix"}:
+    weak_sources = {"fallback_k12", "name_prefix", "plus_bundle_signature"}
+    if source not in weak_sources:
         return
 
     cached_credentials = cached.get("credentials") if isinstance(cached.get("credentials"), dict) else {}
@@ -898,7 +899,9 @@ def _copy_cached_plan_type(account: dict[str, Any], cached: dict[str, Any]) -> N
         return
 
     cached_source = str(cached.get("codex_plan_type_source") or cached_extra.get("codex_plan_type_source") or "")
-    if source == "name_prefix" and cached_source in {"fallback_k12", "name_prefix"}:
+    if source != "fallback_k12" and (
+        _normalize_capacity_account_type(cached_plan_type) == "free" or cached_source in weak_sources
+    ):
         return
     resolved_source = "fallback_k12" if cached_source == "fallback_k12" else "cached"
     account["plan_type"] = cached_plan_type
@@ -2712,7 +2715,13 @@ def _normalize_account_snapshot(account: dict[str, Any]) -> dict[str, Any]:
             normalized[field] = value
 
     plan_type = str(_first_present(normalized, credentials, extra, "plan_type") or "").strip()
-    if plan_type:
+    plus_bundle_plan_type = _plan_type_from_plus_bundle_signature(normalized, plan_type)
+    if plus_bundle_plan_type:
+        normalized["plan_type"] = plus_bundle_plan_type
+        normalized["codex_plan_type_source"] = "plus_bundle_signature"
+        extra["plan_type"] = plus_bundle_plan_type
+        extra["codex_plan_type_source"] = "plus_bundle_signature"
+    elif plan_type:
         normalized["plan_type"] = plan_type
     elif inferred_plan_type := _plan_type_from_standard_name(normalized.get("name")):
         normalized["plan_type"] = inferred_plan_type
@@ -2847,6 +2856,31 @@ def _normalize_account_snapshot(account: dict[str, Any]) -> dict[str, Any]:
 def _plan_type_from_standard_name(value: Any) -> str | None:
     name = str(value or "").strip().lower()
     if re.match(r"^plus(?:\s|[+_-])", name):
+        return "plus"
+    return None
+
+
+def _plan_type_from_plus_bundle_signature(account: dict[str, Any], remote_plan_type: Any) -> str | None:
+    if _normalize_capacity_account_type(remote_plan_type) != "free":
+        return None
+    extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+    if str(extra.get("source") or "").strip().lower() != "sub_bundle_input":
+        return None
+    five_hour_window = _usage_number(account, "codex_5h_window_minutes")
+    seven_day_window = _usage_number(account, "codex_7d_window_minutes")
+    if five_hour_window != 0 or seven_day_window != SEVEN_DAY_WINDOW_SECONDS // 60:
+        return None
+
+    group_names: list[str] = []
+    groups = account.get("groups") if isinstance(account.get("groups"), list) else []
+    group_names.extend(str(group.get("name") or "") for group in groups if isinstance(group, dict))
+    account_groups = account.get("account_groups") if isinstance(account.get("account_groups"), list) else []
+    group_names.extend(
+        str(item["group"].get("name") or "")
+        for item in account_groups
+        if isinstance(item, dict) and isinstance(item.get("group"), dict)
+    )
+    if any(re.search(r"(^|[^a-z0-9])plus([^a-z0-9]|$)", name, re.I) for name in group_names):
         return "plus"
     return None
 

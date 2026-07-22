@@ -118,6 +118,84 @@ class BugTeamCapacityTests(unittest.TestCase):
         self.assertEqual(account["plan_type"], "plus")
         self.assertEqual(account["codex_plan_type_source"], "name_prefix")
 
+    def test_sub_bundle_free_in_plus_pool_with_paid_window_is_treated_as_plus(self) -> None:
+        account = cache._normalize_account_snapshot(
+            {
+                "id": 4072,
+                "name": "jamisonlofaso480829@outlook.com",
+                "credentials": {
+                    "email": "jamisonlofaso480829@outlook.com",
+                    "plan_type": "free",
+                },
+                "extra": {
+                    "source": "sub_bundle_input",
+                    "codex_5h_window_minutes": 0,
+                    "codex_7d_window_minutes": 10_080,
+                },
+                "groups": [{"id": 3, "name": "plus 账号池 01"}],
+            }
+        )
+
+        self.assertEqual(account["plan_type"], "plus")
+        self.assertEqual(account["codex_plan_type_source"], "plus_bundle_signature")
+        self.assertEqual(cache._capacity_account_type(account), "plus")
+
+    def test_sub_bundle_free_requires_plus_group_and_paid_window_signature(self) -> None:
+        base = {
+            "id": 4073,
+            "name": "person@example.com",
+            "credentials": {"email": "person@example.com", "plan_type": "free"},
+            "extra": {
+                "source": "sub_bundle_input",
+                "codex_5h_window_minutes": 0,
+                "codex_7d_window_minutes": 10_080,
+            },
+            "groups": [{"id": 2, "name": "free 账号池 01"}],
+        }
+
+        account = cache._normalize_account_snapshot(base)
+
+        self.assertEqual(account["plan_type"], "free")
+        self.assertNotIn("codex_plan_type_source", account)
+
+    def test_cached_effective_type_wins_over_plus_bundle_signature(self) -> None:
+        account = cache._normalize_account_snapshot(
+            {
+                "id": 4074,
+                "credentials": {"plan_type": "free"},
+                "extra": {
+                    "source": "sub_bundle_input",
+                    "codex_5h_window_minutes": 0,
+                    "codex_7d_window_minutes": 10_080,
+                },
+                "groups": [{"id": 3, "name": "plus 账号池 01"}],
+            }
+        )
+
+        cache._copy_cached_plan_type(account, {"id": 4074, "plan_type": "k12"})
+
+        self.assertEqual(account["plan_type"], "k12")
+        self.assertEqual(account["codex_plan_type_source"], "cached")
+
+    def test_cached_misreported_free_does_not_replace_plus_bundle_signature(self) -> None:
+        account = cache._normalize_account_snapshot(
+            {
+                "id": 4075,
+                "credentials": {"plan_type": "free"},
+                "extra": {
+                    "source": "sub_bundle_input",
+                    "codex_5h_window_minutes": 0,
+                    "codex_7d_window_minutes": 10_080,
+                },
+                "groups": [{"id": 3, "name": "plus 账号池 01"}],
+            }
+        )
+
+        cache._copy_cached_plan_type(account, {"id": 4075, "plan_type": "free"})
+
+        self.assertEqual(account["plan_type"], "plus")
+        self.assertEqual(account["codex_plan_type_source"], "plus_bundle_signature")
+
     def test_cached_plan_type_replaces_temporary_k12_fallback(self) -> None:
         account = cache._normalize_account_snapshot({"id": 1, "plan_type": "", "status": "error"})
 

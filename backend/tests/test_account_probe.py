@@ -113,6 +113,44 @@ class AccountProbePlanTypeTests(unittest.TestCase):
             ("pro", "cached"),
         )
 
+    def test_sub_bundle_free_in_plus_pool_supplies_plus_plan_type(self) -> None:
+        account = account_probe._normalize_probe_account(
+            {
+                "id": 4072,
+                "name": "jamisonlofaso480829@outlook.com",
+                "credentials": {
+                    "email": "jamisonlofaso480829@outlook.com",
+                    "plan_type": "free",
+                },
+                "extra": {
+                    "source": "sub_bundle_input",
+                    "codex_5h_window_minutes": 0,
+                    "codex_7d_window_minutes": 10_080,
+                },
+                "groups": [{"id": 3, "name": "plus 账号池 01"}],
+            }
+        )
+
+        self.assertEqual(account["plan_type"], "plus")
+        self.assertEqual(account["plan_type_source"], "plus_bundle_signature")
+        self.assertEqual(
+            account_probe._resolved_probe_plan_type(
+                account["plan_type"],
+                "k12",
+                current_source=account["plan_type_source"],
+            ),
+            ("k12", "cached"),
+        )
+        self.assertEqual(
+            account_probe._resolved_probe_plan_type(
+                account["plan_type"],
+                "free",
+                current_source=account["plan_type_source"],
+                previous_source="remote",
+            ),
+            ("plus", "plus_bundle_signature"),
+        )
+
     def test_empty_remote_plan_type_keeps_previous_value(self) -> None:
         self.assertEqual(account_probe._resolved_probe_plan_type("", "plus"), ("plus", "cached"))
 
