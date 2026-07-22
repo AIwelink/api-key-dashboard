@@ -362,7 +362,18 @@ async def upsert_cached_account_snapshot(
     *,
     fetched_at: datetime | None = None,
 ) -> dict[str, Any]:
-    normalized = _normalize_account_snapshot(account)
+    remote_id = account.get("id")
+    verified_states = await _load_verified_plan_states(
+        db,
+        site_id,
+        [account],
+    )
+    normalized = _normalize_account_snapshot(
+        _account_with_verified_plan_type(
+            account,
+            verified_states.get(f"{site_id}:{remote_id}"),
+        )
+    )
     remote_id = normalized.get("id")
     if remote_id is None:
         return normalized
@@ -406,7 +417,17 @@ async def refresh_site_cache(db: AsyncIOMotorDatabase, site_id: str = DEFAULT_SI
             groups = pool_snapshot["groups"]
             group_ids = [_int_group_id(group.get("id")) for group in groups if isinstance(group, dict)]
             group_ids = [group_id for group_id in group_ids if group_id is not None]
-            accounts = [_normalize_account_snapshot(account) for account in pool_snapshot["accounts"]]
+            raw_accounts = pool_snapshot["accounts"]
+            verified_states = await _load_verified_plan_states(db, site_id, raw_accounts)
+            accounts = [
+                _normalize_account_snapshot(
+                    _account_with_verified_plan_type(
+                        account,
+                        verified_states.get(f"{site_id}:{account.get('id')}"),
+                    )
+                )
+                for account in raw_accounts
+            ]
             fetched_at = now_utc()
             dashboard_summary = {
                 "ok": True,
@@ -885,7 +906,7 @@ async def update_cached_account_runtime_fields(
 def _copy_cached_plan_type(account: dict[str, Any], cached: dict[str, Any]) -> None:
     extra = dict(account.get("extra") if isinstance(account.get("extra"), dict) else {})
     source = str(account.get("codex_plan_type_source") or extra.get("codex_plan_type_source") or "")
-    weak_sources = {"fallback_k12", "name_prefix", "plus_bundle_signature"}
+    weak_sources = {"fallback_k12", "name_prefix", "plus_bundle_signature", "account_test"}
     if source not in weak_sources:
         return
 
@@ -2715,12 +2736,15 @@ def _normalize_account_snapshot(account: dict[str, Any]) -> dict[str, Any]:
             normalized[field] = value
 
     plan_type = str(_first_present(normalized, credentials, extra, "plan_type") or "").strip()
-    plus_bundle_plan_type = _plan_type_from_plus_bundle_signature(normalized, plan_type)
-    if plus_bundle_plan_type:
-        normalized["plan_type"] = plus_bundle_plan_type
-        normalized["codex_plan_type_source"] = "plus_bundle_signature"
-        extra["plan_type"] = plus_bundle_plan_type
-        extra["codex_plan_type_source"] = "plus_bundle_signature"
+    plus_bundle_candidate = _plan_type_from_plus_bundle_signature(normalized, plan_type)
+    verified_plan_type = _normalize_capacity_account_type(
+        normalized.get("codex_verified_plan_type")
+    )
+    if plus_bundle_candidate and verified_plan_type == "plus":
+        normalized["plan_type"] = "plus"
+        normalized["codex_plan_type_source"] = "account_test"
+        extra["plan_type"] = "plus"
+        extra["codex_plan_type_source"] = "account_test"
     elif plan_type:
         normalized["plan_type"] = plan_type
     elif inferred_plan_type := _plan_type_from_standard_name(normalized.get("name")):
@@ -2858,6 +2882,52 @@ def _plan_type_from_standard_name(value: Any) -> str | None:
     if re.match(r"^plus(?:\s|[+_-])", name):
         return "plus"
     return None
+
+
+def _account_with_verified_plan_type(
+    account: dict[str, Any],
+    state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    annotated = dict(account)
+    verified_plan_type = _normalize_capacity_account_type(
+        (state or {}).get("verified_plan_type")
+    )
+    if verified_plan_type:
+        annotated["codex_verified_plan_type"] = verified_plan_type
+        annotated["codex_verified_plan_type_source"] = str(
+            (state or {}).get("verified_plan_type_source") or "account_test"
+        )
+    return annotated
+
+
+async def _load_verified_plan_states(
+    db: AsyncIOMotorDatabase,
+    site_id: str,
+    accounts: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    collection = getattr(db, "sub2api_account_test_states", None)
+    if collection is None:
+        return {}
+    state_ids = [
+        f"{site_id}:{account.get('id')}"
+        for account in accounts
+        if account.get("id") is not None
+    ]
+    if not state_ids:
+        return {}
+    return {
+        str(state["_id"]): state
+        async for state in collection.find(
+            {
+                "_id": {"$in": state_ids},
+                "verified_plan_type": {"$exists": True},
+            },
+            {
+                "verified_plan_type": 1,
+                "verified_plan_type_source": 1,
+            },
+        )
+    }
 
 
 def _plan_type_from_plus_bundle_signature(account: dict[str, Any], remote_plan_type: Any) -> str | None:

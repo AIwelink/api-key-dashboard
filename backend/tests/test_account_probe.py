@@ -113,9 +113,8 @@ class AccountProbePlanTypeTests(unittest.TestCase):
             ("pro", "cached"),
         )
 
-    def test_sub_bundle_free_in_plus_pool_supplies_plus_plan_type(self) -> None:
-        account = account_probe._normalize_probe_account(
-            {
+    def test_sub_bundle_free_requires_persisted_test_verification(self) -> None:
+        raw = {
                 "id": 4072,
                 "name": "jamisonlofaso480829@outlook.com",
                 "credentials": {
@@ -129,10 +128,20 @@ class AccountProbePlanTypeTests(unittest.TestCase):
                 },
                 "groups": [{"id": 3, "name": "plus 账号池 01"}],
             }
+        account = account_probe._normalize_probe_account(raw)
+
+        self.assertEqual(account["plan_type"], "free")
+        self.assertIsNone(account["plan_type_source"])
+
+        account = account_probe._normalize_probe_account(
+            account_probe._account_with_verified_plan_type(
+                raw,
+                {"verified_plan_type": "plus"},
+            )
         )
 
         self.assertEqual(account["plan_type"], "plus")
-        self.assertEqual(account["plan_type_source"], "plus_bundle_signature")
+        self.assertEqual(account["plan_type_source"], "account_test")
         self.assertEqual(
             account_probe._resolved_probe_plan_type(
                 account["plan_type"],
@@ -148,7 +157,7 @@ class AccountProbePlanTypeTests(unittest.TestCase):
                 current_source=account["plan_type_source"],
                 previous_source="remote",
             ),
-            ("plus", "plus_bundle_signature"),
+            ("plus", "account_test"),
         )
 
     def test_empty_remote_plan_type_keeps_previous_value(self) -> None:

@@ -118,7 +118,7 @@ class BugTeamCapacityTests(unittest.TestCase):
         self.assertEqual(account["plan_type"], "plus")
         self.assertEqual(account["codex_plan_type_source"], "name_prefix")
 
-    def test_sub_bundle_free_in_plus_pool_with_paid_window_is_treated_as_plus(self) -> None:
+    def test_sub_bundle_free_signature_requires_persisted_verification(self) -> None:
         account = cache._normalize_account_snapshot(
             {
                 "id": 4072,
@@ -136,8 +136,26 @@ class BugTeamCapacityTests(unittest.TestCase):
             }
         )
 
+        self.assertEqual(account["plan_type"], "free")
+        self.assertNotEqual(account.get("codex_plan_type_source"), "account_test")
+        self.assertEqual(cache._capacity_account_type(account), "free")
+
+        verified = cache._account_with_verified_plan_type(
+            {
+                "id": 4072,
+                "credentials": {"plan_type": "free"},
+                "extra": {
+                    "source": "sub_bundle_input",
+                    "codex_5h_window_minutes": 0,
+                    "codex_7d_window_minutes": 10_080,
+                },
+                "groups": [{"id": 3, "name": "plus"}],
+            },
+            {"verified_plan_type": "plus"},
+        )
+        account = cache._normalize_account_snapshot(verified)
         self.assertEqual(account["plan_type"], "plus")
-        self.assertEqual(account["codex_plan_type_source"], "plus_bundle_signature")
+        self.assertEqual(account["codex_plan_type_source"], "account_test")
         self.assertEqual(cache._capacity_account_type(account), "plus")
 
     def test_sub_bundle_free_requires_plus_group_and_paid_window_signature(self) -> None:
@@ -160,7 +178,8 @@ class BugTeamCapacityTests(unittest.TestCase):
 
     def test_cached_effective_type_wins_over_plus_bundle_signature(self) -> None:
         account = cache._normalize_account_snapshot(
-            {
+            cache._account_with_verified_plan_type(
+                {
                 "id": 4074,
                 "credentials": {"plan_type": "free"},
                 "extra": {
@@ -169,7 +188,9 @@ class BugTeamCapacityTests(unittest.TestCase):
                     "codex_7d_window_minutes": 10_080,
                 },
                 "groups": [{"id": 3, "name": "plus 账号池 01"}],
-            }
+                },
+                {"verified_plan_type": "plus"},
+            )
         )
 
         cache._copy_cached_plan_type(account, {"id": 4074, "plan_type": "k12"})
@@ -179,7 +200,8 @@ class BugTeamCapacityTests(unittest.TestCase):
 
     def test_cached_misreported_free_does_not_replace_plus_bundle_signature(self) -> None:
         account = cache._normalize_account_snapshot(
-            {
+            cache._account_with_verified_plan_type(
+                {
                 "id": 4075,
                 "credentials": {"plan_type": "free"},
                 "extra": {
@@ -188,13 +210,15 @@ class BugTeamCapacityTests(unittest.TestCase):
                     "codex_7d_window_minutes": 10_080,
                 },
                 "groups": [{"id": 3, "name": "plus 账号池 01"}],
-            }
+                },
+                {"verified_plan_type": "plus"},
+            )
         )
 
         cache._copy_cached_plan_type(account, {"id": 4075, "plan_type": "free"})
 
         self.assertEqual(account["plan_type"], "plus")
-        self.assertEqual(account["codex_plan_type_source"], "plus_bundle_signature")
+        self.assertEqual(account["codex_plan_type_source"], "account_test")
 
     def test_cached_plan_type_replaces_temporary_k12_fallback(self) -> None:
         account = cache._normalize_account_snapshot({"id": 1, "plan_type": "", "status": "error"})

@@ -20,7 +20,9 @@ from app.modules.sub2api.account_history import (
     snapshot_hash,
 )
 from app.modules.sub2api.cache import (
+    _account_with_verified_plan_type,
     _get_or_update_group_capacity_summary,
+    _load_verified_plan_states,
     _plan_type_from_plus_bundle_signature,
     _plan_type_from_standard_name,
     get_site,
@@ -408,7 +410,17 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
                 upsert=True,
             )
             return {"ok": True, "site_id": site_id, "run_id": run_id, "group_ids_checked": [], "message": "no enabled groups due", **counters}
-        accounts = [_normalize_probe_account(item) for item in await _fetch_probe_accounts(site)]
+        raw_accounts = await _fetch_probe_accounts(site)
+        verified_states = await _load_verified_plan_states(db, site_id, raw_accounts)
+        accounts = [
+            _normalize_probe_account(
+                _account_with_verified_plan_type(
+                    item,
+                    verified_states.get(f"{site_id}:{item.get('id')}"),
+                )
+            )
+            for item in raw_accounts
+        ]
         fetched_at = now_utc()
         identity_accounts = [account for account in accounts if not _is_spark_shadow_account(account)]
         all_seen_identity_ids = {
@@ -623,8 +635,10 @@ def _normalize_probe_account(account: dict[str, Any]) -> dict[str, Any]:
     email = _first_present(account, credentials, extra, "email")
     group_ids = _extract_group_ids(account)
     remote_plan_type = str(_first_present(account, credentials, extra, "plan_type") or "").strip()
-    inferred_plan_type = _plan_type_from_plus_bundle_signature(account, remote_plan_type)
-    inferred_source = "plus_bundle_signature" if inferred_plan_type else None
+    plus_bundle_candidate = _plan_type_from_plus_bundle_signature(account, remote_plan_type)
+    verified_plan_type = str(account.get("codex_verified_plan_type") or "").strip().lower()
+    inferred_plan_type = "plus" if plus_bundle_candidate and verified_plan_type == "plus" else None
+    inferred_source = "account_test" if inferred_plan_type else None
     if not remote_plan_type:
         inferred_plan_type = _plan_type_from_standard_name(account.get("name"))
         inferred_source = "name_prefix" if inferred_plan_type else None
@@ -879,7 +893,7 @@ def _resolved_probe_plan_type(
     previous_value = str(previous or "").strip()
     source = str(current_source or "").strip()
     prior_source = str(previous_source or "").strip()
-    weak_sources = {"name_prefix", "plus_bundle_signature"}
+    weak_sources = {"name_prefix", "plus_bundle_signature", "account_test"}
     previous_is_effective = previous_value.lower() != "free" and prior_source != "fallback_k12"
     if current_value and source in weak_sources and previous_value and previous_is_effective:
         return previous_value, "cached"

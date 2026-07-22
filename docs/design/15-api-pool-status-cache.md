@@ -117,7 +117,7 @@ fetched_at
 - 5h/7d 429 必须按各自窗口和恢复时间判断，不能仅凭历史 `rate_limited_at` 永久标记。
 - Bug Team 类型识别和容量资格必须分开：显式 `account_type/plan_type=bug_team` 优先级最高；否则仅把 `plan_type=team`、没有有效 5h 窗口且 7d 窗口不少于 28 天的账号识别为 Bug Team。Bug Team 的 7d 使用率低于 100% 时正常计入概览、美元容量和并发；达到 100% 后，恢复时间不超过 2 天才计入动态 5h/7d 容量，超过 2 天或恢复时间未知时排除。临时 403 cooldown 不能替代明确的 7d 100% 判断。
 - 新导入的 Plus 可能缺少远端 `plan_type`。标准名称以独立的 `plus` 前缀开头（例如 `plus +手机号---邮箱`）时可将类型标记为 Plus；这条规则只用于容量类型推断，账号身份仍必须按规范化邮箱或明确远端绑定匹配。其余缺少类型且没有有效历史值的账号继续按 K12 回退。
-- `sub_bundle_input` 导入的账号可能被远端错误标记为 `free`。仅当账号同时位于名称含独立 `plus` 标记的分组、没有 5h 窗口且主窗口恰好为 7 天时，才将该远端 Free 纠正为 Plus。已有非 Free、非回退的有效历史类型优先；普通 Free 分组和不满足完整签名的账号不得纠正。
+- `sub_bundle_input` 导入的账号可能被远端错误标记为 `free`。账号位于名称含独立 `plus` 标记的分组、没有 5h 窗口且主窗口恰好为 7 天时，只能标记为待验证候选；签名本身不能直接纠正类型。只有统一 `gpt-5.4` 测试已经持久化为 `passed` 或 `rate_limited`，才能写入本地 `verified_plan_type=plus` 并在缓存归一化时纠正。`model_not_supported` 会撤销该验证。已有非 Free、非回退的有效历史类型优先；普通 Free 分组和不满足完整签名的账号不得纠正。
 
 ## 5. 远端刷新流程
 
@@ -127,12 +127,22 @@ fetched_at
 2. 并行拉取 groups 和第一页 accounts。
 3. 并行拉取剩余账号分页。
 4. 拉取需要更新的账号 usage；当前实现并行请求，不设置人为逐请求限速，错误单独记录。
-5. 归一化远端账号；类型优先使用远端 `plan_type`，其次保留缓存中的有效历史类型，再识别标准 Plus 名称前缀，其余缺失类型按 K12 回退。
+5. 批量读取 `sub2api_account_test_states`，把已持久化的类型验证附加到对应远端账号后再归一化；类型优先使用明确的非 Free 远端 `plan_type` 和有效历史类型，已验证的错误 Free 可纠正为 Plus，再识别标准 Plus 名称前缀，其余缺失类型按 K12 回退。
 6. 批量写入 groups/accounts 缓存并删除远端已不存在的缓存文档。
 7. 基于完整 group 集合重算 `capacity_summary`。
 8. 更新 `sub2api_cache_meta`，供页面显示同步状态和最后完成时间。
 
 远端 accounts 拉取使用分页，不能假设单页包含全部账号。group 归属以账号返回的 `group_ids` / `groups` / `account_groups` 为准，本地不依赖远端 `group_id` 查询参数完成完整归类。
+
+### 5.1 统一账号测试基座
+
+- `account_test_scheduler_loop` 覆盖所有启用 Sub2API 站点中仍存在于账号缓存的全部账号，包括 `schedulable=false`；每个账号每 24 小时测试一次，未测试账号优先。
+- 所有站点共用 MongoDB 租约，全局严格串行调用 `/accounts/{id}/test`。请求固定为 `gpt-5.4`、空 prompt、`default` 模式。
+- 每次结果先写入 `sub2api_account_test_events` 和 `sub2api_account_test_states`，之后才调用内部 dispatcher。判断程序只读取已保存事件，不得再次请求远端测试接口。
+- `passed` 会重新开启关闭的调度；401、402 和确认账号失效的 403 会关闭调度；429、普通 403、模型不支持和传输错误不改变调度。
+- handler 状态保存在事件中，支持 `pending` / `processing` / `completed` / `failed` 幂等重放。机器人通知不属于该 dispatcher。
+- 管理 API Key 认证失败是站点级故障，只写 `sub2api_account_test_site_meta` 退避，不得生成账号 401 事件。
+- 旧 `long_7d_probe_scheduler_loop` 不再随应用启动，但旧模块和历史集合保留。US06-5002 自产 Plus 测试、改名和转组流程继续独立运行，不复用本次类型或调度 handler。
 
 ## 6. 调度与防抖
 
