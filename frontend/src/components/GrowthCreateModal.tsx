@@ -1,9 +1,9 @@
-import { type FormEventHandler, type ReactNode, useEffect, useRef } from "react";
+import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
 
 type GrowthCreateModalProps = {
   children: ReactNode;
   onClose: () => void;
-  onSubmit: FormEventHandler<HTMLFormElement>;
+  onSubmit: () => void;
   saving: boolean;
   submitDisabled: boolean;
   submitLabel: string;
@@ -25,6 +25,16 @@ function getFocusableElements(container: HTMLElement | null) {
   return Array.from(container.querySelectorAll<HTMLElement>(focusableSelector)).filter(
     (element) => !element.hasAttribute("hidden") && element.getAttribute("aria-hidden") !== "true",
   );
+}
+
+export function submitGrowthCreateModal(
+  event: Pick<FormEvent<HTMLFormElement>, "preventDefault">,
+  saving: boolean,
+  submitDisabled: boolean,
+  onSubmit: () => void,
+) {
+  event.preventDefault();
+  if (!saving && !submitDisabled) onSubmit();
 }
 
 export function GrowthCreateModal({
@@ -98,6 +108,10 @@ export function GrowthCreateModal({
     if (!saving) onClose();
   };
 
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    submitGrowthCreateModal(event, saving, submitDisabled, onSubmit);
+  };
+
   return (
     <div className="growth-create-modal-backdrop" onMouseDown={close} role="presentation">
       <section
@@ -109,7 +123,7 @@ export function GrowthCreateModal({
         role="dialog"
         tabIndex={-1}
       >
-        <form className="growth-create-modal-form" onSubmit={onSubmit}>
+        <form className="growth-create-modal-form" onSubmit={submit}>
           <header className="growth-create-modal-header">
             <h3 id="growth-create-modal-title">{title}</h3>
             <button aria-label="关闭" className="ghost icon-button" disabled={saving} onClick={close} type="button">

@@ -1,8 +1,31 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { GrowthCreateModal } from "./GrowthCreateModal";
+import { GrowthCreateModal, submitGrowthCreateModal } from "./GrowthCreateModal";
 
 describe("GrowthCreateModal", () => {
+  it("prevents native form submission before invoking the business submit callback", () => {
+    const event = { preventDefault: vi.fn() };
+    const onSubmit = vi.fn();
+
+    submitGrowthCreateModal(event, false, false, onSubmit);
+
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(onSubmit).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["saving", true, false],
+    ["submission is disabled", false, true],
+  ])("does not invoke the business submit callback while %s", (_reason, saving, submitDisabled) => {
+    const event = { preventDefault: vi.fn() };
+    const onSubmit = vi.fn();
+
+    submitGrowthCreateModal(event, saving, submitDisabled, onSubmit);
+
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("renders an accessible dialog with its supplied title and form body", () => {
     const html = renderToStaticMarkup(
       <GrowthCreateModal
