@@ -434,7 +434,7 @@
   flex: 0 0 auto;
 }
 
-.growth-list-page {
+.growth-workspace-page .growth-list-page {
   width: 100%;
   min-width: 0;
   padding: 14px;
@@ -567,7 +567,7 @@
     white-space: normal;
   }
 
-  .growth-list-page,
+  .growth-workspace-page .growth-list-page,
   .growth-site-panel {
     padding: 12px;
   }
