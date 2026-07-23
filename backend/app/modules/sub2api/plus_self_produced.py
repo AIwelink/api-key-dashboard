@@ -138,9 +138,7 @@ async def update_settings(
         updates["enabled"] = bool(payload["enabled"])
     if "interval_minutes" in payload and payload["interval_minutes"] is not None:
         updates["interval_seconds"] = int(payload["interval_minutes"]) * 60
-    for field in GROUP_SETTING_DEFAULTS:
-        if field in payload and payload[field] is not None:
-            updates[field] = int(payload[field])
+    updates.update(effective_group_ids)
     await db.plus_self_produced_settings.update_one(
         {"_id": SETTINGS_ID},
         {
@@ -374,12 +372,13 @@ async def _run_probe_locked(
     plus_group_id_setting = settings["plus_group_id"]
     banned_group_id_setting = settings["banned_group_id"]
     plus_error_group_id_setting = settings["plus_error_group_id"]
-    configured_group_ids = {
-        source_group_id_setting,
-        plus_group_id_setting,
-        banned_group_id_setting,
-        plus_error_group_id_setting,
+    configured_group_roles = {
+        "source_group_id": source_group_id_setting,
+        "plus_group_id": plus_group_id_setting,
+        "banned_group_id": banned_group_id_setting,
+        "plus_error_group_id": plus_error_group_id_setting,
     }
+    configured_group_ids = set(configured_group_roles.values())
     counters = {
         "candidates": 0,
         "tested": 0,
@@ -398,6 +397,7 @@ async def _run_probe_locked(
             "status": "running",
             "started_at": started_at,
             "created_at": started_at,
+            **configured_group_roles,
             **counters,
         }
     )
@@ -606,6 +606,7 @@ async def _run_probe_locked(
             "status": run_status,
             "started_at": started_at,
             "finished_at": finished_at,
+            **configured_group_roles,
             **counters,
         }
         await _finish_run(db, result)
@@ -621,6 +622,7 @@ async def _run_probe_locked(
             "started_at": started_at,
             "finished_at": finished_at,
             "error": "probe cancelled during application shutdown",
+            **configured_group_roles,
             **counters,
         }
         await asyncio.shield(_finish_run(db, result))
@@ -636,6 +638,7 @@ async def _run_probe_locked(
             "started_at": started_at,
             "finished_at": finished_at,
             "error": _exception_error(exc),
+            **configured_group_roles,
             **counters,
         }
         await _finish_run(db, result)

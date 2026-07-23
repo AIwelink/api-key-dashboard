@@ -146,6 +146,7 @@ describe("plus self-produced page", () => {
         intervalMinutes={15}
         groups={groups}
         groupSelection={groupSelection}
+        configurationReady
         loading={false}
         saving={false}
         running={false}
@@ -194,6 +195,7 @@ describe("plus self-produced page", () => {
         intervalMinutes={15}
         groups={groups}
         groupSelection={groupSelection}
+        configurationReady
         loading={false}
         saving={false}
         running
@@ -217,6 +219,7 @@ describe("plus self-produced page", () => {
         intervalMinutes={15}
         groups={groups}
         groupSelection={groupSelection}
+        configurationReady
         loading
         saving={false}
         running={false}
@@ -240,6 +243,7 @@ describe("plus self-produced page", () => {
         intervalMinutes={15}
         groups={groups}
         groupSelection={{ ...groupSelection, plus_group_id: 14 }}
+        configurationReady
         loading={false}
         saving={false}
         running={false}
@@ -251,6 +255,36 @@ describe("plus self-produced page", () => {
     );
 
     expect(html).toContain("四个分组必须一对一，不能重复");
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>保存设置<\/button>/);
+  });
+
+  it("keeps settings disabled until current database options and settings load", () => {
+    const html = renderToStaticMarkup(
+      <PlusSelfProducedView
+        status={null}
+        results={[]}
+        enabled
+        intervalMinutes={15}
+        groups={[]}
+        groupSelection={{
+          source_group_id: 4,
+          plus_group_id: 6,
+          banned_group_id: 7,
+          plus_error_group_id: 9,
+        }}
+        configurationReady={false}
+        loading={false}
+        saving={false}
+        running={false}
+        resultsTotal={0}
+        resultsPage={1}
+        resultsPageSize={100}
+        {...callbacks}
+      />,
+    );
+
+    expect(html).toMatch(/<input[^>]*type="checkbox"[^>]*disabled=""/);
+    expect(html).toMatch(/<select[^>]*disabled=""/);
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>保存设置<\/button>/);
   });
 

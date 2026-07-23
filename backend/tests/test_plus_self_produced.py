@@ -237,6 +237,42 @@ class PlusSelfProducedSettingsTests(unittest.IsolatedAsyncioTestCase):
 
         settings_collection.update_one.assert_not_awaited()
 
+    async def test_partial_update_writes_a_complete_group_role_snapshot(self) -> None:
+        stored = {
+            "_id": "plus-self-produced",
+            "source_group_id": 4,
+            "plus_group_id": 6,
+            "banned_group_id": 7,
+            "plus_error_group_id": 9,
+        }
+        settings_collection = SimpleNamespace(
+            update_one=AsyncMock(),
+            find_one=AsyncMock(return_value=stored),
+        )
+        db = SimpleNamespace(plus_self_produced_settings=settings_collection)
+
+        with patch.object(
+            plus_self_produced,
+            "list_groups",
+            AsyncMock(return_value=[{"id": group_id} for group_id in (6, 7, 9, 14)]),
+        ):
+            await plus_self_produced.update_settings(
+                db,
+                {"source_group_id": 14},
+                {"_id": "admin@example.com"},
+            )
+
+        updates = settings_collection.update_one.await_args.args[1]["$set"]
+        self.assertEqual(
+            {field: updates[field] for field in plus_self_produced.GROUP_SETTING_DEFAULTS},
+            {
+                "source_group_id": 14,
+                "plus_group_id": 6,
+                "banned_group_id": 7,
+                "plus_error_group_id": 9,
+            },
+        )
+
     def test_due_time_uses_last_finish_and_enabled_state(self) -> None:
         now = datetime(2026, 7, 21, 12, 0, tzinfo=UTC)
 
@@ -554,6 +590,25 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
         stored = [call.args[1]["$set"] for call in db.plus_self_produced_account_results.update_one.await_args_list]
         self.assertEqual([item["source_group_id"] for item in stored], [14, 16])
         self.assertEqual([item["destination_group_id"] for item in stored], [16, 14])
+        run_document = db.plus_self_produced_runs.insert_one.await_args.args[0]
+        self.assertEqual(
+            {field: run_document[field] for field in plus_self_produced.GROUP_SETTING_DEFAULTS},
+            {
+                "source_group_id": 14,
+                "plus_group_id": 16,
+                "banned_group_id": 17,
+                "plus_error_group_id": 19,
+            },
+        )
+        self.assertEqual(
+            {field: result[field] for field in plus_self_produced.GROUP_SETTING_DEFAULTS},
+            {
+                "source_group_id": 14,
+                "plus_group_id": 16,
+                "banned_group_id": 17,
+                "plus_error_group_id": 19,
+            },
+        )
 
     async def test_model_reset_failure_skips_probe_and_continues_with_next_account(self) -> None:
         db = self.build_db()

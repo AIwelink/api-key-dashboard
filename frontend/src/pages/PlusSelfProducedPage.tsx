@@ -98,6 +98,7 @@ type ViewProps = {
   intervalMinutes: number;
   groups: PlusGroupOption[];
   groupSelection: PlusGroupSelection;
+  configurationReady: boolean;
   loading: boolean;
   saving: boolean;
   running: boolean;
@@ -118,6 +119,7 @@ export function PlusSelfProducedPage({ token, showToast }: Props) {
   const [intervalMinutes, setIntervalMinutes] = useState(15);
   const [groups, setGroups] = useState<PlusGroupOption[]>([]);
   const [groupSelection, setGroupSelection] = useState<PlusGroupSelection>(DEFAULT_GROUP_SELECTION);
+  const [configurationToken, setConfigurationToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
@@ -141,24 +143,44 @@ export function PlusSelfProducedPage({ token, showToast }: Props) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    Promise.all([
+    setConfigurationToken(null);
+    setGroups([]);
+    setStatus(null);
+    Promise.allSettled([
       api<PlusSelfProducedStatus>("/plus-self-produced/status", token),
       api<ResultsResponse>(`/plus-self-produced/results?page=1&page_size=${RESULTS_PAGE_SIZE}`, token),
       api<PlusGroupOption[]>("/plus-self-produced/groups", token),
     ])
-      .then(([nextStatus, nextResults, nextGroups]) => {
+      .then(([statusResult, resultsResult, groupsResult]) => {
         if (cancelled) return;
-        setStatus(nextStatus);
-        setResults(nextResults.items);
-        setResultsTotal(nextResults.total);
-        setResultsPage(nextResults.page);
-        setEnabled(nextStatus.settings.enabled);
-        setIntervalMinutes(nextStatus.settings.interval_minutes);
-        setGroups(nextGroups);
-        setGroupSelection(groupSelectionFromStatus(nextStatus));
-      })
-      .catch((error) => {
-        if (!cancelled) showToast(errorMessage(error), true);
+        const errors: unknown[] = [];
+        if (statusResult.status === "fulfilled") {
+          const nextStatus = statusResult.value;
+          setStatus(nextStatus);
+          setEnabled(nextStatus.settings.enabled);
+          setIntervalMinutes(nextStatus.settings.interval_minutes);
+          setGroupSelection(groupSelectionFromStatus(nextStatus));
+        } else {
+          errors.push(statusResult.reason);
+        }
+        if (resultsResult.status === "fulfilled") {
+          setResults(resultsResult.value.items);
+          setResultsTotal(resultsResult.value.total);
+          setResultsPage(resultsResult.value.page);
+        } else {
+          errors.push(resultsResult.reason);
+        }
+        if (groupsResult.status === "fulfilled") {
+          setGroups(groupsResult.value);
+        } else {
+          errors.push(groupsResult.reason);
+        }
+        if (statusResult.status === "fulfilled" && groupsResult.status === "fulfilled") {
+          setConfigurationToken(token);
+        }
+        if (errors.length) {
+          showToast(errorMessage(errors[0]), true);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -177,6 +199,10 @@ export function PlusSelfProducedPage({ token, showToast }: Props) {
   );
 
   const save = async () => {
+    if (configurationToken !== token) {
+      showToast("当前分组配置尚未加载完成", true);
+      return;
+    }
     if (!hasDistinctGroupSelection(groupSelection)) {
       showToast("四个分组必须一对一，不能重复", true);
       return;
@@ -265,6 +291,7 @@ export function PlusSelfProducedPage({ token, showToast }: Props) {
       intervalMinutes={intervalMinutes}
       groups={groups}
       groupSelection={groupSelection}
+      configurationReady={configurationToken === token}
       loading={loading}
       saving={saving}
       running={workflowRunning}
@@ -288,6 +315,7 @@ export function PlusSelfProducedView({
   intervalMinutes,
   groups,
   groupSelection,
+  configurationReady,
   loading,
   saving,
   running,
@@ -307,6 +335,7 @@ export function PlusSelfProducedView({
   const lastRun = status?.last_run;
   const invalidInterval = !Number.isFinite(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 1440;
   const groupsAreDistinct = hasDistinctGroupSelection(groupSelection);
+  const settingsDisabled = loading || saving || running || !configurationReady;
   const resultsPages = Math.max(1, Math.ceil(resultsTotal / resultsPageSize));
 
   return (
@@ -338,7 +367,7 @@ export function PlusSelfProducedView({
               type="checkbox"
               checked={enabled}
               onChange={(event) => onEnabledChange(event.target.checked)}
-              disabled={loading || saving || running}
+              disabled={settingsDisabled}
             />
             <span className="switch-track" aria-hidden="true"><span className="switch-thumb" /></span>
             <span className="switch-copy">
@@ -355,7 +384,7 @@ export function PlusSelfProducedView({
                 max={1440}
                 value={intervalMinutes}
                 onChange={(event) => onIntervalChange(Number(event.target.value))}
-                disabled={loading || saving || running}
+                disabled={settingsDisabled}
                 aria-label="探测间隔分钟"
               />
               <b>分钟</b>
@@ -366,7 +395,7 @@ export function PlusSelfProducedView({
             className="ghost"
             type="button"
             onClick={onSave}
-            disabled={loading || saving || running || invalidInterval || !groupsAreDistinct}
+            disabled={settingsDisabled || invalidInterval || !groupsAreDistinct}
           >
             {saving ? "保存中..." : "保存设置"}
           </button>
@@ -377,7 +406,7 @@ export function PlusSelfProducedView({
             role="source_group_id"
             value={sourceGroupId}
             groups={groups}
-            disabled={loading || saving || running}
+            disabled={settingsDisabled}
             onChange={onGroupChange}
           />
           <GroupSelect
@@ -385,7 +414,7 @@ export function PlusSelfProducedView({
             role="plus_group_id"
             value={plusGroupId}
             groups={groups}
-            disabled={loading || saving || running}
+            disabled={settingsDisabled}
             onChange={onGroupChange}
           />
           <GroupSelect
@@ -393,7 +422,7 @@ export function PlusSelfProducedView({
             role="banned_group_id"
             value={bannedGroupId}
             groups={groups}
-            disabled={loading || saving || running}
+            disabled={settingsDisabled}
             onChange={onGroupChange}
           />
           <GroupSelect
@@ -401,7 +430,7 @@ export function PlusSelfProducedView({
             role="plus_error_group_id"
             value={plusErrorGroupId}
             groups={groups}
-            disabled={loading || saving || running}
+            disabled={settingsDisabled}
             onChange={onGroupChange}
           />
         </div>
