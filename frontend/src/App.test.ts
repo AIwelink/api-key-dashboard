@@ -41,7 +41,9 @@ describe("app navigation", () => {
     "logs",
   ]);
 
-  const adminPermissions = permissions(ownerPermissions.allowed_views.filter((view) => view !== "presence"));
+  const adminPermissions = permissions(
+    ownerPermissions.allowed_views.filter((view) => view !== "presence" && view !== "api-tokens"),
+  );
 
   const visibleGroups = (userPermissions: UserPermissions) =>
     getVisibleNavigationGroups(userPermissions).map((group) => group.map(([key]) => key));
@@ -70,9 +72,10 @@ describe("app navigation", () => {
       ["api-pools", "plus-self-produced"],
       ["traffic-analysis", "operations-management"],
       ["event-records", "alert-center", "pool-lifecycle", "client-sites", "traffic-analysis-config"],
-      ["agent-analysis", "agent-workbench", "api-tokens", "users", "logs"],
+      ["agent-analysis", "agent-workbench", "users", "logs"],
     ]);
     expect(visibleKeys).not.toContain("presence");
+    expect(visibleKeys).not.toContain("api-tokens");
     hiddenViews.forEach((view) => expect(visibleKeys).not.toContain(view));
   });
 

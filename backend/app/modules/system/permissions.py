@@ -51,13 +51,17 @@ AVAILABLE_VIEW_SET = set(AVAILABLE_VIEWS)
 
 DEFAULT_ROLE_VIEWS: dict[str, list[ViewName]] = {
     "owner": list(AVAILABLE_VIEWS),
-    "admin": [view for view in AVAILABLE_VIEWS if view != "presence"],
+    "admin": [view for view in AVAILABLE_VIEWS if view not in {"presence", "api-tokens"}],
     "maintainer": [
-        view for view in AVAILABLE_VIEWS if view not in {"presence", "traffic-analysis", "traffic-analysis-config"}
+        view
+        for view in AVAILABLE_VIEWS
+        if view not in {"presence", "traffic-analysis", "traffic-analysis-config", "api-tokens"}
     ],
     "operator": ["traffic-analysis", "operations-management"],
     "viewer": [
-        view for view in AVAILABLE_VIEWS if view not in {"presence", "traffic-analysis", "traffic-analysis-config"}
+        view
+        for view in AVAILABLE_VIEWS
+        if view not in {"presence", "traffic-analysis", "traffic-analysis-config", "api-tokens"}
     ],
 }
 DEFAULT_ROLE_DEFAULTS: dict[str, ViewName] = {

@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from app.modules.system import permissions
+from app.routers import api_tokens as api_tokens_router
 from app.routers import auth as auth_router
 from app.routers import settings as settings_router
 from app.schemas import RolePermissionEntry, RolePermissionsUpdate, UserRoleCreate
@@ -38,7 +39,7 @@ class RolePermissionSettingsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["roles"]["operator"]["allowed_views"], ["traffic-analysis", "operations-management"])
         self.assertEqual(result["roles"]["operator"]["default_view"], "traffic-analysis")
-        self.assertIn("api-tokens", result["roles"]["admin"]["allowed_views"])
+        self.assertNotIn("api-tokens", result["roles"]["admin"]["allowed_views"])
         self.assertNotIn("presence", result["roles"]["admin"]["allowed_views"])
 
     async def test_permission_update_is_normalized_and_persisted(self) -> None:
@@ -333,6 +334,22 @@ class RolePermissionDependencyTests(unittest.IsolatedAsyncioTestCase):
             await dependency(user={"_id": "operator@example.com", "role": "operator"}, db=db)
 
         self.assertEqual(raised.exception.status_code, 403)
+
+    async def test_api_token_route_permission_rejects_admin_and_accepts_owner(self) -> None:
+        route = next(
+            route
+            for route in api_tokens_router.router.routes
+            if route.path == "/api-tokens" and "GET" in route.methods
+        )
+        dependency = route.dependant.dependencies[0].call
+        db, _ = fake_db(None)
+
+        with self.assertRaises(HTTPException) as raised:
+            await dependency(user={"_id": "admin@example.com", "role": "admin"}, db=db)
+        self.assertEqual(raised.exception.status_code, 403)
+
+        owner = {"_id": "owner@example.com", "role": "owner"}
+        self.assertEqual(await dependency(user=owner, db=db), owner)
 
 
 if __name__ == "__main__":
