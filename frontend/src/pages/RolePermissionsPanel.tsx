@@ -80,6 +80,11 @@ function setRoleLabel(
 }
 
 
+function permissionLabel(view: ViewName) {
+  return view === "api-tokens" ? "API Key 管理" : viewLabel(view);
+}
+
+
 export function RolePermissionsPanel({ settings, busy, onChange, onSave, onCreate, onDelete }: Props) {
   const [showCreate, setShowCreate] = useState(false);
   const [roleId, setRoleId] = useState("");
@@ -180,7 +185,7 @@ export function RolePermissionsPanel({ settings, busy, onChange, onSave, onCreat
                 >
                   {entry.allowed_views.length ? (
                     entry.allowed_views.map((view) => (
-                      <option value={view} key={view}>{viewLabel(view)}</option>
+                      <option value={view} key={view}>{permissionLabel(view)}</option>
                     ))
                   ) : (
                     <option value="">未设置</option>
@@ -197,7 +202,7 @@ export function RolePermissionsPanel({ settings, busy, onChange, onSave, onCreat
                       disabled={busy || view === "api-tokens"}
                       onChange={() => onChange(toggleRoleViewPermission(settings, role, view))}
                     />
-                    <span>{viewLabel(view)}{view === "api-tokens" ? "（仅 owner）" : ""}</span>
+                    <span>{permissionLabel(view)}{view === "api-tokens" ? "（仅 owner）" : ""}</span>
                   </label>
                 ))}
               </div>

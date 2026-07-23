@@ -40,6 +40,7 @@ describe("role permissions panel", () => {
     expect(html).toContain("运营管理");
     expect(html).toContain("客服");
     expect(html).toContain("添加用户类型");
+    expect(html).toContain("API Key 管理（仅 owner）");
     expect(html).toContain('title="删除客服"');
     expect(html).toMatch(/<input[^>]*checked=""[^>]*value="traffic-analysis"/);
     expect(html).toMatch(/<input[^>]*checked=""[^>]*value="operations-management"/);
