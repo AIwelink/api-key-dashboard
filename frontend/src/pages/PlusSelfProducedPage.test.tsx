@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   PlusSelfProducedView,
+  buildSettingsPayload,
+  type PlusGroupOption,
+  type PlusGroupSelection,
   type PlusSelfProducedResult,
   type PlusSelfProducedStatus,
 } from "./PlusSelfProducedPage";
@@ -10,15 +13,19 @@ import {
 
 const status: PlusSelfProducedStatus = {
   site_id: "US06-5002",
-  source_group_id: 4,
-  plus_group_id: 6,
-  banned_group_id: 7,
-  plus_error_group_id: 9,
+  source_group_id: 14,
+  plus_group_id: 16,
+  banned_group_id: 17,
+  plus_error_group_id: 19,
   model: "gpt-5.6-sol",
   running: false,
   settings: {
     enabled: true,
     interval_minutes: 15,
+    source_group_id: 14,
+    plus_group_id: 16,
+    banned_group_id: 17,
+    plus_error_group_id: 19,
   },
   last_run: {
     status: "completed_with_errors",
@@ -95,11 +102,35 @@ const results: PlusSelfProducedResult[] = [
     action_status: "plus_error",
     tested_at: "2026-07-21T10:00:06+00:00",
   },
+  {
+    id: "US06-5002:17",
+    remote_account_id: 17,
+    account_name: "reset failed@example.com",
+    classification: "failed",
+    action_status: "model_reset_failed",
+    error: "model reset failed",
+    tested_at: "2026-07-21T10:00:07+00:00",
+  },
 ];
+
+const groups: PlusGroupOption[] = [
+  { id: 14, name: "plus自产", status: "active" },
+  { id: 16, name: "plus 正常号池", status: "active" },
+  { id: 17, name: "封禁账号池", status: "active" },
+  { id: 19, name: "plus 错误池", status: "active" },
+];
+
+const groupSelection: PlusGroupSelection = {
+  source_group_id: 14,
+  plus_group_id: 16,
+  banned_group_id: 17,
+  plus_error_group_id: 19,
+};
 
 const callbacks = {
   onEnabledChange: () => undefined,
   onIntervalChange: () => undefined,
+  onGroupChange: () => undefined,
   onSave: () => undefined,
   onRun: () => undefined,
   onPageChange: () => undefined,
@@ -113,6 +144,8 @@ describe("plus self-produced page", () => {
         results={results}
         enabled
         intervalMinutes={15}
+        groups={groups}
+        groupSelection={groupSelection}
         loading={false}
         saving={false}
         running={false}
@@ -125,10 +158,16 @@ describe("plus self-produced page", () => {
 
     expect(html).toContain("plus自产");
     expect(html).toContain("US06-5002");
-    expect(html).toContain("4 → 6");
-    expect(html).toContain("4 → 7");
-    expect(html).toContain("6 → 4");
-    expect(html).toContain("6 → 9");
+    expect(html).toContain("14 → 16");
+    expect(html).toContain("14 → 17");
+    expect(html).toContain("16 → 14");
+    expect(html).toContain("16 → 19");
+    expect(html).toContain("自产来源池");
+    expect(html).toContain("Plus 正常池");
+    expect(html).toContain("封禁池");
+    expect(html).toContain("Plus 错误池");
+    expect(html).toContain("14 · plus自产");
+    expect(html).toContain("16 · plus 正常号池");
     expect(html).toContain("gpt-5.6-sol");
     expect(html).toContain("15 分钟");
     expect(html).toContain("测试通过");
@@ -140,6 +179,7 @@ describe("plus self-produced page", () => {
     expect(html).toContain("已转封禁");
     expect(html).toContain("已还原 Free");
     expect(html).toContain("Plus 错误池");
+    expect(html).toContain("模型重置失败");
     expect(html).toContain("205 条");
     expect(html).toContain("第 1 / 3 页");
     expect(html).toContain("下一页");
@@ -152,6 +192,8 @@ describe("plus self-produced page", () => {
         results={[]}
         enabled
         intervalMinutes={15}
+        groups={groups}
+        groupSelection={groupSelection}
         loading={false}
         saving={false}
         running
@@ -173,6 +215,8 @@ describe("plus self-produced page", () => {
         results={[]}
         enabled
         intervalMinutes={15}
+        groups={groups}
+        groupSelection={groupSelection}
         loading
         saving={false}
         running={false}
@@ -184,6 +228,40 @@ describe("plus self-produced page", () => {
     );
 
     expect(html).toContain("gpt-5.6-sol");
-    expect(html).toContain("6 → 9");
+    expect(html).toContain("16 → 19");
+  });
+
+  it("blocks save when group roles are not one-to-one", () => {
+    const html = renderToStaticMarkup(
+      <PlusSelfProducedView
+        status={status}
+        results={[]}
+        enabled
+        intervalMinutes={15}
+        groups={groups}
+        groupSelection={{ ...groupSelection, plus_group_id: 14 }}
+        loading={false}
+        saving={false}
+        running={false}
+        resultsTotal={0}
+        resultsPage={1}
+        resultsPageSize={100}
+        {...callbacks}
+      />,
+    );
+
+    expect(html).toContain("四个分组必须一对一，不能重复");
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>保存设置<\/button>/);
+  });
+
+  it("builds a complete settings payload", () => {
+    expect(buildSettingsPayload(true, 15, groupSelection)).toEqual({
+      enabled: true,
+      interval_minutes: 15,
+      source_group_id: 14,
+      plus_group_id: 16,
+      banned_group_id: 17,
+      plus_error_group_id: 19,
+    });
   });
 });

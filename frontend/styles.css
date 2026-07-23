@@ -5520,6 +5520,41 @@ code {
   gap: 10px;
 }
 
+.plus-routing-controls {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.plus-group-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.plus-group-field > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.plus-group-field select {
+  width: 100%;
+  min-width: 0;
+}
+
+.plus-settings-error {
+  grid-column: 1 / -1;
+  margin: -4px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .plus-interval-field {
   min-width: 120px;
 }
@@ -5712,6 +5747,10 @@ code {
     width: 100%;
   }
 
+  .plus-routing-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .plus-run-band {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -5734,6 +5773,13 @@ code {
 
   .plus-results-table-wrap {
     width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .plus-routing-controls,
+  .plus-settings-controls {
+    grid-template-columns: 1fr;
   }
 }
 
