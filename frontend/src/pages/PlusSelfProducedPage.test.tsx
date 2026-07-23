@@ -184,5 +184,6 @@ describe("plus self-produced page", () => {
     );
 
     expect(html).toContain("gpt-5.6-sol");
+    expect(html).toContain("6 → 9");
   });
 });
