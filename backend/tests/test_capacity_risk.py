@@ -4,7 +4,11 @@ import unittest
 from datetime import UTC, datetime, timedelta
 
 from app.modules.sub2api import capacity_risk
-from app.modules.sub2api.hourly_forecast import ForecastPoint, ForecastResult
+from app.modules.sub2api.hourly_forecast import (
+    ForecastPoint,
+    ForecastResult,
+    SurgePersistenceProfile,
+)
 
 
 NOW = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
@@ -57,6 +61,67 @@ def calculate(
 
 
 class CapacityRiskTests(unittest.TestCase):
+    def test_confirmed_recovery_surge_adapts_future_p90_without_following_current_rate_completely(self) -> None:
+        now = NOW + timedelta(minutes=30)
+        points = tuple(
+            ForecastPoint(index + 1, NOW + timedelta(hours=index), 100, 150, 14, "analog")
+            for index in range(25)
+        )
+        seasonal_forecast = ForecastResult(
+            model="robust_seasonal_analog",
+            version="2",
+            as_of=NOW,
+            readiness="eligible",
+            history_hours=56 * 24,
+            completeness_ratio=1.0,
+            points=points,
+        )
+        adaptive_forecast = ForecastResult(
+            model=seasonal_forecast.model,
+            version=seasonal_forecast.version,
+            as_of=seasonal_forecast.as_of,
+            readiness=seasonal_forecast.readiness,
+            history_hours=seasonal_forecast.history_hours,
+            completeness_ratio=seasonal_forecast.completeness_ratio,
+            points=points,
+            surge_profiles=(
+                SurgePersistenceProfile(
+                    stage="surge",
+                    event_count=20,
+                    preferred_event_count=10,
+                    confidence=0.8,
+                    persistence_ratios=(0.8, 0.65, 0.5),
+                    source="local_time_and_day_type",
+                ),
+            ),
+        )
+        sample_items = samples(
+            [1_000.0] * 15 + [20_000.0] * 5,
+            latest_at=now,
+            account_cost_per_minute=[1.0] * 15 + [10.0] * 5,
+        )
+        params = {
+            "now": now,
+            "actual_five_hour_remaining_usd": 2160,
+            "dynamic_five_hour_remaining_usd": 2160,
+            "actual_seven_day_remaining_usd": 5000,
+            "dynamic_seven_day_remaining_usd": 5000,
+            "current_hour_observed_cost_usd": 300,
+        }
+
+        seasonal = calculate(sample_items, demand_forecast=seasonal_forecast, **params)
+        adaptive = calculate(sample_items, demand_forecast=adaptive_forecast, **params)
+
+        self.assertEqual(adaptive["demand_regime_stage"], "surge")
+        self.assertTrue(adaptive["forecast_adaptive_p90_applied"])
+        self.assertEqual(adaptive["forecast_adaptive_p90_adjusted_points"], 3)
+        self.assertEqual(adaptive["forecast_adaptive_p90_persistence_h1"], 0.8)
+        self.assertEqual(adaptive["forecast_adaptive_p90_persistence_h2"], 0.65)
+        self.assertEqual(adaptive["forecast_adaptive_p90_persistence_h3"], 0.5)
+        self.assertLess(adaptive["forecast_p90_runway_hours"], seasonal["forecast_p90_runway_hours"])
+        self.assertGreater(adaptive["forecast_p90_runway_hours"], adaptive["actual_runway_hours"])
+        self.assertEqual(adaptive["forecast_p50_runway_hours"], seasonal["forecast_p50_runway_hours"])
+
     def test_latest_pool_sample_is_separate_from_pressure_forecast(self) -> None:
         result = calculate(samples([100] * 15 + [300] * 5, rpm=93))
 

@@ -7,6 +7,7 @@ from typing import Any
 from app.modules.sub2api.hourly_forecast import (
     ForecastInputError,
     ForecastResult,
+    apply_adaptive_p90_propagation,
     apply_current_hour_nowcast,
     forecast_cost_over_window,
     forecast_runway,
@@ -200,6 +201,15 @@ def calculate_capacity_risk(
     forecast_current_hour_selected_remaining_usd = None
     forecast_current_hour_candidate_remaining_usd = None
     forecast_nowcast_realtime_weight = None
+    forecast_adaptive_p90_applied = False
+    forecast_adaptive_p90_stage = None
+    forecast_adaptive_p90_profile_event_count = 0
+    forecast_adaptive_p90_profile_confidence = None
+    forecast_adaptive_p90_persistence_ratios: tuple[float, float, float] | None = None
+    forecast_adaptive_p90_realtime_cost_per_hour = None
+    forecast_adaptive_p90_adjusted_points = 0
+    forecast_adaptive_p90_original_total_usd = None
+    forecast_adaptive_p90_adjusted_total_usd = None
     forecast_meta: dict[str, Any] = {}
     if demand_forecast is not None:
         try:
@@ -238,6 +248,24 @@ def calculate_capacity_risk(
                 forecast_current_hour_selected_remaining_usd = nowcast.selected_p90_remaining_usd
                 forecast_current_hour_candidate_remaining_usd = selection.selected_remaining
                 forecast_nowcast_realtime_weight = selection.realtime_weight
+            adaptive_p90 = apply_adaptive_p90_propagation(
+                effective_forecast,
+                now=now,
+                realtime_cost_per_hour=realtime_burn_usd_per_hour,
+                stage=demand_regime.stage,
+                strength=demand_regime.strength,
+                confidence=demand_regime.confidence,
+            )
+            effective_forecast = adaptive_p90.forecast
+            forecast_adaptive_p90_applied = adaptive_p90.applied
+            forecast_adaptive_p90_stage = adaptive_p90.stage
+            forecast_adaptive_p90_profile_event_count = adaptive_p90.profile_event_count
+            forecast_adaptive_p90_profile_confidence = adaptive_p90.profile_confidence
+            forecast_adaptive_p90_persistence_ratios = adaptive_p90.persistence_ratios
+            forecast_adaptive_p90_realtime_cost_per_hour = adaptive_p90.realtime_cost_per_hour
+            forecast_adaptive_p90_adjusted_points = adaptive_p90.adjusted_points
+            forecast_adaptive_p90_original_total_usd = adaptive_p90.original_p90_total_usd
+            forecast_adaptive_p90_adjusted_total_usd = adaptive_p90.adjusted_p90_total_usd
             actual_forecast = forecast_runway(
                 effective_forecast,
                 remaining_usd=actual_remaining_usd,
@@ -393,6 +421,40 @@ def calculate_capacity_risk(
         "forecast_current_hour_candidate_remaining_usd": _rounded(forecast_current_hour_candidate_remaining_usd),
         "forecast_nowcast_realtime_weight": _rounded(forecast_nowcast_realtime_weight),
         "forecast_nowcast_selector": "regime_aware_v2" if REGIME_NOWCAST_V2_ENABLED else "current_max_v1",
+        "forecast_adaptive_p90_applied": forecast_adaptive_p90_applied,
+        "forecast_adaptive_p90_stage": forecast_adaptive_p90_stage,
+        "forecast_adaptive_p90_profile_event_count": forecast_adaptive_p90_profile_event_count,
+        "forecast_adaptive_p90_profile_confidence": _rounded(forecast_adaptive_p90_profile_confidence),
+        "forecast_adaptive_p90_persistence_ratios": (
+            [_rounded(value) for value in forecast_adaptive_p90_persistence_ratios]
+            if forecast_adaptive_p90_persistence_ratios is not None
+            else None
+        ),
+        "forecast_adaptive_p90_persistence_h1": _rounded(
+            forecast_adaptive_p90_persistence_ratios[0]
+            if forecast_adaptive_p90_persistence_ratios is not None
+            else None
+        ),
+        "forecast_adaptive_p90_persistence_h2": _rounded(
+            forecast_adaptive_p90_persistence_ratios[1]
+            if forecast_adaptive_p90_persistence_ratios is not None
+            else None
+        ),
+        "forecast_adaptive_p90_persistence_h3": _rounded(
+            forecast_adaptive_p90_persistence_ratios[2]
+            if forecast_adaptive_p90_persistence_ratios is not None
+            else None
+        ),
+        "forecast_adaptive_p90_realtime_cost_per_hour": _rounded(
+            forecast_adaptive_p90_realtime_cost_per_hour
+        ),
+        "forecast_adaptive_p90_adjusted_points": forecast_adaptive_p90_adjusted_points,
+        "forecast_adaptive_p90_original_total_usd": _rounded(
+            forecast_adaptive_p90_original_total_usd
+        ),
+        "forecast_adaptive_p90_adjusted_total_usd": _rounded(
+            forecast_adaptive_p90_adjusted_total_usd
+        ),
         "target_runway_hours": DYNAMIC_RUNWAY_TARGET_HOURS,
         "actual_target_hours": ACTUAL_RUNWAY_TARGET_HOURS,
         "concurrency_target_coverage": TOTAL_CONCURRENCY_TARGET,

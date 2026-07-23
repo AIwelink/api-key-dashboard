@@ -29,7 +29,8 @@ During hourly forecast generation, completed hourly history is used to build ris
 - An event anchor compares an hour's cost with the median of its preceding three complete hours.
 - `warming` events have a ratio from 1.20 to below 1.50.
 - `surge` events have a ratio of at least 1.50.
-- For each anchor, record the cost ratios for the next one, two, and three hours relative to the anchor hour.
+- Consecutive rising hours inside the following three-hour window belong to the same event rather than becoming nested anchors.
+- Use the greater of the anchor-hour cost and the first following complete-hour cost as the recovered-rate reference. Record the next one, two, and three hour ratios against that reference so a partially interrupted anchor hour does not amplify an already recovered realtime rate twice.
 - Prefer events from the same local-time band and the same weekday/weekend class. Fall back to all events in the same intensity class when the preferred set is too small.
 - Use recency-weighted P90 persistence ratios so the result remains conservative while still reflecting this group's observed recovery pattern.
 
@@ -84,6 +85,7 @@ Unit tests cover:
 
 - a confirmed recovery surge lowers P90 runway by adjusting future hours;
 - P90 does not collapse all the way to current-speed runway when historical persistence is moderate;
+- a partial-hour recovery ramp is merged into one event and is not applied twice to the realtime rate;
 - historically persistent surges produce a stronger adjustment than historically short surges;
 - stable, cooling, stale, and unconfirmed signals do not propagate;
 - sparse history receives limited influence;
@@ -91,4 +93,3 @@ Unit tests cover:
 - cached forecasts preserve historical profiles.
 
 Backtest evaluation compares the existing and adaptive P90 on rolling origins using P90 coverage, pinball loss, 5:1 underprediction risk loss, and runway error during detected surge windows. Release requires no future-data leakage and no material regression outside surge windows.
-

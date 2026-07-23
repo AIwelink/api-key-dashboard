@@ -8,13 +8,18 @@ from typing import Sequence
 
 
 MODEL_NAME = "robust_seasonal_analog"
-MODEL_VERSION = "1"
+MODEL_VERSION = "2"
 MINIMUM_HISTORY_HOURS = 7 * 24
 PROVISIONAL_HISTORY_HOURS = 14 * 24
 ELIGIBLE_HISTORY_HOURS = 56 * 24
 MAX_ANALOG_DAYS = 28
 CONTEXT_HOURS = 3
 INACTIVE_REGIME_GAP_HOURS = 48
+SURGE_PROFILE_HORIZONS = 3
+SURGE_PROFILE_MIN_PREFERRED_EVENTS = 4
+SURGE_PROFILE_FULL_CONFIDENCE_EVENTS = 8
+SURGE_PROFILE_MAX_RATIO = 3.0
+ADAPTIVE_P90_HORIZON_WEIGHTS = (0.80, 0.60, 0.40)
 SHANGHAI_TZ = timezone(timedelta(hours=8))
 
 
@@ -41,6 +46,16 @@ class ForecastPoint:
 
 
 @dataclass(frozen=True, slots=True)
+class SurgePersistenceProfile:
+    stage: str
+    event_count: int
+    preferred_event_count: int
+    confidence: float
+    persistence_ratios: tuple[float, float, float]
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
 class ForecastResult:
     model: str
     version: str
@@ -49,6 +64,7 @@ class ForecastResult:
     history_hours: int
     completeness_ratio: float
     points: tuple[ForecastPoint, ...]
+    surge_profiles: tuple[SurgePersistenceProfile, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +83,20 @@ class CurrentHourNowcast:
     model_p90_remaining_usd: float
     realtime_remaining_usd: float
     selected_p90_remaining_usd: float
+
+
+@dataclass(frozen=True, slots=True)
+class AdaptiveP90Propagation:
+    forecast: ForecastResult
+    applied: bool
+    stage: str
+    profile_event_count: int
+    profile_confidence: float
+    persistence_ratios: tuple[float, float, float]
+    realtime_cost_per_hour: float
+    adjusted_points: int
+    original_p90_total_usd: float
+    adjusted_p90_total_usd: float
 
 
 def forecast_hourly_demand(
@@ -135,6 +165,109 @@ def forecast_hourly_demand(
         history_hours=len(normalized),
         completeness_ratio=round(completeness_ratio, 6),
         points=tuple(points),
+        surge_profiles=_build_surge_persistence_profiles(normalized, as_of=normalized_as_of),
+    )
+
+
+def _build_surge_persistence_profiles(
+    history: Sequence[HourlyObservation],
+    *,
+    as_of: datetime,
+) -> tuple[SurgePersistenceProfile, ...]:
+    by_bucket = {item.bucket_at: item for item in history}
+    events: dict[str, list[tuple[datetime, tuple[float, float, float]]]] = {
+        "warming": [],
+        "surge": [],
+    }
+    last_event_at: datetime | None = None
+    for anchor in history:
+        if last_event_at is not None and anchor.bucket_at <= last_event_at + timedelta(hours=SURGE_PROFILE_HORIZONS):
+            continue
+        preceding = [
+            by_bucket.get(anchor.bucket_at - timedelta(hours=hours_ago))
+            for hours_ago in range(CONTEXT_HOURS, 0, -1)
+        ]
+        following = [
+            by_bucket.get(anchor.bucket_at + timedelta(hours=horizon))
+            for horizon in range(1, SURGE_PROFILE_HORIZONS + 1)
+        ]
+        if any(item is None for item in preceding) or any(item is None for item in following):
+            continue
+        baseline = statistics.median(item.account_cost for item in preceding if item is not None)
+        previous = preceding[-1]
+        if baseline <= 0 or previous is None or anchor.account_cost <= previous.account_cost * 1.05:
+            continue
+        rise_ratio = anchor.account_cost / baseline
+        if rise_ratio < 1.20:
+            continue
+        stage = "warming" if rise_ratio < 1.50 else "surge"
+        reference_cost = max(anchor.account_cost, following[0].account_cost if following[0] is not None else 0.0)
+        persistence = tuple(
+            min(SURGE_PROFILE_MAX_RATIO, max(0.0, item.account_cost / reference_cost))
+            for item in following
+            if item is not None
+        )
+        if len(persistence) == SURGE_PROFILE_HORIZONS:
+            events[stage].append((anchor.bucket_at, persistence))
+            last_event_at = anchor.bucket_at
+
+    profiles = []
+    for stage in ("warming", "surge"):
+        stage_events = events[stage]
+        if not stage_events:
+            continue
+        preferred = [
+            event
+            for event in stage_events
+            if _same_local_time_band(event[0], as_of) and _same_day_type(event[0], as_of)
+        ]
+        if len(preferred) >= SURGE_PROFILE_MIN_PREFERRED_EVENTS:
+            selected = preferred
+            source = "local_time_and_day_type"
+            confidence = min(1.0, len(selected) / SURGE_PROFILE_FULL_CONFIDENCE_EVENTS)
+        else:
+            selected = stage_events
+            source = "stage_fallback"
+            confidence = min(1.0, len(selected) / (SURGE_PROFILE_FULL_CONFIDENCE_EVENTS * 1.5)) * 0.70
+        ratios = tuple(
+            round(
+                weighted_quantile(
+                    [
+                        (
+                            persistence[horizon],
+                            0.5 ** (max(0.0, (as_of - bucket_at).total_seconds() / 86400) / 28),
+                        )
+                        for bucket_at, persistence in selected
+                    ],
+                    0.90,
+                ),
+                6,
+            )
+            for horizon in range(SURGE_PROFILE_HORIZONS)
+        )
+        profiles.append(
+            SurgePersistenceProfile(
+                stage=stage,
+                event_count=len(stage_events),
+                preferred_event_count=len(preferred),
+                confidence=round(confidence, 6),
+                persistence_ratios=ratios,
+                source=source,
+            )
+        )
+    return tuple(profiles)
+
+
+def _same_local_time_band(left: datetime, right: datetime) -> bool:
+    left_hour = left.astimezone(SHANGHAI_TZ).hour
+    right_hour = right.astimezone(SHANGHAI_TZ).hour
+    distance = abs(left_hour - right_hour)
+    return min(distance, 24 - distance) <= 2
+
+
+def _same_day_type(left: datetime, right: datetime) -> bool:
+    return (left.astimezone(SHANGHAI_TZ).weekday() >= 5) == (
+        right.astimezone(SHANGHAI_TZ).weekday() >= 5
     )
 
 
@@ -189,6 +322,110 @@ def apply_current_hour_nowcast(
         model_p90_remaining_usd=round(model_p90_remaining, 6),
         realtime_remaining_usd=round(realtime_remaining, 6),
         selected_p90_remaining_usd=round(selected_p90_remaining, 6),
+    )
+
+
+def apply_adaptive_p90_propagation(
+    forecast: ForecastResult,
+    *,
+    now: datetime,
+    realtime_cost_per_hour: float,
+    stage: str,
+    strength: float,
+    confidence: float,
+) -> AdaptiveP90Propagation:
+    current_at = _aware_utc(now, field_name="now")
+    realtime_rate = _nonnegative(realtime_cost_per_hour, field_name="realtime_cost_per_hour")
+    normalized_stage = str(stage or "stable").strip().lower()
+    profile = next(
+        (item for item in forecast.surge_profiles if item.stage == normalized_stage),
+        None,
+    )
+    if normalized_stage not in {"warming", "surge"} or profile is None or realtime_rate <= 0:
+        return _unchanged_adaptive_p90(
+            forecast,
+            stage=normalized_stage,
+            realtime_cost_per_hour=realtime_rate,
+        )
+
+    normalized_strength = min(1.0, _nonnegative(strength, field_name="strength"))
+    normalized_confidence = min(1.0, _nonnegative(confidence, field_name="confidence"))
+    profile_confidence = min(
+        1.0,
+        _nonnegative(profile.confidence, field_name="profile confidence"),
+    )
+    stage_weight = 0.65 if normalized_stage == "warming" else 1.0
+    regime_weight = normalized_confidence * (0.5 + 0.5 * normalized_strength) * stage_weight
+    if regime_weight <= 0 or profile_confidence <= 0:
+        return _unchanged_adaptive_p90(
+            forecast,
+            stage=normalized_stage,
+            realtime_cost_per_hour=realtime_rate,
+            profile=profile,
+        )
+
+    current_hour = current_at.replace(minute=0, second=0, microsecond=0)
+    future_indices = [
+        index
+        for index, point in sorted(
+            enumerate(forecast.points),
+            key=lambda item: item[1].target_at,
+        )
+        if _natural_utc_hour(point.target_at, field_name="forecast target_at") > current_hour
+    ][:SURGE_PROFILE_HORIZONS]
+    points = list(forecast.points)
+    original_total = 0.0
+    adjusted_total = 0.0
+    adjusted_points = 0
+    for horizon, point_index in enumerate(future_indices):
+        point = points[point_index]
+        original_p90 = _nonnegative(point.p90, field_name="p90")
+        continuation = realtime_rate * profile.persistence_ratios[horizon]
+        blend_weight = regime_weight * profile_confidence * ADAPTIVE_P90_HORIZON_WEIGHTS[horizon]
+        adjusted_p90 = original_p90 + max(0.0, continuation - original_p90) * blend_weight
+        adjusted_p90 = max(_nonnegative(point.p50, field_name="p50"), original_p90, adjusted_p90)
+        original_total += original_p90
+        adjusted_total += adjusted_p90
+        if adjusted_p90 > original_p90 + 1e-9:
+            adjusted_points += 1
+            points[point_index] = replace(
+                point,
+                p90=round(adjusted_p90, 6),
+                source=f"{point.source}+adaptive_p90",
+            )
+
+    return AdaptiveP90Propagation(
+        forecast=replace(forecast, points=tuple(points)),
+        applied=adjusted_points > 0,
+        stage=normalized_stage,
+        profile_event_count=profile.event_count,
+        profile_confidence=round(profile_confidence, 6),
+        persistence_ratios=profile.persistence_ratios,
+        realtime_cost_per_hour=round(realtime_rate, 6),
+        adjusted_points=adjusted_points,
+        original_p90_total_usd=round(original_total, 6),
+        adjusted_p90_total_usd=round(adjusted_total, 6),
+    )
+
+
+def _unchanged_adaptive_p90(
+    forecast: ForecastResult,
+    *,
+    stage: str,
+    realtime_cost_per_hour: float,
+    profile: SurgePersistenceProfile | None = None,
+) -> AdaptiveP90Propagation:
+    return AdaptiveP90Propagation(
+        forecast=forecast,
+        applied=False,
+        stage=stage,
+        profile_event_count=profile.event_count if profile is not None else 0,
+        profile_confidence=profile.confidence if profile is not None else 0.0,
+        persistence_ratios=profile.persistence_ratios if profile is not None else (0.0, 0.0, 0.0),
+        realtime_cost_per_hour=round(realtime_cost_per_hour, 6),
+        adjusted_points=0,
+        original_p90_total_usd=0.0,
+        adjusted_p90_total_usd=0.0,
     )
 
 

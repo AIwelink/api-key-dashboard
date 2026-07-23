@@ -8,10 +8,13 @@ from typing import Any, Awaitable, Callable
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.modules.sub2api.hourly_forecast import (
+    MODEL_NAME,
+    MODEL_VERSION,
     ForecastInputError,
     ForecastPoint,
     ForecastResult,
     HourlyObservation,
+    SurgePersistenceProfile,
     forecast_hourly_demand,
 )
 from app.modules.sub2api.hourly_forecast_repository import fetch_group_hourly_observations
@@ -43,7 +46,9 @@ async def get_or_create_group_hourly_forecast(
     async with lock:
         cached = await db.sub2api_hourly_forecasts.find_one({"_id": forecast_id})
         if isinstance(cached, dict):
-            return _forecast_from_document(cached)
+            cached_result = _forecast_from_document(cached)
+            if cached_result.model == MODEL_NAME and cached_result.version == MODEL_VERSION:
+                return cached_result
 
         history = await observation_fetcher(
             str(sql_dsn),
@@ -83,6 +88,18 @@ def _forecast_from_document(document: dict[str, Any]) -> ForecastResult:
     )
     if len(points) != len(raw_points):
         raise ForecastInputError("cached forecast contains invalid points")
+    raw_profiles = document.get("surge_profiles")
+    if raw_profiles is None:
+        raw_profiles = []
+    if not isinstance(raw_profiles, (list, tuple)):
+        raise ForecastInputError("cached forecast surge profiles are invalid")
+    profiles = tuple(
+        _profile_from_document(profile)
+        for profile in raw_profiles
+        if isinstance(profile, dict)
+    )
+    if len(profiles) != len(raw_profiles):
+        raise ForecastInputError("cached forecast contains invalid surge profiles")
     return ForecastResult(
         model=str(document.get("model") or ""),
         version=str(document.get("version") or ""),
@@ -91,6 +108,21 @@ def _forecast_from_document(document: dict[str, Any]) -> ForecastResult:
         history_hours=int(document.get("history_hours") or 0),
         completeness_ratio=float(document.get("completeness_ratio") or 0),
         points=points,
+        surge_profiles=profiles,
+    )
+
+
+def _profile_from_document(document: dict[str, Any]) -> SurgePersistenceProfile:
+    raw_ratios = document.get("persistence_ratios")
+    if not isinstance(raw_ratios, (list, tuple)) or len(raw_ratios) != 3:
+        raise ForecastInputError("cached surge profile persistence ratios are invalid")
+    return SurgePersistenceProfile(
+        stage=str(document.get("stage") or ""),
+        event_count=int(document.get("event_count") or 0),
+        preferred_event_count=int(document.get("preferred_event_count") or 0),
+        confidence=float(document.get("confidence") or 0),
+        persistence_ratios=tuple(float(value) for value in raw_ratios),
+        source=str(document.get("source") or "stage_fallback"),
     )
 
 

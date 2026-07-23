@@ -53,7 +53,7 @@ class ForecastResult:
     surge_profiles: tuple[SurgePersistenceProfile, ...] = ()
 ```
 
-Scan completed history for anchors whose cost is at least 1.20 times the preceding three-hour median. Classify ratios below 1.50 as `warming` and the rest as `surge`. Calculate recency-weighted P90 ratios for the next three hours. Prefer matching Shanghai local-time bands and weekday/weekend class when enough events exist; otherwise use all events in the same class. Confidence grows with event count and is reduced for fallback samples.
+Scan completed history for anchors whose cost is at least 1.20 times the preceding three-hour median. Classify ratios below 1.50 as `warming` and the rest as `surge`. Merge rising hours inside the next three-hour window into one event. Normalize the three following hours against the greater of the anchor cost and first following complete-hour cost, then calculate recency-weighted P90 ratios. This prevents a partially interrupted anchor hour from multiplying an already recovered realtime rate twice. Prefer matching Shanghai local-time bands and weekday/weekend class when enough events exist; otherwise use all events in the same class. Confidence grows with event count and is reduced for fallback samples.
 
 - [ ] **Step 4: Run tests and verify GREEN**
 
@@ -200,4 +200,3 @@ Expected: all frontend tests pass and Vite produces a successful production buil
 - [ ] **Step 3: Review the final diff**
 
 Confirm that only forecast profile generation, adaptive P90 propagation, cache compatibility, diagnostics, tests, and planning documents changed. Confirm P50 and current-speed semantics remain unchanged.
-
