@@ -8,6 +8,8 @@ import {
   emptyChannelForm,
   emptySiteForm,
   emptyTrackingLinkForm,
+  filterCampaigns,
+  filterChannels,
   filterTrackingLinks,
   runMutationAndRefresh,
   type GrowthCampaign,
@@ -274,6 +276,31 @@ describe("traffic analysis configuration workspace", () => {
       status: "active",
       keyword: "Claude API",
     })).toEqual([trackingLink]);
+  });
+
+  it("filters channels by status and keyword", () => {
+    expect(filterChannels([
+      channel,
+      { ...channel, channel_id: "telegram", code: "telegram", name: "Telegram", status: "disabled" },
+    ], {
+      status: "active",
+      keyword: "小红书",
+    })).toEqual([channel]);
+  });
+
+  it("filters campaigns by site, channel, status, and keyword", () => {
+    expect(filterCampaigns([
+      campaign,
+      { ...campaign, campaign_id: "other-site", site_id: "other" },
+      { ...campaign, campaign_id: "other-channel", channel_id: "other" },
+      { ...campaign, campaign_id: "paused", status: "paused" },
+      { ...campaign, campaign_id: "other-name", name: "其他活动", code: "other" },
+    ], {
+      site_id: site.site_id,
+      channel_id: channel.channel_id,
+      status: "active",
+      keyword: "summer",
+    })).toEqual([campaign]);
   });
 
   it("keeps a successful mutation successful when the following refresh fails", async () => {

@@ -120,6 +120,18 @@ export type TrackingLinkFilters = {
   keyword: string;
 };
 
+export type ChannelFilters = {
+  status: "" | "active" | "disabled" | "archived";
+  keyword: string;
+};
+
+export type CampaignFilters = {
+  site_id: string;
+  channel_id: string;
+  status: "" | "draft" | "active" | "paused" | "archived";
+  keyword: string;
+};
+
 export type MutationRefreshResult =
   | { status: "saved" }
   | { status: "saved_refresh_failed"; error: unknown }
@@ -129,6 +141,15 @@ export const emptyTrackingLinkFilters: TrackingLinkFilters = {
   site_id: "",
   channel_id: "",
   campaign_id: "",
+  status: "",
+  keyword: "",
+};
+
+export const emptyChannelFilters: ChannelFilters = { status: "", keyword: "" };
+
+export const emptyCampaignFilters: CampaignFilters = {
+  site_id: "",
+  channel_id: "",
   status: "",
   keyword: "",
 };
@@ -220,6 +241,28 @@ export function filterTrackingLinks(links: GrowthTrackingLink[], filters: Tracki
       link.channel_name,
       link.site_name,
     ].some((value) => String(value || "").toLocaleLowerCase().includes(keyword));
+  });
+}
+
+export function filterChannels(items: GrowthChannel[], filters: ChannelFilters) {
+  const keyword = filters.keyword.trim().toLocaleLowerCase();
+  return items.filter((item) => {
+    if (filters.status && item.status !== filters.status) return false;
+    if (!keyword) return true;
+    return [item.code, item.name, item.description]
+      .some((value) => String(value || "").toLocaleLowerCase().includes(keyword));
+  });
+}
+
+export function filterCampaigns(items: GrowthCampaign[], filters: CampaignFilters) {
+  const keyword = filters.keyword.trim().toLocaleLowerCase();
+  return items.filter((item) => {
+    if (filters.site_id && item.site_id !== filters.site_id) return false;
+    if (filters.channel_id && item.channel_id !== filters.channel_id) return false;
+    if (filters.status && item.status !== filters.status) return false;
+    if (!keyword) return true;
+    return [item.code, item.name, item.description, item.site_name, item.channel_name]
+      .some((value) => String(value || "").toLocaleLowerCase().includes(keyword));
   });
 }
 
