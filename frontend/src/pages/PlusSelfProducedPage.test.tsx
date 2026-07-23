@@ -13,6 +13,7 @@ const status: PlusSelfProducedStatus = {
   source_group_id: 4,
   plus_group_id: 6,
   banned_group_id: 7,
+  plus_error_group_id: 10,
   model: "gpt-5.6-sol",
   running: false,
   settings: {
@@ -26,6 +27,8 @@ const status: PlusSelfProducedStatus = {
     eligible: 4,
     promoted: 3,
     banned: 2,
+    downgraded: 1,
+    plus_errors: 1,
     failed: 3,
     finished_at: "2026-07-21T10:00:00+00:00",
   },
@@ -76,6 +79,22 @@ const results: PlusSelfProducedResult[] = [
     error: "API returned 403",
     tested_at: "2026-07-21T10:00:04+00:00",
   },
+  {
+    id: "US06-5002:15",
+    remote_account_id: 15,
+    account_name: "plus free@example.com",
+    classification: "model_not_supported",
+    action_status: "reverted_to_free",
+    tested_at: "2026-07-21T10:00:05+00:00",
+  },
+  {
+    id: "US06-5002:16",
+    remote_account_id: 16,
+    account_name: "plus blocked@example.com",
+    classification: "unauthorized_banned",
+    action_status: "plus_error",
+    tested_at: "2026-07-21T10:00:06+00:00",
+  },
 ];
 
 const callbacks = {
@@ -108,6 +127,8 @@ describe("plus self-produced page", () => {
     expect(html).toContain("US06-5002");
     expect(html).toContain("4 → 6");
     expect(html).toContain("4 → 7");
+    expect(html).toContain("6 → 4");
+    expect(html).toContain("6 → 10");
     expect(html).toContain("gpt-5.6-sol");
     expect(html).toContain("15 分钟");
     expect(html).toContain("测试通过");
@@ -117,6 +138,8 @@ describe("plus self-produced page", () => {
     expect(html).toContain("失败");
     expect(html).toContain("已晋级");
     expect(html).toContain("已转封禁");
+    expect(html).toContain("已还原 Free");
+    expect(html).toContain("Plus 错误池");
     expect(html).toContain("205 条");
     expect(html).toContain("第 1 / 3 页");
     expect(html).toContain("下一页");

@@ -67,6 +67,39 @@ type QuotaDetectionResponse = {
   site_id: string;
   items: QuotaDetectionItem[];
   last_evaluated_at?: string | null;
+  account_health_analysis?: AccountHealthAnalysis | null;
+};
+
+type AccountHealthMetrics = {
+  account_type: string;
+  observed_accounts: number;
+  unavailable_accounts: number;
+  unavailable_probability: number | null;
+  episode_count: number;
+  ongoing_unavailable_accounts: number;
+  average_unavailable_duration_seconds: number | null;
+  average_five_hour_used_percent: number | null;
+  average_seven_day_used_percent: number | null;
+  average_five_hour_actual_cost_usd: number | null;
+  average_seven_day_actual_cost_usd: number | null;
+};
+
+type AccountHealthPeriod = {
+  start_at: string;
+  end_at: string;
+  overall: AccountHealthMetrics;
+  items: AccountHealthMetrics[];
+};
+
+type AccountHealthAnalysis = {
+  site_id: string;
+  computed_at?: string | null;
+  next_refresh_at?: string | null;
+  stale?: boolean;
+  periods?: {
+    one_day?: AccountHealthPeriod;
+    seven_days?: AccountHealthPeriod;
+  };
 };
 
 type GroupObservabilitySetting = {
@@ -791,6 +824,10 @@ export function AccountPoolsPage({ token, showToast }: Props) {
             <div className="quota-detection-empty">暂无有效样本</div>
           )}
         </div>
+        <AccountHealthAnalysisView
+          loading={loadingQuotaDetection}
+          value={quotaDetection?.account_health_analysis}
+        />
       </section>
 
       <section className="panel observability-config-panel">
@@ -1043,6 +1080,127 @@ function QuotaWindowResult({ label, value }: { label: string; value: QuotaDetect
       </span>
     </div>
   );
+}
+
+function AccountHealthAnalysisView({
+  loading,
+  value,
+}: {
+  loading: boolean;
+  value?: AccountHealthAnalysis | null;
+}) {
+  const oneDay = value?.periods?.one_day;
+  const sevenDays = value?.periods?.seven_days;
+  const accountTypes = Array.from(
+    new Set([...(oneDay?.items || []), ...(sevenDays?.items || [])].map((item) => item.account_type)),
+  );
+  const rows = [
+    {
+      key: "all",
+      label: "全部账号",
+      oneDay: oneDay?.overall,
+      sevenDays: sevenDays?.overall,
+      overall: true,
+    },
+    ...accountTypes.map((accountType) => ({
+      key: accountType,
+      label: quotaDetectionLabels[accountType as QuotaDetectionAccountType] || accountType,
+      oneDay: oneDay?.items.find((item) => item.account_type === accountType),
+      sevenDays: sevenDays?.items.find((item) => item.account_type === accountType),
+      overall: false,
+    })),
+  ];
+  const hasData = Boolean(oneDay?.overall?.observed_accounts || sevenDays?.overall?.observed_accounts);
+
+  return (
+    <div className="account-health-analysis" aria-busy={loading}>
+      <div className="account-health-header">
+        <div>
+          <h4>全部账号分析</h4>
+          <p>认证失效、明确封禁与 502 合并统计；429、临时 403 和仅停止调度不计入。</p>
+        </div>
+        <span className={value?.stale ? "is-stale" : ""}>
+          {value?.computed_at
+            ? `${value.stale ? "上次成功统计" : "最近统计"} ${formatDateTime(value.computed_at)} · 每小时更新`
+            : loading
+              ? "正在统计"
+              : "等待统计"}
+        </span>
+      </div>
+      {hasData ? (
+        <div className="account-health-table">
+          <div className="account-health-heading" aria-hidden="true">
+            <span>账号类型</span>
+            <span>最近 1 天</span>
+            <span>最近 7 天</span>
+          </div>
+          {rows.map((row) => (
+            <div className={`account-health-row${row.overall ? " is-overall" : ""}`} key={row.key}>
+              <strong>{row.label}</strong>
+              <AccountHealthPeriodResult label="最近 1 天" value={row.oneDay} />
+              <AccountHealthPeriodResult label="最近 7 天" value={row.sevenDays} />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="quota-detection-empty">暂无足够的账号变化记录</div>
+      )}
+    </div>
+  );
+}
+
+function AccountHealthPeriodResult({
+  label,
+  value,
+}: {
+  label: string;
+  value?: AccountHealthMetrics;
+}) {
+  return (
+    <div className="account-health-period">
+      <span className="quota-window-mobile-label">{label}</span>
+      <div className="account-health-probability">
+        <strong>{formatHealthProbability(value?.unavailable_probability)}</strong>
+        <span>不可用概率</span>
+      </div>
+      <span>
+        {value ? `${value.unavailable_accounts} / ${value.observed_accounts} 个账号` : "无观察账号"}
+        {value?.episode_count ? ` · ${value.episode_count} 次区间` : ""}
+      </span>
+      <span>
+        平均不可用 {formatHealthDuration(value?.average_unavailable_duration_seconds)}
+        {value?.ongoing_unavailable_accounts ? ` · 进行中 ${value.ongoing_unavailable_accounts}` : ""}
+      </span>
+      <span>
+        平均使用 5h {formatHealthUsage(value?.average_five_hour_used_percent)} · 7d {formatHealthUsage(value?.average_seven_day_used_percent)}
+      </span>
+      <span>
+        平均实际成本 5h {formatQuotaUsd(value?.average_five_hour_actual_cost_usd)} · 7d {formatQuotaUsd(value?.average_seven_day_actual_cost_usd)}
+      </span>
+    </div>
+  );
+}
+
+export function formatHealthProbability(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "-";
+}
+
+export function formatHealthDuration(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "-";
+  const seconds = Math.round(value);
+  if (seconds < 60) return `${seconds}秒`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}分${seconds % 60 ? `${seconds % 60}秒` : ""}`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours < 24) return `${hours}小时${remainingMinutes ? `${remainingMinutes}分` : ""}`;
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  return `${days}天${remainingHours ? `${remainingHours}小时` : ""}`;
+}
+
+function formatHealthUsage(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(1)}%` : "-";
 }
 
 function formatQuotaUsd(value: number | null | undefined) {

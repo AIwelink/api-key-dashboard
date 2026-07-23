@@ -1,3 +1,6 @@
+import asyncio
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -10,12 +13,14 @@ from app.modules.system.audit import write_audit_log
 from app.modules.api_pools.capacity_limits import capacity_limits_setting_id, get_capacity_account_limits, update_capacity_account_limits
 from app.modules.accounts.pool_lifecycle import capacity_check
 from app.modules.sub2api.account_probe import list_duplicate_email_alerts, list_group_observability_settings, mark_duplicate_email_alert_read, probe_site_accounts, update_group_observability_setting
+from app.modules.sub2api.account_health_analysis import get_account_health_analysis
 from app.modules.sub2api.auto_refill import list_auto_refill_logs
 from app.modules.sub2api.cache import get_site
 from app.modules.sub2api.quota_detection import get_quota_detection_summary
 
 
 router = APIRouter(prefix="/api-pools", tags=["api-pools"])
+logger = logging.getLogger("app.api_pools")
 
 
 @router.get("")
@@ -84,7 +89,24 @@ async def get_quota_detection(
 ) -> dict:
     if not await get_site(db, site_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
-    return await get_quota_detection_summary(db, site_id)
+    quota_result, health_result = await asyncio.gather(
+        get_quota_detection_summary(db, site_id),
+        get_account_health_analysis(db, site_id),
+        return_exceptions=True,
+    )
+    if isinstance(quota_result, BaseException):
+        raise quota_result
+    quota_summary = quota_result
+    if isinstance(health_result, BaseException):
+        logger.warning(
+            "sub2api_account_health_analysis_failed site_id=%s error_type=%s",
+            site_id,
+            type(health_result).__name__,
+        )
+        health_analysis = {"site_id": site_id, "periods": {}, "stale": True}
+    else:
+        health_analysis = health_result
+    return {**quota_summary, "account_health_analysis": health_analysis}
 
 
 @router.get("/status-preferences")

@@ -25,6 +25,7 @@ from app.modules.sub2api.cache import (
     _load_verified_plan_states,
     _plan_type_from_plus_bundle_signature,
     _plan_type_from_standard_name,
+    _quota_detection_account_type,
     get_site,
     is_bug_team_account,
     is_sub2api_site,
@@ -462,6 +463,8 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
                 current_source=account.get("plan_type_source"),
                 previous_source=(previous_identity or {}).get("plan_type_source"),
             )
+            if account.get("account_type") not in {"special_plus", "special_team"}:
+                account["account_type"] = account.get("plan_type") or "unknown"
             history_change, history_baseline_override = _prepare_history_change(
                 site_id=site_id,
                 account=account,
@@ -659,6 +662,12 @@ def _normalize_probe_account(account: dict[str, Any]) -> dict[str, Any]:
         "subscription_snapshot": _subscription_snapshot(account, credentials, extra),
         "raw_hash": _stable_hash(_compact_raw(account)),
     }
+    detected_account_type = _quota_detection_account_type({**account, "plan_type": normalized["plan_type"]})
+    normalized["account_type"] = (
+        detected_account_type
+        if detected_account_type in {"special_plus", "special_team"}
+        else normalized["plan_type"] or "unknown"
+    )
     return normalized
 
 
@@ -1161,6 +1170,7 @@ async def _update_identity_and_events(
         "401_recovery_streak": confirmed_401["recovery_streak"],
         "current_group_ids": account.get("group_ids") or [],
         "plan_type": account.get("plan_type"),
+        "account_type": account.get("account_type"),
         "plan_type_source": account.get("plan_type_source"),
         "last_usage_snapshot": account.get("usage_snapshot") or {},
         "current_subscription_snapshot": account.get("subscription_snapshot") or {},
@@ -1313,6 +1323,7 @@ async def _write_event(
         "email": account.get("email") or (identity or previous or {}).get("email"),
         "name": account.get("name") or (identity or previous or {}).get("name"),
         "plan_type": account.get("plan_type") or (identity or previous or {}).get("plan_type"),
+        "account_type": account.get("account_type") or (identity or previous or {}).get("account_type"),
         "remote_account_id": account.get("remote_account_id") or (identity or previous or {}).get("current_remote_account_id"),
         "event_type": event_type,
         "severity": severity,

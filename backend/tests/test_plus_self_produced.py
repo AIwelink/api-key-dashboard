@@ -52,6 +52,12 @@ class PlusProbeDecisionTests(unittest.TestCase):
         self.assertEqual(plus_account_name("plususer@example.com"), "plususer@example.com")
         self.assertEqual(plus_account_name("PLUS user@example.com"), "PLUS user@example.com")
 
+    def test_plus_prefix_is_removed_when_reverting_to_free(self) -> None:
+        self.assertEqual(plus_self_produced.free_account_name("plus user@example.com"), "user@example.com")
+        self.assertEqual(plus_self_produced.free_account_name("plususer@example.com"), "user@example.com")
+        self.assertEqual(plus_self_produced.free_account_name("PLUS user@example.com"), "user@example.com")
+        self.assertEqual(plus_self_produced.free_account_name("user@example.com"), "user@example.com")
+
     def test_move_payload_only_contains_requested_promotion_fields(self) -> None:
         account = {"status": "active", "schedulable": True}
 
@@ -98,6 +104,7 @@ class PlusSelfProducedSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(settings["source_group_id"], 4)
         self.assertEqual(settings["plus_group_id"], 6)
         self.assertEqual(settings["banned_group_id"], 7)
+        self.assertEqual(settings["plus_error_group_id"], 10)
 
     async def test_update_persists_enabled_and_interval_minutes(self) -> None:
         stored = {
@@ -133,6 +140,7 @@ class PlusSelfProducedSettingsTests(unittest.IsolatedAsyncioTestCase):
                         "source_group_id": 99,
                         "plus_group_id": 98,
                         "banned_group_id": 97,
+                        "plus_error_group_id": 96,
                         "model": "wrong-model",
                     }
                 )
@@ -145,6 +153,7 @@ class PlusSelfProducedSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(settings["source_group_id"], 4)
         self.assertEqual(settings["plus_group_id"], 6)
         self.assertEqual(settings["banned_group_id"], 7)
+        self.assertEqual(settings["plus_error_group_id"], 10)
         self.assertEqual(settings["model"], "gpt-5.6-sol")
 
     def test_due_time_uses_last_finish_and_enabled_state(self) -> None:
@@ -318,7 +327,7 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(plus_self_produced, "get_site", AsyncMock(return_value={"id": "US06-5002", "base_url": "https://sub2.example.com", "token": "secret", "sql_dsn": "postgresql://reader:secret@postgres/sub2api"})),
             patch.object(plus_self_produced, "Sub2ApiClient", return_value=client),
-            patch.object(plus_self_produced, "fetch_postgres_pool_snapshot", AsyncMock(return_value={"groups": [{"id": 4}, {"id": 6}, {"id": 7}], "accounts": accounts})),
+            patch.object(plus_self_produced, "fetch_postgres_pool_snapshot", AsyncMock(return_value={"groups": [{"id": 4}, {"id": 6}, {"id": 7}, {"id": 10}], "accounts": accounts})),
         ):
             result = await plus_self_produced.run_probe(db, trigger="manual")
 
@@ -331,7 +340,7 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
         db = self.build_db()
         sql_dsn = "postgresql://reader:secret@postgres/sub2api"
         snapshot = {
-            "groups": [{"id": 4}, {"id": 6}, {"id": 7}],
+            "groups": [{"id": 4}, {"id": 6}, {"id": 7}, {"id": 10}],
             "accounts": [
                 {"id": 40, "name": "source@example.com", "status": "active", "schedulable": True, "group_ids": [4]},
                 {"id": 41, "name": "other@example.com", "status": "active", "schedulable": True, "group_ids": [6]},
@@ -370,9 +379,10 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
             base_url="https://sub2.example.com",
             token="postgres-admin-key",
         )
-        client.test_account.assert_awaited_once()
-        self.assertEqual(client.test_account.await_args.args[0], 40)
-        self.assertEqual(result["candidates"], 1)
+        self.assertEqual(client.test_account.await_count, 2)
+        self.assertEqual([call.args[0] for call in client.test_account.await_args_list], [40, 41])
+        self.assertEqual(result["candidates"], 2)
+        self.assertEqual(result["eligible"], 2)
         self.assertEqual(result["promoted"], 1)
 
     async def test_serially_routes_pass_429_and_401_while_leaving_other_failures(self) -> None:
@@ -415,7 +425,7 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(plus_self_produced, "get_site", AsyncMock(return_value={"id": "US06-5002", "base_url": "https://sub2.example.com", "token": "secret", "sql_dsn": "postgresql://reader:secret@postgres/sub2api"})),
             patch.object(plus_self_produced, "Sub2ApiClient", return_value=client),
-            patch.object(plus_self_produced, "fetch_postgres_pool_snapshot", AsyncMock(return_value={"groups": [{"id": 4}, {"id": 6}, {"id": 7}], "accounts": accounts})),
+            patch.object(plus_self_produced, "fetch_postgres_pool_snapshot", AsyncMock(return_value={"groups": [{"id": 4}, {"id": 6}, {"id": 7}, {"id": 10}], "accounts": accounts})),
             patch.object(plus_self_produced, "upsert_cached_account_snapshot", AsyncMock()) as upsert_cache,
         ):
             result = await plus_self_produced.run_probe(db, trigger="manual")
@@ -485,7 +495,7 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(plus_self_produced, "get_site", AsyncMock(return_value={"id": "US06-5002", "base_url": "https://sub2.example.com", "token": "secret", "sql_dsn": "postgresql://reader:secret@postgres/sub2api"})),
             patch.object(plus_self_produced, "Sub2ApiClient", return_value=client),
-            patch.object(plus_self_produced, "fetch_postgres_pool_snapshot", AsyncMock(return_value={"groups": [{"id": 4}, {"id": 6}, {"id": 7}], "accounts": accounts})),
+            patch.object(plus_self_produced, "fetch_postgres_pool_snapshot", AsyncMock(return_value={"groups": [{"id": 4}, {"id": 6}, {"id": 7}, {"id": 10}], "accounts": accounts})),
             patch.object(plus_self_produced, "upsert_cached_account_snapshot", AsyncMock()),
         ):
             result = await plus_self_produced.run_probe(db, trigger="manual")
@@ -500,6 +510,92 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("remote update failed", stored[0]["error"])
         self.assertEqual(stored[1]["action_status"], "banned")
 
+    async def test_revalidates_plus_group_and_corrects_400_or_401_accounts(self) -> None:
+        db = self.build_db()
+        accounts = [
+            {"id": 60, "name": "plus passed@example.com", "group_ids": [6]},
+            {"id": 61, "name": "plus limited@example.com", "group_ids": [6]},
+            {"id": 62, "name": "plusfree@example.com", "group_ids": [6]},
+            {"id": 63, "name": "plus blocked@example.com", "group_ids": [6]},
+            {"id": 64, "name": "plus failed@example.com", "group_ids": [6]},
+        ]
+        verifications = {
+            60: {"success": True, "model": "gpt-5.6-sol", "error": None},
+            61: {"success": False, "model": "gpt-5.6-sol", "error": "API returned 429"},
+            62: {
+                "success": False,
+                "model": "gpt-5.6-sol",
+                "error": (
+                    "API returned 400: {\"detail\":\"The 'gpt-5.6-sol' model is not supported "
+                    "when using Codex with a ChatGPT account.\"}"
+                ),
+            },
+            63: {"success": False, "model": "gpt-5.6-sol", "error": "API returned 401"},
+            64: {"success": False, "model": "gpt-5.6-sol", "error": "API returned 403"},
+        }
+        client = SimpleNamespace(
+            test_account=AsyncMock(side_effect=lambda account_id, **_kwargs: verifications[account_id]),
+            update_account=AsyncMock(side_effect=lambda account_id, payload: {"id": account_id, **payload}),
+        )
+
+        with (
+            patch.object(
+                plus_self_produced,
+                "get_site",
+                AsyncMock(
+                    return_value={
+                        "id": "US06-5002",
+                        "base_url": "https://sub2.example.com",
+                        "sql_dsn": "postgresql://reader:secret@postgres/sub2api",
+                    }
+                ),
+            ),
+            patch.object(plus_self_produced, "Sub2ApiClient", return_value=client),
+            patch.object(
+                plus_self_produced,
+                "fetch_postgres_pool_snapshot",
+                AsyncMock(
+                    return_value={
+                        "groups": [{"id": 4}, {"id": 6}, {"id": 7}, {"id": 10}],
+                        "accounts": accounts,
+                    }
+                ),
+            ),
+            patch.object(plus_self_produced, "fetch_postgres_admin_api_key", AsyncMock(return_value="admin-key")),
+            patch.object(plus_self_produced, "upsert_cached_account_snapshot", AsyncMock()) as upsert_cache,
+        ):
+            result = await plus_self_produced.run_probe(db, trigger="manual")
+
+        self.assertEqual(result["candidates"], 5)
+        self.assertEqual(result["tested"], 5)
+        self.assertEqual(result["eligible"], 2)
+        self.assertEqual(result["promoted"], 0)
+        self.assertEqual(result["downgraded"], 1)
+        self.assertEqual(result["plus_errors"], 1)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(
+            [call.args for call in client.update_account.await_args_list],
+            [
+                (
+                    62,
+                    {
+                        "name": "free@example.com",
+                        "group_id": 4,
+                        "group_ids": [4],
+                        "credentials": {"plan_type": "free"},
+                    },
+                ),
+                (63, {"group_id": 10, "group_ids": [10]}),
+            ],
+        )
+        self.assertEqual(upsert_cache.await_count, 2)
+        stored = [call.args[1]["$set"] for call in db.plus_self_produced_account_results.update_one.await_args_list]
+        self.assertEqual(
+            [item["action_status"] for item in stored],
+            ["verified_plus", "verified_plus", "reverted_to_free", "plus_error", "not_moved"],
+        )
+        self.assertTrue(all(item["source_group_id"] == 6 for item in stored))
+
     async def test_cache_failure_does_not_reclassify_a_successful_remote_move(self) -> None:
         db = self.build_db()
         accounts = [
@@ -513,7 +609,7 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(plus_self_produced, "get_site", AsyncMock(return_value={"id": "US06-5002", "base_url": "https://sub2.example.com", "token": "secret", "sql_dsn": "postgresql://reader:secret@postgres/sub2api"})),
             patch.object(plus_self_produced, "Sub2ApiClient", return_value=client),
-            patch.object(plus_self_produced, "fetch_postgres_pool_snapshot", AsyncMock(return_value={"groups": [{"id": 4}, {"id": 6}, {"id": 7}], "accounts": accounts})),
+            patch.object(plus_self_produced, "fetch_postgres_pool_snapshot", AsyncMock(return_value={"groups": [{"id": 4}, {"id": 6}, {"id": 7}, {"id": 10}], "accounts": accounts})),
             patch.object(plus_self_produced, "upsert_cached_account_snapshot", AsyncMock(side_effect=RuntimeError("cache unavailable"))),
         ):
             result = await plus_self_produced.run_probe(db, trigger="manual")
@@ -542,7 +638,7 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(plus_self_produced, "get_site", AsyncMock(return_value={"id": "US06-5002", "base_url": "https://sub2.example.com", "token": "secret", "sql_dsn": "postgresql://reader:secret@postgres/sub2api"})),
             patch.object(plus_self_produced, "Sub2ApiClient", return_value=client),
-            patch.object(plus_self_produced, "fetch_postgres_pool_snapshot", AsyncMock(return_value={"groups": [{"id": 4}, {"id": 6}, {"id": 7}], "accounts": accounts})),
+            patch.object(plus_self_produced, "fetch_postgres_pool_snapshot", AsyncMock(return_value={"groups": [{"id": 4}, {"id": 6}, {"id": 7}, {"id": 10}], "accounts": accounts})),
             patch.object(plus_self_produced, "upsert_cached_account_snapshot", AsyncMock()),
         ):
             result = await plus_self_produced._run_probe_locked(

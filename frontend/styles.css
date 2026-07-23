@@ -1758,6 +1758,108 @@ legend {
   font-size: 13px;
 }
 
+.account-health-analysis {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.account-health-header {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.account-health-header h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.account-health-header p,
+.account-health-header > span {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.account-health-header > span {
+  flex: none;
+  text-align: right;
+}
+
+.account-health-header > span.is-stale {
+  color: var(--warning);
+}
+
+.account-health-table {
+  display: grid;
+  min-width: 0;
+}
+
+.account-health-heading,
+.account-health-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.45fr) repeat(2, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.account-health-heading {
+  padding-bottom: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.account-health-row {
+  align-items: start;
+  padding: 13px 0;
+  border-top: 1px solid var(--line);
+}
+
+.account-health-row.is-overall {
+  border-top-color: var(--accent);
+}
+
+.account-health-row > strong {
+  padding-top: 2px;
+  font-size: 14px;
+}
+
+.account-health-period {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) minmax(0, 1fr);
+  gap: 3px 10px;
+  min-width: 0;
+}
+
+.account-health-probability {
+  grid-row: span 2;
+  display: grid;
+  align-content: start;
+  gap: 1px;
+}
+
+.account-health-probability strong {
+  color: var(--text);
+  font-size: 20px;
+  line-height: 1.1;
+}
+
+.account-health-probability span,
+.account-health-period > span:not(.quota-window-mobile-label) {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.account-health-period > span:not(.quota-window-mobile-label) {
+  grid-column: 2;
+}
+
 .pool-compact-toolbar {
   display: grid;
   grid-template-columns: minmax(180px, 0.8fr) minmax(190px, 260px) minmax(260px, 1fr) minmax(210px, auto);
@@ -6275,6 +6377,36 @@ code {
 
   .quota-window-mobile-label {
     display: inline;
+  }
+
+  .account-health-header {
+    display: grid;
+    gap: 5px;
+  }
+
+  .account-health-header > span {
+    text-align: left;
+  }
+
+  .account-health-heading {
+    display: none;
+  }
+
+  .account-health-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 14px;
+  }
+
+  .account-health-row > strong {
+    grid-column: 1 / -1;
+  }
+
+  .account-health-period {
+    grid-template-columns: minmax(72px, auto) minmax(0, 1fr);
+  }
+
+  .account-health-period .quota-window-mobile-label {
+    grid-column: 1 / -1;
   }
 
   .pool-mini-metrics,

@@ -79,6 +79,18 @@ class AccountProbeDatabaseSourceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AccountProbePlanTypeTests(unittest.TestCase):
+    def test_normalized_account_keeps_special_quota_classification(self) -> None:
+        account = account_probe._normalize_probe_account(
+            {
+                "id": 3584,
+                "name": "ordinary account",
+                "quota_dimension": "dedicated",
+                "credentials": {"email": "special@example.com", "plan_type": "plus"},
+            }
+        )
+
+        self.assertEqual(account["account_type"], "special_plus")
+
     def test_standard_plus_name_supplies_missing_remote_plan_type(self) -> None:
         account = account_probe._normalize_probe_account(
             {

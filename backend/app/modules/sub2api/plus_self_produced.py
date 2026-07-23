@@ -27,6 +27,7 @@ SITE_ID = "US06-5002"
 SOURCE_GROUP_ID = 4
 PLUS_GROUP_ID = 6
 BANNED_GROUP_ID = 7
+PLUS_ERROR_GROUP_ID = 10
 PROBE_MODEL = "gpt-5.6-sol"
 DEFAULT_INTERVAL_SECONDS = 15 * 60
 SCHEDULER_POLL_SECONDS = 30
@@ -71,6 +72,11 @@ def plus_account_name(name: Any) -> str:
     return f"plus {current_name}".rstrip()
 
 
+def free_account_name(name: Any) -> str:
+    current_name = str(name or "").strip()
+    return re.sub(r"^plus\s*", "", current_name, count=1, flags=re.IGNORECASE).strip()
+
+
 async def get_settings(db: AsyncIOMotorDatabase) -> dict[str, Any]:
     stored = await db.plus_self_produced_settings.find_one({"_id": SETTINGS_ID})
     settings = {
@@ -82,6 +88,7 @@ async def get_settings(db: AsyncIOMotorDatabase) -> dict[str, Any]:
         "source_group_id": SOURCE_GROUP_ID,
         "plus_group_id": PLUS_GROUP_ID,
         "banned_group_id": BANNED_GROUP_ID,
+        "plus_error_group_id": PLUS_ERROR_GROUP_ID,
         "model": PROBE_MODEL,
     }
     interval_seconds = max(60, int(settings.get("interval_seconds") or DEFAULT_INTERVAL_SECONDS))
@@ -139,6 +146,7 @@ async def get_status(db: AsyncIOMotorDatabase) -> dict[str, Any]:
         "source_group_id": SOURCE_GROUP_ID,
         "plus_group_id": PLUS_GROUP_ID,
         "banned_group_id": BANNED_GROUP_ID,
+        "plus_error_group_id": PLUS_ERROR_GROUP_ID,
         "model": PROBE_MODEL,
         "running": _run_lock.locked(),
         "settings": settings,
@@ -315,6 +323,8 @@ async def _run_probe_locked(
         "eligible": 0,
         "promoted": 0,
         "banned": 0,
+        "downgraded": 0,
+        "plus_errors": 0,
         "failed": 0,
     }
     await db.plus_self_produced_runs.insert_one(
@@ -358,7 +368,7 @@ async def _run_probe_locked(
             for group in pool_snapshot.get("groups", [])
             if isinstance(group, dict) and isinstance(group.get("id"), int)
         }
-        missing_groups = {SOURCE_GROUP_ID, PLUS_GROUP_ID, BANNED_GROUP_ID} - group_ids
+        missing_groups = {SOURCE_GROUP_ID, PLUS_GROUP_ID, BANNED_GROUP_ID, PLUS_ERROR_GROUP_ID} - group_ids
         if missing_groups:
             missing_text = ", ".join(str(group_id) for group_id in sorted(missing_groups))
             raise RuntimeError(f"Sub2API groups not found: {missing_text}")
@@ -366,7 +376,8 @@ async def _run_probe_locked(
         accounts = [
             item
             for item in pool_snapshot.get("accounts", [])
-            if isinstance(item, dict) and account_in_group(item, SOURCE_GROUP_ID)
+            if isinstance(item, dict)
+            and (account_in_group(item, SOURCE_GROUP_ID) or account_in_group(item, PLUS_GROUP_ID))
         ]
         counters["candidates"] = len(accounts)
 
@@ -387,25 +398,61 @@ async def _run_probe_locked(
             action_error: str | None = None
             resulting_name = _account_name(account)
             destination_group_id: int | None = None
+            success_counter: str | None = None
+            failure_action_status: str | None = None
+            source_group_id = (
+                PLUS_GROUP_ID if account_in_group(account, PLUS_GROUP_ID) else SOURCE_GROUP_ID
+            )
 
-            if classification in {"passed", "rate_limited_but_eligible"}:
-                counters["eligible"] += 1
-                destination_group_id = PLUS_GROUP_ID
-                resulting_name = plus_account_name(_account_name(account))
-                payload = _move_payload(
-                    account,
-                    group_id=PLUS_GROUP_ID,
-                    name=resulting_name,
-                    plan_type="plus",
-                )
-                action_status = "promoted"
-            elif classification == "unauthorized_banned":
-                destination_group_id = BANNED_GROUP_ID
-                payload = _move_payload(account, group_id=BANNED_GROUP_ID)
-                action_status = "banned"
+            if source_group_id == SOURCE_GROUP_ID:
+                if classification in {"passed", "rate_limited_but_eligible"}:
+                    counters["eligible"] += 1
+                    destination_group_id = PLUS_GROUP_ID
+                    resulting_name = plus_account_name(_account_name(account))
+                    payload = _move_payload(
+                        account,
+                        group_id=PLUS_GROUP_ID,
+                        name=resulting_name,
+                        plan_type="plus",
+                    )
+                    action_status = "promoted"
+                    success_counter = "promoted"
+                    failure_action_status = "promotion_failed"
+                elif classification == "unauthorized_banned":
+                    destination_group_id = BANNED_GROUP_ID
+                    payload = _move_payload(account, group_id=BANNED_GROUP_ID)
+                    action_status = "banned"
+                    success_counter = "banned"
+                    failure_action_status = "ban_move_failed"
+                else:
+                    payload = None
+                    counters["failed"] += 1
             else:
-                payload = None
-                counters["failed"] += 1
+                if classification in {"passed", "rate_limited_but_eligible"}:
+                    counters["eligible"] += 1
+                    payload = None
+                    action_status = "verified_plus"
+                elif classification == "model_not_supported":
+                    destination_group_id = SOURCE_GROUP_ID
+                    resulting_name = free_account_name(_account_name(account))
+                    payload = _move_payload(
+                        account,
+                        group_id=SOURCE_GROUP_ID,
+                        name=resulting_name,
+                        plan_type="free",
+                    )
+                    action_status = "reverted_to_free"
+                    success_counter = "downgraded"
+                    failure_action_status = "revert_failed"
+                elif classification == "unauthorized_banned":
+                    destination_group_id = PLUS_ERROR_GROUP_ID
+                    payload = _move_payload(account, group_id=PLUS_ERROR_GROUP_ID)
+                    action_status = "plus_error"
+                    success_counter = "plus_errors"
+                    failure_action_status = "plus_error_move_failed"
+                else:
+                    payload = None
+                    counters["failed"] += 1
 
             if payload is not None:
                 try:
@@ -414,19 +461,16 @@ async def _run_probe_locked(
                     remote_snapshot["id"] = remote_account_id
                     remote_snapshot["group_id"] = destination_group_id
                     remote_snapshot["group_ids"] = [destination_group_id]
-                    if classification in {"passed", "rate_limited_but_eligible"}:
-                        remote_snapshot["name"] = resulting_name
-                        counters["promoted"] += 1
-                    else:
-                        remote_snapshot["name"] = _account_name(account)
-                        counters["banned"] += 1
+                    remote_snapshot["name"] = resulting_name
+                    if success_counter is not None:
+                        counters[success_counter] += 1
                 except asyncio.CancelledError:
                     raise
                 except InvalidAdminApiKeyError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - one remote update must not stop the queue.
                     action_error = _exception_error(exc)
-                    action_status = "promotion_failed" if destination_group_id == PLUS_GROUP_ID else "ban_move_failed"
+                    action_status = failure_action_status or "update_failed"
                     counters["failed"] += 1
                 else:
                     try:
@@ -451,6 +495,7 @@ async def _run_probe_locked(
                 error=action_error or test_error,
                 resulting_name=resulting_name,
                 destination_group_id=destination_group_id,
+                source_group_id=source_group_id,
                 tested_at=tested_at,
             )
 
@@ -549,6 +594,7 @@ async def _write_account_result(
     error: str | None,
     resulting_name: str,
     destination_group_id: int | None,
+    source_group_id: int,
     tested_at: datetime,
 ) -> None:
     remote_account_id = account.get("id")
@@ -567,7 +613,7 @@ async def _write_account_result(
                 "error": _short_error(error),
                 "model": verification.get("model") or PROBE_MODEL,
                 "latency_ms": verification.get("latency_ms"),
-                "source_group_id": SOURCE_GROUP_ID,
+                "source_group_id": source_group_id,
                 "destination_group_id": destination_group_id,
                 "resulting_name": resulting_name,
                 "tested_at": tested_at,

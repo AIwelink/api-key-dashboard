@@ -15,6 +15,7 @@ export type PlusSelfProducedStatus = {
   source_group_id: number;
   plus_group_id: number;
   banned_group_id: number;
+  plus_error_group_id: number;
   model: string;
   running: boolean;
   settings: {
@@ -30,6 +31,8 @@ export type PlusSelfProducedStatus = {
     eligible?: number;
     promoted?: number;
     banned?: number;
+    downgraded?: number;
+    plus_errors?: number;
     failed?: number;
     started_at?: string | null;
     finished_at?: string | null;
@@ -160,11 +163,21 @@ export function PlusSelfProducedPage({ token, showToast }: Props) {
   const run = async () => {
     setRunning(true);
     try {
-      const result = await api<{ ok: boolean; promoted?: number; banned?: number; error?: string }>("/plus-self-produced/run", token, {
+      const result = await api<{
+        ok: boolean;
+        promoted?: number;
+        banned?: number;
+        downgraded?: number;
+        plus_errors?: number;
+        error?: string;
+      }>("/plus-self-produced/run", token, {
         method: "POST",
       });
       if (result.ok) {
-        showToast(`探测完成：晋级 ${result.promoted || 0}，转封禁 ${result.banned || 0}`);
+        showToast(
+          `探测完成：晋级 ${result.promoted || 0}，还原 Free ${result.downgraded || 0}，` +
+          `Plus 错误 ${result.plus_errors || 0}，转封禁 ${result.banned || 0}`,
+        );
       } else {
         showToast(result.error || "探测失败", true);
       }
@@ -237,6 +250,7 @@ export function PlusSelfProducedView({
   const sourceGroupId = status?.source_group_id ?? 4;
   const plusGroupId = status?.plus_group_id ?? 6;
   const bannedGroupId = status?.banned_group_id ?? 7;
+  const plusErrorGroupId = status?.plus_error_group_id ?? 10;
   const model = status?.model || "gpt-5.6-sol";
   const lastRun = status?.last_run;
   const invalidInterval = !Number.isFinite(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 1440;
@@ -260,7 +274,9 @@ export function PlusSelfProducedView({
         <div className="plus-workflow-facts" aria-label="探测目标">
           <WorkflowFact label="站点" value={siteId} />
           <WorkflowFact label="Plus 流向" value={`${sourceGroupId} → ${plusGroupId}`} />
-          <WorkflowFact label="401 流向" value={`${sourceGroupId} → ${bannedGroupId}`} />
+          <WorkflowFact label="自产 401" value={`${sourceGroupId} → ${bannedGroupId}`} />
+          <WorkflowFact label="Free 回退" value={`${plusGroupId} → ${sourceGroupId}`} />
+          <WorkflowFact label="Plus 401" value={`${plusGroupId} → ${plusErrorGroupId}`} />
           <WorkflowFact label="模型" value={model} />
         </div>
         <div className="plus-settings-controls">
@@ -310,6 +326,8 @@ export function PlusSelfProducedView({
         <RunMetric label="Plus 可用" value={lastRun?.eligible} />
         <RunMetric label="已晋级" value={lastRun?.promoted} tone="success" />
         <RunMetric label="已转封禁" value={lastRun?.banned} tone="danger" />
+        <RunMetric label="已还原 Free" value={lastRun?.downgraded} tone="warning" />
+        <RunMetric label="Plus 错误" value={lastRun?.plus_errors} tone="danger" />
         <RunMetric label="失败" value={lastRun?.failed} tone="warning" />
         <div className="plus-run-time">
           <span>最近完成</span>
@@ -408,9 +426,14 @@ function classificationDisplay(classification: string) {
 function actionDisplay(actionStatus: string) {
   const displays: Record<string, { label: string; tone: string }> = {
     promoted: { label: "已晋级", tone: "success" },
+    verified_plus: { label: "Plus 正常", tone: "success" },
     banned: { label: "已转封禁", tone: "danger" },
+    reverted_to_free: { label: "已还原 Free", tone: "warning" },
+    plus_error: { label: "Plus 错误池", tone: "danger" },
     promotion_failed: { label: "晋级失败", tone: "danger" },
     ban_move_failed: { label: "转封禁失败", tone: "danger" },
+    revert_failed: { label: "还原 Free 失败", tone: "danger" },
+    plus_error_move_failed: { label: "转 Plus 错误池失败", tone: "danger" },
     not_moved: { label: "未移动", tone: "" },
   };
   return displays[actionStatus] || { label: actionStatus || "-", tone: "" };

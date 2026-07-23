@@ -64,6 +64,7 @@ async def ensure_quota_detection_indexes(db: AsyncIOMotorDatabase) -> None:
         [("site_id", 1), ("account_type", 1), ("window_type", 1)],
         unique=True,
     )
+    await db.sub2api_account_health_analyses.create_index("expires_at", expireAfterSeconds=0)
 
 
 async def ensure_plus_self_produced_indexes(db: AsyncIOMotorDatabase) -> None:
