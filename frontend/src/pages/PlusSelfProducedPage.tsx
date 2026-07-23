@@ -250,7 +250,7 @@ export function PlusSelfProducedView({
   const sourceGroupId = status?.source_group_id ?? 4;
   const plusGroupId = status?.plus_group_id ?? 6;
   const bannedGroupId = status?.banned_group_id ?? 7;
-  const plusErrorGroupId = status?.plus_error_group_id ?? 10;
+  const plusErrorGroupId = status?.plus_error_group_id ?? 9;
   const model = status?.model || "gpt-5.6-sol";
   const lastRun = status?.last_run;
   const invalidInterval = !Number.isFinite(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 1440;
