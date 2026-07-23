@@ -4,18 +4,20 @@ import { describe, expect, it } from "vitest";
 import {
   RolePermissionsPanel,
   toggleRoleViewPermission,
-  type RolePermissionsSettings,
-} from "./ApiTokensPage";
+} from "./RolePermissionsPanel";
+import type { RolePermissionsSettings } from "../types";
 
 
 const settings: RolePermissionsSettings = {
-  available_views: ["traffic-analysis", "operations-management", "api-pools"],
+  available_views: ["traffic-analysis", "operations-management", "api-tokens", "api-pools"],
+  role_order: ["owner", "admin", "maintainer", "operator", "viewer", "support"],
   roles: {
-    owner: { allowed_views: ["api-pools"], default_view: "api-pools" },
-    admin: { allowed_views: ["api-pools"], default_view: "api-pools" },
-    maintainer: { allowed_views: ["api-pools"], default_view: "api-pools" },
-    operator: { allowed_views: ["traffic-analysis", "operations-management"], default_view: "traffic-analysis" },
-    viewer: { allowed_views: ["api-pools"], default_view: "api-pools" },
+    owner: { label: "owner", builtin: true, allowed_views: ["api-pools", "api-tokens"], default_view: "api-pools" },
+    admin: { label: "admin", builtin: true, allowed_views: ["api-pools"], default_view: "api-pools" },
+    maintainer: { label: "maintainer", builtin: true, allowed_views: ["api-pools"], default_view: "api-pools" },
+    operator: { label: "运营", builtin: true, allowed_views: ["traffic-analysis", "operations-management"], default_view: "traffic-analysis" },
+    viewer: { label: "viewer", builtin: true, allowed_views: ["api-pools"], default_view: "api-pools" },
+    support: { label: "客服", builtin: false, allowed_views: [], default_view: null },
   },
 };
 
@@ -26,6 +28,8 @@ describe("role permissions panel", () => {
         settings={settings}
         busy={false}
         onChange={() => undefined}
+        onCreate={async () => undefined}
+        onDelete={async () => undefined}
         onSave={() => undefined}
       />,
     );
@@ -34,8 +38,12 @@ describe("role permissions panel", () => {
     expect(html).toContain("运营");
     expect(html).toContain("访问流量分析");
     expect(html).toContain("运营管理");
+    expect(html).toContain("客服");
+    expect(html).toContain("添加用户类型");
+    expect(html).toContain('title="删除客服"');
     expect(html).toMatch(/<input[^>]*checked=""[^>]*value="traffic-analysis"/);
     expect(html).toMatch(/<input[^>]*checked=""[^>]*value="operations-management"/);
+    expect(html).toMatch(/<input[^>]*disabled=""[^>]*value="api-tokens"/);
   });
 
   it("falls back to an allowed default view when the current default is removed", () => {

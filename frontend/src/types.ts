@@ -21,8 +21,23 @@ export type ViewName =
   | "users"
   | "logs";
 
-export type UserRole = "owner" | "admin" | "maintainer" | "operator" | "viewer";
+export type UserRole = string;
 export type UserStatus = "active" | "disabled" | "pending_password_reset";
+
+export type RolePermissionEntry = {
+  label: string;
+  builtin: boolean;
+  allowed_views: ViewName[];
+  default_view: ViewName | null;
+};
+
+export type RolePermissionsSettings = {
+  available_views: ViewName[];
+  role_order: UserRole[];
+  roles: Record<UserRole, RolePermissionEntry>;
+  updated_at?: string;
+  updated_by?: string;
+};
 
 export type UserPermissions = {
   allowed_views: ViewName[];
