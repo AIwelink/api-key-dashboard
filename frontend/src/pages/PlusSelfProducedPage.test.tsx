@@ -13,7 +13,7 @@ const status: PlusSelfProducedStatus = {
   source_group_id: 4,
   plus_group_id: 6,
   banned_group_id: 7,
-  plus_error_group_id: 10,
+  plus_error_group_id: 9,
   model: "gpt-5.6-sol",
   running: false,
   settings: {
@@ -128,7 +128,7 @@ describe("plus self-produced page", () => {
     expect(html).toContain("4 → 6");
     expect(html).toContain("4 → 7");
     expect(html).toContain("6 → 4");
-    expect(html).toContain("6 → 10");
+    expect(html).toContain("6 → 9");
     expect(html).toContain("gpt-5.6-sol");
     expect(html).toContain("15 分钟");
     expect(html).toContain("测试通过");
