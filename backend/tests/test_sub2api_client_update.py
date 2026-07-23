@@ -135,6 +135,44 @@ class Sub2ApiClientUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["group_ids"], [6])
         self.assertEqual(result, {"id": 4802, "credentials": {"plan_type": "plus"}})
 
+    async def test_model_mapping_update_replaces_mapping_and_preserves_other_credentials(self) -> None:
+        client = Sub2ApiClient(base_url="http://sub2.example.com", token="admin-key")
+        put_response = httpx.Response(
+            200,
+            json={"code": 0, "data": {"id": 4802, "credentials": {"model_mapping": {}}}},
+            request=httpx.Request("PUT", "http://sub2.example.com/api/v1/admin/accounts/4802"),
+        )
+        request = AsyncMock(return_value=put_response)
+        current_account = {
+            "id": 4802,
+            "name": "account@example.com",
+            "status": "active",
+            "group_ids": [4],
+            "credentials": {
+                "chatgpt_account_id": "account-id",
+                "email": "account@example.com",
+                "model_mapping": {"gpt-5.6-sol": "gpt-5.4"},
+                "plan_type": "free",
+            },
+            "extra": {"privacy_mode": "training_off"},
+        }
+
+        with (
+            patch.object(client, "_request_admin_response_with_retries", request),
+            patch.object(client, "get_account", AsyncMock(return_value=current_account)),
+        ):
+            await client.update_account(4802, {"credentials": {"model_mapping": {}}})
+
+        self.assertEqual(
+            request.await_args.kwargs["json"]["credentials"],
+            {
+                "chatgpt_account_id": "account-id",
+                "email": "account@example.com",
+                "model_mapping": {},
+                "plan_type": "free",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

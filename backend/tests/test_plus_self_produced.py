@@ -396,13 +396,16 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
             {"id": 50, "name": "first@example.com", "status": "active", "schedulable": True, "group_ids": [4]},
             {"id": 51, "name": "second@example.com", "status": "active", "schedulable": True, "group_ids": [4]},
         ]
+        async def update_account(account_id: int, payload: dict[str, object]) -> dict[str, object]:
+            if payload == {"credentials": {"model_mapping": {}}}:
+                return {"id": account_id, **payload}
+            raise sub2api_client.InvalidAdminApiKeyError(
+                "Sub2API Admin API Key was rejected with status 401"
+            )
+
         client = SimpleNamespace(
             test_account=AsyncMock(return_value={"success": True, "error": None}),
-            update_account=AsyncMock(
-                side_effect=sub2api_client.InvalidAdminApiKeyError(
-                    "Sub2API Admin API Key was rejected with status 401"
-                )
-            ),
+            update_account=AsyncMock(side_effect=update_account),
         )
 
         with (
@@ -415,7 +418,7 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("Admin API Key", result["error"])
         self.assertEqual(client.test_account.await_count, 1)
-        self.assertEqual(client.update_account.await_count, 1)
+        self.assertEqual(client.update_account.await_count, 2)
 
     async def test_reads_groups_accounts_and_admin_key_from_postgresql(self) -> None:
         db = self.build_db()
@@ -465,6 +468,145 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["candidates"], 2)
         self.assertEqual(result["eligible"], 2)
         self.assertEqual(result["promoted"], 1)
+
+    async def test_custom_group_roles_drive_candidate_selection_and_routes(self) -> None:
+        db = self.build_db()
+        db.plus_self_produced_settings.find_one.return_value = {
+            "_id": "plus-self-produced",
+            "source_group_id": 14,
+            "plus_group_id": 16,
+            "banned_group_id": 17,
+            "plus_error_group_id": 19,
+        }
+        accounts = [
+            {"id": 140, "name": "source@example.com", "group_ids": [14]},
+            {"id": 160, "name": "plus free@example.com", "group_ids": [16]},
+            {"id": 170, "name": "not-a-candidate@example.com", "group_ids": [17]},
+        ]
+        verifications = {
+            140: {"success": True, "model": "gpt-5.6-sol", "error": None},
+            160: {
+                "success": False,
+                "model": "gpt-5.6-sol",
+                "error": "API returned 400: model is not supported when using Codex with a ChatGPT account",
+            },
+        }
+        client = SimpleNamespace(
+            test_account=AsyncMock(side_effect=lambda account_id, **_kwargs: verifications[account_id]),
+            update_account=AsyncMock(side_effect=lambda account_id, payload: {"id": account_id, **payload}),
+        )
+
+        with (
+            patch.object(
+                plus_self_produced,
+                "get_site",
+                AsyncMock(
+                    return_value={
+                        "id": "US06-5002",
+                        "base_url": "https://sub2.example.com",
+                        "sql_dsn": "postgresql://reader:secret@postgres/sub2api",
+                    }
+                ),
+            ),
+            patch.object(plus_self_produced, "Sub2ApiClient", return_value=client),
+            patch.object(
+                plus_self_produced,
+                "fetch_postgres_pool_snapshot",
+                AsyncMock(
+                    return_value={
+                        "groups": [{"id": group_id} for group_id in (14, 16, 17, 19)],
+                        "accounts": accounts,
+                    }
+                ),
+            ),
+            patch.object(plus_self_produced, "upsert_cached_account_snapshot", AsyncMock()),
+        ):
+            result = await plus_self_produced.run_probe(db, trigger="manual")
+
+        self.assertEqual(result["candidates"], 2)
+        self.assertEqual(result["promoted"], 1)
+        self.assertEqual(result["downgraded"], 1)
+        self.assertEqual(
+            [call.args for call in client.update_account.await_args_list],
+            [
+                (140, {"credentials": {"model_mapping": {}}}),
+                (
+                    140,
+                    {
+                        "name": "plus source@example.com",
+                        "group_id": 16,
+                        "group_ids": [16],
+                        "credentials": {"plan_type": "plus"},
+                    },
+                ),
+                (160, {"credentials": {"model_mapping": {}}}),
+                (
+                    160,
+                    {
+                        "name": "free@example.com",
+                        "group_id": 14,
+                        "group_ids": [14],
+                        "credentials": {"plan_type": "free"},
+                    },
+                ),
+            ],
+        )
+        stored = [call.args[1]["$set"] for call in db.plus_self_produced_account_results.update_one.await_args_list]
+        self.assertEqual([item["source_group_id"] for item in stored], [14, 16])
+        self.assertEqual([item["destination_group_id"] for item in stored], [16, 14])
+
+    async def test_model_reset_failure_skips_probe_and_continues_with_next_account(self) -> None:
+        db = self.build_db()
+        accounts = [
+            {"id": 70, "name": "reset-fails@example.com", "group_ids": [4]},
+            {"id": 71, "name": "continues@example.com", "group_ids": [4]},
+        ]
+
+        async def update_account(account_id: int, payload: dict[str, object]) -> dict[str, object]:
+            if account_id == 70 and payload == {"credentials": {"model_mapping": {}}}:
+                raise RuntimeError("model reset failed")
+            return {"id": account_id, **payload}
+
+        client = SimpleNamespace(
+            test_account=AsyncMock(return_value={"success": True, "model": "gpt-5.6-sol", "error": None}),
+            update_account=AsyncMock(side_effect=update_account),
+        )
+
+        with (
+            patch.object(
+                plus_self_produced,
+                "get_site",
+                AsyncMock(
+                    return_value={
+                        "id": "US06-5002",
+                        "base_url": "https://sub2.example.com",
+                        "sql_dsn": "postgresql://reader:secret@postgres/sub2api",
+                    }
+                ),
+            ),
+            patch.object(plus_self_produced, "Sub2ApiClient", return_value=client),
+            patch.object(
+                plus_self_produced,
+                "fetch_postgres_pool_snapshot",
+                AsyncMock(
+                    return_value={
+                        "groups": [{"id": group_id} for group_id in (4, 6, 7, 9)],
+                        "accounts": accounts,
+                    }
+                ),
+            ),
+            patch.object(plus_self_produced, "upsert_cached_account_snapshot", AsyncMock()),
+        ):
+            result = await plus_self_produced.run_probe(db, trigger="manual")
+
+        self.assertEqual(result["candidates"], 2)
+        self.assertEqual(result["tested"], 1)
+        self.assertEqual(result["promoted"], 1)
+        self.assertEqual(result["failed"], 1)
+        client.test_account.assert_awaited_once_with(71, model_id="gpt-5.6-sol", prompt="", mode="default")
+        stored = [call.args[1]["$set"] for call in db.plus_self_produced_account_results.update_one.await_args_list]
+        self.assertEqual([item["action_status"] for item in stored], ["model_reset_failed", "promoted"])
+        self.assertIn("model reset failed", stored[0]["error"])
 
     async def test_serially_routes_pass_429_and_401_while_leaving_other_failures(self) -> None:
         db = self.build_db()
@@ -521,32 +663,32 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
         for call in client.test_account.await_args_list:
             self.assertEqual(call.kwargs, {"model_id": "gpt-5.6-sol", "prompt": "", "mode": "default"})
         self.assertEqual(
-            client.update_account.await_args_list[0].args,
-            (
-                10,
-                {
-                    "name": "plus user@example.com",
-                    "group_id": 6,
-                    "group_ids": [6],
-                    "credentials": {"plan_type": "plus"},
-                },
-            ),
-        )
-        self.assertEqual(
-            client.update_account.await_args_list[1].args,
-            (
-                11,
-                {
-                    "name": "plusready@example.com",
-                    "group_id": 6,
-                    "group_ids": [6],
-                    "credentials": {"plan_type": "plus"},
-                },
-            ),
-        )
-        self.assertEqual(
-            client.update_account.await_args_list[2].args,
-            (12, {"group_id": 7, "group_ids": [7]}),
+            [call.args for call in client.update_account.await_args_list],
+            [
+                (10, {"credentials": {"model_mapping": {}}}),
+                (
+                    10,
+                    {
+                        "name": "plus user@example.com",
+                        "group_id": 6,
+                        "group_ids": [6],
+                        "credentials": {"plan_type": "plus"},
+                    },
+                ),
+                (11, {"credentials": {"model_mapping": {}}}),
+                (
+                    11,
+                    {
+                        "name": "plusready@example.com",
+                        "group_id": 6,
+                        "group_ids": [6],
+                        "credentials": {"plan_type": "plus"},
+                    },
+                ),
+                (12, {"credentials": {"model_mapping": {}}}),
+                (12, {"group_id": 7, "group_ids": [7]}),
+                (13, {"credentials": {"model_mapping": {}}}),
+            ],
         )
         self.assertEqual(upsert_cache.await_count, 3)
         stored = [call.args[1]["$set"] for call in db.plus_self_produced_account_results.update_one.await_args_list]
@@ -561,6 +703,13 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
             {"id": 20, "name": "first@example.com", "status": "active", "schedulable": True, "group_ids": [4]},
             {"id": 21, "name": "second@example.com", "status": "active", "schedulable": True, "group_ids": [4]},
         ]
+        async def update_account(account_id: int, payload: dict[str, object]) -> dict[str, object]:
+            if payload == {"credentials": {"model_mapping": {}}}:
+                return {"id": account_id, **payload}
+            if account_id == 20:
+                raise RuntimeError("remote update failed")
+            return {"id": account_id, **payload}
+
         client = SimpleNamespace(
             test_account=AsyncMock(
                 side_effect=[
@@ -568,9 +717,7 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
                     {"success": False, "error": "API returned 401"},
                 ]
             ),
-            update_account=AsyncMock(
-                side_effect=[RuntimeError("remote update failed"), {"id": 21, "group_ids": [7]}]
-            ),
+            update_account=AsyncMock(side_effect=update_account),
         )
 
         with (
@@ -582,7 +729,7 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
             result = await plus_self_produced.run_probe(db, trigger="manual")
 
         self.assertEqual(client.test_account.await_count, 2)
-        self.assertEqual(client.update_account.await_count, 2)
+        self.assertEqual(client.update_account.await_count, 4)
         self.assertEqual(result["promoted"], 0)
         self.assertEqual(result["banned"], 1)
         self.assertEqual(result["failed"], 1)
@@ -657,6 +804,9 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [call.args for call in client.update_account.await_args_list],
             [
+                (60, {"credentials": {"model_mapping": {}}}),
+                (61, {"credentials": {"model_mapping": {}}}),
+                (62, {"credentials": {"model_mapping": {}}}),
                 (
                     62,
                     {
@@ -666,7 +816,9 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
                         "credentials": {"plan_type": "free"},
                     },
                 ),
+                (63, {"credentials": {"model_mapping": {}}}),
                 (63, {"group_id": 9, "group_ids": [9]}),
+                (64, {"credentials": {"model_mapping": {}}}),
             ],
         )
         self.assertEqual(upsert_cache.await_count, 2)
@@ -709,7 +861,8 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         async def update_account(account_id: int, payload: dict[str, object]) -> dict[str, object]:
-            lease_lost.set()
+            if payload != {"credentials": {"model_mapping": {}}}:
+                lease_lost.set()
             return {"id": account_id, **payload}
 
         client = SimpleNamespace(

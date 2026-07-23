@@ -369,6 +369,17 @@ async def _run_probe_locked(
 ) -> dict[str, Any]:
     started_at = now_utc()
     run_id = uuid4().hex
+    settings = await get_settings(db)
+    source_group_id_setting = settings["source_group_id"]
+    plus_group_id_setting = settings["plus_group_id"]
+    banned_group_id_setting = settings["banned_group_id"]
+    plus_error_group_id_setting = settings["plus_error_group_id"]
+    configured_group_ids = {
+        source_group_id_setting,
+        plus_group_id_setting,
+        banned_group_id_setting,
+        plus_error_group_id_setting,
+    }
     counters = {
         "candidates": 0,
         "tested": 0,
@@ -400,6 +411,8 @@ async def _run_probe_locked(
     )
 
     try:
+        if len(configured_group_ids) != len(GROUP_SETTING_DEFAULTS):
+            raise RuntimeError("Plus routing group IDs must be distinct")
         site = await get_site(db, SITE_ID, include_token=True)
         if not site:
             raise RuntimeError(f"Sub2API site {SITE_ID} not found")
@@ -420,7 +433,7 @@ async def _run_probe_locked(
             for group in pool_snapshot.get("groups", [])
             if isinstance(group, dict) and isinstance(group.get("id"), int)
         }
-        missing_groups = {SOURCE_GROUP_ID, PLUS_GROUP_ID, BANNED_GROUP_ID, PLUS_ERROR_GROUP_ID} - group_ids
+        missing_groups = configured_group_ids - group_ids
         if missing_groups:
             missing_text = ", ".join(str(group_id) for group_id in sorted(missing_groups))
             raise RuntimeError(f"Sub2API groups not found: {missing_text}")
@@ -429,7 +442,10 @@ async def _run_probe_locked(
             item
             for item in pool_snapshot.get("accounts", [])
             if isinstance(item, dict)
-            and (account_in_group(item, SOURCE_GROUP_ID) or account_in_group(item, PLUS_GROUP_ID))
+            and (
+                account_in_group(item, source_group_id_setting)
+                or account_in_group(item, plus_group_id_setting)
+            )
         ]
         counters["candidates"] = len(accounts)
 
@@ -441,6 +457,38 @@ async def _run_probe_locked(
                 continue
 
             tested_at = now_utc()
+            source_group_id = (
+                plus_group_id_setting
+                if account_in_group(account, plus_group_id_setting)
+                else source_group_id_setting
+            )
+            try:
+                await client.update_account(
+                    remote_account_id,
+                    {"credentials": {"model_mapping": {}}},
+                )
+                _ensure_probe_lease(lease_lost)
+            except asyncio.CancelledError:
+                raise
+            except InvalidAdminApiKeyError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - one reset failure must not stop the queue.
+                counters["failed"] += 1
+                await _write_account_result(
+                    db,
+                    run_id=run_id,
+                    account=account,
+                    verification={"model": PROBE_MODEL, "latency_ms": None},
+                    classification="failed",
+                    action_status="model_reset_failed",
+                    error=_exception_error(exc),
+                    resulting_name=_account_name(account),
+                    destination_group_id=None,
+                    source_group_id=source_group_id,
+                    tested_at=tested_at,
+                )
+                continue
+
             verification = await _test_account(client, remote_account_id)
             _ensure_probe_lease(lease_lost)
             counters["tested"] += 1
@@ -452,18 +500,15 @@ async def _run_probe_locked(
             destination_group_id: int | None = None
             success_counter: str | None = None
             failure_action_status: str | None = None
-            source_group_id = (
-                PLUS_GROUP_ID if account_in_group(account, PLUS_GROUP_ID) else SOURCE_GROUP_ID
-            )
 
-            if source_group_id == SOURCE_GROUP_ID:
+            if source_group_id == source_group_id_setting:
                 if classification in {"passed", "rate_limited_but_eligible"}:
                     counters["eligible"] += 1
-                    destination_group_id = PLUS_GROUP_ID
+                    destination_group_id = plus_group_id_setting
                     resulting_name = plus_account_name(_account_name(account))
                     payload = _move_payload(
                         account,
-                        group_id=PLUS_GROUP_ID,
+                        group_id=plus_group_id_setting,
                         name=resulting_name,
                         plan_type="plus",
                     )
@@ -471,8 +516,8 @@ async def _run_probe_locked(
                     success_counter = "promoted"
                     failure_action_status = "promotion_failed"
                 elif classification == "unauthorized_banned":
-                    destination_group_id = BANNED_GROUP_ID
-                    payload = _move_payload(account, group_id=BANNED_GROUP_ID)
+                    destination_group_id = banned_group_id_setting
+                    payload = _move_payload(account, group_id=banned_group_id_setting)
                     action_status = "banned"
                     success_counter = "banned"
                     failure_action_status = "ban_move_failed"
@@ -485,11 +530,11 @@ async def _run_probe_locked(
                     payload = None
                     action_status = "verified_plus"
                 elif classification == "model_not_supported":
-                    destination_group_id = SOURCE_GROUP_ID
+                    destination_group_id = source_group_id_setting
                     resulting_name = free_account_name(_account_name(account))
                     payload = _move_payload(
                         account,
-                        group_id=SOURCE_GROUP_ID,
+                        group_id=source_group_id_setting,
                         name=resulting_name,
                         plan_type="free",
                     )
@@ -497,8 +542,8 @@ async def _run_probe_locked(
                     success_counter = "downgraded"
                     failure_action_status = "revert_failed"
                 elif classification == "unauthorized_banned":
-                    destination_group_id = PLUS_ERROR_GROUP_ID
-                    payload = _move_payload(account, group_id=PLUS_ERROR_GROUP_ID)
+                    destination_group_id = plus_error_group_id_setting
+                    payload = _move_payload(account, group_id=plus_error_group_id_setting)
                     action_status = "plus_error"
                     success_counter = "plus_errors"
                     failure_action_status = "plus_error_move_failed"
