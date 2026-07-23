@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.schemas import AgentLlmSettingsUpdate, GrowthDatabaseSettingsUpdate
+from app.schemas import AgentLlmSettingsUpdate, GrowthDatabaseSettingsUpdate, RolePermissionsUpdate
 from app.security import require_roles
 from app.modules.agent.llm_client import AgentLlmConfigError, test_agent_llm_connection
 from app.modules.agent.settings import (
@@ -21,6 +21,7 @@ from app.modules.system.growth_database_settings import (
     run_growth_database_test,
     update_growth_database_settings,
 )
+from app.modules.system.permissions import get_role_permissions_settings, update_role_permissions_settings
 
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -146,6 +147,34 @@ async def update_sync_policy(
     await db.app_settings.update_one({"_id": "sync_policy"}, {"$set": payload}, upsert=True)
     await write_audit_log(db, actor=actor, action="settings.sync_policy.update", resource_type="setting", resource_id="sync_policy")
     return await get_sync_policy(actor, db)
+
+
+@router.get("/role-permissions")
+async def get_role_permissions_settings_route(
+    _: dict = Depends(require_roles("owner", "admin")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    return await get_role_permissions_settings(db)
+
+
+@router.put("/role-permissions")
+async def put_role_permissions_settings(
+    payload: RolePermissionsUpdate,
+    actor: dict = Depends(require_roles("owner", "admin")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    before = await get_role_permissions_settings(db)
+    updated = await update_role_permissions_settings(db, payload=payload, actor=actor)
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="settings.role_permissions.update",
+        resource_type="setting",
+        resource_id="role_permissions",
+        before=before,
+        after=updated,
+    )
+    return updated
 
 
 @router.get("/agent-llm")

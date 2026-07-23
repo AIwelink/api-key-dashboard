@@ -21,8 +21,13 @@ export type ViewName =
   | "users"
   | "logs";
 
-export type UserRole = "owner" | "admin" | "maintainer" | "viewer";
+export type UserRole = "owner" | "admin" | "maintainer" | "operator" | "viewer";
 export type UserStatus = "active" | "disabled" | "pending_password_reset";
+
+export type UserPermissions = {
+  allowed_views: ViewName[];
+  default_view: ViewName | null;
+};
 
 export type User = {
   id?: string;
@@ -30,6 +35,7 @@ export type User = {
   name?: string;
   role: UserRole;
   status?: UserStatus;
+  permissions?: UserPermissions;
 };
 
 export type AccountDocument = {

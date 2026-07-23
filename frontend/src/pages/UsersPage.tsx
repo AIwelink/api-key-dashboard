@@ -20,6 +20,7 @@ const ROLE_OPTIONS: Array<{ label: string; value: UserRole }> = [
   { label: "owner", value: "owner" },
   { label: "admin", value: "admin" },
   { label: "maintainer", value: "maintainer" },
+  { label: "运营", value: "operator" },
   { label: "viewer", value: "viewer" },
 ];
 
@@ -164,7 +165,7 @@ export function UsersPage({ token, showToast }: Props) {
                     <span className={`status-pill ${statusTone(item.status)}`}>{statusLabel(item.status)}</span>
                   </div>
                   <div className="muted">{item.email}</div>
-                  <div className="muted">角色：{item.role}</div>
+                  <div className="muted">角色：{roleLabel(item.role)}</div>
                 </div>
                 <div className="user-list-actions">
                   <button className="ghost compact-button" disabled={busy} onClick={() => startEditing(item)} type="button">
@@ -265,12 +266,16 @@ function userIdentity(user: User) {
 }
 
 function normalizeRole(value: string): UserRole {
-  if (value === "owner" || value === "admin" || value === "viewer" || value === "maintainer") return value;
+  if (value === "owner" || value === "admin" || value === "viewer" || value === "maintainer" || value === "operator") return value;
   return "maintainer";
 }
 
 function roleOptionsFor(user: User | null) {
   return user?.role === "owner" ? ROLE_OPTIONS : ROLE_OPTIONS.filter((option) => option.value !== "owner");
+}
+
+function roleLabel(value: UserRole) {
+  return ROLE_OPTIONS.find((option) => option.value === value)?.label || value;
 }
 
 function normalizeStatus(value: string | undefined): UserStatus {

@@ -10,7 +10,6 @@ import { ApiTokensPage } from "./pages/ApiTokensPage";
 import { AuditPage } from "./pages/AuditPage";
 import { ClientSitesPage } from "./pages/ClientSitesPage";
 import { EventRecordsPage } from "./pages/EventRecordsPage";
-import { IntroPage } from "./pages/IntroPage";
 import { AvailablePoolPage, ReservePoolPage } from "./pages/ManualPoolPage";
 import { PushErrorTodoPage, TodoPage } from "./pages/TodoPage";
 import { LoginPage } from "./pages/LoginPage";
@@ -22,151 +21,26 @@ import { TrafficAnalysisConfigPage } from "./pages/TrafficAnalysisConfigPage";
 import { UploadPage } from "./pages/UploadPage";
 import { UsersPage } from "./pages/UsersPage";
 import { useForegroundPresence } from "./hooks/useForegroundPresence";
-import type { User, UserRole, ViewName } from "./types";
+import {
+  canAccessView,
+  defaultViewForPermissions,
+  getVisibleNavigationGroups,
+  navigationGroupClass,
+  navShortLabels,
+  viewFromPath,
+  viewPaths,
+} from "./navigation";
+import { api } from "./api/client";
+import type { User, ViewName } from "./types";
+import { errorMessage } from "./utils/format";
 
 type ToastState = {
   message: string;
   isError: boolean;
 } | null;
 
-const navItems: Array<[ViewName, string]> = [
-  ["upload", "上传账号"],
-  ["todos", "代办与错误账号处理"],
-];
-
-const accountNavItems: Array<[ViewName, string]> = [
-  ["push-error-todos", "疑问账号分配面板"],
-  ["accounts", "账号列表"],
-];
-
-const poolNavItems: Array<[ViewName, string]> = [
-  ["available-pool", "可用池"],
-  ["reserve-pool", "使用备选池"],
-  ["api-pools", "API 账号池状态"],
-  ["plus-self-produced", "plus自产"],
-];
-
-const poolOperationsNavItems: Array<[ViewName, string]> = [
-  ["event-records", "事件记录"],
-  ["alert-center", "异常告警"],
-  ["pool-lifecycle", "账号池管理"],
-  ["client-sites", "客户站点"],
-  ["traffic-analysis-config", "访问流量分析配置"],
-];
-
-const operationsManagementNavItems: Array<[ViewName, string]> = [
-  ["traffic-analysis", "访问流量分析"],
-  ["operations-management", "运营管理"],
-];
-
-const adminNavItems: Array<[ViewName, string]> = [
-  ["agent-analysis", "Agent分析"],
-  ["agent-workbench", "Agent工作台"],
-  ["api-tokens", "系统管理"],
-  ["presence", "前台在线"],
-  ["users", "用户管理"],
-  ["logs", "日志"],
-];
-
-const hiddenNavItems = new Set<ViewName>([
-  "upload",
-  "todos",
-  "push-error-todos",
-  "accounts",
-  "available-pool",
-  "reserve-pool",
-]);
-
-export function canAccessTrafficAnalysis(role?: UserRole) {
-  return role === "owner" || role === "admin";
-}
-
-export const canAccessTrafficAnalysisConfig = canAccessTrafficAnalysis;
-
-export function getVisibleNavigationGroups(role?: UserRole): Array<Array<[ViewName, string]>> {
-  return [
-    navItems,
-    accountNavItems,
-    poolNavItems,
-    operationsManagementNavItems.filter(([key]) => key !== "traffic-analysis" || canAccessTrafficAnalysis(role)),
-    poolOperationsNavItems.filter(([key]) => key !== "traffic-analysis-config" || canAccessTrafficAnalysis(role)),
-    adminNavItems.filter(([key]) => key !== "presence" || role === "owner"),
-  ]
-    .map((group) => group.filter(([key]) => !hiddenNavItems.has(key)))
-    .filter((group) => group.length > 0);
-}
-
-const navShortLabels: Record<ViewName, string> = {
-  upload: "传",
-  todos: "办",
-  "push-error-todos": "疑",
-  accounts: "账",
-  "available-pool": "可",
-  "reserve-pool": "备",
-  "api-pools": "池",
-  "plus-self-produced": "产",
-  "traffic-analysis": "流",
-  "operations-management": "运",
-  "event-records": "事",
-  "alert-center": "警",
-  "pool-lifecycle": "站",
-  "client-sites": "客",
-  "traffic-analysis-config": "配",
-  "agent-analysis": "析",
-  "agent-workbench": "台",
-  "api-tokens": "管",
-  presence: "在",
-  users: "用",
-  logs: "志",
-};
-
-const viewPaths: Record<ViewName, string> = {
-  upload: "/upload-accounts",
-  todos: "/todo-and-error-accounts",
-  "push-error-todos": "/question-account-assignment",
-  accounts: "/accounts",
-  "available-pool": "/available-pool",
-  "reserve-pool": "/reserve-pool",
-  "api-pools": "/api-pool-status",
-  "plus-self-produced": "/plus-self-produced",
-  "traffic-analysis": "/traffic-analysis",
-  "operations-management": "/operations-management",
-  "event-records": "/event-records",
-  "alert-center": "/alert-center",
-  "pool-lifecycle": "/account-pool-management",
-  "client-sites": "/client-sites",
-  "traffic-analysis-config": "/traffic-analysis-config",
-  "agent-analysis": "/agent-analysis",
-  "agent-workbench": "/agent-workbench",
-  "api-tokens": "/system-management",
-  presence: "/user-presence",
-  users: "/users",
-  logs: "/logs",
-};
-
-const pathAliases: Record<string, ViewName> = {
-  "/upload": "upload",
-  "/todos": "todos",
-  "/push-error-todos": "push-error-todos",
-  "/api-pools": "api-pools",
-  "/api-tokens": "api-tokens",
-  "/pool-lifecycle": "pool-lifecycle",
-  "/site-configuration": "pool-lifecycle",
-};
-
 function isMobileMenuLayout() {
   return window.matchMedia("(max-width: 720px), (max-width: 900px) and (orientation: portrait), (max-aspect-ratio: 3 / 4)").matches;
-}
-
-function defaultViewForLayout(): ViewName {
-  return "api-pools";
-}
-
-export function viewFromPath(pathname: string): ViewName {
-  const normalized = pathname.replace(/\/+$/, "") || "/";
-  if (normalized === "/") return defaultViewForLayout();
-  const matched = Object.entries(viewPaths).find(([, path]) => path === normalized);
-  return matched ? (matched[0] as ViewName) : pathAliases[normalized] || defaultViewForLayout();
 }
 
 function App() {
@@ -211,6 +85,8 @@ function App() {
       return next;
     });
   };
+  const permissions = user?.permissions;
+  const canRenderCurrentView = Boolean(token && permissions && canAccessView(permissions, view));
 
   useEffect(() => {
     const handlePopState = () => {
@@ -221,12 +97,27 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const presenceDenied = view === "presence" && user?.role !== "owner";
-    const growthDenied = (view === "traffic-analysis" || view === "traffic-analysis-config") && !canAccessTrafficAnalysis(user?.role);
-    if (token && user && (presenceDenied || growthDenied)) {
-      navigateToView(defaultViewForLayout());
+    if (token && permissions && !canAccessView(permissions, view)) {
+      navigateToView(defaultViewForPermissions(permissions));
     }
-  }, [token, user, view]);
+  }, [token, permissions, view]);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    api<User>("/auth/me", token)
+      .then((nextUser) => {
+        if (cancelled) return;
+        setUser(nextUser);
+        localStorage.setItem("user", JSON.stringify(nextUser));
+      })
+      .catch((error) => {
+        if (!cancelled) showToast(errorMessage(error), true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
 
   useEffect(() => {
     const handleAuthExpired = () => {
@@ -257,7 +148,7 @@ function App() {
         </button>
 
         <nav className="nav">
-          {getVisibleNavigationGroups(user?.role).map((group, index) => (
+          {getVisibleNavigationGroups(permissions).map((group, index) => (
             <div className={navigationGroupClass(group)} key={index}>
               {group.map(([key, label]) => (
                 <button
@@ -295,12 +186,12 @@ function App() {
               setUser(nextUser);
               localStorage.setItem("token", nextToken);
               localStorage.setItem("user", JSON.stringify(nextUser));
-              if (window.location.pathname === "/") navigateToView(defaultViewForLayout());
+              if (window.location.pathname === "/") navigateToView(defaultViewForPermissions(nextUser.permissions));
               showToast("登录成功");
             }}
             showToast={showToast}
           />
-        ) : (
+        ) : canRenderCurrentView ? (
           <>
             {view === "upload" && <UploadPage token={token} showToast={showToast} />}
             {view === "todos" && <TodoPage token={token} showToast={showToast} />}
@@ -310,37 +201,25 @@ function App() {
             {view === "reserve-pool" && <ReservePoolPage token={token} showToast={showToast} />}
             {view === "api-pools" && <ApiPoolStatusPage token={token} showToast={showToast} />}
             {view === "plus-self-produced" && <PlusSelfProducedPage token={token} showToast={showToast} />}
-            {view === "traffic-analysis" && canAccessTrafficAnalysis(user?.role) && (
-              <TrafficAnalysisPage token={token} showToast={showToast} />
-            )}
+            {view === "traffic-analysis" && <TrafficAnalysisPage token={token} showToast={showToast} />}
             {view === "operations-management" && <OperationsManagementPage />}
             {view === "event-records" && <EventRecordsPage token={token} showToast={showToast} />}
             {view === "alert-center" && <AlertCenterPage token={token} showToast={showToast} />}
             {view === "pool-lifecycle" && <AccountPoolsPage token={token} showToast={showToast} />}
             {view === "client-sites" && <ClientSitesPage token={token} showToast={showToast} />}
-            {view === "traffic-analysis-config" && canAccessTrafficAnalysis(user?.role) && (
-              <TrafficAnalysisConfigPage token={token} showToast={showToast} />
-            )}
+            {view === "traffic-analysis-config" && <TrafficAnalysisConfigPage token={token} showToast={showToast} />}
             {view === "agent-analysis" && <AgentAnalysisPage token={token} showToast={showToast} />}
             {view === "agent-workbench" && <AgentWorkbenchPage token={token} showToast={showToast} />}
             {view === "api-tokens" && <ApiTokensPage token={token} showToast={showToast} />}
-            {view === "presence" && user?.role === "owner" && <PresencePage token={token} showToast={showToast} />}
+            {view === "presence" && <PresencePage token={token} showToast={showToast} />}
             {view === "users" && <UsersPage token={token} showToast={showToast} />}
             {view === "logs" && <AuditPage token={token} showToast={showToast} />}
           </>
-        )}
+        ) : null}
         {toast && <div className={`toast ${toast.isError ? "danger" : ""}`}>{toast.message}</div>}
       </main>
     </div>
   );
-}
-
-function navigationGroupClass(group: Array<[ViewName, string]>) {
-  const firstKey = group[0]?.[0];
-  if (firstKey === "api-pools") return "nav-group pool-status-nav-group";
-  if (firstKey === "traffic-analysis") return "nav-group operations-management-nav-group";
-  if (firstKey === "event-records") return "nav-group pool-operations-nav-group";
-  return "nav-group";
 }
 
 export default App;

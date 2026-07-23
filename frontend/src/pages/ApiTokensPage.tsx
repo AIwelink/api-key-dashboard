@@ -1,7 +1,8 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../api/client";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
-import type { ApiPool } from "../types";
+import { allNavigationItems, viewLabel } from "../navigation";
+import type { ApiPool, UserRole, ViewName } from "../types";
 import { errorMessage, formatDateTime } from "../utils/format";
 
 type Props = {
@@ -57,7 +58,19 @@ type NotificationForm = {
   note: string;
 };
 
-type SystemTab = "tokens" | "notifications" | "agent-llm";
+type SystemTab = "tokens" | "notifications" | "permissions" | "agent-llm";
+
+export type RolePermissionEntry = {
+  allowed_views: ViewName[];
+  default_view: ViewName | null;
+};
+
+export type RolePermissionsSettings = {
+  available_views: ViewName[];
+  roles: Record<UserRole, RolePermissionEntry>;
+  updated_at?: string;
+  updated_by?: string;
+};
 
 type AgentLlmSettings = {
   id?: string;
@@ -136,6 +149,16 @@ type AgentLlmForm = {
 
 const decisionNotificationTriggerOptions = ["event_spike", "scheduler_task_due", "scheduler_review_due", "scheduler_patrol"];
 
+const roleOrder: UserRole[] = ["owner", "admin", "maintainer", "operator", "viewer"];
+
+const roleLabels: Record<UserRole, string> = {
+  owner: "owner",
+  admin: "admin",
+  maintainer: "maintainer",
+  operator: "运营",
+  viewer: "viewer",
+};
+
 const emptyNotificationForm: NotificationForm = {
   name: "",
   channel_type: "dingtalk",
@@ -191,6 +214,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
   const [agentLlmSettings, setAgentLlmSettings] = useState<AgentLlmSettings | null>(null);
   const [agentLlmForm, setAgentLlmForm] = useState<AgentLlmForm>(emptyAgentLlmForm);
   const [agentPools, setAgentPools] = useState<ApiPool[]>([]);
+  const [rolePermissionsSettings, setRolePermissionsSettings] = useState<RolePermissionsSettings | null>(null);
   const [busy, setBusy] = useState(false);
 
   const loadTokens = async () => {
@@ -206,6 +230,11 @@ export function ApiTokensPage({ token, showToast }: Props) {
   const loadAgentPools = async () => {
     const data = await api<{ items: ApiPool[] }>("/agent/pools", token);
     setAgentPools((data.items || []).filter((pool) => pool.status !== "disabled"));
+  };
+
+  const loadRolePermissionsSettings = async () => {
+    const data = await api<RolePermissionsSettings>("/settings/role-permissions", token);
+    setRolePermissionsSettings(data);
   };
 
   const loadAgentLlmSettings = async () => {
@@ -247,7 +276,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
   };
 
   useEffect(() => {
-    Promise.all([loadTokens(), loadNotificationChannels(), loadAgentLlmSettings(), loadAgentPools()]).catch((error) => showToast(errorMessage(error), true));
+    Promise.all([loadTokens(), loadNotificationChannels(), loadAgentLlmSettings(), loadAgentPools(), loadRolePermissionsSettings()]).catch((error) => showToast(errorMessage(error), true));
   }, []);
 
   const submitToken = async (event: FormEvent<HTMLFormElement>) => {
@@ -499,8 +528,31 @@ export function ApiTokensPage({ token, showToast }: Props) {
     }
   };
 
+  const saveRolePermissionsSettings = async () => {
+    if (!rolePermissionsSettings) return;
+    setBusy(true);
+    try {
+      const updated = await api<RolePermissionsSettings>("/settings/role-permissions", token, {
+        method: "PUT",
+        body: JSON.stringify({ roles: rolePermissionsSettings.roles }),
+      });
+      setRolePermissionsSettings(updated);
+      showToast("权限配置已保存");
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const refreshCurrentTab = () => {
-    const loader = activeTab === "tokens" ? loadTokens : activeTab === "notifications" ? loadNotificationChannels : loadAgentLlmSettings;
+    const loader = activeTab === "tokens"
+      ? loadTokens
+      : activeTab === "notifications"
+        ? loadNotificationChannels
+        : activeTab === "permissions"
+          ? loadRolePermissionsSettings
+          : loadAgentLlmSettings;
     loader().catch((error) => showToast(errorMessage(error), true));
   };
 
@@ -508,6 +560,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
     async () => {
       if (activeTab === "tokens") await loadTokens();
       if (activeTab === "notifications") await loadNotificationChannels();
+      if (activeTab === "permissions") await loadRolePermissionsSettings();
       if (activeTab === "agent-llm") await loadAgentPools();
     },
     { paused: Boolean(busy || editingChannelId) },
@@ -547,6 +600,9 @@ export function ApiTokensPage({ token, showToast }: Props) {
         </button>
         <button className={activeTab === "notifications" ? "active" : ""} onClick={() => setActiveTab("notifications")} type="button">
           通知
+        </button>
+        <button className={activeTab === "permissions" ? "active" : ""} onClick={() => setActiveTab("permissions")} type="button">
+          权限
         </button>
         <button className={activeTab === "agent-llm" ? "active" : ""} onClick={() => setActiveTab("agent-llm")} type="button">
           Agent LLM
@@ -606,6 +662,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
               <select name="role" defaultValue="maintainer">
                 <option value="viewer">viewer</option>
                 <option value="maintainer">maintainer</option>
+                <option value="operator">运营</option>
                 <option value="admin">admin</option>
               </select>
             </label>
@@ -621,6 +678,15 @@ export function ApiTokensPage({ token, showToast }: Props) {
           </form>
         </section>
       </div>
+      )}
+
+      {activeTab === "permissions" && (
+        <RolePermissionsPanel
+          settings={rolePermissionsSettings}
+          busy={busy}
+          onChange={setRolePermissionsSettings}
+          onSave={saveRolePermissionsSettings}
+        />
       )}
 
       {activeTab === "notifications" && (
@@ -1154,6 +1220,119 @@ export function ApiTokensPage({ token, showToast }: Props) {
           </section>
         </div>
       )}
+    </section>
+  );
+}
+
+export function toggleRoleViewPermission(settings: RolePermissionsSettings, role: UserRole, view: ViewName): RolePermissionsSettings {
+  const entry = settings.roles[role];
+  const exists = entry.allowed_views.includes(view);
+  const allowedViews = exists
+    ? entry.allowed_views.filter((item) => item !== view)
+    : [...entry.allowed_views, view];
+  const defaultView = entry.default_view && allowedViews.includes(entry.default_view)
+    ? entry.default_view
+    : allowedViews[0] || null;
+  return {
+    ...settings,
+    roles: {
+      ...settings.roles,
+      [role]: {
+        allowed_views: allowedViews,
+        default_view: defaultView,
+      },
+    },
+  };
+}
+
+function setRoleDefaultView(settings: RolePermissionsSettings, role: UserRole, view: ViewName): RolePermissionsSettings {
+  const entry = settings.roles[role];
+  if (!entry.allowed_views.includes(view)) return settings;
+  return {
+    ...settings,
+    roles: {
+      ...settings.roles,
+      [role]: {
+        ...entry,
+        default_view: view,
+      },
+    },
+  };
+}
+
+export function RolePermissionsPanel({
+  settings,
+  busy,
+  onChange,
+  onSave,
+}: {
+  settings: RolePermissionsSettings | null;
+  busy: boolean;
+  onChange: (settings: RolePermissionsSettings) => void;
+  onSave: () => void;
+}) {
+  if (!settings) {
+    return (
+      <section className="panel">
+        <div className="muted">正在加载权限配置...</div>
+      </section>
+    );
+  }
+  const availableViews = settings.available_views.length ? settings.available_views : allNavigationItems.map(([view]) => view);
+  return (
+    <section className="panel role-permissions-panel">
+      <div className="panel-header">
+        <div>
+          <h3>权限管理</h3>
+          <p>角色可访问页面由后端配置保存到数据库。</p>
+        </div>
+        <button className="success-button" disabled={busy} onClick={onSave} type="button">
+          {busy ? "保存中..." : "保存权限"}
+        </button>
+      </div>
+      <div className="role-permission-grid">
+        {roleOrder.map((role) => {
+          const entry = settings.roles[role];
+          return (
+            <article className="role-permission-card" key={role}>
+              <div className="role-permission-head">
+                <strong>{roleLabels[role]}</strong>
+                <span>{entry.allowed_views.length} 个页面</span>
+              </div>
+              <label>
+                默认页面
+                <select
+                  value={entry.default_view || ""}
+                  disabled={busy || entry.allowed_views.length === 0}
+                  onChange={(event) => onChange(setRoleDefaultView(settings, role, event.target.value as ViewName))}
+                >
+                  {entry.allowed_views.length ? (
+                    entry.allowed_views.map((view) => (
+                      <option value={view} key={view}>{viewLabel(view)}</option>
+                    ))
+                  ) : (
+                    <option value="">未设置</option>
+                  )}
+                </select>
+              </label>
+              <div className="role-permission-options">
+                {availableViews.map((view) => (
+                  <label className="checkbox-row" key={`${role}-${view}`}>
+                    <input
+                      type="checkbox"
+                      value={view}
+                      checked={entry.allowed_views.includes(view)}
+                      disabled={busy}
+                      onChange={() => onChange(toggleRoleViewPermission(settings, role, view))}
+                    />
+                    <span>{viewLabel(view)}</span>
+                  </label>
+                ))}
+              </div>
+            </article>
+          );
+        })}
+      </div>
     </section>
   );
 }

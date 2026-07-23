@@ -316,6 +316,8 @@ async def ensure_initial_owner(db: AsyncIOMotorDatabase) -> None:
 
 async def ensure_bootstrap_data(db: AsyncIOMotorDatabase) -> None:
     from app.modules.system.client_sites import migrate_legacy_client_sites
+    from app.modules.system.permissions import ensure_role_permissions_settings
 
     await ensure_initial_owner(db)
+    await ensure_role_permissions_settings(db)
     await migrate_legacy_client_sites(db)

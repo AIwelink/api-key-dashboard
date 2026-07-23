@@ -98,7 +98,12 @@ function renderWorkspace(activeTab: "links" | "sources" | "sites", loadError = "
       campaigns={[campaign]}
       trackingLinks={[trackingLink]}
       selectedSiteId="aiwelink"
-      linkForm={{ ...emptyTrackingLinkForm, site_id: "aiwelink", campaign_id: campaign.campaign_id }}
+      linkForm={{
+        ...emptyTrackingLinkForm,
+        site_id: "aiwelink",
+        channel_id: channel.channel_id,
+        campaign_id: campaign.campaign_id,
+      }}
       channelForm={emptyChannelForm}
       campaignForm={{ ...emptyCampaignForm, site_id: "aiwelink", channel_id: channel.channel_id }}
       siteForm={{ ...emptySiteForm, public_origin: "https://api.aiwelink.cc" }}
@@ -157,6 +162,7 @@ describe("traffic analysis configuration workspace", () => {
     const form: TrackingLinkForm = {
       ...emptyTrackingLinkForm,
       site_id: " aiwelink ",
+      channel_id: channel.channel_id,
       campaign_id: campaign.campaign_id,
       source_type: "post",
       source_name: " 帖子 A ",
@@ -183,6 +189,45 @@ describe("traffic analysis configuration workspace", () => {
       extra_dimensions: { region: "cn", topic: "api" },
       status: "active",
     });
+  });
+
+  it("keeps a channel without campaigns selectable when creating a tracking link", () => {
+    const newChannel: GrowthChannel = {
+      channel_id: "44444444-4444-4444-4444-444444444444",
+      code: "telegram",
+      name: "Telegram",
+      description: "",
+      status: "active",
+    };
+    const linkForm = {
+      ...emptyTrackingLinkForm,
+      site_id: site.site_id,
+      channel_id: newChannel.channel_id,
+      campaign_id: "",
+      source_name: "Telegram 群推广",
+    };
+
+    const html = renderToStaticMarkup(
+      <TrafficAnalysisWorkspace
+        activeTab="links"
+        sites={[site]}
+        channels={[channel, newChannel]}
+        campaigns={[campaign]}
+        trackingLinks={[]}
+        selectedSiteId={site.site_id}
+        linkForm={linkForm}
+        channelForm={emptyChannelForm}
+        campaignForm={{ ...emptyCampaignForm, site_id: site.site_id }}
+        siteForm={emptySiteForm}
+        loading={false}
+        saving={false}
+        {...callbacks}
+      />,
+    );
+
+    expect(html).toContain(`<option value="${newChannel.channel_id}" selected="">${newChannel.name}</option>`);
+    expect(html).toContain("该渠道暂无活动，请先创建活动");
+    expect(buildTrackingLinkPayload(linkForm)).not.toHaveProperty("channel_id");
   });
 
   it("keeps initial load failures visible and offers a retry action", () => {

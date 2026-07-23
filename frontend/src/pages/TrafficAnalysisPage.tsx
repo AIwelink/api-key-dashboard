@@ -72,6 +72,7 @@ export type GrowthTrackingLink = {
 
 export type TrackingLinkForm = {
   site_id: string;
+  channel_id: string;
   campaign_id: string;
   source_type: TrackingSourceType;
   source_name: string;
@@ -134,6 +135,7 @@ export const emptyTrackingLinkFilters: TrackingLinkFilters = {
 
 export const emptyTrackingLinkForm: TrackingLinkForm = {
   site_id: "",
+  channel_id: "",
   campaign_id: "",
   source_type: "post",
   source_name: "",
@@ -286,18 +288,26 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
     const selectedSite = data.sites.find((item) => item.site_id === siteId);
     const siteCampaigns = data.campaigns.filter((item) => item.site_id === siteId);
     setSelectedSiteId(siteId);
-    setLinkForm((current) => ({
-      ...current,
-      site_id: siteId,
-      campaign_id:
-        current.campaign_id && siteCampaigns.some((item) => item.campaign_id === current.campaign_id)
-          ? current.campaign_id
-          : siteCampaigns[0]?.campaign_id || "",
-      landing_path:
-        current.site_id === siteId
-          ? current.landing_path || selectedSite?.default_landing_path || "/"
-          : selectedSite?.default_landing_path || "/",
-    }));
+    setLinkForm((current) => {
+      const currentCampaign = siteCampaigns.find((item) => item.campaign_id === current.campaign_id);
+      const channelId = data.channels.some((item) => item.channel_id === current.channel_id)
+        ? current.channel_id
+        : currentCampaign?.channel_id || siteCampaigns[0]?.channel_id || "";
+      const channelCampaigns = siteCampaigns.filter((item) => item.channel_id === channelId);
+      const campaignId = currentCampaign?.channel_id === channelId
+        ? currentCampaign.campaign_id
+        : channelCampaigns[0]?.campaign_id || "";
+      return {
+        ...current,
+        site_id: siteId,
+        channel_id: channelId,
+        campaign_id: campaignId,
+        landing_path:
+          current.site_id === siteId
+            ? current.landing_path || selectedSite?.default_landing_path || "/"
+            : selectedSite?.default_landing_path || "/",
+      };
+    });
     setCampaignForm((current) => ({
       ...current,
       site_id: siteId,
@@ -378,6 +388,7 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
     setLinkForm((current) => ({
       ...current,
       site_id: siteId,
+      channel_id: firstCampaign?.channel_id || "",
       campaign_id: firstCampaign?.campaign_id || "",
       landing_path: site?.default_landing_path || current.landing_path || "/",
     }));
@@ -394,6 +405,7 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
       setLinkForm((current) => ({
         ...emptyTrackingLinkForm,
         site_id: current.site_id,
+        channel_id: current.channel_id,
         campaign_id: current.campaign_id,
         landing_path: sites.find((site) => site.site_id === current.site_id)?.default_landing_path || "/",
       }));
@@ -587,8 +599,7 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
   } = props;
   const [linkFilters, setLinkFilters] = useState<TrackingLinkFilters>(emptyTrackingLinkFilters);
   const siteCampaigns = campaigns.filter((item) => item.site_id === linkForm.site_id);
-  const selectedCampaign = campaigns.find((item) => item.campaign_id === linkForm.campaign_id);
-  const selectedChannelId = selectedCampaign?.channel_id || "";
+  const channelCampaigns = siteCampaigns.filter((item) => item.channel_id === linkForm.channel_id);
   const selectedSite = sites.find((item) => item.site_id === selectedSiteId);
   const filterCampaigns = campaigns.filter((item) =>
     (!linkFilters.site_id || item.site_id === linkFilters.site_id)
@@ -645,16 +656,20 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
               <label>
                 <span className="field-label"><strong>渠道</strong></span>
                 <select
-                  value={selectedChannelId}
+                  value={linkForm.channel_id}
                   onChange={(event) => {
                     const campaign = siteCampaigns.find((item) => item.channel_id === event.target.value);
-                    onLinkFormChange({ ...linkForm, campaign_id: campaign?.campaign_id || "" });
+                    onLinkFormChange({
+                      ...linkForm,
+                      channel_id: event.target.value,
+                      campaign_id: campaign?.campaign_id || "",
+                    });
                   }}
                   disabled={!linkForm.site_id}
                   required
                 >
                   <option value="">选择渠道</option>
-                  {channels.filter((channel) => siteCampaigns.some((item) => item.channel_id === channel.channel_id)).map((channel) => (
+                  {channels.map((channel) => (
                     <option value={channel.channel_id} key={channel.channel_id}>{channel.name}</option>
                   ))}
                 </select>
@@ -664,14 +679,17 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
                 <select
                   value={linkForm.campaign_id}
                   onChange={(event) => onLinkFormChange({ ...linkForm, campaign_id: event.target.value })}
-                  disabled={!linkForm.site_id}
+                  disabled={!linkForm.site_id || !linkForm.channel_id || channelCampaigns.length === 0}
                   required
                 >
-                  <option value="">选择活动</option>
-                  {siteCampaigns.filter((item) => !selectedChannelId || item.channel_id === selectedChannelId).map((campaign) => (
+                  <option value="">{linkForm.channel_id && channelCampaigns.length === 0 ? "暂无可选活动" : "选择活动"}</option>
+                  {channelCampaigns.map((campaign) => (
                     <option value={campaign.campaign_id} key={campaign.campaign_id}>{campaign.name}</option>
                   ))}
                 </select>
+                {linkForm.channel_id && channelCampaigns.length === 0 && (
+                  <span className="growth-field-message">该渠道暂无活动，请先创建活动</span>
+                )}
               </label>
               <label>
                 <span className="field-label"><strong>具体来源类型</strong></span>

@@ -32,10 +32,11 @@ from app.modules.growth.schemas import (
     TrackingLinkUpdate,
 )
 from app.modules.system.audit import write_audit_log
-from app.security import require_roles
+from app.modules.system.permissions import require_view_permission
 
 
 router = APIRouter(prefix="/growth", tags=["growth"])
+GROWTH_PERMISSION = "traffic-analysis"
 
 
 def _actor_id(actor: dict[str, Any]) -> str:
@@ -62,7 +63,7 @@ def _raise_http_error(exc: Exception) -> None:
 
 @router.get("/sites")
 async def get_growth_sites(
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission(GROWTH_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     del actor
@@ -76,7 +77,7 @@ async def get_growth_sites(
 async def put_growth_site(
     site_id: str,
     payload: GrowthSiteUpdate,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission(GROWTH_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     try:
@@ -96,7 +97,7 @@ async def put_growth_site(
 
 @router.get("/channels")
 async def get_growth_channels(
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission(GROWTH_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     del actor
@@ -109,7 +110,7 @@ async def get_growth_channels(
 @router.post("/channels", status_code=status.HTTP_201_CREATED)
 async def post_growth_channel(
     payload: ChannelCreate,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission(GROWTH_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     try:
@@ -131,7 +132,7 @@ async def post_growth_channel(
 async def patch_growth_channel(
     channel_id: UUID,
     payload: ChannelUpdate,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission(GROWTH_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     try:
@@ -153,7 +154,7 @@ async def patch_growth_channel(
 async def get_growth_campaigns(
     site_id: str | None = Query(default=None),
     channel_id: UUID | None = Query(default=None),
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission(GROWTH_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     del actor
@@ -166,7 +167,7 @@ async def get_growth_campaigns(
 @router.post("/campaigns", status_code=status.HTTP_201_CREATED)
 async def post_growth_campaign(
     payload: CampaignCreate,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission(GROWTH_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     try:
@@ -188,7 +189,7 @@ async def post_growth_campaign(
 async def patch_growth_campaign(
     campaign_id: UUID,
     payload: CampaignUpdate,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission(GROWTH_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     try:
@@ -210,7 +211,7 @@ async def patch_growth_campaign(
 async def get_growth_tracking_links(
     site_id: str | None = Query(default=None),
     campaign_id: UUID | None = Query(default=None),
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission(GROWTH_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     del actor
@@ -223,7 +224,7 @@ async def get_growth_tracking_links(
 @router.post("/tracking-links", status_code=status.HTTP_201_CREATED)
 async def post_growth_tracking_link(
     payload: TrackingLinkCreate,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission(GROWTH_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     try:
@@ -245,7 +246,7 @@ async def post_growth_tracking_link(
 async def patch_growth_tracking_link(
     tracking_link_id: UUID,
     payload: TrackingLinkUpdate,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission(GROWTH_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     try:

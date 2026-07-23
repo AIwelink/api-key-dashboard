@@ -47,7 +47,7 @@ class GrowthConfigurationRouteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(getattr(caught.exception, "status_code", None), 404)
 
-    def test_all_growth_routes_require_owner_or_admin(self) -> None:
+    def test_all_growth_routes_require_traffic_analysis_permission(self) -> None:
         protected_paths = {
             "/growth/sites",
             "/growth/sites/{site_id}",
@@ -63,6 +63,16 @@ class GrowthConfigurationRouteTests(unittest.IsolatedAsyncioTestCase):
                 continue
             dependencies = [dependency.call for dependency in route.dependant.dependencies]
             self.assertTrue(dependencies, route.path)
+            self.assertEqual(_dependency_permission(dependencies[0]), "traffic-analysis", route.path)
+
+
+def _dependency_permission(dependency: object) -> str:
+    closure = getattr(dependency, "__closure__", None) or ()
+    for cell in closure:
+        value = cell.cell_contents
+        if value == "traffic-analysis":
+            return value
+    return ""
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { canAccessTrafficAnalysis, getVisibleNavigationGroups, viewFromPath } from "./App";
+import { canAccessView, defaultViewForPermissions, getVisibleNavigationGroups, viewFromPath } from "./navigation";
+import type { UserPermissions, ViewName } from "./types";
 
 describe("app navigation", () => {
   const hiddenViews = [
@@ -11,11 +12,42 @@ describe("app navigation", () => {
     "reserve-pool",
   ];
 
-  const visibleGroups = (role: "owner" | "admin" | "maintainer" | "viewer") =>
-    getVisibleNavigationGroups(role).map((group) => group.map(([key]) => key));
+  const permissions = (allowedViews: ViewName[], defaultView = allowedViews[0] || "api-pools"): UserPermissions => ({
+    allowed_views: allowedViews,
+    default_view: defaultView,
+  });
+
+  const ownerPermissions = permissions([
+    "upload",
+    "todos",
+    "push-error-todos",
+    "accounts",
+    "available-pool",
+    "reserve-pool",
+    "api-pools",
+    "plus-self-produced",
+    "traffic-analysis",
+    "operations-management",
+    "event-records",
+    "alert-center",
+    "pool-lifecycle",
+    "client-sites",
+    "traffic-analysis-config",
+    "agent-analysis",
+    "agent-workbench",
+    "api-tokens",
+    "presence",
+    "users",
+    "logs",
+  ]);
+
+  const adminPermissions = permissions(ownerPermissions.allowed_views.filter((view) => view !== "presence"));
+
+  const visibleGroups = (userPermissions: UserPermissions) =>
+    getVisibleNavigationGroups(userPermissions).map((group) => group.map(([key]) => key));
 
   it("shows owners the retained navigation groups without hidden account workflow pages", () => {
-    const groups = getVisibleNavigationGroups("owner");
+    const groups = getVisibleNavigationGroups(ownerPermissions);
     const visibleKeys = groups.flat().map(([key]) => key);
 
     expect(groups.every((group) => group.length > 0)).toBe(true);
@@ -30,7 +62,7 @@ describe("app navigation", () => {
   });
 
   it("shows growth database configuration to admins without owner presence", () => {
-    const groups = getVisibleNavigationGroups("admin");
+    const groups = getVisibleNavigationGroups(adminPermissions);
     const visibleKeys = groups.flat().map(([key]) => key);
 
     expect(groups.every((group) => group.length > 0)).toBe(true);
@@ -44,16 +76,40 @@ describe("app navigation", () => {
     hiddenViews.forEach((view) => expect(visibleKeys).not.toContain(view));
   });
 
-  it("allows only owners and admins to access growth operations", () => {
-    expect(canAccessTrafficAnalysis("owner")).toBe(true);
-    expect(canAccessTrafficAnalysis("admin")).toBe(true);
-    expect(canAccessTrafficAnalysis("maintainer")).toBe(false);
-    expect(canAccessTrafficAnalysis("viewer")).toBe(false);
+  it("uses backend permissions to decide traffic analysis access", () => {
+    const maintainerPermissions = permissions(["api-pools", "plus-self-produced"]);
+    const customPermissions = permissions(["traffic-analysis", "traffic-analysis-config"], "traffic-analysis");
 
-    expect(visibleGroups("maintainer").flat()).not.toContain("traffic-analysis-config");
-    expect(visibleGroups("maintainer").flat()).not.toContain("traffic-analysis");
-    expect(visibleGroups("viewer").flat()).not.toContain("traffic-analysis-config");
-    expect(visibleGroups("viewer").flat()).not.toContain("traffic-analysis");
+    expect(canAccessView(ownerPermissions, "traffic-analysis")).toBe(true);
+    expect(canAccessView(adminPermissions, "traffic-analysis-config")).toBe(true);
+    expect(canAccessView(maintainerPermissions, "traffic-analysis")).toBe(false);
+    expect(canAccessView(customPermissions, "traffic-analysis")).toBe(true);
+    expect(canAccessView(customPermissions, "api-pools")).toBe(false);
+  });
+
+  it("limits operators to the views returned by the backend", () => {
+    const operatorPermissions = permissions(["traffic-analysis", "operations-management"], "traffic-analysis");
+
+    expect(visibleGroups(operatorPermissions)).toEqual([["traffic-analysis", "operations-management"]]);
+  });
+
+  it("blocks direct view access outside the backend permission list", () => {
+    const operatorPermissions = permissions(["traffic-analysis", "operations-management"], "traffic-analysis");
+
+    expect(defaultViewForPermissions(operatorPermissions)).toBe("traffic-analysis");
+    expect(canAccessView(operatorPermissions, "traffic-analysis")).toBe(true);
+    expect(canAccessView(operatorPermissions, "operations-management")).toBe(true);
+    expect(canAccessView(operatorPermissions, "api-pools")).toBe(false);
+    expect(canAccessView(operatorPermissions, "traffic-analysis-config")).toBe(false);
+    expect(canAccessView(operatorPermissions, "users")).toBe(false);
+    expect(canAccessView(ownerPermissions, "users")).toBe(true);
+  });
+
+  it("keeps navigation driven by changed backend permission lists", () => {
+    const changedPermissions = permissions(["operations-management", "users"], "operations-management");
+
+    expect(defaultViewForPermissions(changedPermissions)).toBe("operations-management");
+    expect(visibleGroups(changedPermissions)).toEqual([["operations-management"], ["users"]]);
   });
 
   it("keeps hidden account workflow pages directly addressable", () => {

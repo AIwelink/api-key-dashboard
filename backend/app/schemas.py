@@ -5,8 +5,31 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 
-Role = Literal["owner", "admin", "maintainer", "viewer"]
+Role = Literal["owner", "admin", "maintainer", "operator", "viewer"]
 UploadSourceTemplate = Literal["sub2api", "purchased_jinyao"]
+ViewName = Literal[
+    "upload",
+    "todos",
+    "push-error-todos",
+    "accounts",
+    "available-pool",
+    "reserve-pool",
+    "api-pools",
+    "plus-self-produced",
+    "traffic-analysis",
+    "operations-management",
+    "event-records",
+    "alert-center",
+    "pool-lifecycle",
+    "client-sites",
+    "traffic-analysis-config",
+    "agent-analysis",
+    "agent-workbench",
+    "api-tokens",
+    "presence",
+    "users",
+    "logs",
+]
 
 
 class LoginRequest(BaseModel):
@@ -55,6 +78,26 @@ class UserUpdate(BaseModel):
 
 class PasswordResetRequest(BaseModel):
     password: str = Field(min_length=8)
+
+
+class RolePermissionEntry(BaseModel):
+    allowed_views: list[ViewName] = Field(default_factory=list, max_length=50)
+    default_view: ViewName | None = None
+
+    @field_validator("allowed_views")
+    @classmethod
+    def dedupe_allowed_views(cls, values: list[ViewName]) -> list[ViewName]:
+        return list(dict.fromkeys(values))
+
+    @model_validator(mode="after")
+    def validate_default_view(self) -> "RolePermissionEntry":
+        if self.default_view is not None and self.default_view not in self.allowed_views:
+            raise ValueError("default_view must be included in allowed_views")
+        return self
+
+
+class RolePermissionsUpdate(BaseModel):
+    roles: dict[Role, RolePermissionEntry] = Field(min_length=1)
 
 
 class ApiTokenCreate(BaseModel):
