@@ -564,6 +564,10 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
   };
 
   const createCampaign = async () => {
+    if (!sites.find((site) => site.site_id === campaignForm.site_id)?.configured) {
+      showToast("当前站点尚未接入流量分析，请先在站点接入页保存站点配置", true);
+      return;
+    }
     if (!isValidGrowthCode(campaignForm.code)) {
       showToast("活动编码仅支持小写英文字母、数字和连字符", true);
       return;
@@ -757,6 +761,8 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
   const [campaignFilters, setCampaignFilters] = useState<CampaignFilters>(emptyCampaignFilters);
   const siteCampaigns = campaigns.filter((item) => item.site_id === linkForm.site_id);
   const channelCampaigns = siteCampaigns.filter((item) => item.channel_id === linkForm.channel_id);
+  const campaignSiteMissing = Boolean(campaignForm.site_id)
+    && !sites.find((site) => site.site_id === campaignForm.site_id)?.configured;
   const campaignCodeDuplicate = campaignCodeConflict(campaigns, campaignForm.site_id, campaignForm.code);
   const campaignCodeInvalid = Boolean(campaignForm.code.trim())
     && (!isValidGrowthCode(campaignForm.code) || campaignCodeDuplicate);
@@ -931,7 +937,13 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
           </div>
           <div className="growth-site-context">
             <SiteSelect sites={sites} value={selectedSiteId} disabled={saving} onChange={onSelectSite} />
-            {selectedSite && <span className={selectedSite.database_configured ? "is-ready" : "is-pending"}>{selectedSite.database_configured ? "站点数据库已配置" : "站点数据库未配置"}</span>}
+            {selectedSite && (
+              <span className={selectedSite.configured ? "is-ready" : "is-pending"}>
+                {selectedSite.configured
+                  ? "流量分析站点已接入"
+                  : "流量分析站点未接入，请保存下方配置"}
+              </span>
+            )}
           </div>
           <div className="growth-form-grid site-fields">
             <label className="span-2"><span className="field-label"><strong>公开访问域名</strong></span><input type="url" value={siteForm.public_origin} onChange={(event) => onSiteFormChange({ ...siteForm, public_origin: event.target.value })} placeholder="https://api.example.com" required /></label>
@@ -1028,10 +1040,15 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
       )}
 
       {createModal === "campaign" && (
-        <GrowthCreateModal title="新建活动" submitLabel="创建活动" saving={saving} submitDisabled={!campaignForm.site_id || !campaignForm.channel_id || !isValidGrowthCode(campaignForm.code) || campaignCodeDuplicate || !campaignForm.name.trim()} onClose={onCloseCreate} onSubmit={onCreateCampaign}>
+        <GrowthCreateModal title="新建活动" submitLabel="创建活动" saving={saving} submitDisabled={!campaignForm.site_id || campaignSiteMissing || !campaignForm.channel_id || !isValidGrowthCode(campaignForm.code) || campaignCodeDuplicate || !campaignForm.name.trim()} onClose={onCloseCreate} onSubmit={onCreateCampaign}>
           <div className="growth-form-grid compact" data-growth-form="campaign">
             <SiteSelect sites={sites} value={campaignForm.site_id} disabled={saving} onChange={(siteId) => onCampaignFormChange({ ...campaignForm, site_id: siteId })} />
             <label><span className="field-label"><strong>渠道</strong></span><select value={campaignForm.channel_id} onChange={(event) => onCampaignFormChange({ ...campaignForm, channel_id: event.target.value })} required><option value="">选择渠道</option>{channels.map((channel) => <option value={channel.channel_id} key={channel.channel_id}>{channel.name}</option>)}</select></label>
+            {campaignSiteMissing && (
+              <span className="growth-field-message is-error span-2" role="alert">
+                当前站点尚未接入流量分析，请先在站点接入页保存站点配置
+              </span>
+            )}
             <label>
               <span className="field-label"><strong>活动编码</strong></span>
               <input

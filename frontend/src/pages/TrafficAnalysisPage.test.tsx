@@ -116,11 +116,12 @@ function renderWorkspace(
   campaignForm = { ...emptyCampaignForm, site_id: "aiwelink", channel_id: channel.channel_id },
   createModal: "link" | "channel" | "campaign" | null = null,
   workspaceCampaigns: GrowthCampaign[] = [campaign],
+  workspaceSites: GrowthSite[] = [site],
 ) {
   return renderToStaticMarkup(
     <TrafficAnalysisWorkspace
       activeTab={activeTab}
-      sites={[site]}
+      sites={workspaceSites}
       channels={[channel]}
       campaigns={workspaceCampaigns}
       trackingLinks={[trackingLink]}
@@ -277,6 +278,19 @@ describe("traffic analysis configuration workspace", () => {
     expect(html).toContain('<button disabled="" type="submit">创建活动</button>');
   });
 
+  it("blocks campaign creation until the selected site is connected to Growth", () => {
+    const html = renderWorkspace("campaigns", "", {
+      ...emptyCampaignForm,
+      site_id: site.site_id,
+      channel_id: channel.channel_id,
+      code: "launch-2026",
+      name: "上线活动",
+    }, "campaign", [], [{ ...site, configured: false }]);
+
+    expect(html).toContain("当前站点尚未接入流量分析，请先在站点接入页保存站点配置");
+    expect(html).toContain('<button disabled="" type="submit">创建活动</button>');
+  });
+
   it("renders site integration fields and binding mode", () => {
     const html = renderWorkspace("sites");
 
@@ -284,6 +298,20 @@ describe("traffic analysis configuration workspace", () => {
     expect(html).toContain("公开访问域名");
     expect(html).toContain("共享主域 Cookie");
     expect(html).toContain("同步间隔");
+  });
+
+  it("distinguishes Growth site integration from the client database status", () => {
+    const html = renderWorkspace(
+      "sites",
+      "",
+      undefined,
+      null,
+      [],
+      [{ ...site, configured: false, database_configured: true }],
+    );
+
+    expect(html).toContain("流量分析站点未接入，请保存下方配置");
+    expect(html).not.toContain("站点数据库已配置");
   });
 
   it("builds a trimmed tracking-link payload with at most three non-empty dimensions", () => {

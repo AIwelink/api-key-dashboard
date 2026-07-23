@@ -216,6 +216,14 @@ async def create_campaign(
     actor_id: str,
     campaign_id: UUID | None = None,
 ) -> dict[str, Any]:
+    site_result = await connection.execute(
+        text("SELECT site_id FROM growth.sites WHERE site_id = :site_id"),
+        {"site_id": payload.site_id},
+    )
+    if _one(site_result) is None:
+        raise GrowthNotFoundError(
+            "当前站点尚未接入流量分析，请先在站点接入页保存站点配置"
+        )
     selected_id = campaign_id or uuid4()
     result = await connection.execute(
         text(

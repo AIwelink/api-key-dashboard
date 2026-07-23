@@ -113,7 +113,7 @@ class GrowthRepositoryTests(unittest.IsolatedAsyncioTestCase):
         from app.modules.growth.repository import GrowthConflictError, create_campaign
         from app.modules.growth.schemas import CampaignCreate
 
-        connection = _FakeConnection([None])
+        connection = _FakeConnection([{"site_id": "aiwelink"}, None])
         payload = CampaignCreate(
             site_id="aiwelink",
             channel_id=uuid4(),
@@ -126,7 +126,30 @@ class GrowthRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(str(caught.exception), "当前站点下已存在相同活动编码")
         statement, _ = connection.calls[0]
-        self.assertIn("ON CONFLICT (site_id, code) DO NOTHING", statement)
+        self.assertIn("growth.sites", statement)
+        insert_statement, _ = connection.calls[1]
+        self.assertIn("ON CONFLICT (site_id, code) DO NOTHING", insert_statement)
+
+    async def test_create_campaign_requires_connected_growth_site(self) -> None:
+        from app.modules.growth.repository import GrowthNotFoundError, create_campaign
+        from app.modules.growth.schemas import CampaignCreate
+
+        connection = _FakeConnection([None])
+        payload = CampaignCreate(
+            site_id="aiwelink",
+            channel_id=uuid4(),
+            code="launch-2026",
+            name="上线活动",
+        )
+
+        with self.assertRaisesRegex(
+            GrowthNotFoundError,
+            "当前站点尚未接入流量分析，请先在站点接入页保存站点配置",
+        ):
+            await create_campaign(connection, payload, actor_id="admin@example.com")
+
+        self.assertEqual(len(connection.calls), 1)
+        self.assertIn("growth.sites", connection.calls[0][0])
 
     async def test_create_tracking_link_rejects_campaign_from_another_site(self) -> None:
         from app.modules.growth.repository import GrowthNotFoundError, create_tracking_link
