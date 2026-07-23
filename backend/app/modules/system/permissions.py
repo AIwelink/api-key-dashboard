@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fastapi import Depends, HTTPException, status
@@ -13,6 +14,15 @@ from app.utils import now_utc
 
 SETTINGS_ID = "role_permissions"
 ROLE_ORDER = ("owner", "admin", "maintainer", "operator", "viewer")
+ROLE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+ROLE_LABELS = {
+    "owner": "owner",
+    "admin": "admin",
+    "maintainer": "maintainer",
+    "operator": "运营",
+    "viewer": "viewer",
+}
+OWNER_REQUIRED_VIEWS = {"api-tokens", "users"}
 AVAILABLE_VIEWS: tuple[ViewName, ...] = (
     "upload",
     "todos",
@@ -61,6 +71,8 @@ DEFAULT_ROLE_DEFAULTS: dict[str, ViewName] = {
 def default_role_permissions() -> dict[str, dict[str, Any]]:
     return {
         role: {
+            "label": ROLE_LABELS[role],
+            "builtin": True,
             "allowed_views": list(DEFAULT_ROLE_VIEWS[role]),
             "default_view": DEFAULT_ROLE_DEFAULTS[role],
         }
@@ -75,12 +87,13 @@ async def get_role_permissions_settings(db: AsyncIOMotorDatabase) -> dict[str, A
 async def ensure_role_permissions_settings(db: AsyncIOMotorDatabase) -> dict[str, Any]:
     stored = await db.app_settings.find_one({"_id": SETTINGS_ID})
     public = _public_settings(stored)
-    if not stored or stored.get("roles") != public["roles"]:
+    if not stored or stored.get("roles") != public["roles"] or stored.get("role_order") != public["role_order"]:
         await db.app_settings.update_one(
             {"_id": SETTINGS_ID},
             {
                 "$set": {
                     "roles": public["roles"],
+                    "role_order": public["role_order"],
                     "updated_at": now_utc(),
                     "updated_by": "system",
                 }
@@ -99,9 +112,10 @@ async def update_role_permissions_settings(
     current = await get_role_permissions_settings(db)
     roles = {role: dict(entry) for role, entry in current["roles"].items()}
     for role, entry in payload.roles.items():
-        roles[role] = _normalize_entry(entry.model_dump(), fallback=roles.get(role))
+        roles[role] = _normalize_entry(role, entry.model_dump(), fallback=roles.get(role))
     updates = {
         "roles": roles,
+        "role_order": current["role_order"],
         "updated_at": now_utc(),
         "updated_by": _actor_id(actor),
     }
@@ -144,12 +158,16 @@ def _public_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
     stored_roles = (settings or {}).get("roles")
     roles = default_role_permissions()
     if isinstance(stored_roles, dict):
-        for role in ROLE_ORDER:
-            value = stored_roles.get(role)
+        for raw_role, value in stored_roles.items():
+            role = str(raw_role)
+            if not ROLE_ID_PATTERN.fullmatch(role):
+                continue
             if isinstance(value, dict):
-                roles[role] = _normalize_entry(value, fallback=roles[role])
+                roles[role] = _normalize_entry(role, value, fallback=roles.get(role))
+    role_order = _normalize_role_order(settings, roles)
     response: dict[str, Any] = {
         "available_views": list(AVAILABLE_VIEWS),
+        "role_order": role_order,
         "roles": roles,
     }
     if settings and settings.get("updated_at") is not None:
@@ -159,19 +177,41 @@ def _public_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
     return response
 
 
-def _normalize_entry(value: dict[str, Any], *, fallback: dict[str, Any] | None = None) -> dict[str, Any]:
-    fallback = fallback or {"allowed_views": [], "default_view": None}
+def _normalize_entry(role: str, value: dict[str, Any], *, fallback: dict[str, Any] | None = None) -> dict[str, Any]:
+    fallback = fallback or {
+        "label": ROLE_LABELS.get(role, role),
+        "builtin": role in ROLE_ORDER,
+        "allowed_views": [],
+        "default_view": None,
+    }
     raw_allowed = value.get("allowed_views")
     if isinstance(raw_allowed, list):
         allowed_views = _dedupe_valid_views(raw_allowed)
     else:
         allowed_views = _dedupe_valid_views(fallback.get("allowed_views", []))
+    if role == "owner":
+        allowed_views = [view for view in AVAILABLE_VIEWS if view in set(allowed_views) | OWNER_REQUIRED_VIEWS]
+    else:
+        allowed_views = [view for view in allowed_views if view != "api-tokens"]
     preferred_default = value.get("default_view") or fallback.get("default_view")
     default_view = preferred_default if preferred_default in allowed_views else (allowed_views[0] if allowed_views else None)
+    raw_label = value.get("label")
+    label = str(raw_label).strip() if raw_label is not None else str(fallback.get("label") or role).strip()
     return {
+        "label": label or role,
+        "builtin": role in ROLE_ORDER,
         "allowed_views": allowed_views,
         "default_view": default_view,
     }
+
+
+def _normalize_role_order(settings: dict[str, Any] | None, roles: dict[str, dict[str, Any]]) -> list[str]:
+    stored_order = (settings or {}).get("role_order")
+    order = [str(role) for role in stored_order if str(role) in roles] if isinstance(stored_order, list) else []
+    for role in (*ROLE_ORDER, *roles):
+        if role in roles and role not in order:
+            order.append(role)
+    return order
 
 
 def _dedupe_valid_views(values: list[Any]) -> list[ViewName]:

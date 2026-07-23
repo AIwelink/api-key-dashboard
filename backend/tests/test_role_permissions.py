@@ -90,6 +90,34 @@ class RolePermissionSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updates["updated_by"], "system")
         self.assertEqual(result["roles"]["operator"]["default_view"], "traffic-analysis")
 
+    async def test_stored_custom_roles_and_order_are_preserved(self) -> None:
+        db, _ = fake_db(
+            {
+                "_id": "role_permissions",
+                "role_order": ["owner", "admin", "maintainer", "operator", "viewer", "support"],
+                "roles": {
+                    "support": {
+                        "label": "Customer Support",
+                        "builtin": False,
+                        "allowed_views": ["todos"],
+                        "default_view": "todos",
+                    },
+                    "admin": {
+                        "allowed_views": ["api-pools", "api-tokens"],
+                        "default_view": "api-pools",
+                    },
+                },
+            }
+        )
+
+        result = await permissions.get_role_permissions_settings(db)
+
+        self.assertEqual(result["role_order"][-1], "support")
+        self.assertEqual(result["roles"]["support"]["label"], "Customer Support")
+        self.assertFalse(result["roles"]["support"]["builtin"])
+        self.assertNotIn("api-tokens", result["roles"]["admin"]["allowed_views"])
+        self.assertIn("api-tokens", result["roles"]["owner"]["allowed_views"])
+
 
 class RolePermissionRouterTests(unittest.IsolatedAsyncioTestCase):
     async def test_settings_update_writes_audit_log(self) -> None:

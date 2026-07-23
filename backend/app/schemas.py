@@ -1,11 +1,12 @@
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 
 Role = Literal["owner", "admin", "maintainer", "operator", "viewer"]
+UserRoleId = Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[a-z][a-z0-9-]{0,31}$")]
 UploadSourceTemplate = Literal["sub2api", "purchased_jinyao"]
 ViewName = Literal[
     "upload",
@@ -66,13 +67,13 @@ class ChangePasswordRequest(BaseModel):
 class UserCreate(BaseModel):
     email: EmailStr
     name: str
-    role: Role = "maintainer"
+    role: UserRoleId = "maintainer"
     password: str | None = Field(default=None, min_length=8)
 
 
 class UserUpdate(BaseModel):
     name: str | None = None
-    role: Role | None = None
+    role: UserRoleId | None = None
     status: Literal["active", "disabled", "pending_password_reset"] | None = None
 
 
@@ -81,6 +82,8 @@ class PasswordResetRequest(BaseModel):
 
 
 class RolePermissionEntry(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=40)
+    builtin: bool | None = None
     allowed_views: list[ViewName] = Field(default_factory=list, max_length=50)
     default_view: ViewName | None = None
 
@@ -97,7 +100,12 @@ class RolePermissionEntry(BaseModel):
 
 
 class RolePermissionsUpdate(BaseModel):
-    roles: dict[Role, RolePermissionEntry] = Field(min_length=1)
+    roles: dict[UserRoleId, RolePermissionEntry] = Field(min_length=1)
+
+
+class UserRoleCreate(BaseModel):
+    id: UserRoleId
+    label: str = Field(min_length=1, max_length=40)
 
 
 class ApiTokenCreate(BaseModel):
