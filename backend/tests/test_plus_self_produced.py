@@ -135,7 +135,7 @@ class PlusSelfProducedSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(settings["source_group_id"], 4)
         self.assertEqual(settings["plus_group_id"], 6)
         self.assertEqual(settings["banned_group_id"], 7)
-        self.assertEqual(settings["model"], "gpt-5.4")
+        self.assertEqual(settings["model"], "gpt-5.6-sol")
 
     def test_due_time_uses_last_finish_and_enabled_state(self) -> None:
         now = datetime(2026, 7, 21, 12, 0, tzinfo=UTC)
@@ -276,7 +276,7 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
             patch.object(sub2api_client.httpx, "AsyncClient", return_value=http_client_context),
             self.assertRaises(sub2api_client.InvalidAdminApiKeyError),
         ):
-            await client.test_account(42, model_id="gpt-5.4")
+            await client.test_account(42, model_id="gpt-5.6-sol")
 
     async def test_invalid_admin_key_response_aborts_the_whole_run(self) -> None:
         client = SimpleNamespace(
@@ -374,12 +374,12 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
             {"id": 13, "name": "free@example.com", "status": "active", "schedulable": True, "group_ids": [4]},
         ]
         verifications = {
-            10: {"success": True, "model": "gpt-5.4", "latency_ms": 10, "error": None},
-            11: {"success": False, "model": "gpt-5.4", "latency_ms": 11, "error": "API returned 429"},
-            12: {"success": False, "model": "gpt-5.4", "latency_ms": 12, "error": "API returned 401"},
+            10: {"success": True, "model": "gpt-5.6-sol", "latency_ms": 10, "error": None},
+            11: {"success": False, "model": "gpt-5.6-sol", "latency_ms": 11, "error": "API returned 429"},
+            12: {"success": False, "model": "gpt-5.6-sol", "latency_ms": 12, "error": "API returned 401"},
             13: {
                 "success": False,
-                "model": "gpt-5.4",
+                "model": "gpt-5.6-sol",
                 "latency_ms": 13,
                 "error": "API returned 400: model is not supported when using Codex with a ChatGPT account",
             },
@@ -418,7 +418,7 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["failed"], 1)
         self.assertEqual(client.test_account.await_count, 4)
         for call in client.test_account.await_args_list:
-            self.assertEqual(call.kwargs, {"model_id": "gpt-5.4", "prompt": "", "mode": "default"})
+            self.assertEqual(call.kwargs, {"model_id": "gpt-5.6-sol", "prompt": "", "mode": "default"})
         self.assertEqual(
             client.update_account.await_args_list[0].args,
             (

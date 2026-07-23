@@ -13,7 +13,7 @@ const status: PlusSelfProducedStatus = {
   source_group_id: 4,
   plus_group_id: 6,
   banned_group_id: 7,
-  model: "gpt-5.4",
+  model: "gpt-5.6-sol",
   running: false,
   settings: {
     enabled: true,
@@ -108,7 +108,7 @@ describe("plus self-produced page", () => {
     expect(html).toContain("US06-5002");
     expect(html).toContain("4 → 6");
     expect(html).toContain("4 → 7");
-    expect(html).toContain("gpt-5.4");
+    expect(html).toContain("gpt-5.6-sol");
     expect(html).toContain("15 分钟");
     expect(html).toContain("测试通过");
     expect(html).toContain("429 可用");
@@ -141,5 +141,25 @@ describe("plus self-produced page", () => {
 
     expect(html).toContain("探测中...");
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>探测中\.\.\.<\/button>/);
+  });
+
+  it("uses gpt-5.6-sol while status is loading", () => {
+    const html = renderToStaticMarkup(
+      <PlusSelfProducedView
+        status={null}
+        results={[]}
+        enabled
+        intervalMinutes={15}
+        loading
+        saving={false}
+        running={false}
+        resultsTotal={0}
+        resultsPage={1}
+        resultsPageSize={100}
+        {...callbacks}
+      />,
+    );
+
+    expect(html).toContain("gpt-5.6-sol");
   });
 });
