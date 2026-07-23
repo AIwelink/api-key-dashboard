@@ -17,6 +17,7 @@ from app.modules.sub2api.cache import get_site, upsert_cached_account_snapshot
 from app.modules.sub2api.client import InvalidAdminApiKeyError, Sub2ApiClient, account_in_group
 from app.modules.sub2api.postgres_repository import (
     fetch_admin_api_key as fetch_postgres_admin_api_key,
+    fetch_groups as fetch_postgres_groups,
     fetch_pool_snapshot as fetch_postgres_pool_snapshot,
 )
 from app.modules.system.sql_dsn import redact_sql_error
@@ -152,6 +153,30 @@ async def get_status(db: AsyncIOMotorDatabase) -> dict[str, Any]:
         "settings": settings,
         "last_run": serialize_doc(last_run) if last_run else None,
     }
+
+
+async def list_groups(db: AsyncIOMotorDatabase) -> list[dict[str, Any]]:
+    site = await get_site(db, SITE_ID, include_token=True)
+    if not site:
+        raise RuntimeError(f"Sub2API site {SITE_ID} not found")
+    sql_dsn = str(site.get("sql_dsn") or "").strip()
+    if not sql_dsn:
+        raise RuntimeError(f"Sub2API site {SITE_ID} PostgreSQL SQL_DSN is not configured")
+    try:
+        groups = await fetch_postgres_groups(sql_dsn)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - API errors must not expose database credentials.
+        raise RuntimeError(redact_sql_error(exc, sql_dsn, "postgresql")) from exc
+    return [
+        {
+            "id": group["id"],
+            "name": str(group.get("name") or f"Group {group['id']}"),
+            "status": str(group.get("status") or ""),
+        }
+        for group in groups
+        if isinstance(group, dict) and isinstance(group.get("id"), int)
+    ]
 
 
 async def list_results(

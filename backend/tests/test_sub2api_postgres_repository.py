@@ -77,6 +77,41 @@ class FakeSettingConnection:
 
 
 class Sub2ApiPostgresRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fetch_groups_reads_only_postgresql_groups(self) -> None:
+        fetch_groups = getattr(postgres_repository, "fetch_groups", None)
+        self.assertTrue(callable(fetch_groups), "fetch_groups is not implemented")
+        if not callable(fetch_groups):
+            return
+        connection = FakeConnection(
+            [
+                [
+                    {
+                        "id": 4,
+                        "name": "plus自产",
+                        "platform": "openai",
+                        "status": "active",
+                        "sort_order": 4,
+                        "rate_multiplier": Decimal("1.25"),
+                    }
+                ]
+            ]
+        )
+        engine = FakeEngine(connection)
+        engine_factory = MagicMock(return_value=engine)
+
+        result = await fetch_groups(
+            "host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
+            engine_factory=engine_factory,
+        )
+
+        self.assertEqual(result[0]["id"], 4)
+        self.assertEqual(result[0]["name"], "plus自产")
+        self.assertEqual(result[0]["rate_multiplier"], 1.25)
+        self.assertEqual(len(connection.executed), 1)
+        self.assertIn("FROM groups", connection.executed[0])
+        self.assertNotIn("FROM accounts", connection.executed[0])
+        engine.dispose.assert_awaited_once()
+
     async def test_admin_api_key_is_read_from_settings(self) -> None:
         fetch_admin_api_key = getattr(postgres_repository, "fetch_admin_api_key", None)
         self.assertTrue(callable(fetch_admin_api_key), "fetch_admin_api_key is not implemented")

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.modules.sub2api.plus_self_produced import get_status, list_results, run_probe, update_settings
+from app.modules.sub2api.plus_self_produced import get_status, list_groups, list_results, run_probe, update_settings
 from app.modules.system.audit import write_audit_log
 from app.schemas import PlusSelfProducedSettingsUpdate
 from app.security import get_current_user
@@ -22,6 +22,14 @@ async def get_plus_self_produced_status(
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await get_status(db)
+
+
+@router.get("/groups")
+async def get_plus_self_produced_groups(
+    _: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> list[dict]:
+    return await list_groups(db)
 
 
 @router.get("/results")

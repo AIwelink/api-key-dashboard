@@ -23,6 +23,18 @@ class PlusSelfProducedSchemaTests(unittest.TestCase):
 
 
 class PlusSelfProducedRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_groups_delegate_to_postgresql_service(self) -> None:
+        endpoint = getattr(router, "get_plus_self_produced_groups", None)
+        self.assertTrue(callable(endpoint), "groups endpoint is not implemented")
+        if not callable(endpoint):
+            return
+        groups = [{"id": 4, "name": "plus自产", "status": "active"}]
+        with patch.object(router, "list_groups", AsyncMock(return_value=groups)) as list_groups:
+            result = await endpoint(_={}, db=object())
+
+        self.assertEqual(result, groups)
+        list_groups.assert_awaited_once_with(ANY)
+
     async def test_status_and_results_delegate_to_services(self) -> None:
         status_payload = {"site_id": "US06-5002", "running": False}
         results_payload = {"items": [], "total": 0, "page": 1, "page_size": 50}

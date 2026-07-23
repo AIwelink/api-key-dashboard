@@ -354,6 +354,28 @@ async def fetch_admin_api_key(
             await engine.dispose()
 
 
+async def fetch_groups(
+    sql_dsn: str,
+    *,
+    engine_factory: Callable[..., Any] = create_async_engine,
+) -> list[dict[str, Any]]:
+    parsed = parse_sql_dsn(sql_dsn, "postgresql")
+    engine = None
+    try:
+        engine = engine_factory(
+            parsed.driver_url(),
+            poolclass=NullPool,
+            connect_args=parsed.connect_args(DATABASE_READ_TIMEOUT_SECONDS),
+        )
+        async with asyncio.timeout(DATABASE_READ_TIMEOUT_SECONDS):
+            async with engine.connect() as connection:
+                result = await connection.execute(text(GROUPS_QUERY))
+                return [_normalize_row(row) for row in result.mappings().all()]
+    finally:
+        if engine is not None:
+            await engine.dispose()
+
+
 async def fetch_pool_snapshot(
     sql_dsn: str,
     *,
