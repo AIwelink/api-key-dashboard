@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.schemas import AgentLlmSettingsUpdate, GrowthDatabaseSettingsUpdate, RolePermissionsUpdate
+from app.schemas import AgentLlmSettingsUpdate, GrowthDatabaseSettingsUpdate, RolePermissionsUpdate, UserRoleCreate
 from app.security import require_roles
 from app.modules.agent.llm_client import AgentLlmConfigError, test_agent_llm_connection
 from app.modules.agent.settings import (
@@ -21,7 +21,16 @@ from app.modules.system.growth_database_settings import (
     run_growth_database_test,
     update_growth_database_settings,
 )
-from app.modules.system.permissions import get_role_permissions_settings, update_role_permissions_settings
+from app.modules.system.permissions import (
+    BuiltinRoleDeleteError,
+    RoleAlreadyExistsError,
+    RoleInUseError,
+    RoleNotFoundError,
+    create_user_role,
+    delete_user_role,
+    get_role_permissions_settings,
+    update_role_permissions_settings,
+)
 
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -164,13 +173,66 @@ async def put_role_permissions_settings(
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     before = await get_role_permissions_settings(db)
-    updated = await update_role_permissions_settings(db, payload=payload, actor=actor)
+    try:
+        updated = await update_role_permissions_settings(db, payload=payload, actor=actor)
+    except RoleNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     await write_audit_log(
         db,
         actor=actor,
         action="settings.role_permissions.update",
         resource_type="setting",
         resource_id="role_permissions",
+        before=before,
+        after=updated,
+    )
+    return updated
+
+
+@router.post("/role-permissions/roles", status_code=status.HTTP_201_CREATED)
+async def post_user_role(
+    payload: UserRoleCreate,
+    actor: dict = Depends(require_roles("owner", "admin")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    before = await get_role_permissions_settings(db)
+    try:
+        updated = await create_user_role(db, role_id=payload.id, label=payload.label, actor=actor)
+    except RoleAlreadyExistsError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="settings.role.create",
+        resource_type="role",
+        resource_id=payload.id,
+        before=before,
+        after=updated,
+    )
+    return updated
+
+
+@router.delete("/role-permissions/roles/{role_id}")
+async def delete_user_role_route(
+    role_id: str,
+    actor: dict = Depends(require_roles("owner", "admin")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    before = await get_role_permissions_settings(db)
+    try:
+        updated = await delete_user_role(db, role_id=role_id, actor=actor)
+    except RoleInUseError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except BuiltinRoleDeleteError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RoleNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="settings.role.delete",
+        resource_type="role",
+        resource_id=role_id,
         before=before,
         after=updated,
     )

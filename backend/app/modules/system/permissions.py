@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi import Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.errors import DuplicateKeyError
 
 from app.database import db_dependency
 from app.schemas import RolePermissionsUpdate, ViewName
@@ -68,6 +69,22 @@ DEFAULT_ROLE_DEFAULTS: dict[str, ViewName] = {
 }
 
 
+class RoleAlreadyExistsError(ValueError):
+    pass
+
+
+class RoleNotFoundError(ValueError):
+    pass
+
+
+class BuiltinRoleDeleteError(ValueError):
+    pass
+
+
+class RoleInUseError(ValueError):
+    pass
+
+
 def default_role_permissions() -> dict[str, dict[str, Any]]:
     return {
         role: {
@@ -111,20 +128,143 @@ async def update_role_permissions_settings(
 ) -> dict[str, Any]:
     current = await get_role_permissions_settings(db)
     roles = {role: dict(entry) for role, entry in current["roles"].items()}
-    for role, entry in payload.roles.items():
-        roles[role] = _normalize_entry(role, entry.model_dump(), fallback=roles.get(role))
-    updates = {
-        "roles": roles,
-        "role_order": current["role_order"],
+    field_updates: dict[str, Any] = {
         "updated_at": now_utc(),
         "updated_by": _actor_id(actor),
     }
+    for role, entry in payload.roles.items():
+        if role not in roles:
+            raise RoleNotFoundError(f"User role '{role}' does not exist")
+        normalized = _normalize_entry(role, entry.model_dump(), fallback=roles[role])
+        roles[role] = normalized
+        field_updates[f"roles.{role}"] = normalized
     await db.app_settings.update_one(
         {"_id": SETTINGS_ID},
-        {"$set": updates},
+        {"$set": field_updates},
         upsert=True,
     )
-    return _public_settings({**current, **updates})
+    return _public_settings(
+        {
+            **current,
+            "roles": roles,
+            "updated_at": field_updates["updated_at"],
+            "updated_by": field_updates["updated_by"],
+        }
+    )
+
+
+async def create_user_role(
+    db: AsyncIOMotorDatabase,
+    *,
+    role_id: str,
+    label: str,
+    actor: dict[str, Any],
+) -> dict[str, Any]:
+    current = await get_role_permissions_settings(db)
+    if role_id in current["roles"]:
+        raise RoleAlreadyExistsError(f"User role '{role_id}' already exists")
+
+    normalized_label = label.strip()
+    if not normalized_label:
+        raise ValueError("User role label must not be empty")
+    entry = _normalize_entry(
+        role_id,
+        {
+            "label": normalized_label,
+            "builtin": False,
+            "allowed_views": [],
+            "default_view": None,
+        },
+    )
+    now = now_utc()
+
+    # Create the settings document when bootstrap has not run yet without touching an existing role map.
+    await db.app_settings.update_one(
+        {"_id": SETTINGS_ID},
+        {
+            "$setOnInsert": {
+                "roles": current["roles"],
+                "role_order": current["role_order"],
+                "created_at": now,
+            },
+        },
+        upsert=True,
+    )
+    try:
+        result = await db.app_settings.update_one(
+            {"_id": SETTINGS_ID, f"roles.{role_id}": {"$exists": False}},
+            {
+                "$set": {
+                    f"roles.{role_id}": entry,
+                    "updated_at": now,
+                    "updated_by": _actor_id(actor),
+                },
+                "$push": {"role_order": role_id},
+            },
+        )
+    except DuplicateKeyError as exc:
+        raise RoleAlreadyExistsError(f"User role '{role_id}' already exists") from exc
+    if not result.modified_count:
+        raise RoleAlreadyExistsError(f"User role '{role_id}' already exists")
+
+    roles = {role: dict(value) for role, value in current["roles"].items()}
+    roles[role_id] = entry
+    return _public_settings(
+        {
+            **current,
+            "roles": roles,
+            "role_order": [*current["role_order"], role_id],
+            "updated_at": now,
+            "updated_by": _actor_id(actor),
+        }
+    )
+
+
+async def delete_user_role(
+    db: AsyncIOMotorDatabase,
+    *,
+    role_id: str,
+    actor: dict[str, Any],
+) -> dict[str, Any]:
+    current = await get_role_permissions_settings(db)
+    entry = current["roles"].get(role_id)
+    if entry is None:
+        raise RoleNotFoundError(f"User role '{role_id}' does not exist")
+    if entry["builtin"]:
+        raise BuiltinRoleDeleteError(f"Built-in user role '{role_id}' cannot be deleted")
+    if await db.users.find_one({"role": role_id}, {"_id": 1}):
+        raise RoleInUseError(f"User role '{role_id}' is assigned to users")
+
+    now = now_utc()
+    result = await db.app_settings.update_one(
+        {"_id": SETTINGS_ID, f"roles.{role_id}": {"$exists": True}},
+        {
+            "$unset": {f"roles.{role_id}": ""},
+            "$pull": {"role_order": role_id},
+            "$set": {
+                "updated_at": now,
+                "updated_by": _actor_id(actor),
+            },
+        },
+    )
+    if not result.modified_count:
+        raise RoleNotFoundError(f"User role '{role_id}' does not exist")
+
+    roles = {role: dict(value) for role, value in current["roles"].items() if role != role_id}
+    return _public_settings(
+        {
+            **current,
+            "roles": roles,
+            "role_order": [role for role in current["role_order"] if role != role_id],
+            "updated_at": now,
+            "updated_by": _actor_id(actor),
+        }
+    )
+
+
+async def role_exists(db: AsyncIOMotorDatabase, role_id: str) -> bool:
+    settings = await get_role_permissions_settings(db)
+    return role_id in settings["roles"]
 
 
 async def permissions_for_user(db: AsyncIOMotorDatabase, user: dict[str, Any]) -> dict[str, Any]:

@@ -92,6 +92,16 @@ class RolePermissionEntry(BaseModel):
     def dedupe_allowed_views(cls, values: list[ViewName]) -> list[ViewName]:
         return list(dict.fromkeys(values))
 
+    @field_validator("label")
+    @classmethod
+    def normalize_label(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("label must not be empty")
+        return normalized
+
     @model_validator(mode="after")
     def validate_default_view(self) -> "RolePermissionEntry":
         if self.default_view is not None and self.default_view not in self.allowed_views:
@@ -106,6 +116,14 @@ class RolePermissionsUpdate(BaseModel):
 class UserRoleCreate(BaseModel):
     id: UserRoleId
     label: str = Field(min_length=1, max_length=40)
+
+    @field_validator("label")
+    @classmethod
+    def normalize_label(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("label must not be empty")
+        return normalized
 
 
 class ApiTokenCreate(BaseModel):
