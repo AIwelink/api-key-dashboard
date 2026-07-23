@@ -124,12 +124,9 @@ export function RolePermissionsPanel({ settings, busy, onChange, onSave, onCreat
   };
 
   return (
-    <section className="panel role-permissions-panel">
+    <section className="role-permissions-panel">
       <div className="panel-header role-permissions-toolbar">
-        <div>
-          <h3>权限管理</h3>
-          <p>用户类型和页面权限由后端保存到数据库并执行校验。</p>
-        </div>
+        <h3>权限管理</h3>
         <div className="button-row">
           <button className="ghost" disabled={busy} onClick={() => setShowCreate(true)} type="button">
             + 添加用户类型
@@ -219,10 +216,7 @@ export function RolePermissionsPanel({ settings, busy, onChange, onSave, onCreat
             role="dialog"
           >
             <div className="panel-header">
-              <div>
-                <h3 id="role-create-title">添加用户类型</h3>
-                <p>英文标识创建后不可修改。</p>
-              </div>
+              <h3 id="role-create-title">添加用户类型</h3>
               <button className="icon-button" disabled={busy} onClick={closeCreate} title="关闭" type="button">×</button>
             </div>
             <label>

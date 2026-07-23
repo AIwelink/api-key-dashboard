@@ -4556,6 +4556,16 @@ button.ghost.success-button:hover {
   gap: 16px;
 }
 
+.role-permissions-toolbar {
+  align-items: center;
+  margin-bottom: 0;
+}
+
+.role-permissions-toolbar .button-row {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .role-permission-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -4572,15 +4582,50 @@ button.ghost.success-button:hover {
 }
 
 .role-permission-head {
-  align-items: center;
+  align-items: flex-start;
   display: flex;
   justify-content: space-between;
   gap: 8px;
 }
 
-.role-permission-head span {
+.role-permission-identity {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.role-permission-identity code {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.role-permission-label-input {
+  font-weight: 700;
+  min-width: 0;
+  width: 100%;
+}
+
+.role-permission-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.role-permission-actions span {
   color: var(--muted);
   font-size: 12px;
+  white-space: nowrap;
+}
+
+.role-permission-delete {
+  border-color: #efc6cf;
+  color: var(--danger);
+}
+
+.role-permission-delete:hover:not(:disabled) {
+  background: #fff3f5;
 }
 
 .role-permission-options {
@@ -4589,6 +4634,62 @@ button.ghost.success-button:hover {
   max-height: 360px;
   overflow: auto;
   padding-right: 4px;
+}
+
+.role-permission-options .checkbox-row {
+  min-height: 28px;
+}
+
+.role-create-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: rgba(17, 24, 39, 0.42);
+  padding: 16px;
+}
+
+.role-create-dialog {
+  display: grid;
+  gap: 14px;
+  width: min(420px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 22px 60px rgba(17, 24, 39, 0.28);
+  padding: 16px;
+}
+
+.role-create-dialog .panel-header {
+  margin-bottom: 0;
+}
+
+.role-create-actions {
+  justify-content: flex-end;
+}
+
+@media (max-width: 560px) {
+  .role-permissions-toolbar {
+    align-items: stretch;
+    display: grid;
+  }
+
+  .role-permissions-toolbar .button-row,
+  .role-create-actions {
+    justify-content: stretch;
+  }
+
+  .role-permissions-toolbar .button-row button,
+  .role-create-actions button {
+    flex: 1 1 0;
+  }
+
+  .role-permission-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .presence-summary {
