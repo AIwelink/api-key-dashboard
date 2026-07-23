@@ -56,6 +56,12 @@ def cost_summary(*, historical_peak: float = 0.0) -> dict[str, object]:
         "recent_24h_cost": historical_peak,
         "seven_day_cost": historical_peak,
         "recent_6h_cost_per_token": 1 / 60_000,
+        "current_consumption_rate": {
+            "usd_per_hour": 640.0,
+            "source": "current_hour_prorated",
+            "elapsed_minutes": 30.0,
+            "hour": "2026-07-16T12:00:00+00:00",
+        },
         "burst_1h": {
             "observed_cost": 0.0,
             "elapsed_minutes": 60,
@@ -76,6 +82,99 @@ def cost_summary(*, historical_peak: float = 0.0) -> dict[str, object]:
             "trend_baseline_hours": 0,
         },
     }
+
+
+class CurrentConsumptionRateTests(unittest.TestCase):
+    @staticmethod
+    def hourly_row(bucket_at: datetime, account_cost: object) -> dict[str, object]:
+        return {"bucket_at": bucket_at, "account_cost": account_cost}
+
+    def test_first_five_minutes_use_exact_previous_natural_hour(self) -> None:
+        previous_hour = datetime(2026, 7, 16, 11, 0, tzinfo=UTC)
+        hourly = [self.hourly_row(previous_hour, 42.5)]
+
+        for minute in (0, 4):
+            with self.subTest(minute=minute):
+                result = cache._current_consumption_rate(
+                    hourly,
+                    now=datetime(2026, 7, 16, 12, minute, tzinfo=UTC),
+                )
+
+                self.assertEqual(result["usd_per_hour"], 42.5)
+                self.assertEqual(result["source"], "previous_full_hour")
+                self.assertEqual(result["elapsed_minutes"], float(minute))
+                self.assertEqual(result["hour"], "2026-07-16T11:00:00+00:00")
+
+    def test_minute_five_and_later_prorate_current_hour(self) -> None:
+        current_hour = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
+
+        for minute, account_cost, expected_rate in ((5, 10, 120), (30, 25, 50), (59, 59, 60)):
+            with self.subTest(minute=minute):
+                result = cache._current_consumption_rate(
+                    [self.hourly_row(current_hour, account_cost)],
+                    now=datetime(2026, 7, 16, 12, minute, tzinfo=UTC),
+                )
+
+                self.assertAlmostEqual(result["usd_per_hour"], expected_rate)
+                self.assertEqual(result["source"], "current_hour_prorated")
+                self.assertEqual(result["elapsed_minutes"], float(minute))
+                self.assertEqual(result["hour"], "2026-07-16T12:00:00+00:00")
+
+    def test_missing_previous_hour_does_not_use_older_hour(self) -> None:
+        result = cache._current_consumption_rate(
+            [self.hourly_row(datetime(2026, 7, 16, 10, 0, tzinfo=UTC), 99)],
+            now=datetime(2026, 7, 16, 12, 4, tzinfo=UTC),
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "usd_per_hour": None,
+                "source": "unavailable",
+                "elapsed_minutes": 4.0,
+                "hour": None,
+            },
+        )
+
+    def test_missing_current_hour_after_guard_does_not_fall_back(self) -> None:
+        result = cache._current_consumption_rate(
+            [self.hourly_row(datetime(2026, 7, 16, 11, 0, tzinfo=UTC), 99)],
+            now=datetime(2026, 7, 16, 12, 5, tzinfo=UTC),
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "usd_per_hour": None,
+                "source": "unavailable",
+                "elapsed_minutes": 5.0,
+                "hour": None,
+            },
+        )
+
+    def test_previous_hour_matching_handles_shanghai_month_rollover(self) -> None:
+        result = cache._current_consumption_rate(
+            [self.hourly_row(datetime(2026, 7, 31, 15, 0, tzinfo=UTC), 80)],
+            now=datetime(2026, 7, 31, 16, 2, tzinfo=UTC),
+        )
+
+        self.assertEqual(result["usd_per_hour"], 80)
+        self.assertEqual(result["source"], "previous_full_hour")
+        self.assertEqual(result["hour"], "2026-07-31T15:00:00+00:00")
+
+    def test_invalid_or_negative_selected_cost_is_unavailable(self) -> None:
+        current_hour = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
+
+        for account_cost in (-1, "invalid"):
+            with self.subTest(account_cost=account_cost):
+                result = cache._current_consumption_rate(
+                    [self.hourly_row(current_hour, account_cost)],
+                    now=datetime(2026, 7, 16, 12, 30, tzinfo=UTC),
+                )
+
+                self.assertEqual(result["source"], "unavailable")
+                self.assertIsNone(result["usd_per_hour"])
+                self.assertIsNone(result["hour"])
 
 
 class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -118,6 +217,10 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["forecast_model"], "robust_seasonal_analog")
         self.assertEqual(summary["forecast_status"], "active")
         self.assertEqual(summary["forecast_accuracy"]["windows"]["24h"]["hourly_sample_count"], 12)
+        self.assertEqual(summary["current_consumption_rate_usd_per_hour"], 640.0)
+        self.assertEqual(summary["current_consumption_rate_source"], "current_hour_prorated")
+        self.assertEqual(summary["current_consumption_rate_elapsed_minutes"], 30.0)
+        self.assertEqual(summary["current_consumption_rate_hour"], "2026-07-16T12:00:00+00:00")
 
     async def test_recent_derived_capacity_summary_avoids_requerying_postgres(self) -> None:
         cached_summary = {
@@ -185,7 +288,7 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            patch.object(cache, "now_utc", return_value=NOW),
+            patch.object(cache, "now_utc", return_value=NOW + timedelta(minutes=30)),
             patch.object(cache, "get_site", AsyncMock(return_value={"sql_dsn": "host=db user=u password=p dbname=d"})),
             patch.object(cache, "fetch_postgres_group_dashboard_snapshot", fetch_group),
         ):
@@ -194,6 +297,15 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["recent_6h_cost_per_token"], 0.2)
         self.assertEqual(summary["recent_6h_cost_per_request"], 2.0)
         self.assertEqual(summary["burst_1h"]["current_hour_observed_cost"], 200)
+        self.assertEqual(
+            summary["current_consumption_rate"],
+            {
+                "usd_per_hour": 400.0,
+                "source": "current_hour_prorated",
+                "elapsed_minutes": 30.0,
+                "hour": "2026-07-16T12:00:00+00:00",
+            },
+        )
 
 
     async def test_group_sample_loader_includes_concurrency_and_direct_cost(self) -> None:

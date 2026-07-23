@@ -1270,6 +1270,14 @@ async def _capacity_summary_for_accounts(
         for key, value in realtime_risk.items()
         if key not in {"health_status", "health_label", "health_tone", "health_reason"}
     }
+    current_consumption_rate = cost_summary.get("current_consumption_rate")
+    if not isinstance(current_consumption_rate, dict):
+        current_consumption_rate = {
+            "usd_per_hour": None,
+            "source": "unavailable",
+            "elapsed_minutes": None,
+            "hour": None,
+        }
     return {
         "capacity_model": (
             "single_pool_hourly_forecast"
@@ -1335,6 +1343,22 @@ async def _capacity_summary_for_accounts(
         "five_hour_peak_cost": round(five_hour_peak_cost, 4),
         "seven_day_five_hour_peak_cost": round(five_hour_peak_cost, 4),
         "recent_day_five_hour_peak_cost": round(recent_day_five_hour_peak_cost, 4),
+        "current_consumption_rate_usd_per_hour": _round_optional(
+            _number_or_none(current_consumption_rate.get("usd_per_hour"))
+        ),
+        "current_consumption_rate_source": (
+            current_consumption_rate.get("source")
+            if current_consumption_rate.get("source") in {
+                "previous_full_hour",
+                "current_hour_prorated",
+                "unavailable",
+            }
+            else "unavailable"
+        ),
+        "current_consumption_rate_elapsed_minutes": _round_optional(
+            _number_or_none(current_consumption_rate.get("elapsed_minutes"))
+        ),
+        "current_consumption_rate_hour": current_consumption_rate.get("hour"),
         "burst_1h_observed_cost": round(burst_summary["observed_cost"], 4),
         "burst_1h_elapsed_minutes": burst_summary["elapsed_minutes"],
         "burst_1h_projection_multiplier": round(burst_summary["projection_multiplier"], 4),
@@ -1941,6 +1965,7 @@ async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, gro
     five_hour_peak_cost = _five_hour_daily_peak_cost(hourly_7d)
     recent_day_five_hour_peak_cost = _rolling_peak_cost(hourly_24h, 5)
     burst_1h = _burst_1h_summary(hourly_8h)
+    current_consumption_rate = _current_consumption_rate(hourly, now=current_time)
     seven_day_24h_peak_cost = round(_rolling_peak_cost(hourly_7d, 24), 6)
     recent_24h_cost = round(sum(_capacity_cost(doc) for doc in hourly_24h), 6)
     recent_5h_cost = round(sum(_capacity_cost(doc) for doc in hourly_5h), 6)
@@ -1955,6 +1980,7 @@ async def _dashboard_cost_summary(db: AsyncIOMotorDatabase, site_id: str, *, gro
         "five_hour_peak_cost": five_hour_peak_cost,
         "seven_day_five_hour_peak_cost": five_hour_peak_cost,
         "recent_day_five_hour_peak_cost": recent_day_five_hour_peak_cost,
+        "current_consumption_rate": current_consumption_rate,
         "burst_1h": burst_1h,
         "seven_day_24h_peak_cost": seven_day_24h_peak_cost,
         "recent_24h_cost": recent_24h_cost,
@@ -2086,6 +2112,58 @@ def _rolling_peak_cost(items: list[dict[str, Any]], window_size: int) -> float:
     if len(costs) <= window_size:
         return round(sum(costs), 6)
     return round(max(sum(costs[index:index + window_size]) for index in range(0, len(costs) - window_size + 1)), 6)
+
+
+def _current_consumption_rate(
+    hourly: list[dict[str, Any]],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    current_time = _parse_datetime(now or now_utc()) or now_utc()
+    local_now = current_time.astimezone(timezone(timedelta(hours=8)))
+    elapsed_minutes = round(
+        local_now.minute + local_now.second / 60 + local_now.microsecond / 60_000_000,
+        6,
+    )
+    current_hour = local_now.replace(minute=0, second=0, microsecond=0)
+    expected_hour = current_hour - timedelta(hours=1) if elapsed_minutes < 5 else current_hour
+    expected_hour_utc = expected_hour.astimezone(UTC)
+
+    selected: dict[str, Any] | None = None
+    for item in hourly:
+        bucket_at = _parse_datetime(item.get("bucket_at"))
+        if bucket_at == expected_hour_utc:
+            selected = item
+            break
+
+    unavailable = {
+        "usd_per_hour": None,
+        "source": "unavailable",
+        "elapsed_minutes": elapsed_minutes,
+        "hour": None,
+    }
+    if selected is None:
+        return unavailable
+
+    raw_cost = selected.get("account_cost")
+    if raw_cost is None:
+        raw_cost = selected.get("cost")
+    cost = _number_or_none(raw_cost)
+    if cost is None or not math.isfinite(float(cost)) or cost < 0:
+        return unavailable
+
+    if elapsed_minutes < 5:
+        rate = float(cost)
+        source = "previous_full_hour"
+    else:
+        rate = float(cost) / elapsed_minutes * 60
+        source = "current_hour_prorated"
+    return {
+        "usd_per_hour": round(rate, 6),
+        "source": source,
+        "elapsed_minutes": elapsed_minutes,
+        "hour": expected_hour_utc.isoformat(),
+    }
 
 
 def _burst_1h_summary(hourly: list[dict[str, Any]]) -> dict[str, Any]:

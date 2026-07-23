@@ -44,6 +44,10 @@ class CapacitySnapshotTests(unittest.IsolatedAsyncioTestCase):
             "concurrency_coverage": 3.4,
             "pool_active_normal_accounts": 6,
             "account_type": "plus",
+            "current_consumption_rate_usd_per_hour": 640.0,
+            "current_consumption_rate_source": "current_hour_prorated",
+            "current_consumption_rate_elapsed_minutes": 30.0,
+            "current_consumption_rate_hour": "2026-07-18T06:00:00+00:00",
             "type_summary": {
                 "plus": {
                     "available_accounts": 126,
@@ -96,6 +100,10 @@ class CapacitySnapshotTests(unittest.IsolatedAsyncioTestCase):
                 "concurrency_coverage": 3.4,
                 "pool_active_normal_accounts": 6,
                 "account_type": "plus",
+                "current_consumption_rate_usd_per_hour": 640.0,
+                "current_consumption_rate_source": "current_hour_prorated",
+                "current_consumption_rate_elapsed_minutes": 30.0,
+                "current_consumption_rate_hour": "2026-07-18T06:00:00+00:00",
                 "calculated_at": sampled_at,
             },
         )

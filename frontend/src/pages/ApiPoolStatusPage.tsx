@@ -129,6 +129,10 @@ type CapacitySummary = {
   five_hour_peak_cost?: number;
   seven_day_five_hour_peak_cost?: number;
   recent_day_five_hour_peak_cost?: number;
+  current_consumption_rate_usd_per_hour?: number | null;
+  current_consumption_rate_source?: "previous_full_hour" | "current_hour_prorated" | "unavailable";
+  current_consumption_rate_elapsed_minutes?: number | null;
+  current_consumption_rate_hour?: string | null;
   burst_1h_observed_cost?: number;
   burst_1h_elapsed_minutes?: number;
   burst_1h_projection_multiplier?: number;
@@ -1521,6 +1525,12 @@ function CapacityRunwaySummary({ summary, loading }: { summary?: CapacitySummary
           meterTiered
         />
         <CapacityMetric
+          label="当前消耗速度"
+          value={formatCurrentConsumptionRate(summary?.current_consumption_rate_usd_per_hour)}
+          sub={currentConsumptionRateSourceLabel(summary?.current_consumption_rate_source)}
+          tone="muted"
+        />
+        <CapacityMetric
           label="压力阶段"
           value={summary?.pressure_stage_label || "等待数据"}
           sub={`TPM ${formatRate(traffic.tpm)} · RPM ${formatRate(traffic.rpm)} · ${summary?.sample_count || 0} 个分钟样本`}
@@ -1821,6 +1831,11 @@ const METRIC_HELP_DETAILS: Record<string, MetricHelpDetail> = {
     purpose: "把流量变化和当前容量风险归纳为一个运营阶段，用于判断继续观察、准备补号、峰值保底还是关注库存风险。",
     formula: "综合TPM/RPM的EMA5、EMA15、EMA60计算短期动量和需求倍率，并结合流量是否确认回落、实时容量健康状态和动态可用时间判定。",
     note: "页面只显示当前账号池分组的最新原始TPM/RPM。预测内部使用同一站点、同一分组的EMA/P90压力值，不汇总客户端站点。等待数据：分钟样本尚未就绪；稳定：需求倍率低于1.2；压力传导：需求倍率达到1.2；加速上涨：需求倍率达到1.5或TPM短期动量达到1.2；峰值保底：容量已危险或耗尽；回落观察：流量确认下降；库存风险：流量下降且动态可用时间超过6小时。",
+  },
+  "当前消耗速度": {
+    purpose: "显示当前分组在最近自然小时内的美元消耗速度，便于维护人员直接观察即时压力。",
+    formula: "整点后前5分钟使用上一完整自然小时的实际消耗；之后按 本小时累计消耗 / 已过分钟 * 60 折算为每小时速度。",
+    note: "只读取当前站点、当前分组的account_cost。紧邻小时桶缺失时显示等待数据，不使用更早小时或其他分组补位。",
   },
   "安全并发覆盖": {
     purpose: "判断低额度风险账号之外的安全并发，能覆盖当前压力并发多少倍。",
@@ -2430,6 +2445,17 @@ function formatUsd(value: unknown): string {
   if (Math.abs(number) >= 100) return `$${number.toFixed(0)}`;
   if (Math.abs(number) >= 10) return `$${number.toFixed(1)}`;
   return `$${number.toFixed(2)}`;
+}
+
+function formatCurrentConsumptionRate(value: unknown): string {
+  const number = optionalNumberValue(value);
+  return number === null ? "-" : `${formatUsd(number)}/小时`;
+}
+
+function currentConsumptionRateSourceLabel(source?: CapacitySummary["current_consumption_rate_source"]): string {
+  if (source === "previous_full_hour") return "上一完整小时";
+  if (source === "current_hour_prorated") return "本小时折算";
+  return "等待小时消耗数据";
 }
 
 function formatMultiple(value: unknown): string {

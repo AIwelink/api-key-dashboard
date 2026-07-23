@@ -37,4 +37,26 @@ describe("API pool metric help", () => {
       expect(source).toContain(label);
     }
   });
+
+  it("shows the backend current consumption rate beside the pressure stage", () => {
+    expect(source).toContain("current_consumption_rate_usd_per_hour?: number | null;");
+    expect(source).toContain('current_consumption_rate_source?: "previous_full_hour" | "current_hour_prorated" | "unavailable";');
+    expect(source).toContain("current_consumption_rate_elapsed_minutes?: number | null;");
+    expect(source).toContain("current_consumption_rate_hour?: string | null;");
+
+    const rateMetric = source.indexOf('label="当前消耗速度"');
+    const pressureMetric = source.indexOf('label="压力阶段"');
+    expect(rateMetric).toBeGreaterThan(-1);
+    expect(rateMetric).toBeLessThan(pressureMetric);
+    expect(source).toContain('if (source === "previous_full_hour") return "上一完整小时";');
+    expect(source).toContain('if (source === "current_hour_prorated") return "本小时折算";');
+    expect(source).toContain('return "等待小时消耗数据";');
+  });
+
+  it("documents the current consumption rate guard and formula", () => {
+    expect(source).toContain('"当前消耗速度": {');
+    expect(source).toContain("整点后前5分钟");
+    expect(source).toContain("本小时累计消耗 / 已过分钟 * 60");
+    expect(source).toContain("当前站点、当前分组");
+  });
 });

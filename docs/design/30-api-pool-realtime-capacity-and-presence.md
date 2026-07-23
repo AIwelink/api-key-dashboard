@@ -9,6 +9,7 @@
 - `backend/app/modules/sub2api/cache.py`：sub2api 缓存、分组容量汇总和账号列表。
 - `backend/app/modules/sub2api/capacity_risk.py`：分钟压力、可用时间、并发覆盖、补号判断。
 - `backend/app/modules/sub2api/tpm_sampler.py`：每分钟 TPM/RPM/当前并发采样。
+- `backend/app/modules/sub2api/capacity_sampler.py`：每 5 分钟保存分组容量摘要，供后续回测。
 - `backend/app/routers/sub2api_sites.py`：站点、分组和账号缓存接口。
 - `backend/app/modules/system/presence.py`：前台在线心跳、当前在线和历史聚合。
 - `backend/app/routers/presence.py`：前台在线接口。
@@ -82,6 +83,10 @@ created_at DESC, sub2api_account_id DESC
 | `actual_runway_hours` | 只按当前实际剩余额度计算的可用时间 |
 | `dynamic_runway_hours` | 包含短期额度恢复后的动态可用时间 |
 | `target_runway_hours` | 动态可用时间目标，当前为 `3h` |
+| `current_consumption_rate_usd_per_hour` | 当前分组的自然小时美元消耗速度；无可靠小时桶时为 `null` |
+| `current_consumption_rate_source` | `previous_full_hour`、`current_hour_prorated` 或 `unavailable` |
+| `current_consumption_rate_elapsed_minutes` | 当前自然小时已过分钟，用于核对 5 分钟切换边界 |
+| `current_consumption_rate_hour` | 实际采用的小时桶（UTC ISO 时间）；无可靠数据时为 `null` |
 | `pressure_stage` | `waiting_data`、`stable`、`transmission`、`accelerating`、`peak_guard`、`recovering`、`inventory_risk` |
 | `replenishment_required` | 是否建议补号 |
 | `recommended_refill_options` | 按当前池可补账号类型拆分的建议数量 |
@@ -138,7 +143,23 @@ actual_runway_hours = actual_remaining_usd / burn_usd_per_hour
 dynamic_runway_hours = dynamic_remaining_usd / burn_usd_per_hour
 ```
 
-### 4.1 压力阶段
+### 4.1 当前消耗速度
+
+“当前消耗速度”只读取当前 sub2api 站点、当前分组的 PostgreSQL 小时趋势，基础值为 `account_cost`，不能汇总其他分组或客户端站点：
+
+```text
+Asia/Shanghai 整点后 elapsed < 5 分钟：
+rate = 紧邻上一完整自然小时的 account_cost
+
+elapsed >= 5 分钟：
+rate = 本小时累计 account_cost / elapsed * 60
+```
+
+小时桶必须和目标自然小时精确相等。前 5 分钟缺少紧邻上一小时，或 5 分钟后缺少当前小时，都返回 `source=unavailable`；不能使用更早小时回退。负数、非数值和无法解析的桶同样不可用。
+
+前端只格式化后端结果为 `$ / 小时` 并显示“上一完整小时”“本小时折算”或“等待小时消耗数据”，不得自行按浏览器时间重算。该指标当前只用于人工观察，不参与健康等级、通知阈值或补号公式。
+
+### 4.2 压力阶段
 
 前端“压力阶段”标题必须通过 `MetricHelp` 提供 hover/focus 详情。阶段由 TPM/RPM 的 EMA5、EMA15、EMA60、短期动量、需求倍率、回落判断、实时健康状态和动态可用时间共同决定：
 
@@ -154,7 +175,7 @@ dynamic_runway_hours = dynamic_remaining_usd / burn_usd_per_hour
 
 阶段用于解释运营态势，不替代 `health_status`。等待数据不得触发容量预警或恢复通知；峰值保底优先于上涨阶段。
 
-### 4.2 一小时硬告警线
+### 4.3 一小时硬告警线
 
 分组容量通知启用后，只要 `realtime_risk_ready=true`，并且以下任一值低于 `1h`，必须发送危险告警：
 
@@ -346,6 +367,8 @@ sub2api_tpm_samples
 sub2api_capacity_samples
 ```
 
+`sub2api_capacity_samples` 每 5 分钟按站点和分组保存一次 schema version 2 文档。`metrics` 会自动保留容量摘要中的标量字段，因此当前消耗速度的四个字段直接进入新样本；这是加法兼容变更，不提升 schema version，也不回填历史样本。
+
 前台在线：
 
 ```text
@@ -362,6 +385,7 @@ frontend_presence_minutes
 ```text
 backend/tests/test_capacity_risk.py
 backend/tests/test_capacity_risk_integration.py
+backend/tests/test_capacity_sampler.py
 backend/tests/test_concurrency_capacity.py
 backend/tests/test_frontend_presence.py
 backend/tests/test_sub2api_account_list.py
@@ -394,3 +418,4 @@ npm.cmd run build
 7. 账号列表排序必须在数据库分页前执行。
 8. presence leave 必须携带 `session_id`，不能关闭同一浏览器的其他标签页。
 9. `schedulable=false` 的账号不能进入美元容量或并发容量，即使账号仍带有 5h/7d 429 状态。
+10. 当前消耗速度在整点后前 5 分钟只使用紧邻上一小时，5 分钟后只使用当前小时，且始终保持站点/分组隔离。
