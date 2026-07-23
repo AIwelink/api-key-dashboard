@@ -40,6 +40,10 @@ At the start of every scheduled or manual probe, the service reads the effective
 
 Before testing any account, it verifies that all four configured groups still exist and are distinct. If validation fails, the run records an error and stops before any remote account update.
 
+For every candidate account from either the configured source group or Plus normal group, every run first updates the remote account so `credentials.model_mapping` is exactly `{}`. This reset is unconditional, including when the PostgreSQL snapshot shows no mapping or an empty mapping, because the remote account remains authoritative and may have changed after the snapshot. The existing account-update path fetches the current remote account, preserves its other editable fields and credentials, overlays the empty mapping, and sends the complete PUT payload accepted by Sub2API. Only after that update succeeds does the workflow call the `gpt-5.6-sol` account test.
+
+If the model reset fails, the workflow does not test or move that account. It records `model_reset_failed`, increments the run failure count, and continues to the next candidate. This prevents a stale per-account model mapping from influencing eligibility classification.
+
 The configured roles replace every fixed group constant in candidate selection and routing:
 
 - Source success or 429: move to the configured Plus normal group, add the `plus ` prefix when absent, and set `plan_type=plus`.
@@ -74,11 +78,13 @@ PostgreSQL connection errors are sanitized through the existing SQL error redact
 
 Settings validation distinguishes duplicate role selection from missing PostgreSQL group IDs. Probe-time validation is required even after save-time validation because groups may be deleted or changed externally.
 
+The pre-probe model reset is not optional and is not controlled by a page setting. A failed reset is an account-level failure rather than a run-level failure, so other candidates still run. The reset payload never clears unrelated credentials, metadata, account status, or group membership.
+
 The groups endpoint and settings save are read-only with respect to Sub2API accounts. They never trigger a model probe or account move.
 
 ## Testing
 
-Backend tests cover defaults, persisted custom IDs, partial updates, positive ID schema validation, duplicate-role rejection, missing-group rejection, PostgreSQL-backed group options, dynamic status fields, dynamic candidate selection, and all five routing outcomes using custom IDs.
+Backend tests cover defaults, persisted custom IDs, partial updates, positive ID schema validation, duplicate-role rejection, missing-group rejection, PostgreSQL-backed group options, dynamic status fields, dynamic candidate selection, unconditional empty model-mapping updates before every account test, preservation of other account fields, reset-failure isolation, and all five routing outcomes using custom IDs.
 
 Frontend tests cover rendering the four selects, ID-and-name options, initialization from settings, dynamic workflow facts, duplicate-selection blocking, and the complete settings request payload.
 
