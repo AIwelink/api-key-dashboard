@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../api/client";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
-import type { User, UserRole, UserStatus } from "../types";
+import type { RolePermissionsSettings, User, UserRole, UserStatus } from "../types";
 import { errorMessage } from "../utils/format";
 
 type Props = {
@@ -15,14 +15,6 @@ type UserForm = {
   status: UserStatus;
   password: string;
 };
-
-const ROLE_OPTIONS: Array<{ label: string; value: UserRole }> = [
-  { label: "owner", value: "owner" },
-  { label: "admin", value: "admin" },
-  { label: "maintainer", value: "maintainer" },
-  { label: "运营", value: "operator" },
-  { label: "viewer", value: "viewer" },
-];
 
 const STATUS_OPTIONS: Array<{ label: string; value: UserStatus }> = [
   { label: "正常", value: "active" },
@@ -39,6 +31,7 @@ const emptyEditForm: UserForm = {
 
 export function UsersPage({ token, showToast }: Props) {
   const [users, setUsers] = useState<User[]>([]);
+  const [roleSettings, setRoleSettings] = useState<RolePermissionsSettings | null>(null);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [editForm, setEditForm] = useState<UserForm>(emptyEditForm);
   const [busy, setBusy] = useState(false);
@@ -48,10 +41,19 @@ export function UsersPage({ token, showToast }: Props) {
     setUsers(data.items);
   };
 
-  usePageAutoRefresh(loadUsers, { paused: Boolean(editingUser || busy) });
+  const loadPageData = async () => {
+    const [usersData, settingsData] = await Promise.all([
+      api<{ items: User[] }>("/users", token),
+      api<RolePermissionsSettings>("/settings/role-permissions", token),
+    ]);
+    setUsers(usersData.items);
+    setRoleSettings(settingsData);
+  };
+
+  usePageAutoRefresh(loadPageData, { paused: Boolean(editingUser || busy) });
 
   useEffect(() => {
-    loadUsers().catch((error) => showToast(errorMessage(error), true));
+    loadPageData().catch((error) => showToast(errorMessage(error), true));
   }, []);
 
   const submitCreate = async (event: FormEvent<HTMLFormElement>) => {
@@ -149,7 +151,7 @@ export function UsersPage({ token, showToast }: Props) {
           <h2>用户</h2>
           <p>系统不开放注册，用户由后台创建。</p>
         </div>
-        <button onClick={() => loadUsers().catch((error) => showToast(errorMessage(error), true))} type="button">
+        <button onClick={() => loadPageData().catch((error) => showToast(errorMessage(error), true))} type="button">
           刷新
         </button>
       </div>
@@ -165,7 +167,7 @@ export function UsersPage({ token, showToast }: Props) {
                     <span className={`status-pill ${statusTone(item.status)}`}>{statusLabel(item.status)}</span>
                   </div>
                   <div className="muted">{item.email}</div>
-                  <div className="muted">角色：{roleLabel(item.role)}</div>
+                  <div className="muted">角色：{roleLabel(item.role, roleSettings)}</div>
                 </div>
                 <div className="user-list-actions">
                   <button className="ghost compact-button" disabled={busy} onClick={() => startEditing(item)} type="button">
@@ -199,8 +201,12 @@ export function UsersPage({ token, showToast }: Props) {
               </label>
               <label>
                 角色
-                <select value={editForm.role} onChange={(event) => setEditField("role", event.target.value as UserRole)}>
-                  {roleOptionsFor(editingUser).map((option) => (
+                <select
+                  disabled={!roleSettings}
+                  value={editForm.role}
+                  onChange={(event) => setEditField("role", event.target.value as UserRole)}
+                >
+                  {roleOptionsFor(roleSettings, editingUser).map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -239,8 +245,13 @@ export function UsersPage({ token, showToast }: Props) {
               </label>
               <label>
                 角色
-                <select name="role" defaultValue="maintainer">
-                  {ROLE_OPTIONS.filter((option) => option.value !== "owner").map((option) => (
+                <select
+                  defaultValue={defaultCreateRole(roleSettings)}
+                  disabled={!roleSettings}
+                  key={roleSettings?.role_order.join("|") || "loading"}
+                  name="role"
+                >
+                  {roleOptionsFromSettings(roleSettings, false).map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -250,7 +261,7 @@ export function UsersPage({ token, showToast }: Props) {
               <label>
                 临时密码 <input name="password" minLength={8} placeholder="留空自动生成" />
               </label>
-              <button disabled={busy} type="submit">
+              <button disabled={busy || !roleSettings} type="submit">
                 {busy ? "创建中..." : "创建用户"}
               </button>
             </form>
@@ -266,16 +277,30 @@ function userIdentity(user: User) {
 }
 
 function normalizeRole(value: string): UserRole {
-  if (value === "owner" || value === "admin" || value === "viewer" || value === "maintainer" || value === "operator") return value;
-  return "maintainer";
+  return value || "maintainer";
 }
 
-function roleOptionsFor(user: User | null) {
-  return user?.role === "owner" ? ROLE_OPTIONS : ROLE_OPTIONS.filter((option) => option.value !== "owner");
+export function roleOptionsFromSettings(settings: RolePermissionsSettings | null, includeOwner: boolean) {
+  if (!settings) return [];
+  return settings.role_order
+    .filter((role) => Boolean(settings.roles[role]))
+    .filter((role) => includeOwner || role !== "owner")
+    .map((role) => ({ label: settings.roles[role].label, value: role }));
 }
 
-function roleLabel(value: UserRole) {
-  return ROLE_OPTIONS.find((option) => option.value === value)?.label || value;
+function roleOptionsFor(settings: RolePermissionsSettings | null, user: User | null) {
+  const options = roleOptionsFromSettings(settings, user?.role === "owner");
+  if (!user?.role || options.some((option) => option.value === user.role)) return options;
+  return [{ label: user.role, value: user.role }, ...options];
+}
+
+function defaultCreateRole(settings: RolePermissionsSettings | null) {
+  const options = roleOptionsFromSettings(settings, false);
+  return options.some((option) => option.value === "maintainer") ? "maintainer" : options[0]?.value || "";
+}
+
+function roleLabel(value: UserRole, settings: RolePermissionsSettings | null) {
+  return settings?.roles[value]?.label || value;
 }
 
 function normalizeStatus(value: string | undefined): UserStatus {
