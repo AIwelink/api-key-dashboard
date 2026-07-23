@@ -78,6 +78,8 @@ const trackingLink: GrowthTrackingLink = {
 
 const callbacks = {
   onTabChange: () => undefined,
+  onOpenCreate: () => undefined,
+  onCloseCreate: () => undefined,
   onLinkFormChange: () => undefined,
   onChannelFormChange: () => undefined,
   onCampaignFormChange: () => undefined,
@@ -92,16 +94,18 @@ const callbacks = {
 };
 
 function renderWorkspace(
-  activeTab: "links" | "sources" | "sites",
+  activeTab: "links" | "channels" | "campaigns" | "sites",
   loadError = "",
   campaignForm = { ...emptyCampaignForm, site_id: "aiwelink", channel_id: channel.channel_id },
+  createModal: "link" | "channel" | "campaign" | null = null,
+  workspaceCampaigns: GrowthCampaign[] = [campaign],
 ) {
   return renderToStaticMarkup(
     <TrafficAnalysisWorkspace
       activeTab={activeTab}
       sites={[site]}
       channels={[channel]}
-      campaigns={[campaign]}
+      campaigns={workspaceCampaigns}
       trackingLinks={[trackingLink]}
       selectedSiteId="aiwelink"
       linkForm={{
@@ -116,6 +120,7 @@ function renderWorkspace(
       loading={false}
       saving={false}
       loadError={loadError}
+      createModal={createModal}
       onRetry={() => undefined}
       {...callbacks}
     />,
@@ -126,47 +131,77 @@ describe("traffic analysis configuration workspace", () => {
   it("renders real promotion-link configuration without fake analytics", () => {
     const html = renderWorkspace("links");
 
-    expect(html).toContain('class="growth-stacked-flow"');
-    expect(html).not.toContain("growth-links-layout");
+    expect(html).toContain('aria-label="推广链接查询"');
     expect(html).toContain("推广链接");
-    expect(html).toContain("渠道与活动");
+    expect(html).toContain("渠道管理");
+    expect(html).toContain("活动管理");
     expect(html).toContain("站点接入");
-    expect(html).toContain("具体来源");
     expect(html).toContain("https://aiwelink.cc/r/7km4q2xd");
     expect(html).toContain("Claude API 入门第 3 篇");
     expect(html).not.toContain("点击人数");
     expect(html).not.toContain("注册率");
   });
 
-  it("renders channel and campaign configuration together", () => {
-    const html = renderWorkspace("sources");
-    const channelForm = html.indexOf('data-growth-section="channel-form"');
-    const channelList = html.indexOf('data-growth-section="channel-list"');
-    const campaignForm = html.indexOf('data-growth-section="campaign-form"');
-    const campaignList = html.indexOf('data-growth-section="campaign-list"');
+  it("renders four independent query-first tabs", () => {
+    const linksHtml = renderWorkspace("links");
+    const channelsHtml = renderWorkspace("channels");
+    const campaignsHtml = renderWorkspace("campaigns");
 
-    expect(channelForm).toBeGreaterThan(-1);
-    expect(channelList).toBeGreaterThan(channelForm);
-    expect(campaignForm).toBeGreaterThan(channelList);
-    expect(campaignList).toBeGreaterThan(campaignForm);
-    expect(html).toContain("新建渠道");
-    expect(html).toContain("新建活动");
-    expect(html).toContain("小红书");
-    expect(html).toContain("2026 夏季推广");
+    expect(linksHtml).toContain("推广链接");
+    expect(linksHtml).toContain("渠道管理");
+    expect(linksHtml).toContain("活动管理");
+    expect(linksHtml).toContain("站点接入");
+    expect(linksHtml).toContain("新建推广链接");
+    expect(linksHtml).not.toContain('data-growth-form="link"');
+
+    expect(channelsHtml).toContain('data-growth-page="channels"');
+    expect(channelsHtml).toContain("渠道列表");
+    expect(channelsHtml).toContain("新建渠道");
+    expect(channelsHtml).not.toContain("活动列表");
+    expect(channelsHtml).not.toContain('data-growth-form="channel"');
+
+    expect(campaignsHtml).toContain('data-growth-page="campaigns"');
+    expect(campaignsHtml).toContain("活动列表");
+    expect(campaignsHtml).toContain("新建活动");
+    expect(campaignsHtml).not.toContain("渠道列表");
+    expect(campaignsHtml).not.toContain('data-growth-form="campaign"');
+  });
+
+  it("renders each creation form only inside its selected modal", () => {
+    const channelModal = renderWorkspace("channels", "", undefined, "channel");
+    const campaignModal = renderWorkspace("campaigns", "", undefined, "campaign");
+    const linkModal = renderWorkspace("links", "", undefined, "link");
+
+    expect(channelModal).toContain('role="dialog"');
+    expect(channelModal).toContain('data-growth-form="channel"');
+    expect(channelModal).not.toContain('data-growth-form="campaign"');
+
+    expect(campaignModal).toContain('role="dialog"');
+    expect(campaignModal).toContain('data-growth-form="campaign"');
+    expect(campaignModal).not.toContain('data-growth-form="channel"');
+
+    expect(linkModal).toContain('role="dialog"');
+    expect(linkModal).toContain('data-growth-form="link"');
+  });
+
+  it("labels draft campaigns as drafts", () => {
+    const html = renderWorkspace("campaigns", "", undefined, null, [{ ...campaign, status: "draft" }]);
+
+    expect(html).toContain('<span class="status-pill draft">草稿</span>');
   });
 
   it("blocks an invalid campaign code and explains the accepted format", () => {
-    const html = renderWorkspace("sources", "", {
+    const html = renderWorkspace("campaigns", "", {
       ...emptyCampaignForm,
       site_id: site.site_id,
       channel_id: channel.channel_id,
       code: "活动编码 test",
       name: "测试活动",
-    });
+    }, "campaign");
 
     expect(html).toContain('aria-invalid="true"');
     expect(html).toContain("仅支持小写英文字母、数字和连字符");
-    expect(html).toContain('<button type="submit" disabled="">创建活动</button>');
+    expect(html).toContain('<button disabled="" type="submit">创建活动</button>');
   });
 
   it("renders site integration fields and binding mode", () => {
@@ -241,6 +276,7 @@ describe("traffic analysis configuration workspace", () => {
         siteForm={emptySiteForm}
         loading={false}
         saving={false}
+        createModal="link"
         {...callbacks}
       />,
     );

@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 
 import { api } from "../api/client";
+import { GrowthCreateModal } from "../components/GrowthCreateModal";
 import { errorMessage } from "../utils/format";
 
 
@@ -10,7 +11,8 @@ type Props = {
 };
 
 export type GrowthStatus = "active" | "disabled" | "paused" | "draft" | "archived";
-export type TrafficAnalysisTab = "links" | "sources" | "sites";
+export type TrafficAnalysisTab = "links" | "channels" | "campaigns" | "sites";
+export type GrowthCreateKind = "link" | "channel" | "campaign";
 export type BindingMode = "shared_parent_cookie" | "signed_handoff" | "disabled";
 export type TrackingSourceType = "post" | "group" | "referrer" | "profile" | "other";
 
@@ -324,6 +326,7 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [createModal, setCreateModal] = useState<GrowthCreateKind | null>(null);
 
   const applyWorkspaceData = (data: Awaited<ReturnType<typeof requestWorkspaceData>>, preferredSiteId?: string) => {
     setSites(data.sites);
@@ -445,6 +448,30 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
     setSiteForm(siteToForm(site));
   };
 
+  const openCreateModal = (kind: GrowthCreateKind) => {
+    if (kind === "link") {
+      const siteId = linkForm.site_id || selectedSiteId;
+      const site = sites.find((item) => item.site_id === siteId);
+      const currentCampaign = campaigns.find((item) => item.campaign_id === linkForm.campaign_id && item.site_id === siteId);
+      setLinkForm({
+        ...emptyTrackingLinkForm,
+        site_id: siteId,
+        channel_id: currentCampaign?.channel_id || linkForm.channel_id,
+        campaign_id: currentCampaign?.campaign_id || "",
+        landing_path: site?.default_landing_path || "/",
+      });
+    } else if (kind === "channel") {
+      setChannelForm(emptyChannelForm);
+    } else {
+      setCampaignForm({ ...emptyCampaignForm, site_id: campaignForm.site_id || selectedSiteId });
+    }
+    setCreateModal(kind);
+  };
+
+  const closeCreateModal = () => {
+    if (!saving) setCreateModal(null);
+  };
+
   const createLink = async () => {
     const created = await runMutation(
       () => api("/growth/tracking-links", token, { method: "POST", body: JSON.stringify(buildTrackingLinkPayload(linkForm)) }),
@@ -458,6 +485,7 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
         campaign_id: current.campaign_id,
         landing_path: sites.find((site) => site.site_id === current.site_id)?.default_landing_path || "/",
       }));
+      setCreateModal(null);
     }
   };
 
@@ -474,7 +502,10 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
       }),
       "渠道已创建",
     );
-    if (created) setChannelForm(emptyChannelForm);
+    if (created) {
+      setChannelForm(emptyChannelForm);
+      setCreateModal(null);
+    }
   };
 
   const createCampaign = async () => {
@@ -496,7 +527,10 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
       }),
       "活动已创建",
     );
-    if (created) setCampaignForm((current) => ({ ...emptyCampaignForm, site_id: current.site_id }));
+    if (created) {
+      setCampaignForm((current) => ({ ...emptyCampaignForm, site_id: current.site_id }));
+      setCreateModal(null);
+    }
   };
 
   const saveSite = () =>
@@ -549,7 +583,10 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
       loading={loading}
       loadError={loadError}
       saving={saving}
+      createModal={createModal}
       onTabChange={setActiveTab}
+      onOpenCreate={openCreateModal}
+      onCloseCreate={closeCreateModal}
       onLinkFormChange={setLinkForm}
       onChannelFormChange={setChannelForm}
       onCampaignFormChange={setCampaignForm}
@@ -579,8 +616,11 @@ type WorkspaceProps = {
   siteForm: SiteForm;
   loading: boolean;
   saving: boolean;
+  createModal: GrowthCreateKind | null;
   loadError?: string;
   onTabChange: (tab: TrafficAnalysisTab) => void;
+  onOpenCreate: (kind: GrowthCreateKind) => void;
+  onCloseCreate: () => void;
   onLinkFormChange: (form: TrackingLinkForm) => void;
   onChannelFormChange: (form: ChannelForm) => void;
   onCampaignFormChange: (form: CampaignForm) => void;
@@ -610,6 +650,7 @@ const bindingModeLabels: Record<BindingMode, string> = {
 };
 
 function trackingStatusLabel(status: GrowthStatus) {
+  if (status === "draft") return "草稿";
   if (status === "active") return "启用";
   if (status === "archived") return "归档";
   return "停用";
@@ -645,21 +686,25 @@ function SiteSelect({
 export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
   const {
     activeTab, sites, channels, campaigns, trackingLinks, selectedSiteId,
-    linkForm, channelForm, campaignForm, siteForm, loading, saving, loadError = "",
-    onTabChange, onLinkFormChange, onChannelFormChange, onCampaignFormChange,
+    linkForm, channelForm, campaignForm, siteForm, loading, saving, createModal, loadError = "",
+    onTabChange, onOpenCreate, onCloseCreate, onLinkFormChange, onChannelFormChange, onCampaignFormChange,
     onSiteFormChange, onCreateLink, onCreateChannel, onCreateCampaign,
     onSaveSite, onToggleLink, onSelectSite, onCopyLink, onRetry = () => undefined,
   } = props;
   const [linkFilters, setLinkFilters] = useState<TrackingLinkFilters>(emptyTrackingLinkFilters);
+  const [channelFilters, setChannelFilters] = useState<ChannelFilters>(emptyChannelFilters);
+  const [campaignFilters, setCampaignFilters] = useState<CampaignFilters>(emptyCampaignFilters);
   const siteCampaigns = campaigns.filter((item) => item.site_id === linkForm.site_id);
   const channelCampaigns = siteCampaigns.filter((item) => item.channel_id === linkForm.channel_id);
   const campaignCodeInvalid = Boolean(campaignForm.code.trim()) && !isValidGrowthCode(campaignForm.code);
   const selectedSite = sites.find((item) => item.site_id === selectedSiteId);
-  const filterCampaigns = campaigns.filter((item) =>
+  const linkFilterCampaigns = campaigns.filter((item) =>
     (!linkFilters.site_id || item.site_id === linkFilters.site_id)
     && (!linkFilters.channel_id || item.channel_id === linkFilters.channel_id),
   );
   const visibleLinks = filterTrackingLinks(trackingLinks, linkFilters);
+  const visibleChannels = filterChannels(channels, channelFilters);
+  const visibleCampaigns = filterCampaigns(campaigns, campaignFilters);
 
   return (
     <section className="view accounts-page growth-workspace-page">
@@ -671,7 +716,7 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
       </div>
 
       <div className="growth-workspace-tabs" role="tablist" aria-label="访问流量分析配置">
-        {([['links', '推广链接'], ['sources', '渠道与活动'], ['sites', '站点接入']] as const).map(([key, label]) => (
+        {([['links', '推广链接'], ['channels', '渠道管理'], ['campaigns', '活动管理'], ['sites', '站点接入']] as const).map(([key, label]) => (
           <button
             className={activeTab === key ? "active" : ""}
             type="button"
@@ -696,115 +741,12 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
           <button type="button" onClick={onRetry}>重新加载</button>
         </div>
       ) : activeTab === "links" ? (
-        <div className="growth-stacked-flow">
-          <form className="panel growth-editor" onSubmit={(event) => submit(event, onCreateLink)}>
-            <div className="growth-section-head">
-              <div><strong>新建推广链接</strong><span>先选择承接访问的站点，再补充来源信息</span></div>
-              <button type="submit" disabled={saving || !linkForm.site_id || !linkForm.campaign_id || !linkForm.source_name.trim()}>
-                {saving ? "创建中..." : "创建链接"}
-              </button>
-            </div>
-
-            <div className="growth-form-grid">
-              <SiteSelect sites={sites} value={linkForm.site_id} disabled={saving} onChange={onSelectSite} />
-              <label>
-                <span className="field-label"><strong>渠道</strong></span>
-                <select
-                  value={linkForm.channel_id}
-                  onChange={(event) => {
-                    const campaign = siteCampaigns.find((item) => item.channel_id === event.target.value);
-                    onLinkFormChange({
-                      ...linkForm,
-                      channel_id: event.target.value,
-                      campaign_id: campaign?.campaign_id || "",
-                    });
-                  }}
-                  disabled={!linkForm.site_id}
-                  required
-                >
-                  <option value="">选择渠道</option>
-                  {channels.map((channel) => (
-                    <option value={channel.channel_id} key={channel.channel_id}>{channel.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span className="field-label"><strong>活动</strong></span>
-                <select
-                  value={linkForm.campaign_id}
-                  onChange={(event) => onLinkFormChange({ ...linkForm, campaign_id: event.target.value })}
-                  disabled={!linkForm.site_id || !linkForm.channel_id || channelCampaigns.length === 0}
-                  required
-                >
-                  <option value="">{linkForm.channel_id && channelCampaigns.length === 0 ? "暂无可选活动" : "选择活动"}</option>
-                  {channelCampaigns.map((campaign) => (
-                    <option value={campaign.campaign_id} key={campaign.campaign_id}>{campaign.name}</option>
-                  ))}
-                </select>
-                {linkForm.channel_id && channelCampaigns.length === 0 && (
-                  <span className="growth-field-message">该渠道暂无活动，请先创建活动</span>
-                )}
-              </label>
-              <label>
-                <span className="field-label"><strong>具体来源类型</strong></span>
-                <select value={linkForm.source_type} onChange={(event) => onLinkFormChange({ ...linkForm, source_type: event.target.value as TrackingSourceType })}>
-                  {Object.entries(sourceTypeLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}
-                </select>
-              </label>
-              <label className="span-2">
-                <span className="field-label"><strong>具体来源名称</strong></span>
-                <input value={linkForm.source_name} onChange={(event) => onLinkFormChange({ ...linkForm, source_name: event.target.value })} placeholder="例如：Claude API 入门第 3 篇" required />
-              </label>
-              <label className="span-2">
-                <span className="field-label"><strong>来源 URL</strong><span>（可选）</span></span>
-                <input type="url" value={linkForm.source_url} onChange={(event) => onLinkFormChange({ ...linkForm, source_url: event.target.value })} placeholder="https://..." />
-              </label>
-              <label>
-                <span className="field-label"><strong>受众</strong><span>（可选）</span></span>
-                <input value={linkForm.audience_group} onChange={(event) => onLinkFormChange({ ...linkForm, audience_group: event.target.value })} placeholder="开发者" />
-              </label>
-              <label>
-                <span className="field-label"><strong>推广人</strong><span>（可选）</span></span>
-                <input value={linkForm.promoter} onChange={(event) => onLinkFormChange({ ...linkForm, promoter: event.target.value })} placeholder="运营人员或合作方" />
-              </label>
-              <label>
-                <span className="field-label"><strong>落地路径</strong></span>
-                <input value={linkForm.landing_path} onChange={(event) => onLinkFormChange({ ...linkForm, landing_path: event.target.value })} placeholder="/register" />
-              </label>
-            </div>
-
-            <fieldset className="growth-dimensions">
-              <legend>扩展维度 <span>最多 3 个字符串键值</span></legend>
-              {linkForm.dimensions.slice(0, 3).map((dimension, index) => (
-                <div key={index}>
-                  <input
-                    aria-label={`扩展维度 ${index + 1} 名称`}
-                    value={dimension.key}
-                    onChange={(event) => {
-                      const dimensions = linkForm.dimensions.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item);
-                      onLinkFormChange({ ...linkForm, dimensions });
-                    }}
-                    placeholder="字段名"
-                  />
-                  <input
-                    aria-label={`扩展维度 ${index + 1} 值`}
-                    value={dimension.value}
-                    onChange={(event) => {
-                      const dimensions = linkForm.dimensions.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item);
-                      onLinkFormChange({ ...linkForm, dimensions });
-                    }}
-                    placeholder="字符串值"
-                  />
-                </div>
-              ))}
-            </fieldset>
-          </form>
-
-          <div className="panel growth-link-list">
-            <div className="growth-section-head">
-              <div><strong>已生成链接</strong><span>{visibleLinks.length} / {trackingLinks.length} 条</span></div>
-            </div>
-            <div className="growth-link-filters" aria-label="推广链接筛选">
+        <div className="panel growth-list-page">
+          <div className="growth-section-head">
+            <div><strong>推广链接</strong><span>{visibleLinks.length} / {trackingLinks.length} 条</span></div>
+            <button type="button" onClick={() => onOpenCreate("link")}>新建推广链接</button>
+          </div>
+          <div className="growth-query-grid" aria-label="推广链接查询">
               <label>
                 <span>站点</span>
                 <select
@@ -829,7 +771,7 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
                 <span>活动</span>
                 <select value={linkFilters.campaign_id} onChange={(event) => setLinkFilters({ ...linkFilters, campaign_id: event.target.value })}>
                   <option value="">全部活动</option>
-                  {filterCampaigns.map((campaign) => <option value={campaign.campaign_id} key={campaign.campaign_id}>{campaign.name}</option>)}
+                  {linkFilterCampaigns.map((campaign) => <option value={campaign.campaign_id} key={campaign.campaign_id}>{campaign.name}</option>)}
                 </select>
               </label>
               <label>
@@ -845,78 +787,78 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
                 <span>关键词</span>
                 <input value={linkFilters.keyword} onChange={(event) => setLinkFilters({ ...linkFilters, keyword: event.target.value })} placeholder="搜索来源、链接或推广人" />
               </label>
-            </div>
-            {visibleLinks.length ? (
-              <div className="growth-link-rows">
-                {visibleLinks.map((link) => (
-                  <article className="growth-link-row" key={link.tracking_link_id}>
-                    <div className="growth-link-main">
-                      <div><strong>{link.source_name}</strong><span className={`status-pill ${link.status}`}>{trackingStatusLabel(link.status)}</span></div>
-                      <a href={link.public_url} target="_blank" rel="noreferrer">{link.public_url}</a>
-                      <span>{link.channel_name || "未命名渠道"} · {link.campaign_name || "未命名活动"} · {sourceTypeLabels[link.source_type]}</span>
-                    </div>
-                    <div className="growth-row-actions">
-                      <button className="ghost" type="button" onClick={() => onCopyLink(link.public_url)}>复制</button>
-                      <button className="ghost" type="button" disabled={saving || link.status === "archived"} onClick={() => onToggleLink(link)}>{link.status === "archived" ? "已归档" : link.status === "active" ? "停用" : "启用"}</button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="growth-workspace-empty">{trackingLinks.length ? "没有符合筛选条件的推广链接" : "尚未创建推广链接"}</div>
-            )}
           </div>
+          {visibleLinks.length ? (
+            <div className="growth-link-rows">
+              {visibleLinks.map((link) => (
+                <article className="growth-link-row" key={link.tracking_link_id}>
+                  <div className="growth-link-main">
+                    <div><strong>{link.source_name}</strong><span className={`status-pill ${link.status}`}>{trackingStatusLabel(link.status)}</span></div>
+                    <a href={link.public_url} target="_blank" rel="noreferrer">{link.public_url}</a>
+                    <span>{link.channel_name || "未命名渠道"} · {link.campaign_name || "未命名活动"} · {sourceTypeLabels[link.source_type]}</span>
+                  </div>
+                  <div className="growth-row-actions">
+                    <button className="ghost" type="button" onClick={() => onCopyLink(link.public_url)}>复制</button>
+                    <button className="ghost" type="button" disabled={saving || link.status === "archived"} onClick={() => onToggleLink(link)}>{link.status === "archived" ? "已归档" : link.status === "active" ? "停用" : "启用"}</button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="growth-workspace-empty">{trackingLinks.length ? "没有符合筛选条件的记录" : "尚未创建推广链接"}</div>
+          )}
         </div>
-      ) : activeTab === "sources" ? (
-        <div className="panel growth-sources-panel">
-          <form className="growth-source-stage" data-growth-section="channel-form" onSubmit={(event) => submit(event, onCreateChannel)}>
-            <div className="growth-section-head"><div><strong>新建渠道</strong><span>管理来源平台或合作入口</span></div></div>
-            <div className="growth-form-grid compact">
-              <label><span className="field-label"><strong>渠道编码</strong></span><input value={channelForm.code} onChange={(event) => onChannelFormChange({ ...channelForm, code: event.target.value })} placeholder="xiaohongshu" required /></label>
-              <label><span className="field-label"><strong>渠道名称</strong></span><input value={channelForm.name} onChange={(event) => onChannelFormChange({ ...channelForm, name: event.target.value })} placeholder="小红书" required /></label>
-              <label className="span-2"><span className="field-label"><strong>说明</strong><span>（可选）</span></span><input value={channelForm.description} onChange={(event) => onChannelFormChange({ ...channelForm, description: event.target.value })} /></label>
+      ) : activeTab === "channels" ? (
+        <div className="panel growth-list-page" data-growth-page="channels">
+          <div className="growth-section-head">
+            <div><strong>渠道列表</strong><span>{visibleChannels.length} / {channels.length} 个</span></div>
+            <button type="button" onClick={() => onOpenCreate("channel")}>新建渠道</button>
+          </div>
+          <div className="growth-query-grid growth-query-grid-compact" aria-label="渠道查询">
+            <label>
+              <span>状态</span>
+              <select value={channelFilters.status} onChange={(event) => setChannelFilters({ ...channelFilters, status: event.target.value as ChannelFilters["status"] })}>
+                <option value="">全部状态</option><option value="active">启用</option><option value="disabled">停用</option><option value="archived">归档</option>
+              </select>
+            </label>
+            <label><span>关键词</span><input value={channelFilters.keyword} onChange={(event) => setChannelFilters({ ...channelFilters, keyword: event.target.value })} placeholder="搜索渠道名称、编码或说明" /></label>
+          </div>
+          {visibleChannels.length ? (
+            <div className="growth-source-rows">
+              {visibleChannels.map((channel) => (
+                <div className="growth-source-row" key={channel.channel_id}>
+                  <strong>{channel.name}</strong><code>{channel.code}</code><span>{channel.description || "无说明"}</span><span className={`status-pill ${channel.status}`}>{trackingStatusLabel(channel.status)}</span>
+                </div>
+              ))}
             </div>
-            <button type="submit" disabled={saving || !channelForm.code.trim() || !channelForm.name.trim()}>{saving ? "保存中..." : "创建渠道"}</button>
-          </form>
-
-          <section className="growth-source-stage" data-growth-section="channel-list">
-            <div className="growth-list-heading"><strong>渠道列表</strong><span>{channels.length} 个</span></div>
-            {channels.length ? channels.map((channel) => <div className="growth-source-row" key={channel.channel_id}><strong>{channel.name}</strong><code>{channel.code}</code><span>{channel.description || "无说明"}</span></div>) : <div className="growth-workspace-empty">尚未创建渠道</div>}
-          </section>
-
-          <form className="growth-source-stage" data-growth-section="campaign-form" onSubmit={(event) => submit(event, onCreateCampaign)}>
-            <div className="growth-section-head"><div><strong>新建活动</strong><span>活动归属于具体站点与渠道</span></div></div>
-            <div className="growth-form-grid compact">
-              <SiteSelect sites={sites} value={campaignForm.site_id} disabled={saving} onChange={(siteId) => onCampaignFormChange({ ...campaignForm, site_id: siteId })} />
-              <label><span className="field-label"><strong>渠道</strong></span><select value={campaignForm.channel_id} onChange={(event) => onCampaignFormChange({ ...campaignForm, channel_id: event.target.value })} required><option value="">选择渠道</option>{channels.map((channel) => <option value={channel.channel_id} key={channel.channel_id}>{channel.name}</option>)}</select></label>
-              <label>
-                <span className="field-label"><strong>活动编码</strong></span>
-                <input
-                  value={campaignForm.code}
-                  onChange={(event) => onCampaignFormChange({ ...campaignForm, code: event.target.value.toLowerCase() })}
-                  placeholder="summer-2026"
-                  maxLength={60}
-                  pattern="[a-z0-9-]+"
-                  autoCapitalize="none"
-                  spellCheck={false}
-                  aria-invalid={campaignCodeInvalid}
-                  aria-describedby="campaign-code-help"
-                  required
-                />
-                <span id="campaign-code-help" className={`growth-field-message ${campaignCodeInvalid ? "is-error" : "is-muted"}`}>
-                  {campaignCodeInvalid ? "仅支持小写英文字母、数字和连字符" : "例如：summer-2026"}
-                </span>
-              </label>
-              <label><span className="field-label"><strong>活动名称</strong></span><input value={campaignForm.name} onChange={(event) => onCampaignFormChange({ ...campaignForm, name: event.target.value })} placeholder="2026 夏季推广" required /></label>
-              <label className="span-2"><span className="field-label"><strong>说明</strong><span>（可选）</span></span><input value={campaignForm.description} onChange={(event) => onCampaignFormChange({ ...campaignForm, description: event.target.value })} /></label>
+          ) : <div className="growth-workspace-empty">{channels.length ? "没有符合筛选条件的记录" : "尚未创建渠道"}</div>}
+        </div>
+      ) : activeTab === "campaigns" ? (
+        <div className="panel growth-list-page" data-growth-page="campaigns">
+          <div className="growth-section-head">
+            <div><strong>活动列表</strong><span>{visibleCampaigns.length} / {campaigns.length} 个</span></div>
+            <button type="button" onClick={() => onOpenCreate("campaign")}>新建活动</button>
+          </div>
+          <div className="growth-query-grid" aria-label="活动查询">
+            <label><span>站点</span><select value={campaignFilters.site_id} onChange={(event) => setCampaignFilters({ ...campaignFilters, site_id: event.target.value })}><option value="">全部站点</option>{sites.map((site) => <option value={site.site_id} key={site.site_id}>{site.site_name}</option>)}</select></label>
+            <label><span>渠道</span><select value={campaignFilters.channel_id} onChange={(event) => setCampaignFilters({ ...campaignFilters, channel_id: event.target.value })}><option value="">全部渠道</option>{channels.map((channel) => <option value={channel.channel_id} key={channel.channel_id}>{channel.name}</option>)}</select></label>
+            <label>
+              <span>状态</span>
+              <select value={campaignFilters.status} onChange={(event) => setCampaignFilters({ ...campaignFilters, status: event.target.value as CampaignFilters["status"] })}>
+                <option value="">全部状态</option><option value="draft">草稿</option><option value="active">启用</option><option value="paused">停用</option><option value="archived">归档</option>
+              </select>
+            </label>
+            <label><span>关键词</span><input value={campaignFilters.keyword} onChange={(event) => setCampaignFilters({ ...campaignFilters, keyword: event.target.value })} placeholder="搜索活动名称、编码或说明" /></label>
+          </div>
+          {visibleCampaigns.length ? (
+            <div className="growth-source-rows">
+              {visibleCampaigns.map((campaign) => (
+                <div className="growth-source-row" key={campaign.campaign_id}>
+                  <strong>{campaign.name}</strong><code>{campaign.code}</code><span>{campaign.site_name || campaign.site_id} · {campaign.channel_name || channels.find((item) => item.channel_id === campaign.channel_id)?.name}</span><span className={`status-pill ${campaign.status}`}>{trackingStatusLabel(campaign.status)}</span>
+                </div>
+              ))}
             </div>
-            <button type="submit" disabled={saving || !campaignForm.site_id || !campaignForm.channel_id || !isValidGrowthCode(campaignForm.code) || !campaignForm.name.trim()}>{saving ? "保存中..." : "创建活动"}</button>
-          </form>
-
-          <section className="growth-source-stage" data-growth-section="campaign-list">
-            <div className="growth-list-heading"><strong>活动列表</strong><span>{campaigns.length} 个</span></div>
-            {campaigns.length ? campaigns.map((campaign) => <div className="growth-source-row" key={campaign.campaign_id}><strong>{campaign.name}</strong><code>{campaign.code}</code><span>{campaign.site_name || campaign.site_id} · {campaign.channel_name || channels.find((item) => item.channel_id === campaign.channel_id)?.name}</span></div>) : <div className="growth-workspace-empty">尚未创建活动</div>}
-          </section>
+          ) : <div className="growth-workspace-empty">{campaigns.length ? "没有符合筛选条件的记录" : "尚未创建活动"}</div>}
         </div>
       ) : (
         <form className="panel growth-site-panel" onSubmit={(event) => submit(event, onSaveSite)}>
@@ -938,6 +880,117 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
             <label><span className="field-label"><strong>状态</strong></span><select value={siteForm.status} onChange={(event) => onSiteFormChange({ ...siteForm, status: event.target.value as SiteForm['status'] })}><option value="active">启用</option><option value="disabled">停用</option><option value="archived">归档</option></select></label>
           </div>
         </form>
+      )}
+
+      {createModal === "link" && (
+        <GrowthCreateModal title="新建推广链接" submitLabel="创建链接" saving={saving} submitDisabled={!linkForm.site_id || !linkForm.campaign_id || !linkForm.source_name.trim()} onClose={onCloseCreate} onSubmit={onCreateLink}>
+          <div className="growth-form-grid" data-growth-form="link">
+            <SiteSelect sites={sites} value={linkForm.site_id} disabled={saving} onChange={onSelectSite} />
+            <label>
+              <span className="field-label"><strong>渠道</strong></span>
+              <select
+                value={linkForm.channel_id}
+                onChange={(event) => {
+                  const campaign = siteCampaigns.find((item) => item.channel_id === event.target.value);
+                  onLinkFormChange({ ...linkForm, channel_id: event.target.value, campaign_id: campaign?.campaign_id || "" });
+                }}
+                disabled={!linkForm.site_id}
+                required
+              >
+                <option value="">选择渠道</option>
+                {channels.map((channel) => <option value={channel.channel_id} key={channel.channel_id}>{channel.name}</option>)}
+              </select>
+            </label>
+            <label>
+              <span className="field-label"><strong>活动</strong></span>
+              <select
+                value={linkForm.campaign_id}
+                onChange={(event) => onLinkFormChange({ ...linkForm, campaign_id: event.target.value })}
+                disabled={!linkForm.site_id || !linkForm.channel_id || channelCampaigns.length === 0}
+                required
+              >
+                <option value="">{linkForm.channel_id && channelCampaigns.length === 0 ? "暂无可选活动" : "选择活动"}</option>
+                {channelCampaigns.map((campaign) => <option value={campaign.campaign_id} key={campaign.campaign_id}>{campaign.name}</option>)}
+              </select>
+              {linkForm.channel_id && channelCampaigns.length === 0 && <span className="growth-field-message">该渠道暂无活动，请先创建活动</span>}
+            </label>
+            <label>
+              <span className="field-label"><strong>具体来源类型</strong></span>
+              <select value={linkForm.source_type} onChange={(event) => onLinkFormChange({ ...linkForm, source_type: event.target.value as TrackingSourceType })}>
+                {Object.entries(sourceTypeLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}
+              </select>
+            </label>
+            <label className="span-2"><span className="field-label"><strong>具体来源名称</strong></span><input value={linkForm.source_name} onChange={(event) => onLinkFormChange({ ...linkForm, source_name: event.target.value })} placeholder="例如：Claude API 入门第 3 篇" required /></label>
+            <label className="span-2"><span className="field-label"><strong>来源 URL</strong><span>（可选）</span></span><input type="url" value={linkForm.source_url} onChange={(event) => onLinkFormChange({ ...linkForm, source_url: event.target.value })} placeholder="https://..." /></label>
+            <label><span className="field-label"><strong>受众</strong><span>（可选）</span></span><input value={linkForm.audience_group} onChange={(event) => onLinkFormChange({ ...linkForm, audience_group: event.target.value })} placeholder="开发者" /></label>
+            <label><span className="field-label"><strong>推广人</strong><span>（可选）</span></span><input value={linkForm.promoter} onChange={(event) => onLinkFormChange({ ...linkForm, promoter: event.target.value })} placeholder="运营人员或合作方" /></label>
+            <label><span className="field-label"><strong>落地路径</strong></span><input value={linkForm.landing_path} onChange={(event) => onLinkFormChange({ ...linkForm, landing_path: event.target.value })} placeholder="/register" /></label>
+          </div>
+          <fieldset className="growth-dimensions">
+            <legend>扩展维度 <span>最多 3 个字符串键值</span></legend>
+            {linkForm.dimensions.slice(0, 3).map((dimension, index) => (
+              <div key={index}>
+                <input
+                  aria-label={`扩展维度 ${index + 1} 名称`}
+                  value={dimension.key}
+                  onChange={(event) => {
+                    const dimensions = linkForm.dimensions.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item);
+                    onLinkFormChange({ ...linkForm, dimensions });
+                  }}
+                  placeholder="字段名"
+                />
+                <input
+                  aria-label={`扩展维度 ${index + 1} 值`}
+                  value={dimension.value}
+                  onChange={(event) => {
+                    const dimensions = linkForm.dimensions.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item);
+                    onLinkFormChange({ ...linkForm, dimensions });
+                  }}
+                  placeholder="字符串值"
+                />
+              </div>
+            ))}
+          </fieldset>
+        </GrowthCreateModal>
+      )}
+
+      {createModal === "channel" && (
+        <GrowthCreateModal title="新建渠道" submitLabel="创建渠道" saving={saving} submitDisabled={!channelForm.code.trim() || !channelForm.name.trim()} onClose={onCloseCreate} onSubmit={onCreateChannel}>
+          <div className="growth-form-grid compact" data-growth-form="channel">
+            <label><span className="field-label"><strong>渠道编码</strong></span><input value={channelForm.code} onChange={(event) => onChannelFormChange({ ...channelForm, code: event.target.value })} placeholder="xiaohongshu" required /></label>
+            <label><span className="field-label"><strong>渠道名称</strong></span><input value={channelForm.name} onChange={(event) => onChannelFormChange({ ...channelForm, name: event.target.value })} placeholder="小红书" required /></label>
+            <label className="span-2"><span className="field-label"><strong>说明</strong><span>（可选）</span></span><input value={channelForm.description} onChange={(event) => onChannelFormChange({ ...channelForm, description: event.target.value })} /></label>
+          </div>
+        </GrowthCreateModal>
+      )}
+
+      {createModal === "campaign" && (
+        <GrowthCreateModal title="新建活动" submitLabel="创建活动" saving={saving} submitDisabled={!campaignForm.site_id || !campaignForm.channel_id || !isValidGrowthCode(campaignForm.code) || !campaignForm.name.trim()} onClose={onCloseCreate} onSubmit={onCreateCampaign}>
+          <div className="growth-form-grid compact" data-growth-form="campaign">
+            <SiteSelect sites={sites} value={campaignForm.site_id} disabled={saving} onChange={(siteId) => onCampaignFormChange({ ...campaignForm, site_id: siteId })} />
+            <label><span className="field-label"><strong>渠道</strong></span><select value={campaignForm.channel_id} onChange={(event) => onCampaignFormChange({ ...campaignForm, channel_id: event.target.value })} required><option value="">选择渠道</option>{channels.map((channel) => <option value={channel.channel_id} key={channel.channel_id}>{channel.name}</option>)}</select></label>
+            <label>
+              <span className="field-label"><strong>活动编码</strong></span>
+              <input
+                value={campaignForm.code}
+                onChange={(event) => onCampaignFormChange({ ...campaignForm, code: event.target.value.toLowerCase() })}
+                placeholder="summer-2026"
+                maxLength={60}
+                pattern="[a-z0-9-]+"
+                autoCapitalize="none"
+                spellCheck={false}
+                aria-invalid={campaignCodeInvalid}
+                aria-describedby="campaign-code-help"
+                required
+              />
+              <span id="campaign-code-help" className={`growth-field-message ${campaignCodeInvalid ? "is-error" : "is-muted"}`}>
+                {campaignCodeInvalid ? "仅支持小写英文字母、数字和连字符" : "例如：summer-2026"}
+              </span>
+            </label>
+            <label><span className="field-label"><strong>活动名称</strong></span><input value={campaignForm.name} onChange={(event) => onCampaignFormChange({ ...campaignForm, name: event.target.value })} placeholder="2026 夏季推广" required /></label>
+            <label className="span-2"><span className="field-label"><strong>说明</strong><span>（可选）</span></span><input value={campaignForm.description} onChange={(event) => onCampaignFormChange({ ...campaignForm, description: event.target.value })} /></label>
+          </div>
+        </GrowthCreateModal>
       )}
     </section>
   );
