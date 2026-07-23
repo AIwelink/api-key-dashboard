@@ -208,17 +208,20 @@ describe("traffic analysis configuration workspace", () => {
     expect(linksHtml).toContain("活动管理");
     expect(linksHtml).toContain("站点接入");
     expect(linksHtml).toContain("新建推广链接");
+    expect(linksHtml).toContain('class="panel growth-list-page"');
     expect(linksHtml).not.toContain('data-growth-form="link"');
 
     expect(channelsHtml).toContain('data-growth-page="channels"');
     expect(channelsHtml).toContain("渠道列表");
     expect(channelsHtml).toContain("新建渠道");
+    expect(channelsHtml).toContain('class="growth-query-grid growth-query-grid-compact"');
     expect(channelsHtml).not.toContain("活动列表");
     expect(channelsHtml).not.toContain('data-growth-form="channel"');
 
     expect(campaignsHtml).toContain('data-growth-page="campaigns"');
     expect(campaignsHtml).toContain("活动列表");
     expect(campaignsHtml).toContain("新建活动");
+    expect(campaignsHtml).toContain('class="growth-query-grid"');
     expect(campaignsHtml).not.toContain("渠道列表");
     expect(campaignsHtml).not.toContain('data-growth-form="campaign"');
   });
