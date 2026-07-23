@@ -11,7 +11,9 @@ import {
   filterCampaigns,
   filterChannels,
   filterTrackingLinks,
+  initializeGrowthCreateForms,
   runMutationAndRefresh,
+  selectTrackingLinkFormSite,
   type GrowthCampaign,
   type GrowthChannel,
   type GrowthSite,
@@ -56,6 +58,20 @@ const campaign: GrowthCampaign = {
   site_name: "AIWeLink API",
 };
 
+const secondarySite: GrowthSite = {
+  ...site,
+  site_id: "secondary",
+  site_name: "Secondary API",
+  default_landing_path: "/start",
+};
+
+const secondaryCampaign: GrowthCampaign = {
+  ...campaign,
+  campaign_id: "55555555-5555-5555-5555-555555555555",
+  site_id: secondarySite.site_id,
+  channel_id: "66666666-6666-6666-6666-666666666666",
+};
+
 const trackingLink: GrowthTrackingLink = {
   tracking_link_id: "33333333-3333-3333-3333-333333333333",
   site_id: "aiwelink",
@@ -90,6 +106,7 @@ const callbacks = {
   onSaveSite: () => undefined,
   onToggleLink: () => undefined,
   onSelectSite: () => undefined,
+  onSelectLinkSite: () => undefined,
   onCopyLink: () => undefined,
 };
 
@@ -128,6 +145,45 @@ function renderWorkspace(
 }
 
 describe("traffic analysis configuration workspace", () => {
+  it("creates fresh modal forms from the globally selected site after cancellation", () => {
+    const forms = initializeGrowthCreateForms(site.site_id, [site, secondarySite], [campaign, secondaryCampaign]);
+
+    expect(forms.linkForm).toEqual({
+      ...emptyTrackingLinkForm,
+      site_id: site.site_id,
+      channel_id: campaign.channel_id,
+      campaign_id: campaign.campaign_id,
+      landing_path: "/register",
+    });
+    expect(forms.channelForm).toEqual(emptyChannelForm);
+    expect(forms.campaignForm).toEqual({ ...emptyCampaignForm, site_id: site.site_id });
+  });
+
+  it("changes a link modal site without discarding source fields", () => {
+    const dirtyForm: TrackingLinkForm = {
+      ...emptyTrackingLinkForm,
+      site_id: site.site_id,
+      channel_id: campaign.channel_id,
+      campaign_id: campaign.campaign_id,
+      source_name: "保留的来源名称",
+      promoter: "运营 A",
+      landing_path: "/custom",
+    };
+
+    expect(selectTrackingLinkFormSite(
+      dirtyForm,
+      secondarySite.site_id,
+      [site, secondarySite],
+      [campaign, secondaryCampaign],
+    )).toEqual({
+      ...dirtyForm,
+      site_id: secondarySite.site_id,
+      channel_id: secondaryCampaign.channel_id,
+      campaign_id: secondaryCampaign.campaign_id,
+      landing_path: "/start",
+    });
+  });
+
   it("renders real promotion-link configuration without fake analytics", () => {
     const html = renderWorkspace("links");
 

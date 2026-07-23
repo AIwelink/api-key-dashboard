@@ -197,6 +197,44 @@ export const emptySiteForm: SiteForm = {
   status: "active",
 };
 
+export function selectTrackingLinkFormSite(
+  form: TrackingLinkForm,
+  siteId: string,
+  sites: GrowthSite[],
+  campaigns: GrowthCampaign[],
+): TrackingLinkForm {
+  const site = sites.find((item) => item.site_id === siteId);
+  const firstCampaign = campaigns.find((item) => item.site_id === siteId);
+  return {
+    ...form,
+    site_id: siteId,
+    channel_id: firstCampaign?.channel_id || "",
+    campaign_id: firstCampaign?.campaign_id || "",
+    landing_path: site?.default_landing_path || "/",
+  };
+}
+
+export function initializeGrowthCreateForms(
+  selectedSiteId: string,
+  sites: GrowthSite[],
+  campaigns: GrowthCampaign[],
+) {
+  const linkForm = selectTrackingLinkFormSite(
+    {
+      ...emptyTrackingLinkForm,
+      dimensions: emptyTrackingLinkForm.dimensions.map((dimension) => ({ ...dimension })),
+    },
+    selectedSiteId,
+    sites,
+    campaigns,
+  );
+  return {
+    linkForm,
+    channelForm: { ...emptyChannelForm },
+    campaignForm: { ...emptyCampaignForm, site_id: selectedSiteId },
+  };
+}
+
 const GROWTH_CODE_PATTERN = /^[a-z0-9-]+$/;
 
 function isValidGrowthCode(value: string) {
@@ -448,28 +486,31 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
     setSiteForm(siteToForm(site));
   };
 
-  const openCreateModal = (kind: GrowthCreateKind) => {
+  const selectLinkSite = (siteId: string) => {
+    setLinkForm((current) => selectTrackingLinkFormSite(current, siteId, sites, campaigns));
+  };
+
+  const resetCreateForm = (kind: GrowthCreateKind | null) => {
+    if (!kind) return;
+    const forms = initializeGrowthCreateForms(selectedSiteId, sites, campaigns);
     if (kind === "link") {
-      const siteId = linkForm.site_id || selectedSiteId;
-      const site = sites.find((item) => item.site_id === siteId);
-      const currentCampaign = campaigns.find((item) => item.campaign_id === linkForm.campaign_id && item.site_id === siteId);
-      setLinkForm({
-        ...emptyTrackingLinkForm,
-        site_id: siteId,
-        channel_id: currentCampaign?.channel_id || linkForm.channel_id,
-        campaign_id: currentCampaign?.campaign_id || "",
-        landing_path: site?.default_landing_path || "/",
-      });
+      setLinkForm(forms.linkForm);
     } else if (kind === "channel") {
-      setChannelForm(emptyChannelForm);
+      setChannelForm(forms.channelForm);
     } else {
-      setCampaignForm({ ...emptyCampaignForm, site_id: campaignForm.site_id || selectedSiteId });
+      setCampaignForm(forms.campaignForm);
     }
+  };
+
+  const openCreateModal = (kind: GrowthCreateKind) => {
+    resetCreateForm(kind);
     setCreateModal(kind);
   };
 
   const closeCreateModal = () => {
-    if (!saving) setCreateModal(null);
+    if (saving) return;
+    resetCreateForm(createModal);
+    setCreateModal(null);
   };
 
   const createLink = async () => {
@@ -597,6 +638,7 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
       onSaveSite={saveSite}
       onToggleLink={toggleLink}
       onSelectSite={selectSite}
+      onSelectLinkSite={selectLinkSite}
       onCopyLink={copyLink}
       onRetry={retryLoad}
     />
@@ -631,6 +673,7 @@ type WorkspaceProps = {
   onSaveSite: () => void;
   onToggleLink: (link: GrowthTrackingLink) => void;
   onSelectSite: (siteId: string) => void;
+  onSelectLinkSite: (siteId: string) => void;
   onCopyLink: (url: string) => void;
   onRetry?: () => void;
 };
@@ -689,7 +732,7 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
     linkForm, channelForm, campaignForm, siteForm, loading, saving, createModal, loadError = "",
     onTabChange, onOpenCreate, onCloseCreate, onLinkFormChange, onChannelFormChange, onCampaignFormChange,
     onSiteFormChange, onCreateLink, onCreateChannel, onCreateCampaign,
-    onSaveSite, onToggleLink, onSelectSite, onCopyLink, onRetry = () => undefined,
+    onSaveSite, onToggleLink, onSelectSite, onSelectLinkSite, onCopyLink, onRetry = () => undefined,
   } = props;
   const [linkFilters, setLinkFilters] = useState<TrackingLinkFilters>(emptyTrackingLinkFilters);
   const [channelFilters, setChannelFilters] = useState<ChannelFilters>(emptyChannelFilters);
@@ -885,7 +928,7 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
       {createModal === "link" && (
         <GrowthCreateModal title="新建推广链接" submitLabel="创建链接" saving={saving} submitDisabled={!linkForm.site_id || !linkForm.campaign_id || !linkForm.source_name.trim()} onClose={onCloseCreate} onSubmit={onCreateLink}>
           <div className="growth-form-grid" data-growth-form="link">
-            <SiteSelect sites={sites} value={linkForm.site_id} disabled={saving} onChange={onSelectSite} />
+            <SiteSelect sites={sites} value={linkForm.site_id} disabled={saving} onChange={onSelectLinkSite} />
             <label>
               <span className="field-label"><strong>渠道</strong></span>
               <select
