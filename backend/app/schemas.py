@@ -295,6 +295,10 @@ class ApiPoolStatusPreferenceUpdate(BaseModel):
 class PlusSelfProducedSettingsUpdate(BaseModel):
     enabled: bool | None = None
     interval_minutes: int | None = Field(default=None, ge=1, le=1440)
+    source_group_id: int | None = Field(default=None, ge=1)
+    plus_group_id: int | None = Field(default=None, ge=1)
+    banned_group_id: int | None = Field(default=None, ge=1)
+    plus_error_group_id: int | None = Field(default=None, ge=1)
 
 
 class GroupObservabilitySettingUpdate(BaseModel):

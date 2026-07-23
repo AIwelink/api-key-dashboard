@@ -13,13 +13,29 @@ from app.schemas import PlusSelfProducedSettingsUpdate
 class PlusSelfProducedSchemaTests(unittest.TestCase):
     def test_interval_minutes_is_bounded(self) -> None:
         self.assertEqual(
-            PlusSelfProducedSettingsUpdate(enabled=True, interval_minutes=15).model_dump(exclude_unset=True),
-            {"enabled": True, "interval_minutes": 15},
+            PlusSelfProducedSettingsUpdate(
+                enabled=True,
+                interval_minutes=15,
+                source_group_id=14,
+                plus_group_id=16,
+                banned_group_id=17,
+                plus_error_group_id=19,
+            ).model_dump(exclude_unset=True),
+            {
+                "enabled": True,
+                "interval_minutes": 15,
+                "source_group_id": 14,
+                "plus_group_id": 16,
+                "banned_group_id": 17,
+                "plus_error_group_id": 19,
+            },
         )
         with self.assertRaises(ValidationError):
             PlusSelfProducedSettingsUpdate(interval_minutes=0)
         with self.assertRaises(ValidationError):
             PlusSelfProducedSettingsUpdate(interval_minutes=1_441)
+        with self.assertRaises(ValidationError):
+            PlusSelfProducedSettingsUpdate(source_group_id=0)
 
 
 class PlusSelfProducedRouteTests(unittest.IsolatedAsyncioTestCase):

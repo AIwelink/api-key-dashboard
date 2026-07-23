@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+from fastapi import HTTPException
 
 from app.modules.system import bootstrap
 from app.modules.sub2api import client as sub2api_client
@@ -106,11 +107,15 @@ class PlusSelfProducedSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(settings["banned_group_id"], 7)
         self.assertEqual(settings["plus_error_group_id"], 9)
 
-    async def test_update_persists_enabled_and_interval_minutes(self) -> None:
+    async def test_update_persists_enabled_interval_and_group_roles(self) -> None:
         stored = {
             "_id": "plus-self-produced",
             "enabled": False,
             "interval_seconds": 1_200,
+            "source_group_id": 14,
+            "plus_group_id": 16,
+            "banned_group_id": 17,
+            "plus_error_group_id": 19,
         }
         settings_collection = SimpleNamespace(
             update_one=AsyncMock(),
@@ -118,20 +123,36 @@ class PlusSelfProducedSettingsTests(unittest.IsolatedAsyncioTestCase):
         )
         db = SimpleNamespace(plus_self_produced_settings=settings_collection)
 
-        result = await plus_self_produced.update_settings(
-            db,
-            {"enabled": False, "interval_minutes": 20},
-            {"_id": "admin@example.com"},
-        )
+        with patch.object(
+            plus_self_produced,
+            "list_groups",
+            AsyncMock(return_value=[{"id": group_id} for group_id in (14, 16, 17, 19)]),
+        ):
+            result = await plus_self_produced.update_settings(
+                db,
+                {
+                    "enabled": False,
+                    "interval_minutes": 20,
+                    "source_group_id": 14,
+                    "plus_group_id": 16,
+                    "banned_group_id": 17,
+                    "plus_error_group_id": 19,
+                },
+                {"_id": "admin@example.com"},
+            )
 
         updates = settings_collection.update_one.await_args.args[1]["$set"]
         self.assertFalse(updates["enabled"])
         self.assertEqual(updates["interval_seconds"], 1_200)
         self.assertEqual(updates["updated_by"], "admin@example.com")
+        self.assertEqual(updates["source_group_id"], 14)
+        self.assertEqual(updates["plus_group_id"], 16)
+        self.assertEqual(updates["banned_group_id"], 17)
+        self.assertEqual(updates["plus_error_group_id"], 19)
         self.assertFalse(result["enabled"])
         self.assertEqual(result["interval_minutes"], 20)
 
-    async def test_stored_document_cannot_override_fixed_workflow_targets(self) -> None:
+    async def test_stored_document_configures_group_roles_but_not_site_or_model(self) -> None:
         db = SimpleNamespace(
             plus_self_produced_settings=SimpleNamespace(
                 find_one=AsyncMock(
@@ -150,11 +171,71 @@ class PlusSelfProducedSettingsTests(unittest.IsolatedAsyncioTestCase):
         settings = await plus_self_produced.get_settings(db)
 
         self.assertEqual(settings["site_id"], "US06-5002")
-        self.assertEqual(settings["source_group_id"], 4)
-        self.assertEqual(settings["plus_group_id"], 6)
-        self.assertEqual(settings["banned_group_id"], 7)
-        self.assertEqual(settings["plus_error_group_id"], 9)
+        self.assertEqual(settings["source_group_id"], 99)
+        self.assertEqual(settings["plus_group_id"], 98)
+        self.assertEqual(settings["banned_group_id"], 97)
+        self.assertEqual(settings["plus_error_group_id"], 96)
         self.assertEqual(settings["model"], "gpt-5.6-sol")
+
+    async def test_update_rejects_duplicate_effective_group_roles(self) -> None:
+        stored = {
+            "_id": "plus-self-produced",
+            "source_group_id": 4,
+            "plus_group_id": 6,
+            "banned_group_id": 7,
+            "plus_error_group_id": 9,
+        }
+        settings_collection = SimpleNamespace(
+            update_one=AsyncMock(),
+            find_one=AsyncMock(return_value=stored),
+        )
+        db = SimpleNamespace(plus_self_produced_settings=settings_collection)
+
+        with (
+            patch.object(
+                plus_self_produced,
+                "list_groups",
+                AsyncMock(return_value=[{"id": group_id} for group_id in (4, 6, 7, 9)]),
+            ),
+            self.assertRaisesRegex(HTTPException, "distinct"),
+        ):
+            await plus_self_produced.update_settings(
+                db,
+                {"source_group_id": 6},
+                {"_id": "admin@example.com"},
+            )
+
+        settings_collection.update_one.assert_not_awaited()
+
+    async def test_update_rejects_group_missing_from_postgresql(self) -> None:
+        stored = {
+            "_id": "plus-self-produced",
+            "source_group_id": 4,
+            "plus_group_id": 6,
+            "banned_group_id": 7,
+            "plus_error_group_id": 9,
+        }
+        settings_collection = SimpleNamespace(
+            update_one=AsyncMock(),
+            find_one=AsyncMock(return_value=stored),
+        )
+        db = SimpleNamespace(plus_self_produced_settings=settings_collection)
+
+        with (
+            patch.object(
+                plus_self_produced,
+                "list_groups",
+                AsyncMock(return_value=[{"id": group_id} for group_id in (4, 6, 7)]),
+            ),
+            self.assertRaisesRegex(HTTPException, "not found: 9"),
+        ):
+            await plus_self_produced.update_settings(
+                db,
+                {"interval_minutes": 30},
+                {"_id": "admin@example.com"},
+            )
+
+        settings_collection.update_one.assert_not_awaited()
 
     def test_due_time_uses_last_finish_and_enabled_state(self) -> None:
         now = datetime(2026, 7, 21, 12, 0, tzinfo=UTC)

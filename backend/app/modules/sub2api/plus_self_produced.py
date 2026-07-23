@@ -29,6 +29,12 @@ SOURCE_GROUP_ID = 4
 PLUS_GROUP_ID = 6
 BANNED_GROUP_ID = 7
 PLUS_ERROR_GROUP_ID = 9
+GROUP_SETTING_DEFAULTS = {
+    "source_group_id": SOURCE_GROUP_ID,
+    "plus_group_id": PLUS_GROUP_ID,
+    "banned_group_id": BANNED_GROUP_ID,
+    "plus_error_group_id": PLUS_ERROR_GROUP_ID,
+}
 PROBE_MODEL = "gpt-5.6-sol"
 DEFAULT_INTERVAL_SECONDS = 15 * 60
 SCHEDULER_POLL_SECONDS = 30
@@ -83,15 +89,15 @@ async def get_settings(db: AsyncIOMotorDatabase) -> dict[str, Any]:
     settings = {
         "enabled": True,
         "interval_seconds": DEFAULT_INTERVAL_SECONDS,
+        **GROUP_SETTING_DEFAULTS,
         **(stored or {}),
         "_id": SETTINGS_ID,
         "site_id": SITE_ID,
-        "source_group_id": SOURCE_GROUP_ID,
-        "plus_group_id": PLUS_GROUP_ID,
-        "banned_group_id": BANNED_GROUP_ID,
-        "plus_error_group_id": PLUS_ERROR_GROUP_ID,
         "model": PROBE_MODEL,
     }
+    for field, default in GROUP_SETTING_DEFAULTS.items():
+        value = settings.get(field)
+        settings[field] = value if isinstance(value, int) and value > 0 else default
     interval_seconds = max(60, int(settings.get("interval_seconds") or DEFAULT_INTERVAL_SECONDS))
     settings["interval_seconds"] = interval_seconds
     settings["interval_minutes"] = interval_seconds // 60
@@ -105,6 +111,24 @@ async def update_settings(
     actor: dict[str, Any],
 ) -> dict[str, Any]:
     now = now_utc()
+    current = await get_settings(db)
+    effective_group_ids = {
+        field: payload.get(field) if payload.get(field) is not None else current[field]
+        for field in GROUP_SETTING_DEFAULTS
+    }
+    selected_ids = list(effective_group_ids.values())
+    if len(set(selected_ids)) != len(selected_ids):
+        raise HTTPException(status_code=422, detail="Plus routing group IDs must be distinct")
+    available_groups = await list_groups(db)
+    available_ids = {
+        group.get("id")
+        for group in available_groups
+        if isinstance(group, dict) and isinstance(group.get("id"), int)
+    }
+    missing_ids = sorted(set(selected_ids) - available_ids)
+    if missing_ids:
+        missing_text = ", ".join(str(group_id) for group_id in missing_ids)
+        raise HTTPException(status_code=422, detail=f"Sub2API groups not found: {missing_text}")
     updates: dict[str, Any] = {
         "site_id": SITE_ID,
         "updated_at": now,
@@ -114,6 +138,9 @@ async def update_settings(
         updates["enabled"] = bool(payload["enabled"])
     if "interval_minutes" in payload and payload["interval_minutes"] is not None:
         updates["interval_seconds"] = int(payload["interval_minutes"]) * 60
+    for field in GROUP_SETTING_DEFAULTS:
+        if field in payload and payload[field] is not None:
+            updates[field] = int(payload[field])
     await db.plus_self_produced_settings.update_one(
         {"_id": SETTINGS_ID},
         {
@@ -144,10 +171,10 @@ async def get_status(db: AsyncIOMotorDatabase) -> dict[str, Any]:
     )
     return {
         "site_id": SITE_ID,
-        "source_group_id": SOURCE_GROUP_ID,
-        "plus_group_id": PLUS_GROUP_ID,
-        "banned_group_id": BANNED_GROUP_ID,
-        "plus_error_group_id": PLUS_ERROR_GROUP_ID,
+        "source_group_id": settings["source_group_id"],
+        "plus_group_id": settings["plus_group_id"],
+        "banned_group_id": settings["banned_group_id"],
+        "plus_error_group_id": settings["plus_error_group_id"],
         "model": PROBE_MODEL,
         "running": _run_lock.locked(),
         "settings": settings,
