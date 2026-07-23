@@ -281,7 +281,8 @@ describe("traffic analysis configuration workspace", () => {
   it("filters channels by status and keyword", () => {
     expect(filterChannels([
       channel,
-      { ...channel, channel_id: "telegram", code: "telegram", name: "Telegram", status: "disabled" },
+      { ...channel, channel_id: "disabled-xiaohongshu", status: "disabled" },
+      { ...channel, channel_id: "active-telegram", code: "telegram", name: "Telegram", status: "active" },
     ], {
       status: "active",
       keyword: "小红书",
