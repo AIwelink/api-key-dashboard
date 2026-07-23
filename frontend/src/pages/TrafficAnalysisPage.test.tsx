@@ -89,7 +89,11 @@ const callbacks = {
   onCopyLink: () => undefined,
 };
 
-function renderWorkspace(activeTab: "links" | "sources" | "sites", loadError = "") {
+function renderWorkspace(
+  activeTab: "links" | "sources" | "sites",
+  loadError = "",
+  campaignForm = { ...emptyCampaignForm, site_id: "aiwelink", channel_id: channel.channel_id },
+) {
   return renderToStaticMarkup(
     <TrafficAnalysisWorkspace
       activeTab={activeTab}
@@ -105,7 +109,7 @@ function renderWorkspace(activeTab: "links" | "sources" | "sites", loadError = "
         campaign_id: campaign.campaign_id,
       }}
       channelForm={emptyChannelForm}
-      campaignForm={{ ...emptyCampaignForm, site_id: "aiwelink", channel_id: channel.channel_id }}
+      campaignForm={campaignForm}
       siteForm={{ ...emptySiteForm, public_origin: "https://api.aiwelink.cc" }}
       loading={false}
       saving={false}
@@ -147,6 +151,20 @@ describe("traffic analysis configuration workspace", () => {
     expect(html).toContain("新建活动");
     expect(html).toContain("小红书");
     expect(html).toContain("2026 夏季推广");
+  });
+
+  it("blocks an invalid campaign code and explains the accepted format", () => {
+    const html = renderWorkspace("sources", "", {
+      ...emptyCampaignForm,
+      site_id: site.site_id,
+      channel_id: channel.channel_id,
+      code: "活动编码 test",
+      name: "测试活动",
+    });
+
+    expect(html).toContain('aria-invalid="true"');
+    expect(html).toContain("仅支持小写英文字母、数字和连字符");
+    expect(html).toContain('<button type="submit" disabled="">创建活动</button>');
   });
 
   it("renders site integration fields and binding mode", () => {

@@ -174,6 +174,12 @@ export const emptySiteForm: SiteForm = {
   status: "active",
 };
 
+const GROWTH_CODE_PATTERN = /^[a-z0-9-]+$/;
+
+function isValidGrowthCode(value: string) {
+  return GROWTH_CODE_PATTERN.test(value.trim().toLowerCase());
+}
+
 export function buildTrackingLinkPayload(form: TrackingLinkForm) {
   const extraDimensions = Object.fromEntries(
     form.dimensions
@@ -429,6 +435,10 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
   };
 
   const createCampaign = async () => {
+    if (!isValidGrowthCode(campaignForm.code)) {
+      showToast("活动编码仅支持小写英文字母、数字和连字符", true);
+      return;
+    }
     const created = await runMutation(
       () => api("/growth/campaigns", token, {
         method: "POST",
@@ -600,6 +610,7 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
   const [linkFilters, setLinkFilters] = useState<TrackingLinkFilters>(emptyTrackingLinkFilters);
   const siteCampaigns = campaigns.filter((item) => item.site_id === linkForm.site_id);
   const channelCampaigns = siteCampaigns.filter((item) => item.channel_id === linkForm.channel_id);
+  const campaignCodeInvalid = Boolean(campaignForm.code.trim()) && !isValidGrowthCode(campaignForm.code);
   const selectedSite = sites.find((item) => item.site_id === selectedSiteId);
   const filterCampaigns = campaigns.filter((item) =>
     (!linkFilters.site_id || item.site_id === linkFilters.site_id)
@@ -835,11 +846,28 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
             <div className="growth-form-grid compact">
               <SiteSelect sites={sites} value={campaignForm.site_id} disabled={saving} onChange={(siteId) => onCampaignFormChange({ ...campaignForm, site_id: siteId })} />
               <label><span className="field-label"><strong>渠道</strong></span><select value={campaignForm.channel_id} onChange={(event) => onCampaignFormChange({ ...campaignForm, channel_id: event.target.value })} required><option value="">选择渠道</option>{channels.map((channel) => <option value={channel.channel_id} key={channel.channel_id}>{channel.name}</option>)}</select></label>
-              <label><span className="field-label"><strong>活动编码</strong></span><input value={campaignForm.code} onChange={(event) => onCampaignFormChange({ ...campaignForm, code: event.target.value })} placeholder="summer-2026" required /></label>
+              <label>
+                <span className="field-label"><strong>活动编码</strong></span>
+                <input
+                  value={campaignForm.code}
+                  onChange={(event) => onCampaignFormChange({ ...campaignForm, code: event.target.value.toLowerCase() })}
+                  placeholder="summer-2026"
+                  maxLength={60}
+                  pattern="[a-z0-9-]+"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  aria-invalid={campaignCodeInvalid}
+                  aria-describedby="campaign-code-help"
+                  required
+                />
+                <span id="campaign-code-help" className={`growth-field-message ${campaignCodeInvalid ? "is-error" : "is-muted"}`}>
+                  {campaignCodeInvalid ? "仅支持小写英文字母、数字和连字符" : "例如：summer-2026"}
+                </span>
+              </label>
               <label><span className="field-label"><strong>活动名称</strong></span><input value={campaignForm.name} onChange={(event) => onCampaignFormChange({ ...campaignForm, name: event.target.value })} placeholder="2026 夏季推广" required /></label>
               <label className="span-2"><span className="field-label"><strong>说明</strong><span>（可选）</span></span><input value={campaignForm.description} onChange={(event) => onCampaignFormChange({ ...campaignForm, description: event.target.value })} /></label>
             </div>
-            <button type="submit" disabled={saving || !campaignForm.site_id || !campaignForm.channel_id || !campaignForm.code.trim() || !campaignForm.name.trim()}>{saving ? "保存中..." : "创建活动"}</button>
+            <button type="submit" disabled={saving || !campaignForm.site_id || !campaignForm.channel_id || !isValidGrowthCode(campaignForm.code) || !campaignForm.name.trim()}>{saving ? "保存中..." : "创建活动"}</button>
           </form>
 
           <section className="growth-source-stage" data-growth-section="campaign-list">

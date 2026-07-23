@@ -237,6 +237,14 @@
   line-height: 1.45;
 }
 
+.growth-field-message.is-muted {
+  color: var(--muted);
+}
+
+.growth-field-message.is-error {
+  color: var(--danger);
+}
+
 .growth-dimensions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
