@@ -5,15 +5,20 @@ from app.database import db_dependency
 from app.modules.sub2api.plus_self_produced import get_status, list_results, run_probe, update_settings
 from app.modules.system.audit import write_audit_log
 from app.schemas import PlusSelfProducedSettingsUpdate
-from app.security import require_roles
+from app.security import get_current_user
+from app.modules.system.permissions import require_view_permission
 
 
-router = APIRouter(prefix="/plus-self-produced", tags=["plus-self-produced"])
+router = APIRouter(
+    prefix="/plus-self-produced",
+    tags=["plus-self-produced"],
+    dependencies=[Depends(require_view_permission("plus-self-produced"))],
+)
 
 
 @router.get("/status")
 async def get_plus_self_produced_status(
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await get_status(db)
@@ -24,7 +29,7 @@ async def get_plus_self_produced_results(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     classification: str | None = None,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_results(
@@ -38,7 +43,7 @@ async def get_plus_self_produced_results(
 @router.patch("/settings")
 async def patch_plus_self_produced_settings(
     payload: PlusSelfProducedSettingsUpdate,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await update_settings(db, payload.model_dump(exclude_unset=True), actor)
@@ -55,7 +60,7 @@ async def patch_plus_self_produced_settings(
 
 @router.post("/run")
 async def post_plus_self_produced_run(
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await run_probe(db, trigger="manual")

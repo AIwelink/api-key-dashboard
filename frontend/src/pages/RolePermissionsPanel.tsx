@@ -13,13 +13,15 @@ type Props = {
   onDelete: (roleId: string) => Promise<void>;
 };
 
+const BACKEND_MANAGED_VIEWS = new Set<ViewName>(["system-management", "api-tokens"]);
+
 
 export function toggleRoleViewPermission(
   settings: RolePermissionsSettings,
   role: UserRole,
   view: ViewName,
 ): RolePermissionsSettings {
-  if (view === "api-tokens") return settings;
+  if (BACKEND_MANAGED_VIEWS.has(view)) return settings;
   const entry = settings.roles[role];
   const exists = entry.allowed_views.includes(view);
   const allowedViews = exists
@@ -81,7 +83,14 @@ function setRoleLabel(
 
 
 function permissionLabel(view: ViewName) {
-  return view === "api-tokens" ? "API Key 管理" : viewLabel(view);
+  if (view === "api-tokens") return "API Key 管理";
+  return viewLabel(view);
+}
+
+function protectedPermissionLabel(view: ViewName) {
+  if (view === "api-tokens") return "API Key 管理（仅 owner）";
+  if (view === "system-management") return "系统管理（仅 owner/admin）";
+  return permissionLabel(view);
 }
 
 
@@ -183,8 +192,8 @@ export function RolePermissionsPanel({ settings, busy, onChange, onSave, onCreat
                   disabled={busy || entry.allowed_views.length === 0}
                   onChange={(event) => onChange(setRoleDefaultView(settings, role, event.target.value as ViewName))}
                 >
-                  {entry.allowed_views.length ? (
-                    entry.allowed_views.map((view) => (
+                  {entry.allowed_views.some((view) => view !== "api-tokens") ? (
+                    entry.allowed_views.filter((view) => view !== "api-tokens").map((view) => (
                       <option value={view} key={view}>{permissionLabel(view)}</option>
                     ))
                   ) : (
@@ -199,10 +208,10 @@ export function RolePermissionsPanel({ settings, busy, onChange, onSave, onCreat
                       type="checkbox"
                       value={view}
                       checked={entry.allowed_views.includes(view)}
-                      disabled={busy || view === "api-tokens"}
+                      disabled={busy || BACKEND_MANAGED_VIEWS.has(view)}
                       onChange={() => onChange(toggleRoleViewPermission(settings, role, view))}
                     />
-                    <span>{permissionLabel(view)}{view === "api-tokens" ? "（仅 owner）" : ""}</span>
+                    <span>{protectedPermissionLabel(view)}</span>
                   </label>
                 ))}
               </div>

@@ -3,7 +3,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
 from app.schemas import SyncRunRequest
-from app.security import require_roles
+from app.modules.system.permissions import require_view_permission
 from app.modules.accounts.accounts import get_account_or_404
 from app.modules.system.audit import write_audit_log
 from app.modules.sub2api.client import refresh_account_observation
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/sync", tags=["sync"])
 @router.post("/preview")
 async def preview_sync(
     payload: SyncRunRequest,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_view_permission("accounts")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     query = {"metadata.deleted_at": {"$exists": False}}
@@ -29,7 +29,7 @@ async def preview_sync(
 @router.post("/run")
 async def run_sync(
     payload: SyncRunRequest,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("accounts")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     query = {"metadata.deleted_at": {"$exists": False}}
@@ -79,7 +79,7 @@ async def run_sync(
 
 @router.get("/jobs")
 async def list_jobs(
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_view_permission("accounts")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     items = [serialize_doc(item) async for item in db.sync_jobs.find({}).sort("created_at", -1).limit(100)]
@@ -89,7 +89,7 @@ async def list_jobs(
 @router.get("/jobs/{job_id}")
 async def get_job(
     job_id: str,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_view_permission("accounts")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     job = await db.sync_jobs.find_one({"_id": object_id(job_id)})
@@ -99,11 +99,10 @@ async def get_job(
 @router.post("/accounts/{account_id}")
 async def sync_one_account(
     account_id: str,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("accounts")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     account = await get_account_or_404(db, account_id)
     updated = await refresh_account_observation(db, account)
     await write_audit_log(db, actor=actor, action="sync.account", resource_type="account", resource_id=account_id)
     return serialize_doc(updated)
-

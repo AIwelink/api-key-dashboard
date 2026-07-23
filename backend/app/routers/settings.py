@@ -3,7 +3,6 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
 from app.schemas import AgentLlmSettingsUpdate, GrowthDatabaseSettingsUpdate, RolePermissionsUpdate, UserRoleCreate
-from app.security import require_roles
 from app.modules.agent.llm_client import AgentLlmConfigError, test_agent_llm_connection
 from app.modules.agent.settings import (
     AgentLlmSettingsValidationError,
@@ -29,6 +28,8 @@ from app.modules.system.permissions import (
     create_user_role,
     delete_user_role,
     get_role_permissions_settings,
+    get_user_role_catalog,
+    require_view_permission,
     update_role_permissions_settings,
 )
 
@@ -38,7 +39,7 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 
 @router.get("/growth-database")
 async def get_growth_database_settings_route(
-    _: dict = Depends(require_roles("owner", "admin")),
+    _: dict = Depends(require_view_permission("traffic-analysis-config")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await get_growth_database_settings(db)
@@ -47,7 +48,7 @@ async def get_growth_database_settings_route(
 @router.put("/growth-database")
 async def put_growth_database_settings(
     payload: GrowthDatabaseSettingsUpdate,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("traffic-analysis-config")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     before = await get_growth_database_settings(db)
@@ -73,7 +74,7 @@ async def put_growth_database_settings(
 
 @router.post("/growth-database/test")
 async def post_growth_database_test(
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("traffic-analysis-config")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     try:
@@ -101,7 +102,7 @@ async def post_growth_database_test(
 
 @router.get("/growth-database/schema")
 async def get_growth_database_schema(
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("traffic-analysis-config")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     del actor
@@ -115,7 +116,7 @@ async def get_growth_database_schema(
 
 @router.post("/growth-database/initialize")
 async def post_growth_database_initialize(
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("traffic-analysis-config")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     try:
@@ -137,7 +138,7 @@ async def post_growth_database_initialize(
 
 @router.get("/sync-policy")
 async def get_sync_policy(
-    _: dict = Depends(require_roles("owner", "admin")),
+    _: dict = Depends(require_view_permission("system-management")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     policy = await db.app_settings.find_one({"_id": "sync_policy"})
@@ -150,7 +151,7 @@ async def get_sync_policy(
 @router.patch("/sync-policy")
 async def update_sync_policy(
     payload: dict,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("system-management")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     await db.app_settings.update_one({"_id": "sync_policy"}, {"$set": payload}, upsert=True)
@@ -160,16 +161,24 @@ async def update_sync_policy(
 
 @router.get("/role-permissions")
 async def get_role_permissions_settings_route(
-    _: dict = Depends(require_roles("owner", "admin")),
+    _: dict = Depends(require_view_permission("system-management")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await get_role_permissions_settings(db)
 
 
+@router.get("/user-roles")
+async def get_user_roles(
+    _: dict = Depends(require_view_permission("users")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    return await get_user_role_catalog(db)
+
+
 @router.put("/role-permissions")
 async def put_role_permissions_settings(
     payload: RolePermissionsUpdate,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("system-management")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     before = await get_role_permissions_settings(db)
@@ -192,7 +201,7 @@ async def put_role_permissions_settings(
 @router.post("/role-permissions/roles", status_code=status.HTTP_201_CREATED)
 async def post_user_role(
     payload: UserRoleCreate,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("system-management")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     before = await get_role_permissions_settings(db)
@@ -215,7 +224,7 @@ async def post_user_role(
 @router.delete("/role-permissions/roles/{role_id}")
 async def delete_user_role_route(
     role_id: str,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("system-management")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     before = await get_role_permissions_settings(db)
@@ -241,7 +250,7 @@ async def delete_user_role_route(
 
 @router.get("/agent-llm")
 async def get_agent_llm_settings_route(
-    _: dict = Depends(require_roles("owner", "admin")),
+    _: dict = Depends(require_view_permission("system-management")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await get_agent_llm_settings(db)
@@ -250,7 +259,7 @@ async def get_agent_llm_settings_route(
 @router.put("/agent-llm")
 async def put_agent_llm_settings(
     payload: AgentLlmSettingsUpdate,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("system-management")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     before = await get_agent_llm_settings(db)
@@ -272,7 +281,7 @@ async def put_agent_llm_settings(
 
 @router.post("/agent-llm/test")
 async def post_agent_llm_test(
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("system-management")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     settings = await get_agent_llm_settings_private(db)

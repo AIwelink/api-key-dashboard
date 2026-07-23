@@ -23,7 +23,8 @@ ROLE_LABELS = {
     "operator": "运营",
     "viewer": "viewer",
 }
-OWNER_REQUIRED_VIEWS = {"api-tokens", "users"}
+OWNER_REQUIRED_VIEWS = {"system-management", "api-tokens", "users"}
+SYSTEM_MANAGEMENT_ROLES = {"owner", "admin"}
 AVAILABLE_VIEWS: tuple[ViewName, ...] = (
     "upload",
     "todos",
@@ -42,6 +43,7 @@ AVAILABLE_VIEWS: tuple[ViewName, ...] = (
     "traffic-analysis-config",
     "agent-analysis",
     "agent-workbench",
+    "system-management",
     "api-tokens",
     "presence",
     "users",
@@ -55,13 +57,13 @@ DEFAULT_ROLE_VIEWS: dict[str, list[ViewName]] = {
     "maintainer": [
         view
         for view in AVAILABLE_VIEWS
-        if view not in {"presence", "traffic-analysis", "traffic-analysis-config", "api-tokens"}
+        if view not in {"presence", "traffic-analysis", "traffic-analysis-config", "system-management", "api-tokens", "users"}
     ],
     "operator": ["traffic-analysis", "operations-management"],
     "viewer": [
         view
         for view in AVAILABLE_VIEWS
-        if view not in {"presence", "traffic-analysis", "traffic-analysis-config", "api-tokens"}
+        if view not in {"presence", "traffic-analysis", "traffic-analysis-config", "system-management", "api-tokens", "users"}
     ],
 }
 DEFAULT_ROLE_DEFAULTS: dict[str, ViewName] = {
@@ -105,12 +107,52 @@ async def get_role_permissions_settings(db: AsyncIOMotorDatabase) -> dict[str, A
     return _public_settings(await db.app_settings.find_one({"_id": SETTINGS_ID}))
 
 
+async def get_user_role_catalog(db: AsyncIOMotorDatabase) -> dict[str, Any]:
+    settings = await get_role_permissions_settings(db)
+    role_order = [
+        role
+        for role in settings["role_order"]
+        if role in settings["roles"] and not settings["roles"][role].get("deleting")
+    ]
+    return {
+        "role_order": role_order,
+        "roles": {
+            role: {
+                "label": settings["roles"][role]["label"],
+                "builtin": settings["roles"][role]["builtin"],
+            }
+            for role in role_order
+        },
+    }
+
+
 async def ensure_role_permissions_settings(db: AsyncIOMotorDatabase) -> dict[str, Any]:
     stored = await db.app_settings.find_one({"_id": SETTINGS_ID})
     public = _public_settings(stored)
-    if not stored or stored.get("roles") != public["roles"] or stored.get("role_order") != public["role_order"]:
-        await db.app_settings.update_one(
-            {"_id": SETTINGS_ID},
+    if not stored:
+        try:
+            await db.app_settings.update_one(
+                {"_id": SETTINGS_ID},
+                {
+                    "$setOnInsert": {
+                        "roles": public["roles"],
+                        "role_order": public["role_order"],
+                        "updated_at": now_utc(),
+                        "updated_by": "system",
+                    }
+                },
+                upsert=True,
+            )
+        except DuplicateKeyError:
+            pass
+        return await get_role_permissions_settings(db)
+
+    if stored.get("roles") != public["roles"] or stored.get("role_order") != public["role_order"]:
+        update_filter: dict[str, Any] = {"_id": SETTINGS_ID}
+        for field in ("roles", "role_order"):
+            update_filter[field] = stored[field] if field in stored else {"$exists": False}
+        result = await db.app_settings.update_one(
+            update_filter,
             {
                 "$set": {
                     "roles": public["roles"],
@@ -119,8 +161,9 @@ async def ensure_role_permissions_settings(db: AsyncIOMotorDatabase) -> dict[str
                     "updated_by": "system",
                 }
             },
-            upsert=True,
         )
+        if not result.matched_count:
+            return await get_role_permissions_settings(db)
     return public
 
 
@@ -136,25 +179,22 @@ async def update_role_permissions_settings(
         "updated_at": now_utc(),
         "updated_by": _actor_id(actor),
     }
+    update_filter: dict[str, Any] = {"_id": SETTINGS_ID}
     for role, entry in payload.roles.items():
         if role not in roles:
             raise RoleNotFoundError(f"User role '{role}' does not exist")
         normalized = _normalize_entry(role, entry.model_dump(), fallback=roles[role])
         roles[role] = normalized
         field_updates[f"roles.{role}"] = normalized
-    await db.app_settings.update_one(
-        {"_id": SETTINGS_ID},
+        update_filter[f"roles.{role}"] = {"$exists": True}
+        update_filter[f"roles.{role}.deleting"] = {"$ne": True}
+    result = await db.app_settings.update_one(
+        update_filter,
         {"$set": field_updates},
-        upsert=True,
     )
-    return _public_settings(
-        {
-            **current,
-            "roles": roles,
-            "updated_at": field_updates["updated_at"],
-            "updated_by": field_updates["updated_by"],
-        }
-    )
+    if not result.matched_count:
+        raise RoleNotFoundError("One or more user roles no longer exist")
+    return await get_role_permissions_settings(db)
 
 
 async def create_user_role(
@@ -211,17 +251,7 @@ async def create_user_role(
     if not result.modified_count:
         raise RoleAlreadyExistsError(f"User role '{role_id}' already exists")
 
-    roles = {role: dict(value) for role, value in current["roles"].items()}
-    roles[role_id] = entry
-    return _public_settings(
-        {
-            **current,
-            "roles": roles,
-            "role_order": [*current["role_order"], role_id],
-            "updated_at": now,
-            "updated_by": _actor_id(actor),
-        }
-    )
+    return await get_role_permissions_settings(db)
 
 
 async def delete_user_role(
@@ -236,45 +266,78 @@ async def delete_user_role(
         raise RoleNotFoundError(f"User role '{role_id}' does not exist")
     if entry["builtin"]:
         raise BuiltinRoleDeleteError(f"Built-in user role '{role_id}' cannot be deleted")
-    if await db.users.find_one({"role": role_id}, {"_id": 1}):
-        raise RoleInUseError(f"User role '{role_id}' is assigned to users")
 
     now = now_utc()
-    result = await db.app_settings.update_one(
-        {"_id": SETTINGS_ID, f"roles.{role_id}": {"$exists": True}},
+    mark_result = await db.app_settings.update_one(
         {
-            "$unset": {f"roles.{role_id}": ""},
-            "$pull": {"role_order": role_id},
+            "_id": SETTINGS_ID,
+            f"roles.{role_id}": {"$exists": True},
+            f"roles.{role_id}.deleting": {"$ne": True},
+        },
+        {
             "$set": {
+                f"roles.{role_id}.deleting": True,
                 "updated_at": now,
                 "updated_by": _actor_id(actor),
-            },
+            }
         },
     )
+    if not mark_result.modified_count:
+        if not entry.get("deleting"):
+            raise RoleInUseError(f"User role '{role_id}' deletion is already in progress")
+
+    try:
+        assigned_user = await db.users.find_one({"role": role_id}, {"_id": 1})
+    except Exception:
+        await _clear_role_deleting(db, role_id=role_id, actor=actor)
+        raise
+    if assigned_user:
+        await _clear_role_deleting(db, role_id=role_id, actor=actor)
+        raise RoleInUseError(f"User role '{role_id}' is assigned to users")
+
+    try:
+        result = await db.app_settings.update_one(
+            {"_id": SETTINGS_ID, f"roles.{role_id}.deleting": True},
+            {
+                "$unset": {f"roles.{role_id}": ""},
+                "$pull": {"role_order": role_id},
+                "$set": {
+                    "updated_at": now,
+                    "updated_by": _actor_id(actor),
+                },
+            },
+        )
+    except Exception:
+        await _clear_role_deleting(db, role_id=role_id, actor=actor)
+        raise
     if not result.modified_count:
+        await _clear_role_deleting(db, role_id=role_id, actor=actor)
         raise RoleNotFoundError(f"User role '{role_id}' does not exist")
 
-    roles = {role: dict(value) for role, value in current["roles"].items() if role != role_id}
-    return _public_settings(
-        {
-            **current,
-            "roles": roles,
-            "role_order": [role for role in current["role_order"] if role != role_id],
-            "updated_at": now,
-            "updated_by": _actor_id(actor),
-        }
-    )
+    try:
+        late_user = await db.users.find_one({"role": role_id}, {"_id": 1})
+    except Exception:
+        await _restore_deleted_role(db, role_id=role_id, entry=entry, actor=actor)
+        raise
+    if late_user:
+        await _restore_deleted_role(db, role_id=role_id, entry=entry, actor=actor)
+        raise RoleInUseError(f"User role '{role_id}' was assigned during deletion")
+
+    return await get_role_permissions_settings(db)
 
 
 async def role_exists(db: AsyncIOMotorDatabase, role_id: str) -> bool:
     settings = await get_role_permissions_settings(db)
-    return role_id in settings["roles"]
+    entry = settings["roles"].get(role_id)
+    return bool(entry and not entry.get("deleting"))
 
 
 async def permissions_for_user(db: AsyncIOMotorDatabase, user: dict[str, Any]) -> dict[str, Any]:
     settings = await get_role_permissions_settings(db)
     role = str(user.get("role") or "viewer")
-    entry = settings["roles"].get(role) or settings["roles"]["viewer"]
+    entry = settings["roles"].get(role)
+    if not entry or entry.get("deleting"):
+        entry = settings["roles"]["viewer"]
     return {
         "allowed_views": list(entry["allowed_views"]),
         "default_view": entry["default_view"],
@@ -284,6 +347,19 @@ async def permissions_for_user(db: AsyncIOMotorDatabase, user: dict[str, Any]) -
 async def user_can_access_view(db: AsyncIOMotorDatabase, user: dict[str, Any], view: ViewName) -> bool:
     entry = await permissions_for_user(db, user)
     return view in entry["allowed_views"]
+
+
+def require_any_view_permission(*views: ViewName):
+    async def dependency(
+        user: dict[str, Any] = Depends(get_current_user),
+        db: AsyncIOMotorDatabase = Depends(db_dependency),
+    ) -> dict[str, Any]:
+        entry = await permissions_for_user(db, user)
+        if not any(view in entry["allowed_views"] for view in views):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        return user
+
+    return dependency
 
 
 def require_view_permission(view: ViewName):
@@ -337,13 +413,20 @@ def _normalize_entry(role: str, value: dict[str, Any], *, fallback: dict[str, An
         allowed_views = [view for view in AVAILABLE_VIEWS if view in set(allowed_views) | OWNER_REQUIRED_VIEWS]
     else:
         allowed_views = [view for view in allowed_views if view != "api-tokens"]
+    if role in SYSTEM_MANAGEMENT_ROLES:
+        allowed_views = [view for view in AVAILABLE_VIEWS if view in set(allowed_views) | {"system-management"}]
+    else:
+        allowed_views = [view for view in allowed_views if view != "system-management"]
     preferred_default = value.get("default_view") or fallback.get("default_view")
+    if preferred_default == "api-tokens":
+        preferred_default = "system-management"
     default_view = preferred_default if preferred_default in allowed_views else (allowed_views[0] if allowed_views else None)
     raw_label = value.get("label")
     label = str(raw_label).strip() if raw_label is not None else str(fallback.get("label") or role).strip()
     return {
         "label": label or role,
         "builtin": role in ROLE_ORDER,
+        "deleting": bool(value.get("deleting", fallback.get("deleting", False))),
         "allowed_views": allowed_views,
         "default_view": default_view,
     }
@@ -368,3 +451,42 @@ def _dedupe_valid_views(values: list[Any]) -> list[ViewName]:
 
 def _actor_id(actor: dict[str, Any]) -> str:
     return str(actor.get("_id") or actor.get("email") or actor.get("id") or "")
+
+
+async def _clear_role_deleting(
+    db: AsyncIOMotorDatabase,
+    *,
+    role_id: str,
+    actor: dict[str, Any],
+) -> None:
+    await db.app_settings.update_one(
+        {"_id": SETTINGS_ID, f"roles.{role_id}.deleting": True},
+        {
+            "$unset": {f"roles.{role_id}.deleting": ""},
+            "$set": {
+                "updated_at": now_utc(),
+                "updated_by": _actor_id(actor),
+            },
+        },
+    )
+
+
+async def _restore_deleted_role(
+    db: AsyncIOMotorDatabase,
+    *,
+    role_id: str,
+    entry: dict[str, Any],
+    actor: dict[str, Any],
+) -> None:
+    restored_entry = {**entry, "deleting": False}
+    await db.app_settings.update_one(
+        {"_id": SETTINGS_ID, f"roles.{role_id}": {"$exists": False}},
+        {
+            "$set": {
+                f"roles.{role_id}": restored_entry,
+                "updated_at": now_utc(),
+                "updated_by": _actor_id(actor),
+            },
+            "$addToSet": {"role_order": role_id},
+        },
+    )

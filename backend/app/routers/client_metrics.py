@@ -10,10 +10,11 @@ from app.database import db_dependency
 from app.modules.client_metrics.queries import get_client_metric_status, list_client_minute_metrics
 from app.modules.client_metrics.sampler import sample_client_site
 from app.modules.system.audit import write_audit_log
-from app.security import require_roles
+from app.security import get_current_user
+from app.modules.system.permissions import require_view_permission
 
 
-router = APIRouter(prefix="/client-sites", tags=["client-metrics"])
+router = APIRouter(prefix="/client-sites", tags=["client-metrics"], dependencies=[Depends(require_view_permission("client-sites"))])
 
 
 @router.get("/{site_id}/metrics/minutes")
@@ -22,7 +23,7 @@ async def get_site_minute_metrics(
     start_at: datetime,
     end_at: datetime,
     limit: int = Query(default=1_440, ge=1, le=10_080),
-    _: dict = Depends(require_roles("owner", "admin", "maintainer", "viewer")),
+    _: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     await _require_client_site(db, site_id)
@@ -41,7 +42,7 @@ async def get_site_minute_metrics(
 @router.get("/{site_id}/metrics/status")
 async def get_site_metric_status(
     site_id: str,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer", "viewer")),
+    _: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     await _require_client_site(db, site_id)
@@ -51,7 +52,7 @@ async def get_site_metric_status(
 @router.post("/{site_id}/metrics/sample")
 async def post_site_metric_sample(
     site_id: str,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     site = await _require_client_site(db, site_id)

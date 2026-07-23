@@ -3,7 +3,8 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
 from app.schemas import NotificationChannelCreate, NotificationChannelUpdate
-from app.security import require_roles
+from app.security import get_current_user
+from app.modules.system.permissions import require_view_permission
 from app.modules.system.audit import write_audit_log
 from app.modules.notifications.service import (
     create_notification_channel,
@@ -14,12 +15,16 @@ from app.modules.notifications.service import (
 )
 
 
-router = APIRouter(prefix="/notification-channels", tags=["notification-channels"])
+router = APIRouter(
+    prefix="/notification-channels",
+    tags=["notification-channels"],
+    dependencies=[Depends(require_view_permission("system-management"))],
+)
 
 
 @router.get("")
 async def get_notification_channels(
-    _: dict = Depends(require_roles("owner", "admin")),
+    _: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_notification_channels(db)
@@ -28,7 +33,7 @@ async def get_notification_channels(
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def post_notification_channel(
     payload: NotificationChannelCreate,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     created = await create_notification_channel(db, payload=payload, actor=actor)
@@ -47,7 +52,7 @@ async def post_notification_channel(
 async def put_notification_channel(
     channel_id: str,
     payload: NotificationChannelUpdate,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await update_notification_channel(db, channel_id=channel_id, payload=payload, actor=actor)
@@ -67,7 +72,7 @@ async def put_notification_channel(
 @router.delete("/{channel_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_notification_channel_route(
     channel_id: str,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> None:
     deleted = await delete_notification_channel(db, channel_id=channel_id)
@@ -85,7 +90,7 @@ async def delete_notification_channel_route(
 @router.post("/{channel_id}/test")
 async def post_notification_channel_test(
     channel_id: str,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await test_notification_channel(db, channel_id=channel_id, actor=actor)

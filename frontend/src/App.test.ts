@@ -35,6 +35,7 @@ describe("app navigation", () => {
     "traffic-analysis-config",
     "agent-analysis",
     "agent-workbench",
+    "system-management" as ViewName,
     "api-tokens",
     "presence",
     "users",
@@ -57,7 +58,7 @@ describe("app navigation", () => {
       ["api-pools", "plus-self-produced"],
       ["traffic-analysis", "operations-management"],
       ["event-records", "alert-center", "pool-lifecycle", "client-sites", "traffic-analysis-config"],
-      ["agent-analysis", "agent-workbench", "api-tokens", "presence", "users", "logs"],
+      ["agent-analysis", "agent-workbench", "system-management", "presence", "users", "logs"],
     ]);
     expect(visibleKeys).toContain("presence");
     hiddenViews.forEach((view) => expect(visibleKeys).not.toContain(view));
@@ -72,7 +73,7 @@ describe("app navigation", () => {
       ["api-pools", "plus-self-produced"],
       ["traffic-analysis", "operations-management"],
       ["event-records", "alert-center", "pool-lifecycle", "client-sites", "traffic-analysis-config"],
-      ["agent-analysis", "agent-workbench", "users", "logs"],
+      ["agent-analysis", "agent-workbench", "system-management", "users", "logs"],
     ]);
     expect(visibleKeys).not.toContain("presence");
     expect(visibleKeys).not.toContain("api-tokens");
@@ -113,6 +114,12 @@ describe("app navigation", () => {
 
     expect(defaultViewForPermissions(changedPermissions)).toBe("operations-management");
     expect(visibleGroups(changedPermissions)).toEqual([["operations-management"], ["users"]]);
+  });
+
+  it("maps the API key capability default to the system management page", () => {
+    const capabilityDefault = permissions(["system-management", "api-tokens"], "api-tokens");
+
+    expect(defaultViewForPermissions(capabilityDefault)).toBe("system-management");
   });
 
   it("keeps hidden account workflow pages directly addressable", () => {

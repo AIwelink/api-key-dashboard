@@ -4,7 +4,8 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.database import db_dependency
 from app.modules.system.presence import get_frontend_presence_history, list_active_frontend_presence, record_frontend_presence, remove_frontend_presence
 from app.schemas import FrontendPresenceHeartbeat, FrontendPresenceLeave
-from app.security import get_current_user, require_roles
+from app.security import get_current_user
+from app.modules.system.permissions import require_view_permission
 
 
 router = APIRouter(prefix="/presence", tags=["presence"])
@@ -35,7 +36,7 @@ async def post_presence_leave(
 
 @router.get("")
 async def get_active_presence(
-    _: dict = Depends(require_roles("owner")),
+    _: dict = Depends(require_view_permission("presence")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_active_frontend_presence(db)
@@ -43,7 +44,7 @@ async def get_active_presence(
 
 @router.get("/history")
 async def get_presence_history(
-    _: dict = Depends(require_roles("owner")),
+    _: dict = Depends(require_view_permission("presence")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await get_frontend_presence_history(db)

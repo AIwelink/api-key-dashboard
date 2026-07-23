@@ -3,7 +3,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
 from app.schemas import AlertReadRequest, ApiPoolCreate, ApiPoolStatusPreferenceUpdate, ApiPoolUpdate, CapacityAccountLimitsUpdate, GroupObservabilitySettingUpdate
-from app.security import require_roles
+from app.modules.system.permissions import require_any_view_permission, require_view_permission
 from app.modules.api_pools.pools import create_api_pool, list_api_pools, update_api_pool
 from app.modules.api_pools.status_preferences import get_api_pool_status_preferences, update_api_pool_status_preferences
 from app.modules.system.audit import write_audit_log
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api-pools", tags=["api-pools"])
 
 @router.get("")
 async def get_api_pools(
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_any_view_permission("api-pools", "todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_api_pools(db)
@@ -29,7 +29,7 @@ async def get_api_pools(
 @router.post("")
 async def post_api_pool(
     payload: ApiPoolCreate,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("api-pools")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     created = await create_api_pool(db, payload.model_dump(), actor)
@@ -42,7 +42,7 @@ async def get_auto_refill_logs(
     site_id: str | None = None,
     group_id: int | None = None,
     limit: int = Query(default=20, le=100),
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_view_permission("reserve-pool")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_auto_refill_logs(db, site_id=site_id, group_id=group_id, limit=limit)
@@ -51,7 +51,7 @@ async def get_auto_refill_logs(
 @router.get("/capacity-limits")
 async def get_capacity_limits(
     site_id: str | None = None,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_view_permission("pool-lifecycle")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await get_capacity_account_limits(db, site_id)
@@ -61,7 +61,7 @@ async def get_capacity_limits(
 async def patch_capacity_limits(
     payload: CapacityAccountLimitsUpdate,
     site_id: str | None = None,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("pool-lifecycle")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await update_capacity_account_limits(db, {key: value.model_dump() for key, value in payload.limits.items()}, actor, site_id)
@@ -79,7 +79,7 @@ async def patch_capacity_limits(
 @router.get("/quota-detection")
 async def get_quota_detection(
     site_id: str,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_view_permission("pool-lifecycle")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     if not await get_site(db, site_id):
@@ -89,7 +89,7 @@ async def get_quota_detection(
 
 @router.get("/status-preferences")
 async def get_status_preferences(
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_view_permission("api-pools")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await get_api_pool_status_preferences(db)
@@ -98,7 +98,7 @@ async def get_status_preferences(
 @router.patch("/status-preferences")
 async def patch_status_preferences(
     payload: ApiPoolStatusPreferenceUpdate,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("api-pools")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await update_api_pool_status_preferences(db, payload.model_dump(exclude_unset=True), actor)
@@ -116,7 +116,7 @@ async def patch_status_preferences(
 @router.get("/observability/groups")
 async def get_group_observability_settings(
     site_id: str,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_view_permission("pool-lifecycle")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_group_observability_settings(db, site_id)
@@ -127,7 +127,7 @@ async def patch_group_observability_setting(
     group_id: int,
     payload: GroupObservabilitySettingUpdate,
     site_id: str,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("pool-lifecycle")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await update_group_observability_setting(db, site_id=site_id, group_id=group_id, payload=payload.model_dump(exclude_unset=True), actor=actor)
@@ -145,7 +145,7 @@ async def patch_group_observability_setting(
 @router.post("/observability/probe")
 async def post_observability_probe(
     site_id: str,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("pool-lifecycle")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await probe_site_accounts(db, site_id=site_id)
@@ -166,7 +166,7 @@ async def get_observability_alerts(
     group_id: int | None = None,
     include_read: bool = False,
     limit: int = Query(default=100, ge=1, le=500),
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_view_permission("alert-center")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_duplicate_email_alerts(db, site_id=site_id, group_id=group_id, include_read=include_read, limit=limit)
@@ -176,7 +176,7 @@ async def get_observability_alerts(
 async def post_observability_alert_read(
     alert_id: str,
     payload: AlertReadRequest,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("alert-center")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await mark_duplicate_email_alert_read(db, alert_id=alert_id, actor=actor, note=payload.note)
@@ -197,7 +197,7 @@ async def post_observability_alert_read(
 async def patch_api_pool(
     pool_id: str,
     payload: ApiPoolUpdate,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("api-pools")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await update_api_pool(db, pool_id, payload.model_dump(exclude_unset=True), actor)
@@ -208,7 +208,7 @@ async def patch_api_pool(
 @router.post("/{pool_id}/capacity-check")
 async def post_capacity_check(
     pool_id: str,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("pool-lifecycle")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await capacity_check(db, pool_id=pool_id, actor=actor)

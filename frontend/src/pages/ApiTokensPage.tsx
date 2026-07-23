@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import type { ApiPool, RolePermissionsSettings } from "../types";
@@ -6,6 +6,7 @@ import { errorMessage, formatDateTime } from "../utils/format";
 import { RolePermissionsPanel } from "./RolePermissionsPanel";
 
 type Props = {
+  canManageApiTokens: boolean;
   token: string;
   showToast: (message: string, isError?: boolean) => void;
 };
@@ -59,6 +60,33 @@ type NotificationForm = {
 };
 
 type SystemTab = "tokens" | "notifications" | "permissions" | "agent-llm";
+
+export function shouldPauseSystemAutoRefresh(
+  activeTab: SystemTab,
+  busy: boolean,
+  editingChannelId: string | null,
+  rolePermissionsDirty: boolean,
+) {
+  return Boolean(busy || editingChannelId || (activeTab === "permissions" && rolePermissionsDirty));
+}
+
+export function shouldApplyRolePermissionsRefresh(rolePermissionsDirty: boolean, discardUnsaved: boolean) {
+  return discardUnsaved || !rolePermissionsDirty;
+}
+
+export function mergeRolePermissionsSettings(
+  remote: RolePermissionsSettings,
+  local: RolePermissionsSettings,
+): RolePermissionsSettings {
+  return {
+    ...remote,
+    roles: Object.fromEntries(
+      remote.role_order
+        .filter((role) => remote.roles[role])
+        .map((role) => [role, local.roles[role] || remote.roles[role]]),
+    ),
+  };
+}
 
 type AgentLlmSettings = {
   id?: string;
@@ -182,8 +210,8 @@ const emptyAgentLlmForm: AgentLlmForm = {
   decision_notification_cooldown_minutes: "30",
 };
 
-export function ApiTokensPage({ token, showToast }: Props) {
-  const [activeTab, setActiveTab] = useState<SystemTab>("tokens");
+export function ApiTokensPage({ canManageApiTokens, token, showToast }: Props) {
+  const [activeTab, setActiveTab] = useState<SystemTab>(canManageApiTokens ? "tokens" : "permissions");
   const [tokens, setTokens] = useState<ApiToken[]>([]);
   const [createdToken, setCreatedToken] = useState<ApiToken | null>(null);
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
@@ -193,7 +221,14 @@ export function ApiTokensPage({ token, showToast }: Props) {
   const [agentLlmForm, setAgentLlmForm] = useState<AgentLlmForm>(emptyAgentLlmForm);
   const [agentPools, setAgentPools] = useState<ApiPool[]>([]);
   const [rolePermissionsSettings, setRolePermissionsSettings] = useState<RolePermissionsSettings | null>(null);
+  const [rolePermissionsDirty, setRolePermissionsDirty] = useState(false);
+  const rolePermissionsDirtyRef = useRef(false);
   const [busy, setBusy] = useState(false);
+
+  const updateRolePermissionsDirty = (dirty: boolean) => {
+    rolePermissionsDirtyRef.current = dirty;
+    setRolePermissionsDirty(dirty);
+  };
 
   const loadTokens = async () => {
     const data = await api<{ items: ApiToken[] }>("/api-tokens", token);
@@ -210,9 +245,11 @@ export function ApiTokensPage({ token, showToast }: Props) {
     setAgentPools((data.items || []).filter((pool) => pool.status !== "disabled"));
   };
 
-  const loadRolePermissionsSettings = async () => {
+  const loadRolePermissionsSettings = async (discardUnsaved = false) => {
     const data = await api<RolePermissionsSettings>("/settings/role-permissions", token);
+    if (!shouldApplyRolePermissionsRefresh(rolePermissionsDirtyRef.current, discardUnsaved)) return;
     setRolePermissionsSettings(data);
+    updateRolePermissionsDirty(false);
   };
 
   const loadAgentLlmSettings = async () => {
@@ -254,7 +291,9 @@ export function ApiTokensPage({ token, showToast }: Props) {
   };
 
   useEffect(() => {
-    Promise.all([loadTokens(), loadNotificationChannels(), loadAgentLlmSettings(), loadAgentPools(), loadRolePermissionsSettings()]).catch((error) => showToast(errorMessage(error), true));
+    const loaders = [loadNotificationChannels(), loadAgentLlmSettings(), loadAgentPools(), loadRolePermissionsSettings()];
+    if (canManageApiTokens) loaders.push(loadTokens());
+    Promise.all(loaders).catch((error) => showToast(errorMessage(error), true));
   }, []);
 
   const submitToken = async (event: FormEvent<HTMLFormElement>) => {
@@ -515,6 +554,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
         body: JSON.stringify({ roles: rolePermissionsSettings.roles }),
       });
       setRolePermissionsSettings(updated);
+      updateRolePermissionsDirty(false);
       showToast("权限配置已保存");
     } catch (error) {
       showToast(errorMessage(error), true);
@@ -530,7 +570,11 @@ export function ApiTokensPage({ token, showToast }: Props) {
         method: "POST",
         body: JSON.stringify({ id: roleId, label }),
       });
-      setRolePermissionsSettings(updated);
+      const preserveLocalEdits = rolePermissionsDirtyRef.current;
+      setRolePermissionsSettings((current) => (
+        preserveLocalEdits && current ? mergeRolePermissionsSettings(updated, current) : updated
+      ));
+      updateRolePermissionsDirty(preserveLocalEdits);
       showToast("用户类型已添加");
     } catch (error) {
       showToast(errorMessage(error), true);
@@ -548,7 +592,11 @@ export function ApiTokensPage({ token, showToast }: Props) {
         token,
         { method: "DELETE" },
       );
-      setRolePermissionsSettings(updated);
+      const preserveLocalEdits = rolePermissionsDirtyRef.current;
+      setRolePermissionsSettings((current) => (
+        preserveLocalEdits && current ? mergeRolePermissionsSettings(updated, current) : updated
+      ));
+      updateRolePermissionsDirty(preserveLocalEdits);
       showToast("用户类型已删除");
     } catch (error) {
       showToast(errorMessage(error), true);
@@ -564,7 +612,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
       : activeTab === "notifications"
         ? loadNotificationChannels
         : activeTab === "permissions"
-          ? loadRolePermissionsSettings
+          ? () => loadRolePermissionsSettings(true)
           : loadAgentLlmSettings;
     loader().catch((error) => showToast(errorMessage(error), true));
   };
@@ -576,7 +624,7 @@ export function ApiTokensPage({ token, showToast }: Props) {
       if (activeTab === "permissions") await loadRolePermissionsSettings();
       if (activeTab === "agent-llm") await loadAgentPools();
     },
-    { paused: Boolean(busy || editingChannelId) },
+    { paused: shouldPauseSystemAutoRefresh(activeTab, busy, editingChannelId, rolePermissionsDirty) },
   );
 
   const channelLabel = (item: NotificationChannel) => {
@@ -608,9 +656,11 @@ export function ApiTokensPage({ token, showToast }: Props) {
       </div>
 
       <div className="system-tabs">
-        <button className={activeTab === "tokens" ? "active" : ""} onClick={() => setActiveTab("tokens")} type="button">
-          系统 Token
-        </button>
+        {canManageApiTokens && (
+          <button className={activeTab === "tokens" ? "active" : ""} onClick={() => setActiveTab("tokens")} type="button">
+            系统 Token
+          </button>
+        )}
         <button className={activeTab === "notifications" ? "active" : ""} onClick={() => setActiveTab("notifications")} type="button">
           通知
         </button>
@@ -697,7 +747,10 @@ export function ApiTokensPage({ token, showToast }: Props) {
         <RolePermissionsPanel
           settings={rolePermissionsSettings}
           busy={busy}
-          onChange={setRolePermissionsSettings}
+          onChange={(settings) => {
+            setRolePermissionsSettings(settings);
+            updateRolePermissionsDirty(true);
+          }}
           onCreate={createUserRole}
           onDelete={deleteUserRole}
           onSave={saveRolePermissionsSettings}

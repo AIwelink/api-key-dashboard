@@ -26,6 +26,7 @@ ViewName = Literal[
     "traffic-analysis-config",
     "agent-analysis",
     "agent-workbench",
+    "system-management",
     "api-tokens",
     "presence",
     "users",

@@ -2,11 +2,12 @@ from fastapi import APIRouter, Depends, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.security import require_roles
+from app.security import get_current_user
+from app.modules.system.permissions import require_view_permission
 from app.modules.events.records import event_records_summary, get_event_account_detail, list_event_accounts, list_event_records
 
 
-router = APIRouter(prefix="/event-records", tags=["event-records"])
+router = APIRouter(prefix="/event-records", tags=["event-records"], dependencies=[Depends(require_view_permission("event-records"))])
 
 
 @router.get("/events")
@@ -25,7 +26,7 @@ async def get_events(
     only_delete_archive: bool = False,
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_event_records(
@@ -60,7 +61,7 @@ async def get_accounts(
     only_cumulative: bool = False,
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_event_accounts(
@@ -82,7 +83,7 @@ async def get_accounts(
 @router.get("/accounts/{identity_id}")
 async def get_account_detail(
     identity_id: str,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await get_event_account_detail(db, identity_id)
@@ -102,7 +103,7 @@ async def get_summary(
     only_pro: bool = False,
     only_cumulative: bool = False,
     only_delete_archive: bool = False,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await event_records_summary(

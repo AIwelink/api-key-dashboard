@@ -16,6 +16,7 @@ export type ViewName =
   | "traffic-analysis-config"
   | "agent-analysis"
   | "agent-workbench"
+  | "system-management"
   | "api-tokens"
   | "presence"
   | "users"
@@ -37,6 +38,16 @@ export type RolePermissionsSettings = {
   roles: Record<UserRole, RolePermissionEntry>;
   updated_at?: string;
   updated_by?: string;
+};
+
+export type UserRoleCatalogEntry = {
+  label: string;
+  builtin: boolean;
+};
+
+export type UserRoleCatalog = {
+  role_order: UserRole[];
+  roles: Record<UserRole, UserRoleCatalogEntry>;
 };
 
 export type UserPermissions = {

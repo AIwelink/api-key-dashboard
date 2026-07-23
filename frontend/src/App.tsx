@@ -210,9 +210,21 @@ function App() {
             {view === "traffic-analysis-config" && <TrafficAnalysisConfigPage token={token} showToast={showToast} />}
             {view === "agent-analysis" && <AgentAnalysisPage token={token} showToast={showToast} />}
             {view === "agent-workbench" && <AgentWorkbenchPage token={token} showToast={showToast} />}
-            {view === "api-tokens" && <ApiTokensPage token={token} showToast={showToast} />}
+            {view === "system-management" && (
+              <ApiTokensPage
+                canManageApiTokens={canAccessView(permissions, "api-tokens")}
+                token={token}
+                showToast={showToast}
+              />
+            )}
             {view === "presence" && <PresencePage token={token} showToast={showToast} />}
-            {view === "users" && <UsersPage token={token} showToast={showToast} />}
+            {view === "users" && (
+              <UsersPage
+                canManageOwners={user?.role === "owner"}
+                token={token}
+                showToast={showToast}
+              />
+            )}
             {view === "logs" && <AuditPage token={token} showToast={showToast} />}
           </>
         ) : null}

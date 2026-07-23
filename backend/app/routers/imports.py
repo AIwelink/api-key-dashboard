@@ -5,20 +5,21 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
 from app.schemas import ImportCommitRequest, ImportPreviewRequest
-from app.security import require_roles
+from app.security import get_current_user
+from app.modules.system.permissions import require_view_permission
 from app.modules.accounts.accounts import create_account
 from app.modules.system.audit import write_audit_log
 from app.modules.accounts.json_parser import extract_account_objects
 from app.utils import credentials_email, now_utc
 
 
-router = APIRouter(tags=["imports"])
+router = APIRouter(tags=["imports"], dependencies=[Depends(require_view_permission("upload"))])
 
 
 @router.post("/imports/preview")
 async def preview_import(
     payload: ImportPreviewRequest,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     accounts = extract_account_objects(payload.payload, source_template=payload.source_template)
@@ -62,7 +63,7 @@ async def preview_import(
 @router.post("/imports/commit")
 async def commit_import(
     payload: ImportCommitRequest,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     accounts = extract_account_objects(payload.payload, source_template=payload.source_template)
@@ -84,7 +85,7 @@ async def commit_import(
 
 @router.get("/exports/sub2api")
 async def export_sub2api(
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     cursor = db.accounts.find({"metadata.deleted_at": {"$exists": False}}).sort("metadata.created_at", 1)

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.security import require_roles
+from app.modules.system.permissions import require_any_view_permission, require_view_permission
 from app.modules.agent.capacity import list_agent_pools
 from app.modules.agent.chat import analyze_pool, chat
 from app.modules.agent.memory import get_agent_latest_state, list_agent_messages, list_agent_runs, list_agent_steps
@@ -35,10 +35,6 @@ from app.modules.agent.tools import tool_manifest
 
 
 router = APIRouter(prefix="/agent", tags=["agent"])
-AGENT_ROLES = ("owner", "admin", "maintainer")
-AGENT_VIEW_ROLES = ("owner", "admin", "maintainer")
-AGENT_OPERATOR_ROLES = ("owner", "admin", "maintainer")
-AGENT_ADMIN_ROLES = ("owner", "admin")
 
 
 class AgentChatRequest(BaseModel):
@@ -119,7 +115,7 @@ class AgentPatrolRunRequest(BaseModel):
 
 @router.get("/tools")
 async def get_agent_tools(
-    _: dict = Depends(require_roles(*AGENT_ROLES)),
+    _: dict = Depends(require_any_view_permission("agent-analysis", "agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await tool_manifest(db)
@@ -127,7 +123,7 @@ async def get_agent_tools(
 
 @router.get("/pools")
 async def get_agent_pools(
-    _: dict = Depends(require_roles(*AGENT_ROLES)),
+    _: dict = Depends(require_any_view_permission("agent-analysis", "system-management")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_agent_pools(db)
@@ -136,7 +132,7 @@ async def get_agent_pools(
 @router.get("/state")
 async def get_agent_state(
     pool_id: str | None = None,
-    _: dict = Depends(require_roles(*AGENT_ROLES)),
+    _: dict = Depends(require_view_permission("agent-analysis")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await get_agent_latest_state(db, pool_id=pool_id)
@@ -147,7 +143,7 @@ async def get_agent_runs(
     pool_id: str | None = None,
     trigger: str | None = None,
     limit: int = 20,
-    _: dict = Depends(require_roles(*AGENT_ROLES)),
+    _: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_agent_runs(db, pool_id=pool_id, trigger=trigger, limit=max(1, min(limit, 100)))
@@ -157,7 +153,7 @@ async def get_agent_runs(
 async def get_agent_conversation_messages(
     conversation_id: str,
     limit: int = 50,
-    _: dict = Depends(require_roles(*AGENT_ROLES)),
+    _: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_agent_messages(db, conversation_id=conversation_id, limit=max(1, min(limit, 200)))
@@ -168,7 +164,7 @@ async def get_agent_tasks(
     pool_id: str | None = None,
     status: str | None = None,
     limit: int = 50,
-    _: dict = Depends(require_roles(*AGENT_ROLES)),
+    _: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_agent_tasks(db, pool_id=pool_id, status=status, limit=max(1, min(limit, 200)))
@@ -176,7 +172,7 @@ async def get_agent_tasks(
 
 @router.get("/scheduler/status")
 async def get_agent_scheduler_status_route(
-    _: dict = Depends(require_roles(*AGENT_VIEW_ROLES)),
+    _: dict = Depends(require_view_permission("agent-analysis")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await get_agent_scheduler_status(db)
@@ -187,7 +183,7 @@ async def get_agent_scheduler_ticks(
     status: str | None = None,
     reason: str | None = None,
     limit: int = 50,
-    _: dict = Depends(require_roles(*AGENT_VIEW_ROLES)),
+    _: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_agent_scheduler_ticks(db, status=status, reason=reason, limit=max(1, min(limit, 200)))
@@ -195,7 +191,7 @@ async def get_agent_scheduler_ticks(
 
 @router.post("/scheduler/tick")
 async def post_agent_scheduler_tick(
-    actor: dict = Depends(require_roles(*AGENT_OPERATOR_ROLES)),
+    actor: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await run_agent_scheduler_tick(db, reason="manual", actor=actor)
@@ -217,7 +213,7 @@ async def post_agent_scheduler_tick(
 
 @router.post("/scheduler/pause")
 async def post_agent_scheduler_pause(
-    actor: dict = Depends(require_roles(*AGENT_ADMIN_ROLES)),
+    actor: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await set_agent_scheduler_enabled(db, enabled=False, actor=actor)
@@ -234,7 +230,7 @@ async def post_agent_scheduler_pause(
 
 @router.post("/scheduler/resume")
 async def post_agent_scheduler_resume(
-    actor: dict = Depends(require_roles(*AGENT_ADMIN_ROLES)),
+    actor: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await set_agent_scheduler_enabled(db, enabled=True, actor=actor)
@@ -252,7 +248,7 @@ async def post_agent_scheduler_resume(
 @router.post("/tasks/review-due/mark")
 async def post_agent_mark_review_due_tasks(
     payload: AgentMarkReviewDueRequest | None = None,
-    actor: dict = Depends(require_roles(*AGENT_ROLES)),
+    actor: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await mark_due_agent_tasks_review_due(
@@ -274,7 +270,7 @@ async def post_agent_mark_review_due_tasks(
 @router.post("/patrol/run")
 async def post_agent_patrol_run(
     payload: AgentPatrolRunRequest | None = None,
-    actor: dict = Depends(require_roles(*AGENT_OPERATOR_ROLES)),
+    actor: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     request = payload or AgentPatrolRunRequest()
@@ -309,7 +305,7 @@ async def get_agent_patrol_runs(
     site_id: str | None = None,
     status: str | None = None,
     limit: int = 50,
-    _: dict = Depends(require_roles(*AGENT_VIEW_ROLES)),
+    _: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_agent_patrol_runs(
@@ -328,7 +324,7 @@ async def get_agent_event_triggers(
     signal: str | None = None,
     status: str | None = None,
     limit: int = 50,
-    _: dict = Depends(require_roles(*AGENT_VIEW_ROLES)),
+    _: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_agent_event_triggers(
@@ -345,7 +341,7 @@ async def get_agent_event_triggers(
 async def get_agent_notifications(
     status: str | None = None,
     limit: int = 50,
-    _: dict = Depends(require_roles(*AGENT_VIEW_ROLES)),
+    _: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_agent_notifications(db, status=status, limit=max(1, min(limit, 200)))
@@ -355,7 +351,7 @@ async def get_agent_notifications(
 async def get_agent_eval_cases(
     category: str | None = None,
     case_id: str | None = None,
-    _: dict = Depends(require_roles(*AGENT_VIEW_ROLES)),
+    _: dict = Depends(require_view_permission("agent-workbench")),
 ) -> dict:
     return await list_agent_eval_cases(category=category, case_id=case_id)
 
@@ -363,7 +359,7 @@ async def get_agent_eval_cases(
 @router.post("/evals/run")
 async def post_agent_eval_run(
     payload: AgentEvalRunRequest | None = None,
-    actor: dict = Depends(require_roles(*AGENT_OPERATOR_ROLES)),
+    actor: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     request = payload or AgentEvalRunRequest()
@@ -393,7 +389,7 @@ async def get_agent_eval_runs(
     status: str | None = None,
     category: str | None = None,
     limit: int = 50,
-    _: dict = Depends(require_roles(*AGENT_VIEW_ROLES)),
+    _: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_agent_eval_runs(db, status=status, category=category, limit=max(1, min(limit, 200)))
@@ -402,7 +398,7 @@ async def get_agent_eval_runs(
 @router.get("/evals/runs/{eval_run_id}")
 async def get_agent_eval_run_route(
     eval_run_id: str,
-    _: dict = Depends(require_roles(*AGENT_VIEW_ROLES)),
+    _: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await get_agent_eval_run(db, eval_run_id=eval_run_id)
@@ -418,7 +414,7 @@ async def get_agent_eval_results(
     category: str | None = None,
     status: str | None = None,
     limit: int = 100,
-    _: dict = Depends(require_roles(*AGENT_VIEW_ROLES)),
+    _: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_agent_eval_results(
@@ -434,7 +430,7 @@ async def get_agent_eval_results(
 @router.post("/memory/daily")
 async def post_agent_memory_daily(
     payload: AgentMemoryDailyRequest,
-    actor: dict = Depends(require_roles(*AGENT_ROLES)),
+    actor: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await generate_pool_daily_memory_summary(
@@ -466,7 +462,7 @@ async def get_agent_memory(
     pool_id: str | None = None,
     memory_type: str | None = None,
     limit: int = 50,
-    _: dict = Depends(require_roles(*AGENT_VIEW_ROLES)),
+    _: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_agent_memory_summaries(
@@ -481,7 +477,7 @@ async def get_agent_memory(
 @router.get("/memory/{memory_id}")
 async def get_agent_memory_detail(
     memory_id: str,
-    _: dict = Depends(require_roles(*AGENT_VIEW_ROLES)),
+    _: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     memory = await get_agent_memory_summary(db, memory_id=memory_id)
@@ -493,7 +489,7 @@ async def get_agent_memory_detail(
 @router.post("/memory/weekly")
 async def post_agent_memory_weekly(
     payload: AgentMemoryWeeklyRequest,
-    actor: dict = Depends(require_roles(*AGENT_ROLES)),
+    actor: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await generate_pool_weekly_memory_summary(
@@ -523,7 +519,7 @@ async def post_agent_memory_weekly(
 @router.get("/tasks/{task_id}")
 async def get_agent_task_detail(
     task_id: str,
-    _: dict = Depends(require_roles(*AGENT_ROLES)),
+    _: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     task = await get_agent_task(db, task_id=task_id)
@@ -536,7 +532,7 @@ async def get_agent_task_detail(
 async def post_agent_task_feedback(
     task_id: str,
     payload: AgentTaskFeedbackRequest,
-    actor: dict = Depends(require_roles(*AGENT_ROLES)),
+    actor: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     feedback_message = (payload.feedback or payload.message or "").strip()
@@ -580,7 +576,7 @@ async def post_agent_task_feedback(
 async def post_agent_task_transition(
     task_id: str,
     payload: AgentTaskTransitionRequest,
-    actor: dict = Depends(require_roles(*AGENT_ROLES)),
+    actor: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     next_status = (payload.target_status or payload.next_status or "").strip()
@@ -625,7 +621,7 @@ async def post_agent_task_transition(
 async def post_agent_task_review(
     task_id: str,
     payload: AgentTaskReviewRequest | None = None,
-    actor: dict = Depends(require_roles(*AGENT_ROLES)),
+    actor: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     try:
@@ -661,7 +657,7 @@ async def post_agent_task_review(
 async def post_agent_task_run_followup(
     task_id: str,
     payload: AgentTaskRunFollowupRequest | None = None,
-    actor: dict = Depends(require_roles(*AGENT_ROLES)),
+    actor: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     task = await get_agent_task(db, task_id=task_id)
@@ -692,7 +688,7 @@ async def post_agent_task_run_followup(
 async def post_agent_task_dispatch_alert(
     task_id: str,
     payload: AgentTaskDispatchAlertRequest | None = None,
-    actor: dict = Depends(require_roles(*AGENT_OPERATOR_ROLES)),
+    actor: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await dispatch_agent_alert_draft(
@@ -726,7 +722,7 @@ async def post_agent_task_dispatch_alert(
 async def get_agent_run_steps(
     run_id: str,
     limit: int = 50,
-    _: dict = Depends(require_roles(*AGENT_ROLES)),
+    _: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_agent_steps(db, run_id=run_id, limit=max(1, min(limit, 200)))
@@ -736,7 +732,7 @@ async def get_agent_run_steps(
 async def post_agent_decision_review(
     decision_id: str,
     payload: AgentDecisionReviewRequest | None = None,
-    actor: dict = Depends(require_roles(*AGENT_ROLES)),
+    actor: dict = Depends(require_view_permission("agent-workbench")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     review = await review_agent_decision(
@@ -763,7 +759,7 @@ async def post_agent_decision_review(
 @router.post("/pools/{pool_id}/analyze")
 async def analyze_agent_pool(
     pool_id: str,
-    actor: dict = Depends(require_roles(*AGENT_ROLES)),
+    actor: dict = Depends(require_view_permission("agent-analysis")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await analyze_pool(db, pool_id=pool_id, actor=actor)
@@ -774,7 +770,7 @@ async def analyze_agent_pool(
 @router.post("/chat")
 async def post_agent_chat(
     payload: AgentChatRequest,
-    actor: dict = Depends(require_roles(*AGENT_ROLES)),
+    actor: dict = Depends(require_view_permission("agent-analysis")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await chat(db, message=payload.message, pool_id=payload.pool_id, actor=actor, conversation_id=payload.conversation_id)

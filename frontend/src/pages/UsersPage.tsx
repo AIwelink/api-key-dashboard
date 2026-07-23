@@ -1,10 +1,11 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../api/client";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
-import type { RolePermissionsSettings, User, UserRole, UserStatus } from "../types";
+import type { User, UserRole, UserRoleCatalog, UserStatus } from "../types";
 import { errorMessage } from "../utils/format";
 
 type Props = {
+  canManageOwners: boolean;
   token: string;
   showToast: (message: string, isError?: boolean) => void;
 };
@@ -29,9 +30,9 @@ const emptyEditForm: UserForm = {
   password: "",
 };
 
-export function UsersPage({ token, showToast }: Props) {
+export function UsersPage({ canManageOwners, token, showToast }: Props) {
   const [users, setUsers] = useState<User[]>([]);
-  const [roleSettings, setRoleSettings] = useState<RolePermissionsSettings | null>(null);
+  const [roleCatalog, setRoleCatalog] = useState<UserRoleCatalog | null>(null);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [editForm, setEditForm] = useState<UserForm>(emptyEditForm);
   const [busy, setBusy] = useState(false);
@@ -44,10 +45,10 @@ export function UsersPage({ token, showToast }: Props) {
   const loadPageData = async () => {
     const [usersData, settingsData] = await Promise.all([
       api<{ items: User[] }>("/users", token),
-      api<RolePermissionsSettings>("/settings/role-permissions", token),
+      api<UserRoleCatalog>("/settings/user-roles", token),
     ]);
     setUsers(usersData.items);
-    setRoleSettings(settingsData);
+    setRoleCatalog(settingsData);
   };
 
   usePageAutoRefresh(loadPageData, { paused: Boolean(editingUser || busy) });
@@ -167,10 +168,15 @@ export function UsersPage({ token, showToast }: Props) {
                     <span className={`status-pill ${statusTone(item.status)}`}>{statusLabel(item.status)}</span>
                   </div>
                   <div className="muted">{item.email}</div>
-                  <div className="muted">角色：{roleLabel(item.role, roleSettings)}</div>
+                  <div className="muted">角色：{roleLabel(item.role, roleCatalog)}</div>
                 </div>
                 <div className="user-list-actions">
-                  <button className="ghost compact-button" disabled={busy} onClick={() => startEditing(item)} type="button">
+                  <button
+                    className="ghost compact-button"
+                    disabled={busy || !canEditUser(item, canManageOwners)}
+                    onClick={() => startEditing(item)}
+                    type="button"
+                  >
                     编辑
                   </button>
                 </div>
@@ -202,11 +208,11 @@ export function UsersPage({ token, showToast }: Props) {
               <label>
                 角色
                 <select
-                  disabled={!roleSettings}
+                  disabled={!roleCatalog}
                   value={editForm.role}
                   onChange={(event) => setEditField("role", event.target.value as UserRole)}
                 >
-                  {roleOptionsFor(roleSettings, editingUser).map((option) => (
+                  {roleOptionsFor(roleCatalog, editingUser, canManageOwners).map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -246,12 +252,12 @@ export function UsersPage({ token, showToast }: Props) {
               <label>
                 角色
                 <select
-                  defaultValue={defaultCreateRole(roleSettings)}
-                  disabled={!roleSettings}
-                  key={roleSettings?.role_order.join("|") || "loading"}
+                  defaultValue={defaultCreateRole(roleCatalog, canManageOwners)}
+                  disabled={!roleCatalog}
+                  key={roleCatalog?.role_order.join("|") || "loading"}
                   name="role"
                 >
-                  {roleOptionsFromSettings(roleSettings, false).map((option) => (
+                  {roleOptionsFromCatalog(roleCatalog, canManageOwners).map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -261,7 +267,7 @@ export function UsersPage({ token, showToast }: Props) {
               <label>
                 临时密码 <input name="password" minLength={8} placeholder="留空自动生成" />
               </label>
-              <button disabled={busy || !roleSettings} type="submit">
+              <button disabled={busy || !roleCatalog} type="submit">
                 {busy ? "创建中..." : "创建用户"}
               </button>
             </form>
@@ -280,27 +286,31 @@ function normalizeRole(value: string): UserRole {
   return value || "maintainer";
 }
 
-export function roleOptionsFromSettings(settings: RolePermissionsSettings | null, includeOwner: boolean) {
-  if (!settings) return [];
-  return settings.role_order
-    .filter((role) => Boolean(settings.roles[role]))
+export function roleOptionsFromCatalog(catalog: UserRoleCatalog | null, includeOwner: boolean) {
+  if (!catalog) return [];
+  return catalog.role_order
+    .filter((role) => Boolean(catalog.roles[role]))
     .filter((role) => includeOwner || role !== "owner")
-    .map((role) => ({ label: settings.roles[role].label, value: role }));
+    .map((role) => ({ label: catalog.roles[role].label, value: role }));
 }
 
-function roleOptionsFor(settings: RolePermissionsSettings | null, user: User | null) {
-  const options = roleOptionsFromSettings(settings, user?.role === "owner");
+function roleOptionsFor(catalog: UserRoleCatalog | null, user: User | null, canManageOwners: boolean) {
+  const options = roleOptionsFromCatalog(catalog, canManageOwners);
   if (!user?.role || options.some((option) => option.value === user.role)) return options;
   return [{ label: user.role, value: user.role }, ...options];
 }
 
-function defaultCreateRole(settings: RolePermissionsSettings | null) {
-  const options = roleOptionsFromSettings(settings, false);
+function defaultCreateRole(catalog: UserRoleCatalog | null, canManageOwners: boolean) {
+  const options = roleOptionsFromCatalog(catalog, canManageOwners);
   return options.some((option) => option.value === "maintainer") ? "maintainer" : options[0]?.value || "";
 }
 
-function roleLabel(value: UserRole, settings: RolePermissionsSettings | null) {
-  return settings?.roles[value]?.label || value;
+function roleLabel(value: UserRole, catalog: UserRoleCatalog | null) {
+  return catalog?.roles[value]?.label || value;
+}
+
+export function canEditUser(user: Pick<User, "role">, canManageOwners: boolean) {
+  return user.role !== "owner" || canManageOwners;
 }
 
 function normalizeStatus(value: string | undefined): UserStatus {

@@ -34,7 +34,7 @@ const operationsManagementNavItems: Array<[ViewName, string]> = [
 const adminNavItems: Array<[ViewName, string]> = [
   ["agent-analysis", "Agent分析"],
   ["agent-workbench", "Agent工作台"],
-  ["api-tokens", "系统管理"],
+  ["system-management", "系统管理"],
   ["presence", "前台在线"],
   ["users", "用户管理"],
   ["logs", "日志"],
@@ -80,6 +80,7 @@ export const navShortLabels: Record<ViewName, string> = {
   "traffic-analysis-config": "配",
   "agent-analysis": "析",
   "agent-workbench": "台",
+  "system-management": "管",
   "api-tokens": "管",
   presence: "在",
   users: "用",
@@ -104,6 +105,7 @@ export const viewPaths: Record<ViewName, string> = {
   "traffic-analysis-config": "/traffic-analysis-config",
   "agent-analysis": "/agent-analysis",
   "agent-workbench": "/agent-workbench",
+  "system-management": "/system-management",
   "api-tokens": "/system-management",
   presence: "/user-presence",
   users: "/users",
@@ -115,7 +117,7 @@ const pathAliases: Record<string, ViewName> = {
   "/todos": "todos",
   "/push-error-todos": "push-error-todos",
   "/api-pools": "api-pools",
-  "/api-tokens": "api-tokens",
+  "/api-tokens": "system-management",
   "/pool-lifecycle": "pool-lifecycle",
   "/site-configuration": "pool-lifecycle",
 };
@@ -129,6 +131,9 @@ export function canAccessView(permissions: UserPermissions | null | undefined, v
 }
 
 export function defaultViewForPermissions(permissions?: UserPermissions | null): ViewName {
+  if (permissions?.default_view === "api-tokens" && canAccessView(permissions, "system-management")) {
+    return "system-management";
+  }
   if (permissions?.default_view && canAccessView(permissions, permissions.default_view)) return permissions.default_view;
   return permissions?.allowed_views.find((view) => !hiddenNavItems.has(view)) || permissions?.allowed_views[0] || defaultViewForLayout();
 }

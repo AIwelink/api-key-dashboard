@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 
 from app.routers import users as users_router
-from app.schemas import UserCreate, UserUpdate
+from app.schemas import PasswordResetRequest, UserCreate, UserUpdate
 
 
 def fake_user_db(*, existing: dict | None = None):
@@ -21,6 +21,149 @@ def fake_user_db(*, existing: dict | None = None):
 
 
 class DynamicUserRoleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_all_users_routes_use_database_view_permission(self) -> None:
+        app_settings = SimpleNamespace(
+            find_one=AsyncMock(
+                return_value={
+                    "_id": "role_permissions",
+                    "roles": {
+                        "support": {
+                            "label": "Support",
+                            "builtin": False,
+                            "allowed_views": ["users"],
+                            "default_view": "users",
+                        }
+                    },
+                }
+            )
+        )
+        actor = {"_id": "support@example.com", "role": "support"}
+
+        for route in users_router.router.routes:
+            with self.subTest(path=route.path, methods=route.methods):
+                dependency = route.dependant.dependencies[0].call
+                self.assertEqual(
+                    await dependency(user=actor, db=SimpleNamespace(app_settings=app_settings)),
+                    actor,
+                )
+
+    async def test_non_owner_cannot_create_owner(self) -> None:
+        db = fake_user_db()
+        with (
+            patch.object(users_router, "role_exists", AsyncMock(return_value=True)),
+            patch.object(users_router, "write_audit_log", AsyncMock()),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await users_router.create_user(
+                    UserCreate(
+                        email="other-owner@example.com",
+                        name="Other Owner",
+                        role="owner",
+                        password="password123",
+                    ),
+                    actor={"_id": "admin@example.com", "role": "admin"},
+                    db=db,
+                )
+
+        self.assertEqual(raised.exception.status_code, 403)
+        db.users.insert_one.assert_not_awaited()
+
+    async def test_non_owner_cannot_promote_user_to_owner(self) -> None:
+        db = fake_user_db(existing={"_id": "member@example.com", "role": "maintainer"})
+
+        with self.assertRaises(HTTPException) as raised:
+            await users_router.update_user(
+                "member@example.com",
+                UserUpdate(role="owner"),
+                actor={"_id": "admin@example.com", "role": "admin"},
+                db=db,
+            )
+
+        self.assertEqual(raised.exception.status_code, 403)
+        db.users.update_one.assert_not_awaited()
+
+    async def test_non_owner_cannot_update_owner(self) -> None:
+        db = fake_user_db(existing={"_id": "owner@example.com", "role": "owner"})
+
+        with self.assertRaises(HTTPException) as raised:
+            await users_router.update_user(
+                "owner@example.com",
+                UserUpdate(name="Changed"),
+                actor={"_id": "admin@example.com", "role": "admin"},
+                db=db,
+            )
+
+        self.assertEqual(raised.exception.status_code, 403)
+        db.users.update_one.assert_not_awaited()
+
+    async def test_non_owner_cannot_reset_owner_password(self) -> None:
+        db = fake_user_db(existing={"_id": "owner@example.com", "role": "owner"})
+
+        with self.assertRaises(HTTPException) as raised:
+            await users_router.reset_password(
+                "owner@example.com",
+                PasswordResetRequest(password="password123"),
+                actor={"_id": "admin@example.com", "role": "admin"},
+                db=db,
+            )
+
+        self.assertEqual(raised.exception.status_code, 403)
+        db.users.update_one.assert_not_awaited()
+
+    async def test_non_owner_cannot_change_owner_status(self) -> None:
+        for action in (users_router.disable_user, users_router.enable_user):
+            db = fake_user_db(existing={"_id": "owner@example.com", "role": "owner"})
+            with self.subTest(action=action.__name__):
+                with self.assertRaises(HTTPException) as raised:
+                    await action(
+                        "owner@example.com",
+                        actor={"_id": "admin@example.com", "role": "admin"},
+                        db=db,
+                    )
+
+                self.assertEqual(raised.exception.status_code, 403)
+                db.users.update_one.assert_not_awaited()
+
+    async def test_non_owner_update_rejects_concurrent_owner_promotion(self) -> None:
+        db = fake_user_db(existing={"_id": "member@example.com", "role": "maintainer"})
+        db.users.update_one.return_value = SimpleNamespace(matched_count=0, modified_count=0)
+
+        with patch.object(users_router, "write_audit_log", AsyncMock()) as audit_mock:
+            with self.assertRaises(HTTPException) as raised:
+                await users_router.update_user(
+                    "member@example.com",
+                    UserUpdate(name="Changed"),
+                    actor={"_id": "admin@example.com", "role": "admin"},
+                    db=db,
+                )
+
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(
+            db.users.update_one.await_args.args[0],
+            {"_id": "member@example.com", "role": {"$ne": "owner"}},
+        )
+        audit_mock.assert_not_awaited()
+
+    async def test_non_owner_password_reset_rejects_concurrent_owner_promotion(self) -> None:
+        db = fake_user_db(existing={"_id": "member@example.com", "role": "maintainer"})
+        db.users.update_one.return_value = SimpleNamespace(matched_count=0, modified_count=0)
+
+        with patch.object(users_router, "write_audit_log", AsyncMock()) as audit_mock:
+            with self.assertRaises(HTTPException) as raised:
+                await users_router.reset_password(
+                    "member@example.com",
+                    PasswordResetRequest(password="password123"),
+                    actor={"_id": "admin@example.com", "role": "admin"},
+                    db=db,
+                )
+
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(
+            db.users.update_one.await_args.args[0],
+            {"_id": "member@example.com", "role": {"$ne": "owner"}},
+        )
+        audit_mock.assert_not_awaited()
+
     async def test_create_user_accepts_database_role(self) -> None:
         db = fake_user_db()
         with (
@@ -82,9 +225,9 @@ class DynamicUserRoleTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertEqual(raised.exception.status_code, 400)
-        db.users.delete_one.assert_awaited_once_with({"_id": "support@example.com"})
+        db.users.delete_one.assert_awaited_once_with({"_id": "support@example.com", "role": "support"})
 
-    async def test_update_user_rolls_back_all_fields_when_role_is_deleted_during_write(self) -> None:
+    async def test_update_user_conditionally_rolls_back_only_role_when_role_is_deleted_during_write(self) -> None:
         original = {
             "_id": "member@example.com",
             "email": "member@example.com",
@@ -109,10 +252,14 @@ class DynamicUserRoleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(raised.exception.status_code, 400)
         self.assertEqual(db.users.update_one.await_count, 2)
-        rollback = db.users.update_one.await_args_list[1].args[1]["$set"]
-        self.assertEqual(rollback["name"], "Original")
+        role_write = db.users.update_one.await_args_list[0]
+        self.assertNotIn("name", role_write.args[1]["$set"])
+        self.assertNotIn("status", role_write.args[1]["$set"])
+        self.assertEqual(role_write.args[1]["$set"]["role"], "support")
+        rollback_call = db.users.update_one.await_args_list[1]
+        self.assertEqual(rollback_call.args[0], {"_id": "member@example.com", "role": "support"})
+        rollback = rollback_call.args[1]["$set"]
         self.assertEqual(rollback["role"], "maintainer")
-        self.assertEqual(rollback["status"], "active")
         self.assertEqual(rollback["updated_by"], "admin@example.com")
         self.assertEqual(rollback["updated_at"], "before")
 
