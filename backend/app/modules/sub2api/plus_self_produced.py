@@ -392,7 +392,12 @@ async def _run_probe_locked(
                 counters["eligible"] += 1
                 destination_group_id = PLUS_GROUP_ID
                 resulting_name = plus_account_name(_account_name(account))
-                payload = _move_payload(account, group_id=PLUS_GROUP_ID, name=resulting_name)
+                payload = _move_payload(
+                    account,
+                    group_id=PLUS_GROUP_ID,
+                    name=resulting_name,
+                    plan_type="plus",
+                )
                 action_status = "promoted"
             elif classification == "unauthorized_banned":
                 destination_group_id = BANNED_GROUP_ID
@@ -517,11 +522,19 @@ async def _test_account(client: Sub2ApiClient, remote_account_id: int | str) -> 
         }
 
 
-def _move_payload(account: dict[str, Any], *, group_id: int, name: str | None = None) -> dict[str, Any]:
+def _move_payload(
+    account: dict[str, Any],
+    *,
+    group_id: int,
+    name: str | None = None,
+    plan_type: str | None = None,
+) -> dict[str, Any]:
     del account
     payload: dict[str, Any] = {"group_id": group_id, "group_ids": [group_id]}
     if name is not None:
         payload = {"name": name, **payload}
+    if plan_type is not None:
+        payload["credentials"] = {"plan_type": plan_type}
     return payload
 
 

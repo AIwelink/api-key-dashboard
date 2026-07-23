@@ -52,12 +52,22 @@ class PlusProbeDecisionTests(unittest.TestCase):
         self.assertEqual(plus_account_name("plususer@example.com"), "plususer@example.com")
         self.assertEqual(plus_account_name("PLUS user@example.com"), "PLUS user@example.com")
 
-    def test_move_payload_only_contains_requested_name_and_group(self) -> None:
+    def test_move_payload_only_contains_requested_promotion_fields(self) -> None:
         account = {"status": "active", "schedulable": True}
 
         self.assertEqual(
-            plus_self_produced._move_payload(account, group_id=6, name="plus user@example.com"),
-            {"name": "plus user@example.com", "group_id": 6, "group_ids": [6]},
+            plus_self_produced._move_payload(
+                account,
+                group_id=6,
+                name="plus user@example.com",
+                plan_type="plus",
+            ),
+            {
+                "name": "plus user@example.com",
+                "group_id": 6,
+                "group_ids": [6],
+                "credentials": {"plan_type": "plus"},
+            },
         )
         self.assertEqual(
             plus_self_produced._move_payload(account, group_id=7),
@@ -423,14 +433,24 @@ class PlusSelfProducedRunTests(unittest.IsolatedAsyncioTestCase):
             client.update_account.await_args_list[0].args,
             (
                 10,
-                {"name": "plus user@example.com", "group_id": 6, "group_ids": [6]},
+                {
+                    "name": "plus user@example.com",
+                    "group_id": 6,
+                    "group_ids": [6],
+                    "credentials": {"plan_type": "plus"},
+                },
             ),
         )
         self.assertEqual(
             client.update_account.await_args_list[1].args,
             (
                 11,
-                {"name": "plusready@example.com", "group_id": 6, "group_ids": [6]},
+                {
+                    "name": "plusready@example.com",
+                    "group_id": 6,
+                    "group_ids": [6],
+                    "credentials": {"plan_type": "plus"},
+                },
             ),
         )
         self.assertEqual(

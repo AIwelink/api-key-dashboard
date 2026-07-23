@@ -76,6 +76,65 @@ class Sub2ApiClientUpdateTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result, {"id": 3418, "group_ids": [7]})
 
+    async def test_credentials_update_fetches_current_account_and_puts_deep_merged_credentials(self) -> None:
+        client = Sub2ApiClient(base_url="http://sub2.example.com", token="admin-key")
+        put_response = httpx.Response(
+            200,
+            json={"code": 0, "data": {"id": 4802, "credentials": {"plan_type": "plus"}}},
+            request=httpx.Request("PUT", "http://sub2.example.com/api/v1/admin/accounts/4802"),
+        )
+        request = AsyncMock(return_value=put_response)
+        current_account = {
+            "id": 4802,
+            "name": "EmilyKnight25610@outlook.com",
+            "notes": None,
+            "proxy_id": None,
+            "concurrency": 30,
+            "load_factor": 0,
+            "priority": 20,
+            "rate_multiplier": 1,
+            "status": "active",
+            "group_ids": [4],
+            "expires_at": None,
+            "auto_pause_on_expired": True,
+            "credentials": {
+                "chatgpt_account_id": "account-id",
+                "email": "EmilyKnight25610@outlook.com",
+                "expires_at": 1785645865,
+                "plan_type": "free",
+            },
+            "extra": {"privacy_mode": "training_off"},
+        }
+
+        with (
+            patch.object(client, "_request_admin_response_with_retries", request),
+            patch.object(client, "get_account", AsyncMock(return_value=current_account)) as get_account,
+        ):
+            result = await client.update_account(
+                4802,
+                {
+                    "name": "plus EmilyKnight25610@outlook.com",
+                    "group_ids": [6],
+                    "credentials": {"plan_type": "plus"},
+                },
+            )
+
+        get_account.assert_awaited_once_with(4802)
+        request.assert_awaited_once()
+        self.assertEqual(request.await_args.args[:2], ("PUT", "/accounts/4802"))
+        payload = request.await_args.kwargs["json"]
+        self.assertEqual(
+            payload["credentials"],
+            {
+                "chatgpt_account_id": "account-id",
+                "email": "EmilyKnight25610@outlook.com",
+                "expires_at": 1785645865,
+                "plan_type": "plus",
+            },
+        )
+        self.assertEqual(payload["group_ids"], [6])
+        self.assertEqual(result, {"id": 4802, "credentials": {"plan_type": "plus"}})
+
 
 if __name__ == "__main__":
     unittest.main()

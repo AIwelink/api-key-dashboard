@@ -147,6 +147,16 @@ class Sub2ApiClient:
         return response.get("data", response)
 
     async def update_account(self, account_id: int | str, payload: dict[str, Any]) -> dict[str, Any]:
+        if isinstance(payload.get("credentials"), dict):
+            current_account = await self.get_account(account_id)
+            response = await self._request_admin_response_with_retries(
+                "PUT",
+                f"/accounts/{account_id}",
+                json=build_account_put_payload(current_account, payload),
+                timeout=15,
+            )
+            return self._admin_response_payload(response, operation="update")
+
         response = await self._request_admin_response_with_retries(
             "PATCH",
             f"/accounts/{account_id}",
@@ -521,6 +531,9 @@ class Sub2ApiClient:
 
 def build_account_put_payload(current: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
     merged = {**current, **updates}
+    current_credentials = current.get("credentials") if isinstance(current.get("credentials"), dict) else {}
+    credential_updates = updates.get("credentials") if isinstance(updates.get("credentials"), dict) else {}
+    credentials = {**current_credentials, **credential_updates}
     group_ids = updates.get("group_ids")
     if not isinstance(group_ids, list):
         group_id = updates.get("group_id")
@@ -544,7 +557,7 @@ def build_account_put_payload(current: dict[str, Any], updates: dict[str, Any]) 
         "group_ids": group_ids,
         "expires_at": value_or_default("expires_at", 0),
         "auto_pause_on_expired": value_or_default("auto_pause_on_expired", True),
-        "credentials": merged.get("credentials") if isinstance(merged.get("credentials"), dict) else {},
+        "credentials": credentials,
         "extra": merged.get("extra") if isinstance(merged.get("extra"), dict) else {},
     }
 
