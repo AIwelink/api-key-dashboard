@@ -74,10 +74,11 @@ describe("createPageAutoRefreshScheduler", () => {
     await first;
   });
 
-  it("pauses while hidden and catches up when visible", async () => {
+  it("refreshes when returning after sixty seconds hidden", async () => {
     const refresh = vi.fn();
     const harness = createHarness(refresh);
     harness.setVisible(false);
+    harness.visibilityChanged();
     harness.advance(PAGE_AUTO_REFRESH_INTERVAL_MS);
 
     harness.tick();
@@ -88,6 +89,35 @@ describe("createPageAutoRefreshScheduler", () => {
     harness.visibilityChanged();
     await Promise.resolve();
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not count time spent visible toward the hidden threshold", async () => {
+    const refresh = vi.fn();
+    const harness = createHarness(refresh);
+    harness.advance(PAGE_AUTO_REFRESH_INTERVAL_MS - 1_000);
+    harness.setVisible(false);
+    harness.visibilityChanged();
+    harness.advance(2_000);
+
+    harness.setVisible(true);
+    harness.visibilityChanged();
+    await Promise.resolve();
+
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("does not refresh when returning before sixty seconds hidden", async () => {
+    const refresh = vi.fn();
+    const harness = createHarness(refresh);
+    harness.setVisible(false);
+    harness.visibilityChanged();
+    harness.advance(PAGE_AUTO_REFRESH_INTERVAL_MS - 1);
+
+    harness.setVisible(true);
+    harness.visibilityChanged();
+    await Promise.resolve();
+
+    expect(refresh).not.toHaveBeenCalled();
   });
 
   it("cleans up its timer and visibility listener", async () => {

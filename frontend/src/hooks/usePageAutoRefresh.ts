@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 
 export const PAGE_AUTO_REFRESH_INTERVAL_MS = 60_000;
+export const PAGE_RETURN_REFRESH_AFTER_MS = 60_000;
 
 type SchedulerOptions = {
   refresh: () => void | Promise<void>;
@@ -31,12 +32,11 @@ export function createPageAutoRefreshScheduler({
 }: SchedulerOptions): PageAutoRefreshScheduler {
   let stopped = false;
   let inFlight = false;
-  let lastAttemptAt = now();
+  let hiddenAt: number | null = isVisible() ? null : now();
 
   const run = async () => {
     if (stopped || inFlight || !isVisible()) return false;
     inFlight = true;
-    lastAttemptAt = now();
     try {
       await refresh();
       return true;
@@ -49,7 +49,13 @@ export function createPageAutoRefreshScheduler({
   };
 
   const visibilityChanged = () => {
-    if (isVisible() && now() - lastAttemptAt >= intervalMs) {
+    if (!isVisible()) {
+      hiddenAt ??= now();
+      return;
+    }
+    const backgroundStartedAt = hiddenAt;
+    hiddenAt = null;
+    if (backgroundStartedAt !== null && now() - backgroundStartedAt >= PAGE_RETURN_REFRESH_AFTER_MS) {
       void run();
     }
   };
