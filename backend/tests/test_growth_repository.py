@@ -109,6 +109,25 @@ class GrowthRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("xiaohongshu'", statement)
         self.assertEqual(parameters["code"], "xiaohongshu")
 
+    async def test_create_campaign_reports_duplicate_code_within_site(self) -> None:
+        from app.modules.growth.repository import GrowthConflictError, create_campaign
+        from app.modules.growth.schemas import CampaignCreate
+
+        connection = _FakeConnection([None])
+        payload = CampaignCreate(
+            site_id="aiwelink",
+            channel_id=uuid4(),
+            code="summer-2026",
+            name="重复活动",
+        )
+
+        with self.assertRaises(GrowthConflictError) as caught:
+            await create_campaign(connection, payload, actor_id="admin@example.com")
+
+        self.assertEqual(str(caught.exception), "当前站点下已存在相同活动编码")
+        statement, _ = connection.calls[0]
+        self.assertIn("ON CONFLICT (site_id, code) DO NOTHING", statement)
+
     async def test_create_tracking_link_rejects_campaign_from_another_site(self) -> None:
         from app.modules.growth.repository import GrowthNotFoundError, create_tracking_link
         from app.modules.growth.schemas import TrackingLinkCreate

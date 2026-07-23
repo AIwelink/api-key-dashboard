@@ -241,6 +241,20 @@ function isValidGrowthCode(value: string) {
   return GROWTH_CODE_PATTERN.test(value.trim().toLowerCase());
 }
 
+export function campaignCodeConflict(
+  campaigns: GrowthCampaign[],
+  siteId: string,
+  code: string,
+) {
+  const normalizedCode = code.trim().toLowerCase();
+  return Boolean(
+    siteId
+      && normalizedCode
+      && campaigns.some((campaign) =>
+        campaign.site_id === siteId && campaign.code.trim().toLowerCase() === normalizedCode),
+  );
+}
+
 export function buildTrackingLinkPayload(form: TrackingLinkForm) {
   const extraDimensions = Object.fromEntries(
     form.dimensions
@@ -554,6 +568,10 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
       showToast("活动编码仅支持小写英文字母、数字和连字符", true);
       return;
     }
+    if (campaignCodeConflict(campaigns, campaignForm.site_id, campaignForm.code)) {
+      showToast("当前站点下已存在相同活动编码", true);
+      return;
+    }
     const created = await runMutation(
       () => api("/growth/campaigns", token, {
         method: "POST",
@@ -739,7 +757,9 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
   const [campaignFilters, setCampaignFilters] = useState<CampaignFilters>(emptyCampaignFilters);
   const siteCampaigns = campaigns.filter((item) => item.site_id === linkForm.site_id);
   const channelCampaigns = siteCampaigns.filter((item) => item.channel_id === linkForm.channel_id);
-  const campaignCodeInvalid = Boolean(campaignForm.code.trim()) && !isValidGrowthCode(campaignForm.code);
+  const campaignCodeDuplicate = campaignCodeConflict(campaigns, campaignForm.site_id, campaignForm.code);
+  const campaignCodeInvalid = Boolean(campaignForm.code.trim())
+    && (!isValidGrowthCode(campaignForm.code) || campaignCodeDuplicate);
   const selectedSite = sites.find((item) => item.site_id === selectedSiteId);
   const linkFilterCampaigns = campaigns.filter((item) =>
     (!linkFilters.site_id || item.site_id === linkFilters.site_id)
@@ -1008,7 +1028,7 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
       )}
 
       {createModal === "campaign" && (
-        <GrowthCreateModal title="新建活动" submitLabel="创建活动" saving={saving} submitDisabled={!campaignForm.site_id || !campaignForm.channel_id || !isValidGrowthCode(campaignForm.code) || !campaignForm.name.trim()} onClose={onCloseCreate} onSubmit={onCreateCampaign}>
+        <GrowthCreateModal title="新建活动" submitLabel="创建活动" saving={saving} submitDisabled={!campaignForm.site_id || !campaignForm.channel_id || !isValidGrowthCode(campaignForm.code) || campaignCodeDuplicate || !campaignForm.name.trim()} onClose={onCloseCreate} onSubmit={onCreateCampaign}>
           <div className="growth-form-grid compact" data-growth-form="campaign">
             <SiteSelect sites={sites} value={campaignForm.site_id} disabled={saving} onChange={(siteId) => onCampaignFormChange({ ...campaignForm, site_id: siteId })} />
             <label><span className="field-label"><strong>渠道</strong></span><select value={campaignForm.channel_id} onChange={(event) => onCampaignFormChange({ ...campaignForm, channel_id: event.target.value })} required><option value="">选择渠道</option>{channels.map((channel) => <option value={channel.channel_id} key={channel.channel_id}>{channel.name}</option>)}</select></label>
@@ -1027,7 +1047,11 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
                 required
               />
               <span id="campaign-code-help" className={`growth-field-message ${campaignCodeInvalid ? "is-error" : "is-muted"}`}>
-                {campaignCodeInvalid ? "仅支持小写英文字母、数字和连字符" : "例如：summer-2026"}
+                {campaignCodeDuplicate
+                  ? "当前站点下已存在相同活动编码"
+                  : campaignCodeInvalid
+                    ? "仅支持小写英文字母、数字和连字符"
+                    : "例如：summer-2026"}
               </span>
             </label>
             <label><span className="field-label"><strong>活动名称</strong></span><input value={campaignForm.name} onChange={(event) => onCampaignFormChange({ ...campaignForm, name: event.target.value })} placeholder="2026 夏季推广" required /></label>

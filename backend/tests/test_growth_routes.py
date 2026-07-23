@@ -33,6 +33,28 @@ class GrowthConfigurationRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(audit_mock.await_args.kwargs["resource_id"], result["channel_id"])
         self.assertEqual(audit_mock.await_args.kwargs["after"], result)
 
+    async def test_duplicate_campaign_code_returns_specific_conflict(self) -> None:
+        from app.modules.growth.repository import GrowthConflictError
+
+        message = "当前站点下已存在相同活动编码"
+        create_mock = AsyncMock(side_effect=GrowthConflictError(message))
+
+        with patch.object(growth_router, "create_campaign_config", create_mock, create=True):
+            with self.assertRaises(Exception) as caught:
+                await growth_router.post_growth_campaign(
+                    schemas.CampaignCreate(
+                        site_id="aiwelink",
+                        channel_id="11111111-1111-1111-1111-111111111111",
+                        code="summer-2026",
+                        name="重复活动",
+                    ),
+                    actor={"_id": "admin@example.com", "role": "admin"},
+                    db=MagicMock(),
+                )
+
+        self.assertEqual(getattr(caught.exception, "status_code", None), 409)
+        self.assertEqual(getattr(caught.exception, "detail", None), message)
+
     async def test_update_site_requires_existing_client_site(self) -> None:
         update_mock = AsyncMock(side_effect=LookupError("client site not found"))
 

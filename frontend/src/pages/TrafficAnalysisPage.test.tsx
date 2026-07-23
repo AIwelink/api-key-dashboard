@@ -263,6 +263,20 @@ describe("traffic analysis configuration workspace", () => {
     expect(html).toContain('<button disabled="" type="submit">创建活动</button>');
   });
 
+  it("blocks a duplicate campaign code within the selected site", () => {
+    const html = renderWorkspace("campaigns", "", {
+      ...emptyCampaignForm,
+      site_id: site.site_id,
+      channel_id: channel.channel_id,
+      code: " SUMMER-2026 ",
+      name: "重复活动",
+    }, "campaign");
+
+    expect(html).toContain('aria-invalid="true"');
+    expect(html).toContain("当前站点下已存在相同活动编码");
+    expect(html).toContain('<button disabled="" type="submit">创建活动</button>');
+  });
+
   it("renders site integration fields and binding mode", () => {
     const html = renderWorkspace("sites");
 

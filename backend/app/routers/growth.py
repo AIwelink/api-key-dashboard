@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.database import db_dependency
 from app.modules.growth.repository import (
+    GrowthConflictError,
     GrowthNotFoundError,
     create_campaign_config,
     create_channel_config,
@@ -44,6 +45,8 @@ def _actor_id(actor: dict[str, Any]) -> str:
 
 
 def _raise_http_error(exc: Exception) -> None:
+    if isinstance(exc, GrowthConflictError):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if isinstance(exc, (GrowthNotFoundError, LookupError)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     if isinstance(exc, IntegrityError):

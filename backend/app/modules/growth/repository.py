@@ -30,6 +30,10 @@ class GrowthNotFoundError(LookupError):
     pass
 
 
+class GrowthConflictError(RuntimeError):
+    pass
+
+
 def generate_tracking_code() -> str:
     return "".join(secrets.choice(TRACKING_CODE_ALPHABET) for _ in range(8))
 
@@ -223,12 +227,16 @@ async def create_campaign(
                 :campaign_id, :site_id, :channel_id, :code, :name, :description,
                 :starts_at, :ends_at, :status, :actor_id, :actor_id
             )
+            ON CONFLICT (site_id, code) DO NOTHING
             RETURNING *
             """
         ),
         {"campaign_id": selected_id, "actor_id": actor_id, **payload.model_dump()},
     )
-    return _one(result) or {}
+    row = _one(result)
+    if row is None:
+        raise GrowthConflictError("当前站点下已存在相同活动编码")
+    return row
 
 
 async def update_campaign(
