@@ -1,0 +1,329 @@
+from __future__ import annotations
+
+import asyncio
+import unittest
+from datetime import UTC, datetime
+from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import uuid4
+
+
+NOW = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+
+
+class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_create_internal_user_uses_site_and_external_user_identity(self) -> None:
+        from app.modules.operations.repository import create_internal_user
+        from app.modules.operations.schemas import InternalUserCreate
+
+        internal_user_id = uuid4()
+        connection = _FakeConnection(
+            [
+                {
+                    "internal_user_id": internal_user_id,
+                    "site_id": "aiwelink",
+                    "external_user_id": "42",
+                },
+                None,
+            ]
+        )
+
+        row = await create_internal_user(
+            connection,
+            InternalUserCreate(site_id="aiwelink", external_user_id="42"),
+            actor_id="owner",
+            internal_user_id=internal_user_id,
+        )
+
+        self.assertEqual(row["site_id"], "aiwelink")
+        self.assertEqual(row["external_user_id"], "42")
+        statement, parameters = connection.calls[0]
+        self.assertIn("growth.internal_users", statement)
+        self.assertEqual(parameters["site_id"], "aiwelink")
+        self.assertEqual(parameters["external_user_id"], "42")
+        self.assertNotIn("aiwelink'", statement)
+        self.assertIn("growth.ops_user_snapshots", connection.calls[1][0])
+
+    async def test_create_conversion_rate_closes_current_window_before_insert(self) -> None:
+        from app.modules.operations.repository import create_conversion_rate
+        from app.modules.operations.schemas import ConversionRateCreate
+
+        rate_id = uuid4()
+        connection = _FakeConnection(
+            [
+                {
+                    "conversion_rate_id": rate_id,
+                    "site_id": "aiwelink",
+                    "balance_units_per_cny": Decimal("10"),
+                }
+            ]
+        )
+
+        row = await create_conversion_rate(
+            connection,
+            ConversionRateCreate(
+                site_id="aiwelink",
+                balance_units_per_cny=Decimal("10"),
+                effective_from=NOW,
+            ),
+            actor_id="admin",
+            conversion_rate_id=rate_id,
+        )
+
+        statement, parameters = connection.calls[0]
+        self.assertIn("UPDATE growth.balance_conversion_rates", statement)
+        self.assertIn("INSERT INTO growth.balance_conversion_rates", statement)
+        self.assertEqual(parameters["balance_units_per_cny"], Decimal("10"))
+        self.assertEqual(row["conversion_rate_id"], str(rate_id))
+
+    async def test_fact_upserts_use_stable_source_identity(self) -> None:
+        from app.modules.operations.repository import upsert_credit_events, upsert_usage_facts
+
+        connection = _FakeConnection([None, None])
+        await upsert_usage_facts(
+            connection,
+            [
+                {
+                    "site_id": "aiwelink",
+                    "external_user_id": "42",
+                    "source_type": "usage_logs",
+                    "source_record_id": "1001",
+                    "successful_call_count": 1,
+                    "consumed_balance_units": Decimal("2"),
+                    "cost_cny": Decimal("0.2"),
+                    "conversion_rate_id": None,
+                    "occurred_at": NOW,
+                    "source_updated_at": NOW,
+                }
+            ],
+        )
+        await upsert_credit_events(
+            connection,
+            [
+                {
+                    "site_id": "aiwelink",
+                    "external_user_id": "42",
+                    "source_type": "payment",
+                    "source_record_id": "order-1",
+                    "direction": "credit",
+                    "purpose": "sale",
+                    "classification_status": "classified",
+                    "balance_units": Decimal("100"),
+                    "cash_amount_cny": Decimal("10"),
+                    "conversion_rate_id": None,
+                    "occurred_at": NOW,
+                    "source_updated_at": NOW,
+                    "source_metadata": {},
+                }
+            ],
+        )
+
+        for statement, parameters in connection.calls:
+            self.assertIn("ON CONFLICT (site_id, source_type, source_record_id)", statement)
+            self.assertEqual(parameters[0]["source_record_id"], parameters[0]["source_record_id"])
+
+    async def test_user_snapshot_upsert_derives_internal_status_from_configuration(self) -> None:
+        from app.modules.operations.repository import upsert_user_snapshots
+
+        connection = _FakeConnection([None])
+        await upsert_user_snapshots(
+            connection,
+            [
+                {
+                    "site_id": "aigclink",
+                    "external_user_id": "7",
+                    "account_label": "staff@example.com",
+                    "registered_at": NOW,
+                    "account_status": "active",
+                    "balance_units": Decimal("5"),
+                    "source_created_at": NOW,
+                    "source_updated_at": NOW,
+                }
+            ],
+        )
+
+        statement, _ = connection.calls[0]
+        self.assertIn("growth.internal_users", statement)
+        self.assertIn("LEFT JOIN LATERAL", statement)
+        self.assertIn("ON CONFLICT (site_id, external_user_id)", statement)
+
+    async def test_resolve_classification_updates_task_and_credit_event_together(self) -> None:
+        from app.modules.operations.repository import resolve_classification_task
+        from app.modules.operations.schemas import ClassificationUpdate
+
+        task_id = uuid4()
+        connection = _FakeConnection(
+            [
+                {
+                    "classification_task_id": task_id,
+                    "status": "resolved",
+                    "resolved_purpose": "sale",
+                    "resolved_cash_amount_cny": Decimal("20"),
+                }
+            ]
+        )
+
+        await resolve_classification_task(
+            connection,
+            task_id,
+            ClassificationUpdate(purpose="sale", cash_amount_cny=Decimal("20")),
+            actor_id="owner",
+        )
+
+        statement, parameters = connection.calls[0]
+        self.assertIn("UPDATE growth.classification_tasks", statement)
+        self.assertIn("UPDATE growth.credit_events", statement)
+        self.assertEqual(parameters["actor_id"], "owner")
+
+    async def test_summary_query_uses_bound_filters(self) -> None:
+        from app.modules.operations.repository import get_operations_summary
+
+        connection = _FakeConnection([{"registered_user_count": 1}])
+        await get_operations_summary(
+            connection,
+            site_id="aiwelink",
+            segment="ordinary",
+            start_at=NOW,
+            end_at=NOW,
+        )
+
+        statement, parameters = connection.calls[0]
+        self.assertIn(":site_id", statement)
+        self.assertIn(":segment", statement)
+        self.assertNotIn("aiwelink'", statement)
+        self.assertEqual(parameters["site_id"], "aiwelink")
+        self.assertEqual(parameters["segment"], "ordinary")
+
+    async def test_credit_command_requests_are_persisted_as_pending(self) -> None:
+        from app.modules.operations.repository import (
+            create_balance_adjustment_request,
+            create_redemption_batch_request,
+        )
+        from app.modules.operations.schemas import BalanceAdjustmentCreate, RedemptionBatchCreate
+
+        batch_id = uuid4()
+        adjustment_id = uuid4()
+        connection = _FakeConnection(
+            [
+                {"redemption_batch_id": batch_id, "command_status": "pending"},
+                {"adjustment_request_id": adjustment_id, "command_status": "pending"},
+            ]
+        )
+
+        batch = await create_redemption_batch_request(
+            connection,
+            RedemptionBatchCreate(
+                site_id="aiwelink",
+                purpose="internal",
+                code_count=2,
+                balance_units_per_code=Decimal("100"),
+                idempotency_key="batch-1",
+            ),
+            actor_id="owner",
+            redemption_batch_id=batch_id,
+        )
+        adjustment = await create_balance_adjustment_request(
+            connection,
+            BalanceAdjustmentCreate(
+                site_id="aigclink",
+                external_user_id="42",
+                purpose="compensation",
+                balance_units=Decimal("5"),
+                idempotency_key="adjustment-1",
+            ),
+            actor_id="admin",
+            adjustment_request_id=adjustment_id,
+        )
+
+        self.assertEqual(batch["command_status"], "pending")
+        self.assertEqual(adjustment["command_status"], "pending")
+        self.assertIn("growth.redemption_batches", connection.calls[0][0])
+        self.assertIn("growth.balance_adjustment_requests", connection.calls[1][0])
+        self.assertEqual(connection.calls[0][1]["purpose"], "internal")
+        self.assertEqual(connection.calls[1][1]["external_user_id"], "42")
+
+
+class OperationsCacheTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cache_reuses_value_until_invalidated_for_site(self) -> None:
+        from app.modules.operations.cache import OperationsResponseCache
+
+        calls = 0
+
+        async def load():
+            nonlocal calls
+            calls += 1
+            return {"value": calls}
+
+        cache = OperationsResponseCache(ttl_seconds=60, max_entries=4)
+        key = ("summary", "aiwelink", "ordinary")
+
+        first = await cache.get_or_load(key, load)
+        second = await cache.get_or_load(key, load)
+        cache.invalidate(site_id="aiwelink")
+        third = await cache.get_or_load(key, load)
+
+        self.assertEqual(first, second)
+        self.assertNotEqual(second, third)
+        self.assertEqual(calls, 2)
+
+    async def test_cache_coalesces_concurrent_loads_and_bounds_entries(self) -> None:
+        from app.modules.operations.cache import OperationsResponseCache
+
+        calls = 0
+
+        async def load():
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0)
+            return calls
+
+        cache = OperationsResponseCache(ttl_seconds=60, max_entries=2)
+        values = await asyncio.gather(
+            cache.get_or_load(("summary", "aiwelink"), load),
+            cache.get_or_load(("summary", "aiwelink"), load),
+        )
+        await cache.get_or_load(("summary", "aigclink"), load)
+        await cache.get_or_load(("trends", "aigclink"), load)
+
+        self.assertEqual(values, [1, 1])
+        self.assertEqual(calls, 3)
+        self.assertEqual(cache.size, 2)
+
+
+class _FakeMappings:
+    def __init__(self, row):
+        self.row = row
+
+    def one_or_none(self):
+        return self.row
+
+    def all(self):
+        return [] if self.row is None else [self.row]
+
+
+class _FakeResult:
+    def __init__(self, row):
+        self.row = row
+
+    def mappings(self):
+        return _FakeMappings(self.row)
+
+    def scalar_one_or_none(self):
+        return self.row
+
+
+class _FakeConnection:
+    def __init__(self, rows: list[dict | None]):
+        self.rows = list(rows)
+        self.calls: list[tuple[str, object]] = []
+        self.execute = AsyncMock(side_effect=self._execute)
+
+    async def _execute(self, statement, parameters=None):
+        captured = [dict(item) for item in parameters] if isinstance(parameters, list) else dict(parameters or {})
+        self.calls.append((str(statement), captured))
+        return _FakeResult(self.rows.pop(0) if self.rows else None)
+
+
+if __name__ == "__main__":
+    unittest.main()
