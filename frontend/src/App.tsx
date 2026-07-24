@@ -202,7 +202,13 @@ function App() {
             {view === "api-pools" && <ApiPoolStatusPage token={token} showToast={showToast} />}
             {view === "plus-self-produced" && <PlusSelfProducedPage token={token} showToast={showToast} />}
             {view === "traffic-analysis" && <TrafficAnalysisPage token={token} showToast={showToast} />}
-            {view === "operations-management" && <OperationsManagementPage />}
+            {view === "operations-management" && (
+              <OperationsManagementPage
+                token={token}
+                role={user?.role || "viewer"}
+                showToast={showToast}
+              />
+            )}
             {view === "event-records" && <EventRecordsPage token={token} showToast={showToast} />}
             {view === "alert-center" && <AlertCenterPage token={token} showToast={showToast} />}
             {view === "pool-lifecycle" && <AccountPoolsPage token={token} showToast={showToast} />}
