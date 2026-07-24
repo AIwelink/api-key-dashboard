@@ -3,7 +3,7 @@
 ## 1. 文档状态
 
 - 日期：2026-07-24。
-- 状态：V1 已确认设计，可用于新主页项目立项和后续实施计划。
+- 状态：V1 已确认设计；主页前端和流量服务采用两套独立代码库、独立构建和独立部署。
 - 主页域名：`https://aiwelink.cc`。
 - API 业务站：`https://api.aiwelink.cc`、`https://api-us.aiwelink.cc` 等受信任的 `*.aiwelink.cc` 分站。
 - 推广链接：`https://aiwelink.cc/r/{code}`。
@@ -30,7 +30,7 @@ V1 固定采用以下方案：
 
 ## 3. 项目目标
 
-新主页项目需要同时完成三件事：
+本次新增的两个项目共同完成三件事：
 
 1. 在 `aiwelink.cc` 提供品牌主页和进入 API 服务的统一入口。
 2. 处理 `aiwelink.cc/r/{code}`，记录推广访问并创建归因 Session。
@@ -62,37 +62,51 @@ V1 不做以下事项：
 
 ## 5. 系统边界
 
-### 5.1 新主页代码库
+### 5.1 主页前端代码库
 
-新主页使用独立代码库 `aiwelink-homepage`：
+主页前端使用独立代码库 `aiwelink-homepage-web`：
 
 ```text
-aiwelink-homepage
-├── apps/homepage-web           # aiwelink.cc 主页前端
-├── services/public-gateway     # /r、Session、主页公开上下文和内部注册绑定
-├── services/registration-edge  # API 分站前置注册归因适配器
-├── packages/contracts          # 公开和内部接口契约
-├── deploy                      # CDN、Nginx、容器和环境配置
-└── tests                       # 单元、集成和端到端测试
+aiwelink-homepage-web
+├── src                         # 主页页面、组件和交互
+├── public                      # 静态资源
+├── generated                   # 由公开 OpenAPI 契约生成的只读客户端类型
+├── tests                       # 前端单元和端到端测试
+└── deploy                      # 静态站点、CDN 和缓存配置
 ```
 
-这是一份逻辑结构，不强制具体前端或后端框架。主页前端和公开网关必须可以独立部署，避免修改页面时影响 `/r/*` 的稳定性。
+该仓库只生成 `aiwelink.cc` 的前端静态资源，不包含后端框架、数据库连接、`/r/{code}` 实现、Cookie 签发、用户绑定或业务数据同步。前端只调用公开契约 `GET /api/public/growth-context`，并使用返回的 `target_url` 做顶层导航。
 
-本文中的 Attribution Service 是 Public Gateway 内受服务身份保护的内部模块，不是另一套公开页面。V1 保持一个后端部署；流量或团队边界需要时再独立拆分，接口契约不变。
+### 5.2 流量服务代码库
 
-### 5.2 当前管理后台
+流量服务使用另一套独立代码库 `aiwelink-growth-service`：
+
+```text
+aiwelink-growth-service
+├── services/public-gateway     # /r、Session、主页公开上下文
+├── services/attribution-api    # 受保护的注册绑定接口
+├── services/registration-edge  # API 分站前置注册归因适配器
+├── workers/sync                # 调用、充值和退款同步
+├── packages/contracts          # 公开和内部接口契约
+├── tests                       # 单元、集成和端到端测试
+└── deploy                      # 服务、反向代理和密钥配置
+```
+
+该仓库不包含主页组件、营销文案或前端页面。Public Gateway、Attribution API、Registration Edge 和 Sync Worker 可以由同一仓库分别构建、按职责独立部署。本文中的 Attribution Service 指 `services/attribution-api`，只接受可信服务身份调用。流量服务启动时检查 Growth Schema 版本，不自行执行生产数据库迁移。
+
+### 5.3 当前管理后台
 
 当前管理后台继续负责：
 
 - 客户站点管理；
-- Growth PostgreSQL 配置和迁移；
+- Growth PostgreSQL 配置、Schema 定义和迁移；
 - 站点、渠道、活动和推广链接管理；
 - 运营看板和账号详情查询；
 - `owner/admin` 权限与操作审计。
 
-主页项目不再实现一套重复的运营管理页面。
+主页前端和流量服务都不再实现一套重复的运营管理页面。
 
-### 5.3 API 业务站
+### 5.4 API 业务站
 
 Sub2API/NewAPI 等业务系统继续拥有：
 
@@ -104,17 +118,30 @@ Sub2API/NewAPI 等业务系统继续拥有：
 
 API 分站只增加外置的注册归因适配层，不要求把 Growth 代码合并进开源业务仓库。
 
-### 5.4 Growth PostgreSQL 访问边界
+### 5.5 Growth PostgreSQL 访问边界
 
 管理后台、Public Gateway 和 Sync Worker 使用同一个 Growth PostgreSQL，但使用不同的数据库身份：
 
 | 组件 | 必要权限 |
 |---|---|
 | 管理后台 | 执行迁移；管理站点、渠道、活动和推广链接；读取看板数据 |
-| Public Gateway | 读取有效站点和推广配置；写入访问、归因 Session、站点首次触达和用户归因 |
+| Public Gateway / Attribution API | 读取有效站点和推广配置；写入访问、归因 Session、站点首次触达和用户归因 |
 | Sync Worker | 读取用户归因；写入调用、账单投影和用户汇总 |
 
-管理后台中的数据库配置是连接该 Growth PostgreSQL 的权威配置。部署系统或密钥管理服务向 Public Gateway 和 Sync Worker 注入各自的最小权限凭据；主页浏览器、API 业务前端和 Sub2API 都不能取得数据库连接串。服务之间不复制 Growth 数据，也不通过业务站数据库传递归因 Session。
+管理后台中的数据库配置是连接该 Growth PostgreSQL 的权威配置。部署系统或密钥管理服务向流量服务的各个部署单元注入最小权限凭据；主页前端代码库、浏览器、API 业务前端和 Sub2API 都不能取得数据库连接串。服务之间不复制 Growth 数据，也不通过业务站数据库传递归因 Session。
+
+### 5.6 两套新增代码的通信边界
+
+主页前端与流量服务之间只通过版本化 HTTP 契约协作：
+
+- 主页前端只调用 `GET /api/public/growth-context`，不导入流量服务源码或运行时包。
+- 流量服务发布公开 OpenAPI 契约；主页仓库固定契约版本并生成客户端类型。
+- 流量服务不返回主页 HTML、组件或静态资源。
+- 主页前端不直接调用内部注册绑定接口，也不能访问 Growth PostgreSQL。
+- 两个仓库分别安装依赖、构建、测试和发布，不使用共享 `node_modules`、工作区或单体仓库流水线。
+- 公开契约发生不兼容变化时必须发布新版本路径；V1 的 `/api/public/growth-context` 在主页升级完成前保持向后兼容。
+
+现有管理后台是已经存在的管理系统，不计入本次新增的两套代码；它继续通过 Growth PostgreSQL 与流量服务共享数据事实，而不是共享代码。
 
 ## 6. 域名与路由
 
@@ -130,6 +157,27 @@ API 分站只增加外置的注册归因适配层，不要求把 Growth 代码�
 | `/internal/growth/registrations/bind` | Attribution Service | 可信服务调用的注册绑定接口 |
 
 CDN、Nginx 或反向代理必须在主页静态文件和 SPA fallback 之前匹配 `/r/*` 与 `/api/public/*`。
+
+代码库隔离不改变浏览器看到的域名。生产入口按路径分流：
+
+```mermaid
+flowchart LR
+    U["浏览器"] --> E["aiwelink.cc CDN / Nginx"]
+    E -->|"/、静态资源、前端路由"| F["homepage-web 静态站点"]
+    E -->|"/r/*、/api/public/*"| G["growth-service Public Gateway"]
+    A["api-*.aiwelink.cc"] -->|"注册请求"| R["growth-service Registration Edge"]
+    R --> S["Sub2API / NewAPI"]
+```
+
+因此 `/api/public/growth-context` 对前端仍是同源请求，不需要在浏览器开放跨域凭据；`/r/{code}` 也能在 `aiwelink.cc` 响应中设置父域 Cookie。两个代码库拥有独立 CI/CD，任何一方发布都不触发另一方重新构建。
+
+### 6.1 发布与故障隔离
+
+- 主页前端发布失败不会改变 `/r/*`、归因 Session 或注册绑定服务的运行版本。
+- 流量服务发布失败不会影响主页静态资源的构建和分发；主页上下文请求失败时降级到默认 API 入口。
+- 流量服务完全不可用时，普通主页仍可访问，但新的 `/r/*` 点击无法可靠记录，必须告警且不得事后猜测补记。
+- CDN/Nginx 配置是两套服务的唯一入口拼接层；它只按路径或 API 子域转发，不承载业务归因逻辑。
+- 两个仓库分别回滚。回滚流量服务不得要求回滚主页前端，前提是仍满足已发布的公开契约。
 
 ## 7. 总体数据流
 
@@ -447,7 +495,7 @@ V1 主页至少提供：
 
 ### 15.1 站点配置
 
-目标 API 域名不得在主页项目中硬编码。Public Gateway 从受控站点目录读取：
+目标 API 域名不得在主页前端中硬编码。Public Gateway 从受控站点目录读取：
 
 - `site_id`；
 - `site_name`；
@@ -539,6 +587,10 @@ Session 上下文中的 `target_url` 由受控 `base_url` 与落地路径组合�
 
 ### 19.2 集成测试
 
+- 主页仓库可独立构建为静态文件，不需要 Growth 数据库或流量服务源码；
+- 流量服务可独立构建，不包含或提供主页静态文件；
+- CDN/Nginx 将主页路径和流量路径转发到不同部署目标；
+- 主页生成的客户端与公开 Growth 契约版本兼容；
 - `aiwelink.cc` 设置的父域 Cookie 能被 `api.aiwelink.cc` 和 `api-us.aiwelink.cc` 接收；
 - `/r/{code}` 不进入主页前端路由；
 - 主页上下文根据 Session 返回正确 API 分站；
@@ -599,26 +651,28 @@ Session 上下文中的 `target_url` 由受控 `base_url` 与落地路径组合�
 8. 注册失败和已有账号登录不产生新归因。
 9. 同一浏览器随后访问同站点另一推广链接，不覆盖首次触达。
 10. Sub2API/NewAPI 登录 Session、注册响应和业务语义保持不变。
+11. 单独发布主页前端不会重启流量服务，单独发布流量服务也不会重新构建主页。
 
 ## 21. 实施顺序
 
 建议按以下顺序实施：
 
-1. 增加归因 Session 与按站点首次触达数据库迁移。
-2. 实现 `/r/{code}` 和父域 Cookie。
-3. 实现主页公开 Growth 上下文接口。
-4. 实现主页 API 分站入口。
-5. 为首个 Sub2API 分站实现 Registration Edge。
-6. 实现可信注册绑定接口和重试。
-7. 接入业务库调用、充值和退款同步。
-8. 完成运营看板汇总、账号名单和详情。
-9. 完成同主域安全检查和端到端验收。
+1. 在现有管理后台增加归因 Session 与按站点首次触达数据库迁移。
+2. 建立 `aiwelink-growth-service`，实现 `/r/{code}`、父域 Cookie 和 Schema 版本检查。
+3. 在流量服务实现主页公开 Growth 上下文接口并发布 OpenAPI 契约。
+4. 建立 `aiwelink-homepage-web`，根据公开契约实现 API 分站入口。
+5. 配置 CDN/Nginx，把主页路径和流量路径转发到两个独立部署目标。
+6. 在流量服务为首个 Sub2API 分站实现 Registration Edge。
+7. 在流量服务实现可信注册绑定接口、持久重试和业务数据同步。
+8. 在现有管理后台完成运营看板汇总、账号名单和详情。
+9. 完成独立发布、同主域安全和端到端验收。
 
 ## 22. 上线前置条件
 
 上线前必须确认：
 
 - 所有 `*.aiwelink.cc` 子域均受 AIWeLink 控制；
+- 主页前端和流量服务已有独立代码库、构建流水线、部署目标和回滚方式；
 - CDN/Nginx 可以把 `/r/*` 路由到 Public Gateway；
 - 每个首批 API 分站都有准确 `base_url`、注册路径和登录路径；
 - 每个分站的实际注册 POST 都经过 Registration Edge，且 CDN/反向代理保留 `awl_growth_sid`；
