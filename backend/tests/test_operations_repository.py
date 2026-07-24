@@ -286,6 +286,25 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("stream_name = 'operations'", sql)
         self.assertIn("growth.sync_cursors", sql)
 
+    async def test_sync_status_keeps_last_success_when_latest_run_failed(self) -> None:
+        from app.modules.operations.repository import get_sync_status
+
+        connection = _FakeConnection(
+            [
+                {
+                    "site_id": "aiwelink",
+                    "status": "failed",
+                    "last_success_at": NOW,
+                }
+            ]
+        )
+
+        result = await get_sync_status(connection)
+
+        self.assertEqual(result[0]["last_success_at"], NOW.isoformat())
+        statement, _ = connection.calls[0]
+        self.assertIn("growth.sync_cursors", statement)
+
 
 class OperationsCacheTests(unittest.IsolatedAsyncioTestCase):
     async def test_cache_reuses_value_until_invalidated_for_site(self) -> None:

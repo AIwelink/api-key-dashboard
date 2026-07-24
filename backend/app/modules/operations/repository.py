@@ -712,12 +712,21 @@ async def get_sync_status(connection: Any) -> list[dict[str, Any]]:
     result = await connection.execute(
         text(
             """
-            SELECT DISTINCT ON (site_id)
-                   site_id, run_id, adapter_name, status, started_at, finished_at,
-                   rows_scanned, rows_upserted, rows_rejected, error_code, error_message
-            FROM growth.sync_runs
-            WHERE stream_name = 'operations'
-            ORDER BY site_id, started_at DESC
+            WITH latest AS (
+                SELECT DISTINCT ON (site_id)
+                       site_id, run_id, adapter_name, status, started_at, finished_at,
+                       rows_scanned, rows_upserted, rows_rejected, error_code, error_message
+                FROM growth.sync_runs
+                WHERE stream_name = 'operations'
+                ORDER BY site_id, started_at DESC
+            )
+            SELECT latest.*, cursor.last_success_at, cursor.watermark_at
+            FROM latest
+            LEFT JOIN growth.sync_cursors AS cursor
+              ON cursor.site_id = latest.site_id
+             AND cursor.adapter_name = latest.adapter_name
+             AND cursor.stream_name = 'operations'
+            ORDER BY latest.site_id
             """
         )
     )

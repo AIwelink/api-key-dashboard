@@ -1,0 +1,348 @@
+from __future__ import annotations
+
+from typing import Any
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from motor.motor_asyncio import AsyncIOMotorDatabase
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+
+from app.database import db_dependency
+from app.modules.operations import service
+from app.modules.operations.repository import OperationsNotFoundError
+from app.modules.operations.schemas import (
+    BalanceAdjustmentCreate,
+    ClassificationUpdate,
+    ConversionRateCreate,
+    InternalUserCreate,
+    InternalUserUpdate,
+    OperationsQuery,
+    RedemptionBatchCreate,
+    RefreshRequest,
+)
+from app.modules.system.audit import write_audit_log
+from app.modules.system.permissions import require_view_permission
+
+
+router = APIRouter(prefix="/operations", tags=["operations"])
+OPERATIONS_PERMISSION = "operations-management"
+
+
+def _actor_id(actor: dict[str, Any]) -> str:
+    return str(actor.get("_id") or actor.get("email") or actor.get("id") or "")
+
+
+def _require_operations_writer(actor: dict[str, Any]) -> None:
+    if actor.get("role") not in {"owner", "admin"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only owner or admin can change operations configuration",
+        )
+
+
+def _raise_http_error(exc: Exception) -> None:
+    if isinstance(exc, service.CreditCapabilityUnavailable):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    if isinstance(exc, (OperationsNotFoundError, LookupError)):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    if isinstance(exc, IntegrityError):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Operations configuration conflicts with an existing record",
+        ) from exc
+    if isinstance(exc, ValueError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if isinstance(exc, SQLAlchemyError):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Operations database is unavailable or not initialized",
+        ) from exc
+    raise exc
+
+
+@router.get("/summary")
+async def get_operations_summary(
+    query: OperationsQuery = Depends(),
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    del actor
+    try:
+        return await service.get_operations_overview(db, query)
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+
+
+@router.get("/trends")
+async def get_operations_trends(
+    query: OperationsQuery = Depends(),
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    del actor
+    try:
+        return await service.get_operations_trend_data(db, query)
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+
+
+@router.get("/users")
+async def get_operations_users(
+    query: OperationsQuery = Depends(),
+    search: str | None = Query(default=None, max_length=240),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    del actor
+    try:
+        return await service.get_operations_user_data(
+            db,
+            query,
+            search=search,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+
+
+@router.get("/sync-status")
+async def get_operations_sync_status(
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    del actor
+    try:
+        return await service.get_operations_sync_status(db)
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+
+
+@router.post("/refresh", status_code=status.HTTP_202_ACCEPTED)
+async def post_operations_refresh(
+    payload: RefreshRequest,
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    try:
+        result = await service.refresh_operations(db, payload)
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="operations.refresh",
+        resource_type="operations_sync",
+        after={"site_ids": payload.site_ids},
+    )
+    return result
+
+
+@router.get("/internal-users")
+async def get_internal_users(
+    site_id: str | None = Query(default=None),
+    query: str | None = Query(default=None, max_length=240),
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    del actor
+    try:
+        return await service.list_internal_user_configs(db, site_id=site_id, query=query)
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+
+
+@router.post("/internal-users", status_code=status.HTTP_201_CREATED)
+async def post_internal_user(
+    payload: InternalUserCreate,
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    _require_operations_writer(actor)
+    try:
+        result = await service.create_internal_user_config(
+            db,
+            payload,
+            actor_id=_actor_id(actor),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="operations.internal_user.create",
+        resource_type="operations_internal_user",
+        resource_id=result.get("internal_user_id"),
+        after=result,
+    )
+    return result
+
+
+@router.patch("/internal-users/{internal_user_id}")
+async def patch_internal_user(
+    internal_user_id: UUID,
+    payload: InternalUserUpdate,
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    _require_operations_writer(actor)
+    try:
+        result = await service.update_internal_user_config(
+            db,
+            internal_user_id,
+            payload,
+            actor_id=_actor_id(actor),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="operations.internal_user.update",
+        resource_type="operations_internal_user",
+        resource_id=str(internal_user_id),
+        after=result,
+    )
+    return result
+
+
+@router.get("/conversion-rates")
+async def get_conversion_rates(
+    site_id: str | None = Query(default=None),
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    del actor
+    try:
+        return await service.list_conversion_rate_configs(db, site_id=site_id)
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+
+
+@router.post("/conversion-rates", status_code=status.HTTP_201_CREATED)
+async def post_conversion_rate(
+    payload: ConversionRateCreate,
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    _require_operations_writer(actor)
+    try:
+        result = await service.create_conversion_rate_config(
+            db,
+            payload,
+            actor_id=_actor_id(actor),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="operations.conversion_rate.create",
+        resource_type="operations_conversion_rate",
+        resource_id=result.get("conversion_rate_id"),
+        after=result,
+    )
+    return result
+
+
+@router.get("/classification-tasks")
+async def get_classification_tasks(
+    site_id: str | None = Query(default=None),
+    task_status: str = Query(default="pending", pattern="^(pending|resolved|ignored)$"),
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    del actor
+    try:
+        return await service.list_classification_task_configs(
+            db,
+            site_id=site_id,
+            status=task_status,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+
+
+@router.patch("/classification-tasks/{classification_task_id}")
+async def patch_classification_task(
+    classification_task_id: UUID,
+    payload: ClassificationUpdate,
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    _require_operations_writer(actor)
+    try:
+        result = await service.resolve_classification_task_config(
+            db,
+            classification_task_id,
+            payload,
+            actor_id=_actor_id(actor),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="operations.classification.update",
+        resource_type="operations_classification_task",
+        resource_id=str(classification_task_id),
+        after=result,
+    )
+    return result
+
+
+@router.post("/redemption-batches", status_code=status.HTTP_201_CREATED)
+async def post_redemption_batch(
+    payload: RedemptionBatchCreate,
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    _require_operations_writer(actor)
+    try:
+        result = await service.create_redemption_batch(
+            db,
+            payload,
+            actor_id=_actor_id(actor),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="operations.redemption_batch.create",
+        resource_type="operations_redemption_batch",
+        resource_id=result.get("redemption_batch_id"),
+        after=result,
+    )
+    return result
+
+
+@router.post("/balance-adjustments", status_code=status.HTTP_201_CREATED)
+async def post_balance_adjustment(
+    payload: BalanceAdjustmentCreate,
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    _require_operations_writer(actor)
+    try:
+        result = await service.create_balance_adjustment(
+            db,
+            payload,
+            actor_id=_actor_id(actor),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="operations.balance_adjustment.create",
+        resource_type="operations_balance_adjustment",
+        resource_id=result.get("adjustment_request_id"),
+        after=result,
+    )
+    return result
