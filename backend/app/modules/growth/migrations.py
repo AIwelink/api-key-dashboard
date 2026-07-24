@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import text
 
 
-REQUIRED_DOMAIN_TABLES = (
+INITIAL_DOMAIN_TABLES = (
     "sites",
     "channels",
     "campaigns",
@@ -20,6 +20,21 @@ REQUIRED_DOMAIN_TABLES = (
     "sync_cursors",
     "sync_runs",
 )
+
+OPERATIONS_DOMAIN_TABLES = (
+    "internal_users",
+    "balance_conversion_rates",
+    "ops_user_snapshots",
+    "credit_events",
+    "redemption_batches",
+    "balance_adjustment_requests",
+    "usage_facts",
+    "classification_tasks",
+    "ops_hourly_stats",
+    "ops_daily_stats",
+)
+
+REQUIRED_DOMAIN_TABLES = INITIAL_DOMAIN_TABLES + OPERATIONS_DOMAIN_TABLES
 
 
 @dataclass(frozen=True)
@@ -322,7 +337,250 @@ INITIAL_MIGRATION = Migration(
 )
 
 
-MIGRATIONS = (INITIAL_MIGRATION,)
+OPERATIONS_MIGRATION = Migration(
+    version="0002_operations_analytics",
+    description="Create cached operations analytics and internal-user schema",
+    statements=(
+        "CREATE EXTENSION IF NOT EXISTS btree_gist",
+        """
+        CREATE TABLE IF NOT EXISTS growth.internal_users (
+            internal_user_id UUID PRIMARY KEY,
+            site_id TEXT NOT NULL REFERENCES growth.sites(site_id),
+            external_user_id TEXT NOT NULL,
+            account_label TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            active_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            active_until TIMESTAMPTZ,
+            created_by TEXT NOT NULL,
+            updated_by TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (site_id, external_user_id),
+            UNIQUE (internal_user_id, site_id),
+            CHECK (active_until IS NULL OR active_until > active_from)
+        )
+        """.strip(),
+        """
+        CREATE TABLE IF NOT EXISTS growth.balance_conversion_rates (
+            conversion_rate_id UUID PRIMARY KEY,
+            site_id TEXT NOT NULL REFERENCES growth.sites(site_id),
+            balance_units_per_cny NUMERIC(30, 10) NOT NULL
+                CHECK (balance_units_per_cny > 0),
+            effective_from TIMESTAMPTZ NOT NULL,
+            effective_until TIMESTAMPTZ,
+            note TEXT NOT NULL DEFAULT '',
+            created_by TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (site_id, effective_from),
+            CHECK (effective_until IS NULL OR effective_until > effective_from),
+            EXCLUDE USING gist (
+                site_id WITH =,
+                tstzrange(effective_from, effective_until, '[)') WITH &&
+            )
+        )
+        """.strip(),
+        """
+        CREATE TABLE IF NOT EXISTS growth.ops_user_snapshots (
+            site_id TEXT NOT NULL REFERENCES growth.sites(site_id),
+            external_user_id TEXT NOT NULL,
+            account_label TEXT NOT NULL DEFAULT '',
+            registered_at TIMESTAMPTZ,
+            account_status TEXT NOT NULL DEFAULT 'active',
+            balance_units NUMERIC(30, 10),
+            is_internal BOOLEAN NOT NULL DEFAULT FALSE,
+            internal_user_id UUID,
+            source_created_at TIMESTAMPTZ,
+            source_updated_at TIMESTAMPTZ,
+            synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (site_id, external_user_id),
+            FOREIGN KEY (internal_user_id, site_id)
+                REFERENCES growth.internal_users(internal_user_id, site_id),
+            CHECK (
+                (is_internal AND internal_user_id IS NOT NULL)
+                OR (NOT is_internal AND internal_user_id IS NULL)
+            )
+        )
+        """.strip(),
+        """
+        CREATE TABLE IF NOT EXISTS growth.credit_events (
+            credit_event_id UUID PRIMARY KEY,
+            site_id TEXT NOT NULL REFERENCES growth.sites(site_id),
+            external_user_id TEXT NOT NULL,
+            source_type TEXT NOT NULL
+                CHECK (source_type IN ('payment', 'redemption', 'admin_adjustment', 'refund', 'other')),
+            source_record_id TEXT NOT NULL,
+            direction TEXT NOT NULL CHECK (direction IN ('credit', 'debit')),
+            purpose TEXT
+                CHECK (purpose IN ('sale', 'promotion', 'internal', 'compensation', 'other')),
+            classification_status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (classification_status IN ('pending', 'classified')),
+            balance_units NUMERIC(30, 10) NOT NULL CHECK (balance_units >= 0),
+            cash_amount_cny NUMERIC(30, 10) NOT NULL DEFAULT 0
+                CHECK (cash_amount_cny >= 0),
+            conversion_rate_id UUID REFERENCES growth.balance_conversion_rates(conversion_rate_id),
+            occurred_at TIMESTAMPTZ NOT NULL,
+            source_updated_at TIMESTAMPTZ,
+            source_metadata JSONB NOT NULL DEFAULT '{}'::JSONB
+                CHECK (jsonb_typeof(source_metadata) = 'object'),
+            synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (site_id, source_type, source_record_id),
+            CHECK (
+                (classification_status = 'pending' AND purpose IS NULL)
+                OR (classification_status = 'classified' AND purpose IS NOT NULL)
+            ),
+            CHECK (purpose = 'sale' OR cash_amount_cny = 0)
+        )
+        """.strip(),
+        """
+        CREATE TABLE IF NOT EXISTS growth.redemption_batches (
+            redemption_batch_id UUID PRIMARY KEY,
+            site_id TEXT NOT NULL REFERENCES growth.sites(site_id),
+            idempotency_key TEXT NOT NULL,
+            purpose TEXT NOT NULL
+                CHECK (purpose IN ('sale', 'promotion', 'internal', 'compensation', 'other')),
+            code_count INTEGER NOT NULL CHECK (code_count > 0),
+            balance_units_per_code NUMERIC(30, 10) NOT NULL
+                CHECK (balance_units_per_code > 0),
+            cash_amount_cny NUMERIC(30, 10) NOT NULL DEFAULT 0
+                CHECK (cash_amount_cny >= 0),
+            note TEXT NOT NULL DEFAULT '',
+            command_status TEXT NOT NULL
+                CHECK (command_status IN ('pending', 'succeeded', 'failed')),
+            source_batch_id TEXT,
+            code_hashes JSONB NOT NULL DEFAULT '[]'::JSONB
+                CHECK (jsonb_typeof(code_hashes) = 'array'),
+            code_masks JSONB NOT NULL DEFAULT '[]'::JSONB
+                CHECK (jsonb_typeof(code_masks) = 'array'),
+            requested_by TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            completed_at TIMESTAMPTZ,
+            error_code TEXT NOT NULL DEFAULT '',
+            error_message TEXT NOT NULL DEFAULT '',
+            UNIQUE (site_id, idempotency_key),
+            CHECK (purpose = 'sale' OR cash_amount_cny = 0),
+            CHECK (purpose <> 'sale' OR cash_amount_cny > 0)
+        )
+        """.strip(),
+        """
+        CREATE TABLE IF NOT EXISTS growth.balance_adjustment_requests (
+            adjustment_request_id UUID PRIMARY KEY,
+            site_id TEXT NOT NULL REFERENCES growth.sites(site_id),
+            external_user_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            purpose TEXT NOT NULL
+                CHECK (purpose IN ('sale', 'promotion', 'internal', 'compensation', 'other')),
+            balance_units NUMERIC(30, 10) NOT NULL CHECK (balance_units <> 0),
+            cash_amount_cny NUMERIC(30, 10) NOT NULL DEFAULT 0
+                CHECK (cash_amount_cny >= 0),
+            note TEXT NOT NULL DEFAULT '',
+            command_status TEXT NOT NULL
+                CHECK (command_status IN ('pending', 'succeeded', 'failed')),
+            source_record_id TEXT,
+            requested_by TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            completed_at TIMESTAMPTZ,
+            error_code TEXT NOT NULL DEFAULT '',
+            error_message TEXT NOT NULL DEFAULT '',
+            UNIQUE (site_id, idempotency_key),
+            CHECK (purpose = 'sale' OR cash_amount_cny = 0),
+            CHECK (purpose <> 'sale' OR cash_amount_cny > 0)
+        )
+        """.strip(),
+        """
+        CREATE TABLE IF NOT EXISTS growth.usage_facts (
+            usage_fact_id UUID PRIMARY KEY,
+            site_id TEXT NOT NULL REFERENCES growth.sites(site_id),
+            external_user_id TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            source_record_id TEXT NOT NULL,
+            successful_call_count BIGINT NOT NULL DEFAULT 1
+                CHECK (successful_call_count > 0),
+            consumed_balance_units NUMERIC(30, 10) NOT NULL DEFAULT 0
+                CHECK (consumed_balance_units >= 0),
+            cost_cny NUMERIC(30, 10) NOT NULL DEFAULT 0 CHECK (cost_cny >= 0),
+            conversion_rate_id UUID REFERENCES growth.balance_conversion_rates(conversion_rate_id),
+            occurred_at TIMESTAMPTZ NOT NULL,
+            source_updated_at TIMESTAMPTZ,
+            synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (site_id, source_type, source_record_id)
+        )
+        """.strip(),
+        """
+        CREATE TABLE IF NOT EXISTS growth.classification_tasks (
+            classification_task_id UUID PRIMARY KEY,
+            site_id TEXT NOT NULL REFERENCES growth.sites(site_id),
+            credit_event_id UUID NOT NULL UNIQUE REFERENCES growth.credit_events(credit_event_id),
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'resolved', 'ignored')),
+            resolved_purpose TEXT
+                CHECK (resolved_purpose IN ('sale', 'promotion', 'internal', 'compensation', 'other')),
+            resolved_cash_amount_cny NUMERIC(30, 10)
+                CHECK (resolved_cash_amount_cny IS NULL OR resolved_cash_amount_cny >= 0),
+            note TEXT NOT NULL DEFAULT '',
+            resolved_by TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            resolved_at TIMESTAMPTZ,
+            CHECK (
+                (status = 'pending' AND resolved_at IS NULL)
+                OR (status <> 'pending' AND resolved_at IS NOT NULL)
+            )
+        )
+        """.strip(),
+        """
+        CREATE TABLE IF NOT EXISTS growth.ops_hourly_stats (
+            site_id TEXT NOT NULL REFERENCES growth.sites(site_id),
+            bucket_start TIMESTAMPTZ NOT NULL,
+            user_segment TEXT NOT NULL CHECK (user_segment IN ('ordinary', 'internal', 'all')),
+            registered_user_count BIGINT NOT NULL DEFAULT 0 CHECK (registered_user_count >= 0),
+            active_user_count BIGINT NOT NULL DEFAULT 0 CHECK (active_user_count >= 0),
+            successful_call_count BIGINT NOT NULL DEFAULT 0 CHECK (successful_call_count >= 0),
+            consumed_balance_units NUMERIC(30, 10) NOT NULL DEFAULT 0,
+            cost_cny NUMERIC(30, 10) NOT NULL DEFAULT 0,
+            payer_count BIGINT NOT NULL DEFAULT 0 CHECK (payer_count >= 0),
+            sale_event_count BIGINT NOT NULL DEFAULT 0 CHECK (sale_event_count >= 0),
+            gross_income_cny NUMERIC(30, 10) NOT NULL DEFAULT 0,
+            refund_cny NUMERIC(30, 10) NOT NULL DEFAULT 0,
+            computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (site_id, bucket_start, user_segment)
+        )
+        """.strip(),
+        """
+        CREATE TABLE IF NOT EXISTS growth.ops_daily_stats (
+            site_id TEXT NOT NULL REFERENCES growth.sites(site_id),
+            bucket_date DATE NOT NULL,
+            timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+            user_segment TEXT NOT NULL CHECK (user_segment IN ('ordinary', 'internal', 'all')),
+            registered_user_count BIGINT NOT NULL DEFAULT 0 CHECK (registered_user_count >= 0),
+            active_user_count BIGINT NOT NULL DEFAULT 0 CHECK (active_user_count >= 0),
+            successful_call_count BIGINT NOT NULL DEFAULT 0 CHECK (successful_call_count >= 0),
+            consumed_balance_units NUMERIC(30, 10) NOT NULL DEFAULT 0,
+            cost_cny NUMERIC(30, 10) NOT NULL DEFAULT 0,
+            payer_count BIGINT NOT NULL DEFAULT 0 CHECK (payer_count >= 0),
+            sale_event_count BIGINT NOT NULL DEFAULT 0 CHECK (sale_event_count >= 0),
+            gross_income_cny NUMERIC(30, 10) NOT NULL DEFAULT 0,
+            refund_cny NUMERIC(30, 10) NOT NULL DEFAULT 0,
+            computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (site_id, bucket_date, timezone, user_segment)
+        )
+        """.strip(),
+        "CREATE INDEX IF NOT EXISTS growth_internal_users_site_active_idx ON growth.internal_users (site_id, active_from, active_until)",
+        "CREATE INDEX IF NOT EXISTS growth_conversion_rates_site_time_idx ON growth.balance_conversion_rates (site_id, effective_from DESC)",
+        "CREATE INDEX IF NOT EXISTS growth_ops_users_site_segment_registered_idx ON growth.ops_user_snapshots (site_id, is_internal, registered_at DESC)",
+        "CREATE INDEX IF NOT EXISTS growth_credit_events_site_time_idx ON growth.credit_events (site_id, occurred_at DESC)",
+        "CREATE INDEX IF NOT EXISTS growth_credit_events_user_time_idx ON growth.credit_events (site_id, external_user_id, occurred_at DESC)",
+        "CREATE INDEX IF NOT EXISTS growth_credit_events_classification_idx ON growth.credit_events (site_id, classification_status, occurred_at DESC)",
+        "CREATE INDEX IF NOT EXISTS growth_usage_facts_site_time_idx ON growth.usage_facts (site_id, occurred_at DESC)",
+        "CREATE INDEX IF NOT EXISTS growth_usage_facts_user_time_idx ON growth.usage_facts (site_id, external_user_id, occurred_at DESC)",
+        "CREATE INDEX IF NOT EXISTS growth_classification_tasks_status_idx ON growth.classification_tasks (site_id, status, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS growth_ops_hourly_stats_lookup_idx ON growth.ops_hourly_stats (bucket_start DESC, site_id, user_segment)",
+        "CREATE INDEX IF NOT EXISTS growth_ops_daily_stats_lookup_idx ON growth.ops_daily_stats (bucket_date DESC, site_id, user_segment)",
+    ),
+)
+
+
+MIGRATIONS = (INITIAL_MIGRATION, OPERATIONS_MIGRATION)
 
 
 async def apply_pending_migrations(connection: Any) -> dict[str, Any]:
