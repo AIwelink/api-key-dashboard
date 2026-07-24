@@ -48,6 +48,8 @@ export type GrowthCampaign = {
   name: string;
   description: string;
   status: GrowthStatus;
+  starts_at?: string | null;
+  ends_at?: string | null;
   channel_name?: string;
   site_name?: string;
 };
@@ -67,10 +69,17 @@ export type GrowthTrackingLink = {
   landing_path: string | null;
   extra_dimensions: Record<string, string>;
   status: GrowthStatus;
+  valid_from?: string | null;
+  valid_until?: string | null;
   campaign_name?: string;
   channel_name?: string;
   site_name?: string;
 };
+
+export type GrowthEditTarget =
+  | { kind: "link"; item: GrowthTrackingLink }
+  | { kind: "channel"; item: GrowthChannel }
+  | { kind: "campaign"; item: GrowthCampaign };
 
 export type TrackingLinkForm = {
   site_id: string;
@@ -97,6 +106,33 @@ export type CampaignForm = {
   code: string;
   name: string;
   description: string;
+};
+
+export type TrackingLinkEditForm = {
+  source_type: TrackingSourceType;
+  source_name: string;
+  source_url: string;
+  audience_group: string;
+  promoter: string;
+  landing_path: string;
+  dimensions: Array<{ key: string; value: string }>;
+  valid_from: string;
+  valid_until: string;
+  status: "active" | "paused" | "archived";
+};
+
+export type ChannelEditForm = {
+  name: string;
+  description: string;
+  status: "active" | "disabled" | "archived";
+};
+
+export type CampaignEditForm = {
+  name: string;
+  description: string;
+  starts_at: string;
+  ends_at: string;
+  status: "draft" | "active" | "paused" | "archived";
 };
 
 export type SiteForm = {
@@ -187,6 +223,37 @@ export const emptyCampaignForm: CampaignForm = {
   description: "",
 };
 
+export const emptyTrackingLinkEditForm: TrackingLinkEditForm = {
+  source_type: "post",
+  source_name: "",
+  source_url: "",
+  audience_group: "",
+  promoter: "",
+  landing_path: "",
+  dimensions: [
+    { key: "", value: "" },
+    { key: "", value: "" },
+    { key: "", value: "" },
+  ],
+  valid_from: "",
+  valid_until: "",
+  status: "active",
+};
+
+export const emptyChannelEditForm: ChannelEditForm = {
+  name: "",
+  description: "",
+  status: "active",
+};
+
+export const emptyCampaignEditForm: CampaignEditForm = {
+  name: "",
+  description: "",
+  starts_at: "",
+  ends_at: "",
+  status: "active",
+};
+
 export const emptySiteForm: SiteForm = {
   public_origin: "",
   default_landing_path: "/",
@@ -255,13 +322,134 @@ export function campaignCodeConflict(
   );
 }
 
-export function buildTrackingLinkPayload(form: TrackingLinkForm) {
-  const extraDimensions = Object.fromEntries(
-    form.dimensions
+function dimensionsToForm(dimensions: Record<string, string>) {
+  const rows = Object.entries(dimensions)
+    .slice(0, 3)
+    .map(([key, value]) => ({ key, value }));
+  while (rows.length < 3) rows.push({ key: "", value: "" });
+  return rows;
+}
+
+function dimensionsToPayload(dimensions: Array<{ key: string; value: string }>) {
+  return Object.fromEntries(
+    dimensions
       .slice(0, 3)
       .map(({ key, value }) => [key.trim(), value.trim()] as const)
       .filter(([key, value]) => Boolean(key && value)),
   );
+}
+
+function toDateTimeLocal(value?: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return localDate.toISOString().slice(0, 16);
+}
+
+function toIsoDateTime(value: string) {
+  return value.trim() ? new Date(value).toISOString() : null;
+}
+
+export function isValidGrowthTimeRange(start: string, end: string) {
+  const startTime = start.trim() ? Date.parse(start) : null;
+  const endTime = end.trim() ? Date.parse(end) : null;
+  if (startTime !== null && Number.isNaN(startTime)) return false;
+  if (endTime !== null && Number.isNaN(endTime)) return false;
+  return startTime === null || endTime === null || startTime < endTime;
+}
+
+export function channelToEditForm(channel: GrowthChannel): ChannelEditForm {
+  return {
+    name: channel.name,
+    description: channel.description,
+    status: channel.status === "disabled" || channel.status === "archived" ? channel.status : "active",
+  };
+}
+
+export function buildChannelUpdatePayload(form: ChannelEditForm) {
+  return {
+    name: form.name.trim(),
+    description: form.description.trim(),
+    status: form.status,
+  };
+}
+
+export function campaignToEditForm(campaign: GrowthCampaign): CampaignEditForm {
+  const status = campaign.status === "draft"
+    || campaign.status === "paused"
+    || campaign.status === "archived"
+    ? campaign.status
+    : "active";
+  return {
+    name: campaign.name,
+    description: campaign.description,
+    starts_at: toDateTimeLocal(campaign.starts_at),
+    ends_at: toDateTimeLocal(campaign.ends_at),
+    status,
+  };
+}
+
+export function buildCampaignUpdatePayload(form: CampaignEditForm) {
+  return {
+    name: form.name.trim(),
+    description: form.description.trim(),
+    starts_at: toIsoDateTime(form.starts_at),
+    ends_at: toIsoDateTime(form.ends_at),
+    status: form.status,
+  };
+}
+
+export function trackingLinkToEditForm(link: GrowthTrackingLink): TrackingLinkEditForm {
+  return {
+    source_type: link.source_type,
+    source_name: link.source_name,
+    source_url: link.source_url,
+    audience_group: link.audience_group,
+    promoter: link.promoter,
+    landing_path: link.landing_path || "",
+    dimensions: dimensionsToForm(link.extra_dimensions),
+    valid_from: toDateTimeLocal(link.valid_from),
+    valid_until: toDateTimeLocal(link.valid_until),
+    status: link.status === "paused" || link.status === "archived" ? link.status : "active",
+  };
+}
+
+export function initializeGrowthEditForms(target: GrowthEditTarget | null) {
+  const forms = {
+    linkForm: {
+      ...emptyTrackingLinkEditForm,
+      dimensions: emptyTrackingLinkEditForm.dimensions.map((dimension) => ({ ...dimension })),
+    },
+    channelForm: { ...emptyChannelEditForm },
+    campaignForm: { ...emptyCampaignEditForm },
+  };
+  if (target?.kind === "link") forms.linkForm = trackingLinkToEditForm(target.item);
+  if (target?.kind === "channel") forms.channelForm = channelToEditForm(target.item);
+  if (target?.kind === "campaign") forms.campaignForm = campaignToEditForm(target.item);
+  return forms;
+}
+
+export function buildTrackingLinkUpdatePayload(
+  form: TrackingLinkEditForm,
+  originalStatus: GrowthStatus,
+) {
+  return {
+    source_type: form.source_type,
+    source_name: form.source_name.trim(),
+    source_url: form.source_url.trim(),
+    audience_group: form.audience_group.trim(),
+    promoter: form.promoter.trim(),
+    landing_path: form.landing_path.trim() || null,
+    extra_dimensions: dimensionsToPayload(form.dimensions),
+    valid_from: toIsoDateTime(form.valid_from),
+    valid_until: toIsoDateTime(form.valid_until),
+    status: originalStatus === "archived" ? "archived" as const : form.status,
+  };
+}
+
+export function buildTrackingLinkPayload(form: TrackingLinkForm) {
+  const extraDimensions = dimensionsToPayload(form.dimensions);
   return {
     site_id: form.site_id.trim(),
     campaign_id: form.campaign_id.trim(),
@@ -379,6 +567,10 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
   const [loadError, setLoadError] = useState("");
   const [saving, setSaving] = useState(false);
   const [createModal, setCreateModal] = useState<GrowthCreateKind | null>(null);
+  const [editTarget, setEditTarget] = useState<GrowthEditTarget | null>(null);
+  const [linkEditForm, setLinkEditForm] = useState<TrackingLinkEditForm>(() => initializeGrowthEditForms(null).linkForm);
+  const [channelEditForm, setChannelEditForm] = useState<ChannelEditForm>(() => initializeGrowthEditForms(null).channelForm);
+  const [campaignEditForm, setCampaignEditForm] = useState<CampaignEditForm>(() => initializeGrowthEditForms(null).campaignForm);
 
   const applyWorkspaceData = (data: Awaited<ReturnType<typeof requestWorkspaceData>>, preferredSiteId?: string) => {
     setSites(data.sites);
@@ -516,7 +708,28 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
     }
   };
 
+  const clearEditState = () => {
+    const forms = initializeGrowthEditForms(null);
+    setEditTarget(null);
+    setLinkEditForm(forms.linkForm);
+    setChannelEditForm(forms.channelForm);
+    setCampaignEditForm(forms.campaignForm);
+  };
+
+  const openEdit = (target: GrowthEditTarget) => {
+    if (saving) return;
+    const forms = initializeGrowthEditForms(target);
+    resetCreateForm(createModal);
+    setCreateModal(null);
+    setLinkEditForm(forms.linkForm);
+    setChannelEditForm(forms.channelForm);
+    setCampaignEditForm(forms.campaignForm);
+    setEditTarget(target);
+  };
+
   const openCreateModal = (kind: GrowthCreateKind) => {
+    if (saving) return;
+    clearEditState();
     resetCreateForm(kind);
     setCreateModal(kind);
   };
@@ -525,6 +738,11 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
     if (saving) return;
     resetCreateForm(createModal);
     setCreateModal(null);
+  };
+
+  const closeEdit = () => {
+    if (saving) return;
+    clearEditState();
   };
 
   const createLink = async () => {
@@ -611,6 +829,62 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
       "站点接入配置已保存",
     );
 
+  const saveLinkEdit = async () => {
+    if (editTarget?.kind !== "link") return;
+    if (!linkEditForm.source_name.trim()) {
+      showToast("具体来源名称不能为空", true);
+      return;
+    }
+    if (!isValidGrowthTimeRange(linkEditForm.valid_from, linkEditForm.valid_until)) {
+      showToast("推广链接失效时间必须晚于生效时间", true);
+      return;
+    }
+    const saved = await runMutation(
+      () => api(`/growth/tracking-links/${encodeURIComponent(editTarget.item.tracking_link_id)}`, token, {
+        method: "PATCH",
+        body: JSON.stringify(buildTrackingLinkUpdatePayload(linkEditForm, editTarget.item.status)),
+      }),
+      "推广链接已更新",
+    );
+    if (saved) clearEditState();
+  };
+
+  const saveChannelEdit = async () => {
+    if (editTarget?.kind !== "channel") return;
+    if (!channelEditForm.name.trim()) {
+      showToast("渠道名称不能为空", true);
+      return;
+    }
+    const saved = await runMutation(
+      () => api(`/growth/channels/${encodeURIComponent(editTarget.item.channel_id)}`, token, {
+        method: "PATCH",
+        body: JSON.stringify(buildChannelUpdatePayload(channelEditForm)),
+      }),
+      "渠道已更新",
+    );
+    if (saved) clearEditState();
+  };
+
+  const saveCampaignEdit = async () => {
+    if (editTarget?.kind !== "campaign") return;
+    if (!campaignEditForm.name.trim()) {
+      showToast("活动名称不能为空", true);
+      return;
+    }
+    if (!isValidGrowthTimeRange(campaignEditForm.starts_at, campaignEditForm.ends_at)) {
+      showToast("活动结束时间必须晚于开始时间", true);
+      return;
+    }
+    const saved = await runMutation(
+      () => api(`/growth/campaigns/${encodeURIComponent(editTarget.item.campaign_id)}`, token, {
+        method: "PATCH",
+        body: JSON.stringify(buildCampaignUpdatePayload(campaignEditForm)),
+      }),
+      "活动已更新",
+    );
+    if (saved) clearEditState();
+  };
+
   const toggleLink = (link: GrowthTrackingLink) => {
     if (link.status === "archived") return;
     return runMutation(
@@ -647,6 +921,10 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
       loadError={loadError}
       saving={saving}
       createModal={createModal}
+      editTarget={editTarget}
+      linkEditForm={linkEditForm}
+      channelEditForm={channelEditForm}
+      campaignEditForm={campaignEditForm}
       onTabChange={setActiveTab}
       onOpenCreate={openCreateModal}
       onCloseCreate={closeCreateModal}
@@ -663,6 +941,16 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
       onSelectLinkSite={selectLinkSite}
       onCopyLink={copyLink}
       onRetry={retryLoad}
+      onOpenLinkEdit={(link) => openEdit({ kind: "link", item: link })}
+      onOpenChannelEdit={(channel) => openEdit({ kind: "channel", item: channel })}
+      onOpenCampaignEdit={(campaign) => openEdit({ kind: "campaign", item: campaign })}
+      onCloseEdit={closeEdit}
+      onLinkEditFormChange={setLinkEditForm}
+      onChannelEditFormChange={setChannelEditForm}
+      onCampaignEditFormChange={setCampaignEditForm}
+      onSaveLinkEdit={saveLinkEdit}
+      onSaveChannelEdit={saveChannelEdit}
+      onSaveCampaignEdit={saveCampaignEdit}
     />
   );
 }
@@ -681,6 +969,10 @@ type WorkspaceProps = {
   loading: boolean;
   saving: boolean;
   createModal: GrowthCreateKind | null;
+  editTarget: GrowthEditTarget | null;
+  linkEditForm: TrackingLinkEditForm;
+  channelEditForm: ChannelEditForm;
+  campaignEditForm: CampaignEditForm;
   loadError?: string;
   onTabChange: (tab: TrafficAnalysisTab) => void;
   onOpenCreate: (kind: GrowthCreateKind) => void;
@@ -698,6 +990,16 @@ type WorkspaceProps = {
   onSelectLinkSite: (siteId: string) => void;
   onCopyLink: (url: string) => void;
   onRetry?: () => void;
+  onOpenLinkEdit: (link: GrowthTrackingLink) => void;
+  onOpenChannelEdit: (channel: GrowthChannel) => void;
+  onOpenCampaignEdit: (campaign: GrowthCampaign) => void;
+  onCloseEdit: () => void;
+  onLinkEditFormChange: (form: TrackingLinkEditForm) => void;
+  onChannelEditFormChange: (form: ChannelEditForm) => void;
+  onCampaignEditFormChange: (form: CampaignEditForm) => void;
+  onSaveLinkEdit: () => void;
+  onSaveChannelEdit: () => void;
+  onSaveCampaignEdit: () => void;
 };
 
 const sourceTypeLabels: Record<TrackingSourceType, string> = {
@@ -751,10 +1053,15 @@ function SiteSelect({
 export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
   const {
     activeTab, sites, channels, campaigns, trackingLinks, selectedSiteId,
-    linkForm, channelForm, campaignForm, siteForm, loading, saving, createModal, loadError = "",
+    linkForm, channelForm, campaignForm, siteForm, loading, saving, createModal,
+    editTarget, linkEditForm, channelEditForm, campaignEditForm,
+    loadError = "",
     onTabChange, onOpenCreate, onCloseCreate, onLinkFormChange, onChannelFormChange, onCampaignFormChange,
     onSiteFormChange, onCreateLink, onCreateChannel, onCreateCampaign,
     onSaveSite, onToggleLink, onSelectSite, onSelectLinkSite, onCopyLink, onRetry = () => undefined,
+    onOpenLinkEdit, onOpenChannelEdit, onOpenCampaignEdit, onCloseEdit,
+    onLinkEditFormChange, onChannelEditFormChange, onCampaignEditFormChange,
+    onSaveLinkEdit, onSaveChannelEdit, onSaveCampaignEdit,
   } = props;
   const [linkFilters, setLinkFilters] = useState<TrackingLinkFilters>(emptyTrackingLinkFilters);
   const [channelFilters, setChannelFilters] = useState<ChannelFilters>(emptyChannelFilters);
@@ -774,6 +1081,8 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
   const visibleLinks = filterTrackingLinks(trackingLinks, linkFilters);
   const visibleChannels = filterChannels(channels, channelFilters);
   const visibleCampaigns = filterCampaigns(campaigns, campaignFilters);
+  const linkEditTimeInvalid = !isValidGrowthTimeRange(linkEditForm.valid_from, linkEditForm.valid_until);
+  const campaignEditTimeInvalid = !isValidGrowthTimeRange(campaignEditForm.starts_at, campaignEditForm.ends_at);
 
   return (
     <section className="view accounts-page growth-workspace-page">
@@ -867,6 +1176,7 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
                     <span>{link.channel_name || "未命名渠道"} · {link.campaign_name || "未命名活动"} · {sourceTypeLabels[link.source_type]}</span>
                   </div>
                   <div className="growth-row-actions">
+                    <button aria-label={`编辑推广链接 ${link.source_name}`} className="ghost compact-button" disabled={saving} type="button" onClick={() => onOpenLinkEdit(link)}>编辑</button>
                     <button className="ghost" type="button" onClick={() => onCopyLink(link.public_url)}>复制</button>
                     <button className="ghost" type="button" disabled={saving || link.status === "archived"} onClick={() => onToggleLink(link)}>{link.status === "archived" ? "已归档" : link.status === "active" ? "停用" : "启用"}</button>
                   </div>
@@ -896,7 +1206,11 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
             <div className="growth-source-rows">
               {visibleChannels.map((channel) => (
                 <div className="growth-source-row" key={channel.channel_id}>
-                  <strong>{channel.name}</strong><code>{channel.code}</code><span>{channel.description || "无说明"}</span><span className={`status-pill ${channel.status}`}>{trackingStatusLabel(channel.status)}</span>
+                  <strong>{channel.name}</strong><code>{channel.code}</code><span>{channel.description || "无说明"}</span>
+                  <div className="growth-source-actions">
+                    <span className={`status-pill ${channel.status}`}>{trackingStatusLabel(channel.status)}</span>
+                    <button aria-label={`编辑渠道 ${channel.name}`} className="ghost compact-button" disabled={saving} type="button" onClick={() => onOpenChannelEdit(channel)}>编辑</button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -923,7 +1237,11 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
             <div className="growth-source-rows">
               {visibleCampaigns.map((campaign) => (
                 <div className="growth-source-row" key={campaign.campaign_id}>
-                  <strong>{campaign.name}</strong><code>{campaign.code}</code><span>{campaign.site_name || campaign.site_id} · {campaign.channel_name || channels.find((item) => item.channel_id === campaign.channel_id)?.name}</span><span className={`status-pill ${campaign.status}`}>{trackingStatusLabel(campaign.status)}</span>
+                  <strong>{campaign.name}</strong><code>{campaign.code}</code><span>{campaign.site_name || campaign.site_id} · {campaign.channel_name || channels.find((item) => item.channel_id === campaign.channel_id)?.name}</span>
+                  <div className="growth-source-actions">
+                    <span className={`status-pill ${campaign.status}`}>{trackingStatusLabel(campaign.status)}</span>
+                    <button aria-label={`编辑活动 ${campaign.name}`} className="ghost compact-button" disabled={saving} type="button" onClick={() => onOpenCampaignEdit(campaign)}>编辑</button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -957,7 +1275,7 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
         </form>
       )}
 
-      {createModal === "link" && (
+      {!editTarget && createModal === "link" && (
         <GrowthCreateModal title="新建推广链接" submitLabel="创建链接" saving={saving} submitDisabled={!linkForm.site_id || !linkForm.campaign_id || !linkForm.source_name.trim()} onClose={onCloseCreate} onSubmit={onCreateLink}>
           <div className="growth-form-grid" data-growth-form="link">
             <SiteSelect sites={sites} value={linkForm.site_id} disabled={saving} onChange={onSelectLinkSite} />
@@ -1029,7 +1347,7 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
         </GrowthCreateModal>
       )}
 
-      {createModal === "channel" && (
+      {!editTarget && createModal === "channel" && (
         <GrowthCreateModal title="新建渠道" submitLabel="创建渠道" saving={saving} submitDisabled={!channelForm.code.trim() || !channelForm.name.trim()} onClose={onCloseCreate} onSubmit={onCreateChannel}>
           <div className="growth-form-grid compact" data-growth-form="channel">
             <label><span className="field-label"><strong>渠道编码</strong></span><input value={channelForm.code} onChange={(event) => onChannelFormChange({ ...channelForm, code: event.target.value })} placeholder="xiaohongshu" required /></label>
@@ -1039,7 +1357,7 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
         </GrowthCreateModal>
       )}
 
-      {createModal === "campaign" && (
+      {!editTarget && createModal === "campaign" && (
         <GrowthCreateModal title="新建活动" submitLabel="创建活动" saving={saving} submitDisabled={!campaignForm.site_id || campaignSiteMissing || !campaignForm.channel_id || !isValidGrowthCode(campaignForm.code) || campaignCodeDuplicate || !campaignForm.name.trim()} onClose={onCloseCreate} onSubmit={onCreateCampaign}>
           <div className="growth-form-grid compact" data-growth-form="campaign">
             <SiteSelect sites={sites} value={campaignForm.site_id} disabled={saving} onChange={(siteId) => onCampaignFormChange({ ...campaignForm, site_id: siteId })} />
@@ -1073,6 +1391,78 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
             </label>
             <label><span className="field-label"><strong>活动名称</strong></span><input value={campaignForm.name} onChange={(event) => onCampaignFormChange({ ...campaignForm, name: event.target.value })} placeholder="2026 夏季推广" required /></label>
             <label className="span-2"><span className="field-label"><strong>说明</strong><span>（可选）</span></span><input value={campaignForm.description} onChange={(event) => onCampaignFormChange({ ...campaignForm, description: event.target.value })} /></label>
+          </div>
+        </GrowthCreateModal>
+      )}
+
+      {editTarget?.kind === "link" && (
+        <GrowthCreateModal
+          title="编辑推广链接"
+          submitLabel="保存修改"
+          saving={saving}
+          submitDisabled={!linkEditForm.source_name.trim() || linkEditTimeInvalid}
+          onClose={onCloseEdit}
+          onSubmit={onSaveLinkEdit}
+        >
+          <div className="growth-edit-identity" aria-label="推广链接不可修改信息">
+            <div><span>链接编码</span><strong>{editTarget.item.code}</strong></div>
+            <div><span>所属站点</span><strong>{editTarget.item.site_name || sites.find((site) => site.site_id === editTarget.item.site_id)?.site_name || editTarget.item.site_id}</strong></div>
+            <div><span>所属渠道</span><strong>{editTarget.item.channel_name || channels.find((channel) => channel.channel_id === editTarget.item.channel_id)?.name || editTarget.item.channel_id}</strong></div>
+            <div><span>所属活动</span><strong>{editTarget.item.campaign_name || campaigns.find((campaign) => campaign.campaign_id === editTarget.item.campaign_id)?.name || editTarget.item.campaign_id}</strong></div>
+            <div className="span-2"><span>公开链接</span><strong>{editTarget.item.public_url}</strong></div>
+          </div>
+          <div className="growth-form-grid growth-edit-fields" data-growth-edit-form="link">
+            <label><span className="field-label"><strong>具体来源类型</strong></span><select value={linkEditForm.source_type} onChange={(event) => onLinkEditFormChange({ ...linkEditForm, source_type: event.target.value as TrackingSourceType })}>{Object.entries(sourceTypeLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+            <label><span className="field-label"><strong>状态</strong></span><select data-growth-edit-status="link" value={linkEditForm.status} disabled={editTarget.item.status === "archived"} onChange={(event) => onLinkEditFormChange({ ...linkEditForm, status: event.target.value as TrackingLinkEditForm["status"] })}><option value="active">启用</option><option value="paused">停用</option><option value="archived">归档</option></select>{editTarget.item.status === "archived" && <span className="growth-field-message is-muted">归档后不可重新启用</span>}</label>
+            <label className="span-2"><span className="field-label"><strong>具体来源名称</strong></span><input value={linkEditForm.source_name} onChange={(event) => onLinkEditFormChange({ ...linkEditForm, source_name: event.target.value })} required /></label>
+            <label className="span-2"><span className="field-label"><strong>来源 URL</strong><span>（可选）</span></span><input type="url" value={linkEditForm.source_url} onChange={(event) => onLinkEditFormChange({ ...linkEditForm, source_url: event.target.value })} /></label>
+            <label><span className="field-label"><strong>受众</strong><span>（可选）</span></span><input value={linkEditForm.audience_group} onChange={(event) => onLinkEditFormChange({ ...linkEditForm, audience_group: event.target.value })} /></label>
+            <label><span className="field-label"><strong>推广人</strong><span>（可选）</span></span><input value={linkEditForm.promoter} onChange={(event) => onLinkEditFormChange({ ...linkEditForm, promoter: event.target.value })} /></label>
+            <label><span className="field-label"><strong>落地路径</strong></span><input value={linkEditForm.landing_path} onChange={(event) => onLinkEditFormChange({ ...linkEditForm, landing_path: event.target.value })} /></label>
+            <label><span className="field-label"><strong>生效时间</strong><span>（可选）</span></span><input type="datetime-local" value={linkEditForm.valid_from} onChange={(event) => onLinkEditFormChange({ ...linkEditForm, valid_from: event.target.value })} /></label>
+            <label><span className="field-label"><strong>失效时间</strong><span>（可选）</span></span><input type="datetime-local" value={linkEditForm.valid_until} onChange={(event) => onLinkEditFormChange({ ...linkEditForm, valid_until: event.target.value })} /></label>
+            {linkEditTimeInvalid && <span className="growth-field-message is-error span-2" role="alert">失效时间必须晚于生效时间</span>}
+          </div>
+          <fieldset className="growth-dimensions">
+            <legend>扩展维度 <span>最多 3 个字符串键值</span></legend>
+            {linkEditForm.dimensions.slice(0, 3).map((dimension, index) => (
+              <div key={index}>
+                <input aria-label={`编辑扩展维度 ${index + 1} 名称`} value={dimension.key} onChange={(event) => { const dimensions = linkEditForm.dimensions.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item); onLinkEditFormChange({ ...linkEditForm, dimensions }); }} placeholder="字段名" />
+                <input aria-label={`编辑扩展维度 ${index + 1} 值`} value={dimension.value} onChange={(event) => { const dimensions = linkEditForm.dimensions.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item); onLinkEditFormChange({ ...linkEditForm, dimensions }); }} placeholder="字符串值" />
+              </div>
+            ))}
+          </fieldset>
+        </GrowthCreateModal>
+      )}
+
+      {editTarget?.kind === "channel" && (
+        <GrowthCreateModal title="编辑渠道" submitLabel="保存修改" saving={saving} submitDisabled={!channelEditForm.name.trim()} onClose={onCloseEdit} onSubmit={onSaveChannelEdit}>
+          <div className="growth-edit-identity" aria-label="渠道不可修改信息">
+            <div><span>渠道编码</span><strong>{editTarget.item.code}</strong></div>
+            <div><span>渠道 ID</span><strong>{editTarget.item.channel_id}</strong></div>
+          </div>
+          <div className="growth-form-grid compact growth-edit-fields" data-growth-edit-form="channel">
+            <label><span className="field-label"><strong>渠道名称</strong></span><input value={channelEditForm.name} onChange={(event) => onChannelEditFormChange({ ...channelEditForm, name: event.target.value })} required /></label>
+            <label><span className="field-label"><strong>状态</strong></span><select value={channelEditForm.status} onChange={(event) => onChannelEditFormChange({ ...channelEditForm, status: event.target.value as ChannelEditForm["status"] })}><option value="active">启用</option><option value="disabled">停用</option><option value="archived">归档</option></select></label>
+            <label className="span-2"><span className="field-label"><strong>说明</strong><span>（可选）</span></span><input value={channelEditForm.description} onChange={(event) => onChannelEditFormChange({ ...channelEditForm, description: event.target.value })} /></label>
+          </div>
+        </GrowthCreateModal>
+      )}
+
+      {editTarget?.kind === "campaign" && (
+        <GrowthCreateModal title="编辑活动" submitLabel="保存修改" saving={saving} submitDisabled={!campaignEditForm.name.trim() || campaignEditTimeInvalid} onClose={onCloseEdit} onSubmit={onSaveCampaignEdit}>
+          <div className="growth-edit-identity" aria-label="活动不可修改信息">
+            <div><span>活动编码</span><strong>{editTarget.item.code}</strong></div>
+            <div><span>所属站点</span><strong>{editTarget.item.site_name || sites.find((site) => site.site_id === editTarget.item.site_id)?.site_name || editTarget.item.site_id}</strong></div>
+            <div><span>所属渠道</span><strong>{editTarget.item.channel_name || channels.find((channel) => channel.channel_id === editTarget.item.channel_id)?.name || editTarget.item.channel_id}</strong></div>
+          </div>
+          <div className="growth-form-grid compact growth-edit-fields" data-growth-edit-form="campaign">
+            <label><span className="field-label"><strong>活动名称</strong></span><input value={campaignEditForm.name} onChange={(event) => onCampaignEditFormChange({ ...campaignEditForm, name: event.target.value })} required /></label>
+            <label><span className="field-label"><strong>状态</strong></span><select value={campaignEditForm.status} onChange={(event) => onCampaignEditFormChange({ ...campaignEditForm, status: event.target.value as CampaignEditForm["status"] })}><option value="draft">草稿</option><option value="active">启用</option><option value="paused">停用</option><option value="archived">归档</option></select></label>
+            <label className="span-2"><span className="field-label"><strong>说明</strong><span>（可选）</span></span><input value={campaignEditForm.description} onChange={(event) => onCampaignEditFormChange({ ...campaignEditForm, description: event.target.value })} /></label>
+            <label><span className="field-label"><strong>开始时间</strong><span>（可选）</span></span><input type="datetime-local" value={campaignEditForm.starts_at} onChange={(event) => onCampaignEditFormChange({ ...campaignEditForm, starts_at: event.target.value })} /></label>
+            <label><span className="field-label"><strong>结束时间</strong><span>（可选）</span></span><input type="datetime-local" value={campaignEditForm.ends_at} onChange={(event) => onCampaignEditFormChange({ ...campaignEditForm, ends_at: event.target.value })} /></label>
+            {campaignEditTimeInvalid && <span className="growth-field-message is-error span-2" role="alert">结束时间必须晚于开始时间</span>}
           </div>
         </GrowthCreateModal>
       )}

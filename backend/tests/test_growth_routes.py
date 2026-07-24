@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 from app.modules.growth import schemas
 from app.routers import growth as growth_router
@@ -54,6 +55,91 @@ class GrowthConfigurationRouteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(getattr(caught.exception, "status_code", None), 409)
         self.assertEqual(getattr(caught.exception, "detail", None), message)
+
+    async def test_update_channel_writes_audit_with_public_result(self) -> None:
+        channel_id = UUID("11111111-1111-1111-1111-111111111111")
+        result = {
+            "channel_id": str(channel_id),
+            "code": "xiaohongshu",
+            "name": "小红书运营",
+            "description": "内容平台",
+            "status": "active",
+        }
+        update_mock = AsyncMock(return_value=result)
+        audit_mock = AsyncMock()
+
+        with (
+            patch.object(growth_router, "update_channel_config", update_mock, create=True),
+            patch.object(growth_router, "write_audit_log", audit_mock),
+        ):
+            response = await growth_router.patch_growth_channel(
+                channel_id,
+                schemas.ChannelUpdate(name="小红书运营", description="内容平台"),
+                actor={"_id": "admin@example.com", "role": "admin"},
+                db=MagicMock(),
+            )
+
+        self.assertEqual(response, result)
+        self.assertEqual(audit_mock.await_args.kwargs["action"], "growth.channel.update")
+        self.assertEqual(audit_mock.await_args.kwargs["resource_id"], str(channel_id))
+        self.assertEqual(audit_mock.await_args.kwargs["after"], result)
+
+    async def test_update_campaign_writes_audit_with_public_result(self) -> None:
+        campaign_id = UUID("22222222-2222-2222-2222-222222222222")
+        result = {
+            "campaign_id": str(campaign_id),
+            "site_id": "aiwelink",
+            "channel_id": "11111111-1111-1111-1111-111111111111",
+            "code": "summer-2026",
+            "name": "夏季推广调整",
+            "description": "",
+            "status": "active",
+        }
+        update_mock = AsyncMock(return_value=result)
+        audit_mock = AsyncMock()
+
+        with (
+            patch.object(growth_router, "update_campaign_config", update_mock, create=True),
+            patch.object(growth_router, "write_audit_log", audit_mock),
+        ):
+            response = await growth_router.patch_growth_campaign(
+                campaign_id,
+                schemas.CampaignUpdate(name="夏季推广调整"),
+                actor={"_id": "admin@example.com", "role": "admin"},
+                db=MagicMock(),
+            )
+
+        self.assertEqual(response, result)
+        self.assertEqual(audit_mock.await_args.kwargs["action"], "growth.campaign.update")
+        self.assertEqual(audit_mock.await_args.kwargs["resource_id"], str(campaign_id))
+        self.assertEqual(audit_mock.await_args.kwargs["after"], result)
+
+    async def test_update_tracking_link_writes_audit_with_public_result(self) -> None:
+        tracking_link_id = UUID("33333333-3333-3333-3333-333333333333")
+        result = {
+            "tracking_link_id": str(tracking_link_id),
+            "code": "7km4q2xd",
+            "source_name": "更新后的来源",
+            "status": "active",
+        }
+        update_mock = AsyncMock(return_value=result)
+        audit_mock = AsyncMock()
+
+        with (
+            patch.object(growth_router, "update_tracking_link_config", update_mock, create=True),
+            patch.object(growth_router, "write_audit_log", audit_mock),
+        ):
+            response = await growth_router.patch_growth_tracking_link(
+                tracking_link_id,
+                schemas.TrackingLinkUpdate(source_name="更新后的来源"),
+                actor={"_id": "admin@example.com", "role": "admin"},
+                db=MagicMock(),
+            )
+
+        self.assertEqual(response, result)
+        self.assertEqual(audit_mock.await_args.kwargs["action"], "growth.tracking_link.update")
+        self.assertEqual(audit_mock.await_args.kwargs["resource_id"], str(tracking_link_id))
+        self.assertEqual(audit_mock.await_args.kwargs["after"], result)
 
     async def test_update_site_requires_existing_client_site(self) -> None:
         update_mock = AsyncMock(side_effect=LookupError("client site not found"))

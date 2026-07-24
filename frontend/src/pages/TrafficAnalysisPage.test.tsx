@@ -3,17 +3,28 @@ import { describe, expect, it } from "vitest";
 
 import {
   TrafficAnalysisWorkspace,
+  buildCampaignUpdatePayload,
+  buildChannelUpdatePayload,
+  buildTrackingLinkUpdatePayload,
+  campaignToEditForm,
+  channelToEditForm,
+  emptyCampaignEditForm,
   buildTrackingLinkPayload,
+  emptyChannelEditForm,
   emptyCampaignForm,
   emptyChannelForm,
   emptySiteForm,
+  emptyTrackingLinkEditForm,
   emptyTrackingLinkForm,
   filterCampaigns,
   filterChannels,
   filterTrackingLinks,
   initializeGrowthCreateForms,
+  initializeGrowthEditForms,
+  isValidGrowthTimeRange,
   runMutationAndRefresh,
   selectTrackingLinkFormSite,
+  trackingLinkToEditForm,
   type GrowthCampaign,
   type GrowthChannel,
   type GrowthSite,
@@ -108,6 +119,16 @@ const callbacks = {
   onSelectSite: () => undefined,
   onSelectLinkSite: () => undefined,
   onCopyLink: () => undefined,
+  onOpenLinkEdit: () => undefined,
+  onOpenChannelEdit: () => undefined,
+  onOpenCampaignEdit: () => undefined,
+  onCloseEdit: () => undefined,
+  onLinkEditFormChange: () => undefined,
+  onChannelEditFormChange: () => undefined,
+  onCampaignEditFormChange: () => undefined,
+  onSaveLinkEdit: () => undefined,
+  onSaveChannelEdit: () => undefined,
+  onSaveCampaignEdit: () => undefined,
 };
 
 function renderWorkspace(
@@ -117,6 +138,7 @@ function renderWorkspace(
   createModal: "link" | "channel" | "campaign" | null = null,
   workspaceCampaigns: GrowthCampaign[] = [campaign],
   workspaceSites: GrowthSite[] = [site],
+  editState: Record<string, unknown> = {},
 ) {
   return renderToStaticMarkup(
     <TrafficAnalysisWorkspace
@@ -139,13 +161,68 @@ function renderWorkspace(
       saving={false}
       loadError={loadError}
       createModal={createModal}
+      editTarget={null}
+      linkEditForm={emptyTrackingLinkEditForm}
+      channelEditForm={emptyChannelEditForm}
+      campaignEditForm={emptyCampaignEditForm}
       onRetry={() => undefined}
       {...callbacks}
+      {...editState}
     />,
   );
 }
 
 describe("traffic analysis configuration workspace", () => {
+  it("builds an allowlisted channel update payload", () => {
+    const form = channelToEditForm({ ...channel, name: " 小红书运营 " });
+    const payload = buildChannelUpdatePayload({ ...form, description: " 内容平台 " });
+
+    expect(payload).toEqual({ name: "小红书运营", description: "内容平台", status: "active" });
+    expect(payload).not.toHaveProperty("channel_id");
+    expect(payload).not.toHaveProperty("code");
+  });
+
+  it("builds an allowlisted campaign update payload with optional times", () => {
+    const startsAt = "2026-07-24T08:30:00+08:00";
+    const form = campaignToEditForm({ ...campaign, starts_at: startsAt, ends_at: null });
+    const payload = buildCampaignUpdatePayload({ ...form, name: " 夏季推广调整 " });
+
+    expect(payload.name).toBe("夏季推广调整");
+    expect(new Date(payload.starts_at).getTime()).toBe(new Date(startsAt).getTime());
+    expect(payload.ends_at).toBeNull();
+    expect(payload).not.toHaveProperty("campaign_id");
+    expect(payload).not.toHaveProperty("site_id");
+    expect(payload).not.toHaveProperty("channel_id");
+    expect(payload).not.toHaveProperty("code");
+  });
+
+  it("builds an allowlisted tracking-link update and preserves archive state", () => {
+    const validFrom = "2026-07-24T09:15:00+08:00";
+    const form = trackingLinkToEditForm({
+      ...trackingLink,
+      extra_dimensions: { region: "cn", topic: "api" },
+      valid_from: validFrom,
+      valid_until: null,
+      status: "archived",
+    });
+    const payload = buildTrackingLinkUpdatePayload({
+      ...form,
+      source_name: " 更新后的来源 ",
+      status: "active",
+      dimensions: [...form.dimensions, { key: "ignored", value: "fourth" }],
+    }, "archived");
+
+    expect(payload.source_name).toBe("更新后的来源");
+    expect(payload.extra_dimensions).toEqual({ region: "cn", topic: "api" });
+    expect(new Date(payload.valid_from).getTime()).toBe(new Date(validFrom).getTime());
+    expect(payload.valid_until).toBeNull();
+    expect(payload.status).toBe("archived");
+    expect(payload).not.toHaveProperty("tracking_link_id");
+    expect(payload).not.toHaveProperty("code");
+    expect(payload).not.toHaveProperty("site_id");
+    expect(payload).not.toHaveProperty("campaign_id");
+  });
+
   it("creates fresh modal forms from the globally selected site after cancellation", () => {
     const forms = initializeGrowthCreateForms(site.site_id, [site, secondarySite], [campaign, secondaryCampaign]);
 
@@ -242,6 +319,93 @@ describe("traffic analysis configuration workspace", () => {
 
     expect(linkModal).toContain('role="dialog"');
     expect(linkModal).toContain('data-growth-form="link"');
+  });
+
+  it("offers edit actions for tracking links, channels, and campaigns", () => {
+    expect(renderWorkspace("links")).toContain('aria-label="编辑推广链接 Claude API 入门第 3 篇"');
+    expect(renderWorkspace("channels")).toContain('aria-label="编辑渠道 小红书"');
+    expect(renderWorkspace("campaigns")).toContain('aria-label="编辑活动 2026 夏季推广"');
+  });
+
+  it("renders the tracking-link edit dialog with immutable attribution identity", () => {
+    const html = renderWorkspace("links", "", undefined, null, [campaign], [site], {
+      editTarget: { kind: "link", item: trackingLink },
+      linkEditForm: trackingLinkToEditForm(trackingLink),
+    });
+
+    expect(html).toContain("编辑推广链接");
+    expect(html).toContain('data-growth-edit-form="link"');
+    expect(html).toContain("链接编码");
+    expect(html).toContain("7km4q2xd");
+    expect(html).toContain("AIWeLink API");
+    expect(html).toContain("2026 夏季推广");
+    expect(html).toContain("具体来源名称");
+    expect(html).not.toContain('data-growth-form="link"');
+  });
+
+  it("renders channel and campaign edit dialogs with immutable codes and relationships", () => {
+    const channelHtml = renderWorkspace("channels", "", undefined, null, [campaign], [site], {
+      editTarget: { kind: "channel", item: channel },
+      channelEditForm: channelToEditForm(channel),
+    });
+    const campaignHtml = renderWorkspace("campaigns", "", undefined, null, [campaign], [site], {
+      editTarget: { kind: "campaign", item: campaign },
+      campaignEditForm: campaignToEditForm(campaign),
+    });
+
+    expect(channelHtml).toContain("编辑渠道");
+    expect(channelHtml).toContain('data-growth-edit-form="channel"');
+    expect(channelHtml).toContain("渠道编码");
+    expect(channelHtml).toContain("xiaohongshu");
+    expect(campaignHtml).toContain("编辑活动");
+    expect(campaignHtml).toContain('data-growth-edit-form="campaign"');
+    expect(campaignHtml).toContain("活动编码");
+    expect(campaignHtml).toContain("summer-2026");
+    expect(campaignHtml).toContain("所属渠道");
+  });
+
+  it("keeps archived tracking links archived in the edit dialog", () => {
+    const archived = { ...trackingLink, status: "archived" as const };
+    const html = renderWorkspace("links", "", undefined, null, [campaign], [site], {
+      editTarget: { kind: "link", item: archived },
+      linkEditForm: trackingLinkToEditForm(archived),
+    });
+
+    expect(html).toContain('data-growth-edit-status="link"');
+    expect(html).toMatch(/data-growth-edit-status="link"[^>]*disabled=""/);
+    expect(html).toContain("归档后不可重新启用");
+  });
+
+  it("renders only the edit dialog when create and edit state overlap", () => {
+    const html = renderWorkspace("channels", "", undefined, "channel", [campaign], [site], {
+      editTarget: { kind: "channel", item: channel },
+      channelEditForm: channelToEditForm(channel),
+    });
+
+    expect(html).toContain('data-growth-edit-form="channel"');
+    expect(html).not.toContain('data-growth-form="channel"');
+  });
+
+  it("creates isolated edit snapshots without changing create forms", () => {
+    const linkWithDimensions = { ...trackingLink, extra_dimensions: { region: "cn" } };
+    const first = initializeGrowthEditForms({ kind: "link", item: linkWithDimensions });
+    first.linkForm.dimensions[0].key = "changed";
+    const second = initializeGrowthEditForms({ kind: "link", item: linkWithDimensions });
+
+    expect(second.linkForm.dimensions[0]).toEqual({ key: "region", value: "cn" });
+    expect(emptyTrackingLinkForm.dimensions[0]).toEqual({ key: "", value: "" });
+    expect(second.channelForm).toEqual(emptyChannelEditForm);
+    expect(second.campaignForm).toEqual(emptyCampaignEditForm);
+  });
+
+  it("validates optional Growth time ranges", () => {
+    expect(isValidGrowthTimeRange("", "")).toBe(true);
+    expect(isValidGrowthTimeRange("2026-07-24T09:00", "")).toBe(true);
+    expect(isValidGrowthTimeRange("", "2026-07-24T10:00")).toBe(true);
+    expect(isValidGrowthTimeRange("2026-07-24T09:00", "2026-07-24T10:00")).toBe(true);
+    expect(isValidGrowthTimeRange("2026-07-24T09:00", "2026-07-24T09:00")).toBe(false);
+    expect(isValidGrowthTimeRange("2026-07-24T10:00", "2026-07-24T09:00")).toBe(false);
+    expect(isValidGrowthTimeRange("not-a-time", "2026-07-24T09:00")).toBe(false);
   });
 
   it("labels draft campaigns as drafts", () => {
@@ -378,6 +542,10 @@ describe("traffic analysis configuration workspace", () => {
         loading={false}
         saving={false}
         createModal="link"
+        editTarget={null}
+        linkEditForm={emptyTrackingLinkEditForm}
+        channelEditForm={emptyChannelEditForm}
+        campaignEditForm={emptyCampaignEditForm}
         {...callbacks}
       />,
     );
