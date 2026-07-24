@@ -22,7 +22,7 @@ V1 固定采用以下方案：
 5. URL 中不传递推广来源、Session ID、用户 ID 或其他归因信息。
 6. 归因 Session 与 Sub2API/NewAPI 的登录 Session 完全独立。
 7. 一个站点账号最多归入一条推广链接。
-8. V1 使用按站点独立计算的首次有效触达：同一浏览器在同一站点先后访问多条推广链接时，保留该站点 30 天窗口内最早的有效链接；不同站点互不占用窗口。
+8. V1 使用注册前 30 天全局末次有效触发：每次有效推广点击覆盖该浏览器当前邀请并刷新 30 天窗口；注册来源按 `registered_at` 重建，注册后的点击不能倒灌。
 9. 注册成功并绑定后，后续点击其他推广链接不改写账号来源。
 10. 跨主域归因不属于 V1；未来需要时另立项目设计。
 
@@ -92,14 +92,14 @@ aiwelink-growth-service
 └── deploy                      # 服务、反向代理和密钥配置
 ```
 
-该仓库不包含主页组件、营销文案或前端页面。Public Gateway、Attribution API、Registration Edge 和 Sync Worker 可以由同一仓库分别构建、按职责独立部署。本文中的 Attribution Service 指 `services/attribution-api`，只接受可信服务身份调用。流量服务启动时检查 Growth Schema 版本，不自行执行生产数据库迁移。
+该仓库不包含主页组件、营销文案或前端页面。Public Gateway、Attribution API、Registration Edge 和 Sync Worker 可以由同一仓库分别构建、按职责独立部署。本文中的 Attribution Service 指 `services/attribution-api`，只接受可信服务身份调用。流量服务仓库拥有归因运行时表迁移；应用启动只检查 Schema 版本，生产迁移必须由受控部署步骤显式执行。
 
 ### 5.3 当前管理后台
 
 当前管理后台继续负责：
 
 - 客户站点管理；
-- Growth PostgreSQL 配置、Schema 定义和迁移；
+- Growth PostgreSQL 配置、基础配置表和运营分析表迁移；
 - 站点、渠道、活动和推广链接管理；
 - 运营看板和账号详情查询；
 - `owner/admin` 权限与操作审计。
@@ -124,11 +124,11 @@ API 分站只增加外置的注册归因适配层，不要求把 Growth 代码�
 
 | 组件 | 必要权限 |
 |---|---|
-| 管理后台 | 执行迁移；管理站点、渠道、活动和推广链接；读取看板数据 |
-| Public Gateway / Attribution API | 读取有效站点和推广配置；写入访问、归因 Session、站点首次触达和用户归因 |
+| 管理后台 | 管理基础配置表和运营分析表迁移；管理站点、渠道、活动和推广链接；读取看板数据 |
+| Public Gateway / Attribution API | 管理归因运行时表迁移；读取有效站点和推广配置；写入访问、归因 Session、末次邀请和用户归因 |
 | Sync Worker | 读取用户归因；写入调用、账单投影和用户汇总 |
 
-管理后台中的数据库配置是连接该 Growth PostgreSQL 的权威配置。部署系统或密钥管理服务向流量服务的各个部署单元注入最小权限凭据；主页前端代码库、浏览器、API 业务前端和 Sub2API 都不能取得数据库连接串。服务之间不复制 Growth 数据，也不通过业务站数据库传递归因 Session。
+管理后台中的数据库配置是连接该 Growth PostgreSQL 的权威配置。迁移按表归属分工，版本名必须全局唯一：管理后台当前拥有 `0001_initial` 和 `0002_operations_analytics`，流量服务拥有 `0002_attribution_sessions`。部署系统或密钥管理服务向流量服务的各个部署单元注入最小权限凭据；主页前端代码库、浏览器、API 业务前端和 Sub2API 都不能取得数据库连接串。服务之间不复制 Growth 数据，也不通过业务站数据库传递归因 Session。
 
 ### 5.6 两套新增代码的通信边界
 
@@ -221,9 +221,9 @@ Public Gateway 按以下顺序处理：
 5. Cookie 缺失、失效或服务端 Session 已过期时，生成新的高强度随机 Session ID。
 6. 以 Session ID 的服务端摘要生成匿名访客键，不保存原始 Cookie 值。
 7. 写入一条 `growth.link_visits` 访问事件。
-8. 按 `(session, site_id)` 保留该站点 30 天窗口内的首次有效推广触达；窗口到期后，下一次有效触达可建立新的 30 天窗口。
-9. 将 Session 的当前目标站点更新为本次链接的 `site_id`，但不因此覆盖该站点窗口内的首次来源。
-10. 返回父域 Cookie，并把服务端 Session 的技术有效期刷新到当前时间后 30 天。
+8. 按 `session_key_hash` 原子覆盖当前末次邀请，保存本次 `site_id`、`tracking_link_id`、`last_visit_id` 和 `last_touched_at`。
+9. 将末次邀请和服务端 Session 的 `expires_at` 刷新为 `last_touched_at + 30 天`。
+10. 返回父域 Cookie。
 11. 返回 `302` 到干净的 `https://aiwelink.cc/`，URL 不附加任何归因参数。
 
 ### 8.3 Cookie
@@ -251,8 +251,8 @@ Set-Cookie: awl_growth_sid=<256-bit-random-value>;
 - Cookie 只用于归因，不具有认证、授权或登录能力。
 - Cookie 中不保存 `code`、`tracking_link_id`、`site_id`、用户 ID 或来源名称。
 - 数据库保存 Session ID 的 HMAC/SHA-256 摘要，不保存浏览器原值。
-- 每个站点的归因窗口从该站点首次有效触达开始固定为 30 天，不因同站点重复点击延长。
-- Cookie 和服务端 Session 的技术有效期可在新的有效推广访问时刷新；这只维持匿名会话标识，不改变任何尚未到期的站点首次来源及其到期时间。
+- 每次有效推广点击都成为新的全局末次邀请，并把归因窗口刷新为 30 天。
+- 同一浏览器先后点击不同站点的推广链接时，只保留最后一次；注册站点与全局末次邀请站点不一致时，不回退到该站点更早的邀请。
 - 所有可接收父域 Cookie 的子域必须由 AIWeLink 控制并保持可信。
 
 ## 9. Session 与数据表
@@ -265,40 +265,39 @@ Set-Cookie: awl_growth_sid=<256-bit-random-value>;
 |---|---|
 | `session_key_hash` | 原始 Cookie 的服务端摘要，主键 |
 | `anonymous_visitor_key` | 用于访问人数去重的匿名键 |
-| `current_site_id` | 最近一次有效推广访问的目标站点，供主页选择目标 API 分站 |
 | `created_at` | Session 创建时间 |
-| `expires_at` | Session ID 的技术失效时间；新的有效推广访问可刷新到当前时间后 30 天 |
+| `expires_at` | Session ID 的技术失效时间；有效推广访问或主页访问可刷新 |
 | `last_seen_at` | 最近一次有效访问时间 |
 | `status` | `active`、`expired` 或 `revoked` |
 
-为了支持同一浏览器访问不同 API 分站，首次触达按站点保存在 `growth.session_attributions`：
+当前末次邀请保存在 `growth.session_attributions`：
 
 | 字段 | 含义 |
 |---|---|
 | `session_key_hash` | 归因 Session 摘要 |
-| `site_id` | 目标业务站点 |
-| `tracking_link_id` | 该站点首次有效推广链接 |
-| `first_visit_id` | 首次有效访问事件 |
-| `first_touched_at` | 首次有效触达时间 |
-| `expires_at` | 该站点首次触达窗口的固定失效时间，即 `first_touched_at + 30 天` |
+| `site_id` | 当前末次邀请目标站点 |
+| `tracking_link_id` | 当前末次有效推广链接 |
+| `last_visit_id` | 当前末次有效访问事件 |
+| `last_touched_at` | 末次有效触发时间 |
+| `expires_at` | `last_touched_at + 30 天` |
 
-主键为 `(session_key_hash, site_id)`。窗口未到期时冲突写入必须保持原记录；窗口到期后，下一次有效触达可以原子替换为新的首次来源并开始新的 30 天窗口。实现时使用事务和带到期条件的 UPSERT，避免并发点击改写窗口内来源。
+主键为 `session_key_hash`，每个 Session 全局只有一条当前邀请。每次有效点击无条件原子覆盖；并发点击按 PostgreSQL 实际接收顺序决定最后一条，每次点击仍分别保留 `link_visits` 原始事件。
 
 ### 9.2 与现有表的关系
 
 ```mermaid
 flowchart LR
     TL["tracking_links"] -->|"一对多"| LV["link_visits"]
-    S["attribution_sessions"] -->|"一对多"| SA["session_attributions"]
-    TL -->|"站点首次来源"| SA
-    LV -->|"first_visit_id"| SA
+    S["attribution_sessions"] -->|"一对零或一"| SA["session_attributions"]
+    TL -->|"当前末次邀请"| SA
+    LV -->|"last_visit_id"| SA
     SA -->|"注册成功时固化"| UA["user_attributions"]
     UA -->|"一对一派生汇总"| UF["user_facts"]
 ```
 
 - `link_visits` 保存每次访问事件。
 - `attribution_sessions` 表示浏览器持有的服务端归因会话。
-- `session_attributions` 保存该会话在每个站点当前 30 天窗口内的首次有效来源。
+- `session_attributions` 保存该会话当前 30 天窗口内的全局末次有效邀请。
 - `user_attributions` 保存注册账号的永久唯一来源。
 - `user_facts` 保存注册后调用和付费里程碑的派生结果。
 
@@ -313,7 +312,7 @@ GET https://aiwelink.cc/api/public/growth-context
 Cookie: awl_growth_sid=...
 ```
 
-接口读取 Session 的 `current_site_id`，并校验该站点的 `session_attributions` 尚未到期。接口只返回主页跳转所需的安全公开信息：
+接口读取 Session 当前未过期的 `session_attributions`。接口只返回主页跳转所需的安全公开信息：
 
 ```json
 {
@@ -342,7 +341,7 @@ Cookie: awl_growth_sid=...
 
 主页根据上下文处理入口：
 
-- 有有效归因 Session：注册和进入服务按钮优先指向 `current_site_id` 对应站点的 `target_url`。
+- 有有效末次邀请：注册和进入服务按钮优先指向该邀请 `site_id` 对应的 `target_url`。
 - 无归因 Session：使用默认 API 站点，或让用户选择可用分站。
 - 上下文接口失败：主页仍可打开；按钮降级到默认 API 站点，但不得猜测或伪造归因。
 - 用户主动选择另一个站点：允许正常访问，但原推广链接不能绑定到不匹配的站点账号。
@@ -428,8 +427,8 @@ Content-Type: application/json
 - 接口不得接受浏览器直接提交的 `external_user_id` 作为可信事实。
 - 原始 Session 值只在受保护的内部请求中短暂传输，不写日志和审计。
 - Attribution Service 对 Session 做摘要后查询，不保存原始值。
-- Session 必须存在、未过期，并包含相同 `site_id` 的首次有效触达。
-- 对应 `session_attributions` 必须仍在该站点独立的 30 天窗口内。
+- 服务按 `registered_at` 查询该匿名访客此前 30 天内最后一条已计数 `link_visits`，而不是直接信任回调到达时的当前 Session 状态。
+- 全局末次邀请必须与注册 `site_id` 相同；不一致时不回退到本站更早的推广链接。
 - `(site_id, external_user_id)` 唯一，重复调用返回既有归因。
 - 已有账号登录不能调用注册绑定接口。
 - 注册失败、验证码失败或事务回滚不能产生归因。
@@ -452,7 +451,7 @@ Content-Type: application/json
 2. 原始 `awl_growth_sid` 如需进入队列，必须使用专用密钥加密后落盘，禁止明文保存、打印或进入通用消息追踪；任务成功或超过对应归因窗口后立即删除。
 3. 队列写入失败时应产生高优先级告警，但不能回滚已经成功的业务注册。
 4. 重试使用 `source_registration_id` 和 `(site_id, external_user_id)` 保证幂等，指数退避且不超过归因证据有效期。
-5. Attribution Service 成功解析 Session 后，只把摘要、`first_visit_id` 和 `tracking_link_id` 等可审计证据写入 Growth PostgreSQL，不保存原始 Cookie。
+5. Attribution Service 成功解析 Session 后，只把摘要、`source_link_visit_id` 和 `tracking_link_id` 等可审计证据写入 Growth PostgreSQL，不保存原始 Cookie。
 
 该队列属于 Registration Edge 的可靠交付能力，不是浏览器 Token、跨域 handoff 或登录 Session 同步。
 
@@ -540,7 +539,7 @@ Session 上下文中的 `target_url` 由受控 `base_url` 与落地路径组合�
 ### 17.1 `/r/{code}`
 
 - 服务端 P95 处理时间目标低于 150 ms，不含公网和主页加载时间。
-- 只执行必要的链接读取、Session/访问写入和首次触达写入。
+- 只执行必要的链接读取、Session/访问写入和末次邀请更新。
 - 返回 `302`，不返回 HTML，不等待前端 JavaScript。
 - 不使用 `301`，避免长期缓存错误跳转。
 
@@ -577,10 +576,9 @@ Session 上下文中的 `target_url` 由受控 `base_url` 与落地路径组合�
 - code 规范化、状态和时间窗口；
 - Session 生成、摘要、过期和撤销；
 - Cookie 属性；
-- 同站点首次触达不可覆盖；
-- 同站点窗口到期后可建立新的首次触达；
-- 不同站点首次触达相互独立；
-- Session 当前目标站点随有效推广访问更新，但不覆盖站点首次来源；
+- 每次有效推广点击覆盖当前末次邀请并刷新 30 天窗口；
+- 不同站点点击使用全局末次规则，不保留可回退的分站邀请；
+- 注册来源按 `registered_at` 重建，注册后的点击不能倒灌；
 - target URL 只来自受控站点目录；
 - 注册绑定唯一约束和幂等；
 - 站点不匹配拒绝绑定。
@@ -649,7 +647,7 @@ Session 上下文中的 `target_url` 由受控 `base_url` 与落地路径组合�
 6. 账号注册后清除 Cookie，既有归因仍不改变。
 7. 账号后续调用、充值、二次充值、继续调用和退款能回到同一来源。
 8. 注册失败和已有账号登录不产生新归因。
-9. 同一浏览器随后访问同站点另一推广链接，不覆盖首次触达。
+9. 同一浏览器随后访问另一推广链接时，注册前最后一次有效点击成为来源；注册成功后的点击不改写既有账号归因。
 10. Sub2API/NewAPI 登录 Session、注册响应和业务语义保持不变。
 11. 单独发布主页前端不会重启流量服务，单独发布流量服务也不会重新构建主页。
 
@@ -657,8 +655,8 @@ Session 上下文中的 `target_url` 由受控 `base_url` 与落地路径组合�
 
 建议按以下顺序实施：
 
-1. 在现有管理后台增加归因 Session 与按站点首次触达数据库迁移。
-2. 建立 `aiwelink-growth-service`，实现 `/r/{code}`、父域 Cookie 和 Schema 版本检查。
+1. 在现有管理后台维护 Growth 基础配置表和运营分析表迁移。
+2. 在 `aiwelink-growth-service` 维护归因 Session、末次邀请和主页访问迁移，并实现 `/r/{code}`、父域 Cookie 和 Schema 版本检查。
 3. 在流量服务实现主页公开 Growth 上下文接口并发布 OpenAPI 契约。
 4. 建立 `aiwelink-homepage-web`，根据公开契约实现 API 分站入口。
 5. 配置 CDN/Nginx，把主页路径和流量路径转发到两个独立部署目标。
