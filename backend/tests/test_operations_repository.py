@@ -243,6 +243,49 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(connection.calls[0][1]["purpose"], "internal")
         self.assertEqual(connection.calls[1][1]["external_user_id"], "42")
 
+    async def test_operations_sync_run_lifecycle_uses_operations_stream(self) -> None:
+        from app.modules.operations.repository import (
+            finish_operations_sync_run,
+            get_operations_sync_cursor,
+            start_operations_sync_run,
+        )
+
+        run_id = uuid4()
+        connection = _FakeConnection(
+            [
+                {"last_success_at": NOW},
+                {"run_id": run_id, "status": "running"},
+                {"run_id": run_id, "status": "succeeded"},
+            ]
+        )
+
+        cursor = await get_operations_sync_cursor(connection, site_id="aiwelink")
+        started = await start_operations_sync_run(
+            connection,
+            site_id="aiwelink",
+            adapter_name="sub2api",
+            trigger_type="schedule",
+            started_at=NOW,
+            run_id=run_id,
+        )
+        finished = await finish_operations_sync_run(
+            connection,
+            run_id=run_id,
+            site_id="aiwelink",
+            adapter_name="sub2api",
+            status="succeeded",
+            finished_at=NOW,
+            rows_scanned=10,
+            rows_upserted=9,
+        )
+
+        self.assertEqual(cursor["last_success_at"], NOW.isoformat())
+        self.assertEqual(started["status"], "running")
+        self.assertEqual(finished["status"], "succeeded")
+        sql = "\n".join(statement for statement, _ in connection.calls)
+        self.assertIn("stream_name = 'operations'", sql)
+        self.assertIn("growth.sync_cursors", sql)
+
 
 class OperationsCacheTests(unittest.IsolatedAsyncioTestCase):
     async def test_cache_reuses_value_until_invalidated_for_site(self) -> None:

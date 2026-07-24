@@ -12,6 +12,7 @@ from app.database import close_mongo_connection, connect_to_mongo, get_db
 from app.logging_config import RequestLoggingMiddleware, cleanup_old_logs, log_cleanup_loop, setup_logging
 from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, client_metrics, client_sites, event_records, growth, import_batches, imports, notifications, plus_self_produced, presence, settings, sub2api_sites, sync, todo_items, users
 from app.modules.client_metrics.sampler import client_metric_sampler_loop
+from app.modules.operations.sync import operations_sync_loop
 from app.modules.system.bootstrap import ensure_bootstrap_data, ensure_indexes
 from app.modules.agent.scheduler import start_agent_scheduler, stop_agent_scheduler
 from app.modules.sub2api.account_probe import probe_scheduler_loop
@@ -48,6 +49,7 @@ async def lifespan(app_instance: FastAPI):
     capacity_sampler_task = asyncio.create_task(capacity_sampler_loop(db))
     forecast_accuracy_task = asyncio.create_task(forecast_accuracy_evaluator_loop(db))
     client_metric_sampler_task = asyncio.create_task(client_metric_sampler_loop(db))
+    operations_sync_task = asyncio.create_task(operations_sync_loop(db))
     cleanup_task = asyncio.create_task(log_cleanup_loop(settings_obj))
     await start_agent_scheduler(app_instance)
     try:
@@ -66,6 +68,7 @@ async def lifespan(app_instance: FastAPI):
             capacity_sampler_task,
             forecast_accuracy_task,
             client_metric_sampler_task,
+            operations_sync_task,
             cleanup_task,
         )
         for task in background_tasks:

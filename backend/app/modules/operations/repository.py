@@ -724,6 +724,121 @@ async def get_sync_status(connection: Any) -> list[dict[str, Any]]:
     return _all(result)
 
 
+async def get_operations_sync_cursor(
+    connection: Any,
+    *,
+    site_id: str,
+) -> dict[str, Any]:
+    result = await connection.execute(
+        text(
+            """
+            SELECT watermark_at, last_success_at, last_run_id, updated_at
+            FROM growth.sync_cursors
+            WHERE site_id = :site_id AND stream_name = 'operations'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """
+        ),
+        {"site_id": site_id},
+    )
+    return _one(result) or {}
+
+
+async def start_operations_sync_run(
+    connection: Any,
+    *,
+    site_id: str,
+    adapter_name: str,
+    trigger_type: str,
+    started_at: datetime,
+    run_id: UUID | None = None,
+) -> dict[str, Any]:
+    result = await connection.execute(
+        text(
+            """
+            INSERT INTO growth.sync_runs (
+                run_id, site_id, adapter_name, stream_name, trigger_type,
+                status, started_at
+            ) VALUES (
+                :run_id, :site_id, :adapter_name, 'operations', :trigger_type,
+                'running', :started_at
+            )
+            RETURNING *
+            """
+        ),
+        {
+            "run_id": run_id or uuid4(),
+            "site_id": site_id,
+            "adapter_name": adapter_name,
+            "trigger_type": trigger_type,
+            "started_at": started_at,
+        },
+    )
+    return _one(result) or {}
+
+
+async def finish_operations_sync_run(
+    connection: Any,
+    *,
+    run_id: UUID,
+    site_id: str,
+    adapter_name: str,
+    status: str,
+    finished_at: datetime,
+    rows_scanned: int,
+    rows_upserted: int,
+    rows_rejected: int = 0,
+    error_code: str = "",
+    error_message: str = "",
+) -> dict[str, Any]:
+    result = await connection.execute(
+        text(
+            """
+            WITH finished AS (
+                UPDATE growth.sync_runs
+                SET status = :status,
+                    rows_scanned = :rows_scanned,
+                    rows_upserted = :rows_upserted,
+                    rows_rejected = :rows_rejected,
+                    finished_at = :finished_at,
+                    error_code = :error_code,
+                    error_message = :error_message
+                WHERE run_id = :run_id
+                RETURNING *
+            ), cursor_update AS (
+                INSERT INTO growth.sync_cursors (
+                    site_id, adapter_name, stream_name, cursor_value,
+                    watermark_at, last_success_at, last_run_id, updated_at
+                )
+                SELECT :site_id, :adapter_name, 'operations', '{}'::JSONB,
+                       :finished_at, :finished_at, :run_id, NOW()
+                FROM finished
+                WHERE finished.status = 'succeeded'
+                ON CONFLICT (site_id, adapter_name, stream_name) DO UPDATE SET
+                    watermark_at = EXCLUDED.watermark_at,
+                    last_success_at = EXCLUDED.last_success_at,
+                    last_run_id = EXCLUDED.last_run_id,
+                    updated_at = NOW()
+            )
+            SELECT * FROM finished
+            """
+        ),
+        {
+            "run_id": run_id,
+            "site_id": site_id,
+            "adapter_name": adapter_name,
+            "status": status,
+            "finished_at": finished_at,
+            "rows_scanned": rows_scanned,
+            "rows_upserted": rows_upserted,
+            "rows_rejected": rows_rejected,
+            "error_code": error_code,
+            "error_message": error_message[:500],
+        },
+    )
+    return _one(result) or {}
+
+
 async def replace_affected_aggregates(
     connection: Any,
     *,

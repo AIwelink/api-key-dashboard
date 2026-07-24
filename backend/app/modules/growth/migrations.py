@@ -342,6 +342,18 @@ OPERATIONS_MIGRATION = Migration(
     description="Create cached operations analytics and internal-user schema",
     statements=(
         "CREATE EXTENSION IF NOT EXISTS btree_gist",
+        "ALTER TABLE growth.sync_cursors DROP CONSTRAINT IF EXISTS sync_cursors_stream_name_check",
+        """
+        ALTER TABLE growth.sync_cursors
+        ADD CONSTRAINT sync_cursors_stream_name_check
+        CHECK (stream_name IN ('registration', 'usage', 'billing', 'exclusion', 'operations'))
+        """.strip(),
+        "ALTER TABLE growth.sync_runs DROP CONSTRAINT IF EXISTS sync_runs_stream_name_check",
+        """
+        ALTER TABLE growth.sync_runs
+        ADD CONSTRAINT sync_runs_stream_name_check
+        CHECK (stream_name IN ('registration', 'usage', 'billing', 'exclusion', 'operations'))
+        """.strip(),
         """
         CREATE TABLE IF NOT EXISTS growth.internal_users (
             internal_user_id UUID PRIMARY KEY,

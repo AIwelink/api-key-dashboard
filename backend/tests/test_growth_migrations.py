@@ -41,6 +41,9 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(f"CREATE TABLE IF NOT EXISTS growth.{table_name}", sql)
         self.assertIn("balance_units_per_cny > 0", sql)
         self.assertIn("UNIQUE (site_id, source_type, source_record_id)", sql)
+        self.assertIn("sync_cursors_stream_name_check", sql)
+        self.assertIn("sync_runs_stream_name_check", sql)
+        self.assertIn("'operations'", sql)
 
     def test_required_tables_include_initial_and_operations_domains(self) -> None:
         from app.modules.growth.migrations import (
