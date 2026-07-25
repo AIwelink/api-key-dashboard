@@ -4,6 +4,8 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from app.modules.growth import schemas
 from app.routers import growth as growth_router
 
@@ -155,8 +157,68 @@ class GrowthConfigurationRouteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(getattr(caught.exception, "status_code", None), 404)
 
+    async def test_analytics_overview_builds_typed_filters(self) -> None:
+        analytics_mock = AsyncMock(return_value={"summary": {}})
+
+        with patch.object(
+            growth_router,
+            "get_traffic_analytics_overview",
+            analytics_mock,
+            create=True,
+        ):
+            result = await growth_router.get_growth_analytics_overview_route(
+                range_key="30d",
+                segment="internal",
+                site_id=" aiwelink ",
+                source_kind=None,
+                channel_id=None,
+                campaign_id=None,
+                tracking_link_id=None,
+                actor={"role": "operator"},
+                db=MagicMock(),
+            )
+
+        self.assertEqual(result, {"summary": {}})
+        filters = analytics_mock.await_args.args[1]
+        self.assertEqual(filters.range_key, "30d")
+        self.assertEqual(filters.segment, "internal")
+        self.assertEqual(filters.site_id, "aiwelink")
+
+    async def test_analytics_users_normalizes_database_errors(self) -> None:
+        analytics_mock = AsyncMock(side_effect=SQLAlchemyError("missing table"))
+
+        with patch.object(
+            growth_router,
+            "get_traffic_analytics_users",
+            analytics_mock,
+            create=True,
+        ):
+            with self.assertRaises(Exception) as caught:
+                await growth_router.get_growth_analytics_users_route(
+                    range_key="7d",
+                    segment="ordinary",
+                    milestone="registered",
+                    site_id=None,
+                    source_kind=None,
+                    channel_id=None,
+                    campaign_id=None,
+                    tracking_link_id=None,
+                    limit=50,
+                    offset=0,
+                    actor={"role": "admin"},
+                    db=MagicMock(),
+                )
+
+        self.assertEqual(getattr(caught.exception, "status_code", None), 503)
+        self.assertEqual(
+            getattr(caught.exception, "detail", None),
+            "Growth database is unavailable or not initialized",
+        )
+
     def test_all_growth_routes_require_traffic_analysis_permission(self) -> None:
         protected_paths = {
+            "/growth/analytics/overview",
+            "/growth/analytics/users",
             "/growth/sites",
             "/growth/sites/{site_id}",
             "/growth/channels",

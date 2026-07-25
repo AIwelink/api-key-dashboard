@@ -4,6 +4,7 @@
 
 - 状态：V1 需求基线，待产品与技术评审。
 - 日期：2026-07-21。
+- 归因规则修订：2026-07-25；V1 统一采用“注册前 30 天全局末次有效触发”。同主域 Session 的最终拓扑以 `2026-07-24-aiwelink-homepage-growth-session-design.md` 为准，本文跨主域 handoff 内容仅作为未来扩展参考。
 - 范围：推广链接管理、`/r/{code}` 请求、匿名访客识别、注册归因、业务数据同步和运营查询 API。
 - 相关文档：`2026-07-21-growth-data-platform-requirements.md`。
 - 本文不包含：管理页面视觉稿、具体框架选型、业务系统实际字段映射、Nginx/Cloudflare 最终配置。
@@ -36,7 +37,7 @@ V1 必须同时满足：
 5. 多站点可以使用不同业务系统和不同用户 ID 体系。
 6. 不修改 Sub2API 上游核心代码，不阻断其持续升级。
 
-V1 采用首次有效触达归因：同一匿名访客在同一站点 30 天窗口内访问多条推广链接时，注册账号归属于最早的有效链接；注册绑定成功后永久锁定。
+V1 采用全局末次有效触发归因：同一匿名访客每次有效访问推广链接时都覆盖当前邀请并刷新 30 天窗口；注册账号归属于 `registered_at` 之前 30 天内最后一条已计数访问。末次访问与注册站点不一致时不回退到该站点更早的访问；注册绑定成功后永久锁定。
 
 ## 3. 非目标
 
@@ -195,7 +196,7 @@ SameSite: Lax
 
 该父域 Cookie 会被同一主域下的服务接收，因此只能包含无权限的随机标识。若存在不受信任或可能被接管的子域，生产上线前必须重新评估父域 Cookie，改用签名 handoff。
 
-### 8.2 跨主域场景
+### 8.2 跨主域场景（V1 不启用）
 
 如果目标业务站点不在 `*.aiwelink.cc`，不能依赖父域 Cookie。目标站点必须实现签名 handoff：
 
@@ -210,7 +211,7 @@ handoff 流程：
 3. 目标站点网关验证签名、站点、有效期和 nonce。
 4. 网关设置该站点自己的 30 天 HttpOnly 归因 Cookie。
 5. 网关用 302 跳到经过校验的站内 `next`，从地址栏移除 token。
-6. 已存在有效的首次触达 Cookie 时，不被后续 handoff 覆盖。
+6. 若未来启用，后续有效 handoff 必须遵循同一全局末次触发规则，覆盖当前邀请并刷新 30 天窗口。
 
 `next` 必须是站内相对路径。不得允许 token 或 `next` 形成开放重定向。
 
@@ -225,9 +226,8 @@ handoff 流程：
 → 校验链接有效期和目标站点状态
 → 读取或签发匿名访客 Cookie
 → 判断机器人、内部探测和重复请求
-→ 在该站点 30 天窗口内确定首次有效触达
 → 同步写入 link_visits
-→ 必要时生成跨域 handoff token
+→ 原子覆盖该 Session 的全局末次邀请并刷新 30 天窗口
 → 返回 HTTP 302
 ```
 
@@ -242,25 +242,25 @@ Referrer-Policy: no-referrer
 - CDN 必须绕过 `/r/*` 缓存，不能把一个用户的 Cookie 响应发给另一个用户。
 - 使用 `302` 或 `303`，不使用会被长期缓存的 `301`。
 - 跳转目标由站点 `public_origin` 与受校验的站内路径拼接，不读取请求参数中的任意 URL。
-- GET 的数据库读取、首次触达判断和访问写入应在返回跳转前完成。
+- GET 的数据库读取、访问写入和 Session 末次邀请更新应在返回跳转前完成。
 - `HEAD` 可以返回相同可达性状态，但不签发 Cookie、不记录正式点击、不参与归因。
 
-### 9.2 首次触达规则
+### 9.2 全局末次触发规则
 
-同一个匿名访客可以访问多个站点，因此首次触达必须按站点计算：
+当前邀请按全局归因 Session 计算，不按站点拆分：
 
 ```text
-(site_id, anonymous_visitor_key)
+session_key_hash → one current invitation
 ```
 
-在注册时间之前 30 天内，选择该站点最早的 `is_counted=true` 访问作为归因候选：
+每个有效 `/r/{code}` 请求都写入一条 `link_visits`，并按 `session_key_hash` 原子覆盖 `session_attributions`。注册绑定不直接信任回调到达时的当前记录，而是根据 Session 取得 `anonymous_visitor_key`，在 `registered_at` 之前 30 天内选择全局最后一条 `is_counted=true` 访问：
 
 ```text
-ORDER BY visited_at ASC, visit_id ASC
+ORDER BY visited_at DESC, created_at DESC, visit_id DESC
 LIMIT 1
 ```
 
-后续点击仍记录为访问，但不替换首次触达。另一个站点拥有独立的首次触达窗口。
+该访问的 `site_id` 必须与注册请求的 `site_id` 一致才能形成 `promotion` 来源；不一致时不得回退到该站点更早的链接。服务改用独立主页访问证据分类为 `organic_search` 或 `referral`，仍无证据时分类为 `direct`。账号绑定成功后保持不可变，注册后的后续点击只影响匿名 Session，不改写历史账号来源。
 
 ### 9.3 无效、暂停和过期链接
 
@@ -273,7 +273,7 @@ LIMIT 1
 
 对外统一 302 到品牌站的“链接不可用”页面，避免泄露链接是否曾经存在。后端记录脱敏错误指标，不把内部状态放进查询参数。
 
-普通暂停或归档只阻止新的有效触达，不取消暂停前已经产生、仍在 30 天窗口内的注册候选。
+普通暂停或归档只阻止新的有效触发，不删除暂停前已经写入的访问。历史访问只有在注册时仍位于 30 天窗口内、是全局最后一条已计数访问且站点匹配时，才能成为注册候选。
 
 ### 9.4 Growth 数据库不可用
 
@@ -281,11 +281,11 @@ LIMIT 1
 
 - 数据库读取或写入超时后，服务使用固定安全目标完成降级跳转。
 - 降级跳转不得生成新的可用于注册绑定的归因凭据。
-- 不允许把当前链接猜作首次触达后异步补写。
+- 不允许把当前链接猜作末次触发后异步补写。
 - 服务记录 `redirect_degraded_total` 和脱敏日志，并触发告警。
 - 数据恢复后不能根据访问日志中的 IP 或 UA 自动猜测缺失归因。
 
-该策略可能丢失少量统计，但不会把账号错误归入后一次点击。
+该策略可能丢失少量统计，但不会根据不完整证据猜测账号来源。
 
 ## 10. 机器人、重复点击和内部流量
 
@@ -298,7 +298,7 @@ LIMIT 1
 - 明确的内部健康检查标头和来源；
 - 异常频率规则。
 
-机器人访问可以保留一条 `is_counted=false` 的诊断事件，但不能成为首次触达、不能进入点击人数、不能签发跨域 handoff。
+机器人访问可以保留一条 `is_counted=false` 的诊断事件，但不能成为末次有效触发、不能覆盖当前邀请、不能进入点击人数，也不能签发跨域 handoff。
 
 ### 10.2 重复点击
 
@@ -321,16 +321,17 @@ LIMIT 1
 
 1. 来源业务系统已经确认注册成功。
 2. 已取得该站点稳定的 `external_user_id`。
-3. 注册发生时存在有效的匿名访客 Cookie 或跨域 handoff 凭据。
-4. 能找到注册前 30 天内该站点的首次有效触达。
-5. 该账号尚无既有归因。
+3. 已取得稳定、可幂等重放的 `source_registration_id`。
+4. 该账号尚无既有归因。
+
+推广归因还要求注册发生时存在有效归因 Session，并且 `registered_at` 之前 30 天全局最后一条已计数推广访问与注册站点一致。条件不满足时不得回退到旧推广链接，但注册来源仍按独立主页证据分类；没有可验证证据时保存为 `direct`。
 
 ### 11.2 内部绑定接口
 
 业务系统网关调用私有接口：
 
 ```http
-POST /internal/growth/attributions/bind
+POST /internal/growth/registrations/bind
 Content-Type: application/json
 Authorization: service credential
 
@@ -339,33 +340,33 @@ Authorization: service credential
   "external_user_id": "12345",
   "source_registration_id": "12345",
   "registered_at": "2026-07-21T08:00:00Z",
-  "attribution_evidence": "opaque-cookie-or-handoff-token"
+  "growth_session": "opaque-session-value-or-null"
 }
 ```
 
 接口规则：
 
 - 只允许登记过的站点服务身份调用，服务身份只能写自己的 `site_id`。
-- `attribution_evidence` 只在内存中校验，不写日志、不写数据库原文。
-- 服务端根据证据计算匿名访客键，并查找首次有效触达。
+- `growth_session` 只在内存中校验，不写日志、不写数据库原文。
+- 服务端根据证据计算匿名访客键，并按 `registered_at` 查找此前 30 天全局最后一条已计数访问。
+- 末次推广访问站点与注册站点不一致时不得回退到本站更早访问；改用独立主页来源证据，没有证据时分类为 `direct`。
 - 用 `INSERT ... ON CONFLICT (site_id, external_user_id) DO NOTHING` 写入。
 - 重复调用返回 `200` 和原归因；不得返回第二条或覆盖链接。
-- 没有候选触达返回可识别的 `no_eligible_touch`，不创建“未知链接”记录。
-- token 站点不匹配、签名错误或过期返回拒绝，不降级为猜测归因。
+- 缺失、格式错误或无法解析的 Session 不得产生推广来源；分类为 `direct`，且不保存伪造事件证据。
+- 只有可信服务身份提供的 `site_id` 可以作为注册站点事实，浏览器不能自行指定其他站点。
 
 建议响应：
 
 ```json
 {
-  "status": "created",
-  "site_id": "aiwelink",
-  "external_user_id": "12345",
+  "result": "attributed",
+  "source_kind": "promotion",
   "tracking_link_id": "uuid",
-  "attributed_at": "2026-07-21T08:00:01Z"
+  "attribution_method": "shared_cookie"
 }
 ```
 
-`status` 允许：`created`、`already_attributed`、`no_eligible_touch`、`rejected`。
+`result` 允许：`attributed`、`classified`、`already_attributed`。首次创建返回 `201`，幂等重放返回 `200`。
 
 ### 11.3 不修改 Sub2API 的接入方式
 
@@ -400,7 +401,7 @@ Authorization: service credential
 - 已有账号登录不触发注册绑定。
 - 同一账号重复提交注册成功回调只返回原归因。
 - 账号归因后再访问其他链接，不改写归因。
-- 同一匿名浏览器可以注册多个真实账号；每个账号分别按同一首次触达归因，不额外限制浏览器只能注册一个账号。
+- 同一匿名浏览器可以注册多个真实账号；每个账号分别按自己的 `registered_at` 重建当时的全局末次有效触发，不额外限制浏览器只能注册一个账号。
 
 ## 12. 多站点与系统适配器
 
@@ -598,7 +599,7 @@ GET /api/growth/analytics/links
 - 具体来源类型；
 - 推广负责人；
 - 链接状态；
-- 首次触达 cohort 时间范围；
+- 注册 Cohort 时间范围；
 - 预留维度。
 
 每条链接返回：
@@ -670,7 +671,7 @@ GET /api/growth/analytics/accounts/{site_id}/{external_user_id}
 - 对健康检查和机器人流量单独处理；
 - 不在响应、日志或错误页泄露内部链接 UUID、站点配置或数据库错误。
 
-限流不能依赖永久 IP 标识，也不能让攻击者通过大量请求覆盖他人的首次触达。
+限流不能依赖永久 IP 标识，也不能让攻击者通过伪造或高频请求污染他人的全局末次邀请。
 
 ### 17.2 私有接口
 
@@ -694,7 +695,7 @@ GET /api/growth/analytics/accounts/{site_id}/{external_user_id}
 | code 不存在、停用或过期 | 302 到统一不可用页，不归因 | 分类计数，不泄露状态 |
 | Growth DB 暂时不可用 | 降级跳安全页面，不签发新归因 | 告警、指标、脱敏日志 |
 | 注册成功但绑定失败 | 注册仍成功 | 受控重试，不记录密码 |
-| 找不到有效首次触达 | 返回 `no_eligible_touch` | 不创建归因，不猜测 |
+| 找不到有效推广触发，或末次推广站点不匹配 | 返回非推广 `classified` | 不回退旧推广链接；按主页证据分类，否则为 `direct` |
 | 账号已有归因 | 返回 `already_attributed` | 保持原记录 |
 | 适配器网络错误 | 保留旧数据并标记 stale | 不推进游标，可重试 |
 | 适配器字段契约变化 | 对应能力标记 error | 停止该流、告警、要求适配 |
@@ -757,7 +758,7 @@ analytics_query_latency_seconds{endpoint}
 - code 生成、格式、冲突重试和不可复用；
 - 链接状态与有效期判断；
 - Cookie 签名、过期、篡改和密钥轮换；
-- 同站点首次触达与不同站点独立首次触达；
+- 同站点后一次链接覆盖前一次链接、跨站点全局末次触发，以及站点不匹配时不回退；
 - bot、HEAD、内部探测和重复 request ID 排除；
 - 站内路径规范化和开放重定向拦截；
 - 注册绑定唯一性和重复回调；
@@ -768,7 +769,7 @@ analytics_query_latency_seconds{endpoint}
 
 - redirect-service + PostgreSQL 完整访问写入与 302；
 - 父域 Cookie 在 `aiwelink.cc` 与 `api.aiwelink.cc` 网关之间可用；
-- 跨域 handoff 验签、消费、清理 URL 和首次触达保护；
+- 若未来启用跨域 handoff，验证其验签、消费、清理 URL 和全局末次邀请更新；
 - 注册成功时取得用户 ID 并绑定，注册失败时不绑定；
 - Growth 绑定失败不改变业务注册结果；
 - Sub2API/NewAPI 适配器重复同步结果幂等；
@@ -781,7 +782,7 @@ analytics_query_latency_seconds{endpoint}
 - Cookie 和 handoff token 篡改、重放、跨站点使用；
 - CSRF、伪造角色、伪造服务身份；
 - 日志、审计、错误响应和前端状态不泄露 DSN、密码、Session、Cookie 或 token；
-- 大量机器人请求不会污染首次触达和正式点击人数。
+- 大量机器人请求不会污染全局末次邀请和正式点击人数。
 
 ## 22. V1 端到端验收
 
@@ -827,13 +828,14 @@ https://aiwelink.cc/r/7km4q2xd
 
 同一浏览器先访问链接 A，再访问同一站点链接 B，然后注册：
 
-- 账号必须归因到 30 天窗口内最早的有效链接 A。
-- A、B 都可记录访问，B 不覆盖 A。
-- 注册后再次点击 B，归因仍保持 A。
+- A、B 都必须各自记录访问，B 覆盖 Session 当前邀请。
+- 账号必须归因到 `registered_at` 之前 30 天内最后的有效链接 B。
+- 注册后再次点击 A，账号归因仍保持 B。
 
-同一浏览器访问另一个站点的链接 C 并注册该站点账号：
+同一浏览器先访问站点一的链接 A，再访问站点二的链接 C：
 
-- 第二个站点账号可以归因到 C。
+- 随后注册站点二账号时，可以归因到 C。
+- 随后注册站点一账号时，不能回退到 A；按独立主页证据分类，否则来源为 `direct`。
 - 两个站点相同字符串的 `external_user_id` 不得串号。
 
 ### 22.3 异常验证

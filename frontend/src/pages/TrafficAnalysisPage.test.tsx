@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import {
+  TrafficAnalysisPage,
   TrafficAnalysisWorkspace,
   buildCampaignUpdatePayload,
   buildChannelUpdatePayload,
@@ -24,6 +25,7 @@ import {
   isValidGrowthTimeRange,
   runMutationAndRefresh,
   selectTrackingLinkFormSite,
+  shouldNotifyTrafficConfigurationError,
   trackingLinkToEditForm,
   type GrowthCampaign,
   type GrowthChannel,
@@ -132,7 +134,7 @@ const callbacks = {
 };
 
 function renderWorkspace(
-  activeTab: "links" | "channels" | "campaigns" | "sites",
+  activeTab: "overview" | "links" | "channels" | "campaigns" | "sites",
   loadError = "",
   campaignForm = { ...emptyCampaignForm, site_id: "aiwelink", channel_id: channel.channel_id },
   createModal: "link" | "channel" | "campaign" | null = null,
@@ -142,6 +144,8 @@ function renderWorkspace(
 ) {
   return renderToStaticMarkup(
     <TrafficAnalysisWorkspace
+      token="token"
+      showToast={() => undefined}
       activeTab={activeTab}
       sites={workspaceSites}
       channels={[channel]}
@@ -173,6 +177,14 @@ function renderWorkspace(
 }
 
 describe("traffic analysis configuration workspace", () => {
+  it("notifies configuration load failures only on configuration tabs", () => {
+    expect(shouldNotifyTrafficConfigurationError("overview")).toBe(false);
+    expect(shouldNotifyTrafficConfigurationError("links")).toBe(true);
+    expect(shouldNotifyTrafficConfigurationError("channels")).toBe(true);
+    expect(shouldNotifyTrafficConfigurationError("campaigns")).toBe(true);
+    expect(shouldNotifyTrafficConfigurationError("sites")).toBe(true);
+  });
+
   it("builds an allowlisted channel update payload", () => {
     const form = channelToEditForm({ ...channel, name: " 小红书运营 " });
     const payload = buildChannelUpdatePayload({ ...form, description: " 内容平台 " });
@@ -266,6 +278,7 @@ describe("traffic analysis configuration workspace", () => {
     const html = renderWorkspace("links");
 
     expect(html).toContain('aria-label="推广链接查询"');
+    expect(html).toContain("流量概览");
     expect(html).toContain("推广链接");
     expect(html).toContain("渠道管理");
     expect(html).toContain("活动管理");
@@ -276,10 +289,15 @@ describe("traffic analysis configuration workspace", () => {
     expect(html).not.toContain("注册率");
   });
 
-  it("renders four independent query-first tabs", () => {
+  it("renders five independent query-first tabs", () => {
+    const overviewHtml = renderWorkspace("overview");
     const linksHtml = renderWorkspace("links");
     const channelsHtml = renderWorkspace("channels");
     const campaignsHtml = renderWorkspace("campaigns");
+
+    expect(overviewHtml).toContain('aria-label="流量概览查询"');
+    expect(overviewHtml).toContain("正在加载流量概览");
+    expect(overviewHtml).not.toContain("新建推广链接");
 
     expect(linksHtml).toContain("推广链接");
     expect(linksHtml).toContain("渠道管理");
@@ -302,6 +320,15 @@ describe("traffic analysis configuration workspace", () => {
     expect(campaignsHtml).toContain('class="growth-query-grid"');
     expect(campaignsHtml).not.toContain("渠道列表");
     expect(campaignsHtml).not.toContain('data-growth-form="campaign"');
+  });
+
+  it("defaults the page to the isolated traffic overview", () => {
+    const html = renderToStaticMarkup(
+      <TrafficAnalysisPage token="token" showToast={() => undefined} />,
+    );
+
+    expect(html).toContain('aria-label="流量概览查询"');
+    expect(html).toMatch(/aria-selected="true"[^>]*>流量概览/);
   });
 
   it("renders each creation form only inside its selected modal", () => {
@@ -529,6 +556,8 @@ describe("traffic analysis configuration workspace", () => {
 
     const html = renderToStaticMarkup(
       <TrafficAnalysisWorkspace
+        token="token"
+        showToast={() => undefined}
         activeTab="links"
         sites={[site]}
         channels={[channel, newChannel]}
@@ -562,6 +591,14 @@ describe("traffic analysis configuration workspace", () => {
     expect(html).toContain("Growth database is unavailable");
     expect(html).toContain("重新加载");
     expect(html).not.toContain("当前站点还没有推广链接");
+  });
+
+  it("keeps configuration loading failures out of the overview tab", () => {
+    const html = renderWorkspace("overview", "Growth database is unavailable");
+
+    expect(html).toContain('aria-label="流量概览查询"');
+    expect(html).not.toContain("流量配置加载失败");
+    expect(html).not.toContain("Growth database is unavailable");
   });
 
   it("filters tracking links by site, channel, campaign, status, and keyword together", () => {

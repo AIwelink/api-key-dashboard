@@ -1,8 +1,9 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { api } from "../api/client";
 import { GrowthCreateModal } from "../components/GrowthCreateModal";
 import { errorMessage } from "../utils/format";
+import { TrafficOverview } from "./trafficAnalysis/TrafficOverview";
 
 
 type Props = {
@@ -11,7 +12,12 @@ type Props = {
 };
 
 export type GrowthStatus = "active" | "disabled" | "paused" | "draft" | "archived";
-export type TrafficAnalysisTab = "links" | "channels" | "campaigns" | "sites";
+export type TrafficAnalysisTab = "overview" | "links" | "channels" | "campaigns" | "sites";
+
+export function shouldNotifyTrafficConfigurationError(activeTab: TrafficAnalysisTab) {
+  return activeTab !== "overview";
+}
+
 export type GrowthCreateKind = "link" | "channel" | "campaign";
 export type BindingMode = "shared_parent_cookie" | "signed_handoff" | "disabled";
 export type TrackingSourceType = "post" | "group" | "referrer" | "profile" | "other";
@@ -553,7 +559,9 @@ async function requestWorkspaceData(token: string) {
 }
 
 export function TrafficAnalysisPage({ token, showToast }: Props) {
-  const [activeTab, setActiveTab] = useState<TrafficAnalysisTab>("links");
+  const [activeTab, setActiveTab] = useState<TrafficAnalysisTab>("overview");
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
   const [sites, setSites] = useState<GrowthSite[]>([]);
   const [channels, setChannels] = useState<GrowthChannel[]>([]);
   const [campaigns, setCampaigns] = useState<GrowthCampaign[]>([]);
@@ -627,7 +635,9 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
         if (!cancelled) {
           const message = errorMessage(error);
           setLoadError(message);
-          showToast(message, true);
+          if (shouldNotifyTrafficConfigurationError(activeTabRef.current)) {
+            showToast(message, true);
+          }
         }
       })
       .finally(() => {
@@ -907,6 +917,8 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
 
   return (
     <TrafficAnalysisWorkspace
+      token={token}
+      showToast={showToast}
       activeTab={activeTab}
       sites={sites}
       channels={channels}
@@ -956,6 +968,8 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
 }
 
 type WorkspaceProps = {
+  token: string;
+  showToast: (message: string, isError?: boolean) => void;
   activeTab: TrafficAnalysisTab;
   sites: GrowthSite[];
   channels: GrowthChannel[];
@@ -1052,7 +1066,7 @@ function SiteSelect({
 
 export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
   const {
-    activeTab, sites, channels, campaigns, trackingLinks, selectedSiteId,
+    token, showToast, activeTab, sites, channels, campaigns, trackingLinks, selectedSiteId,
     linkForm, channelForm, campaignForm, siteForm, loading, saving, createModal,
     editTarget, linkEditForm, channelEditForm, campaignEditForm,
     loadError = "",
@@ -1094,7 +1108,7 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
       </div>
 
       <div className="growth-workspace-tabs" role="tablist" aria-label="访问流量分析配置">
-        {([['links', '推广链接'], ['channels', '渠道管理'], ['campaigns', '活动管理'], ['sites', '站点接入']] as const).map(([key, label]) => (
+        {([['overview', '流量概览'], ['links', '推广链接'], ['channels', '渠道管理'], ['campaigns', '活动管理'], ['sites', '站点接入']] as const).map(([key, label]) => (
           <button
             className={activeTab === key ? "active" : ""}
             type="button"
@@ -1108,7 +1122,16 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
         ))}
       </div>
 
-      {loading ? (
+      {activeTab === "overview" ? (
+        <TrafficOverview
+          token={token}
+          sites={sites}
+          channels={channels}
+          campaigns={campaigns}
+          trackingLinks={trackingLinks}
+          showToast={showToast}
+        />
+      ) : loading ? (
         <div className="growth-workspace-empty">正在加载流量配置...</div>
       ) : loadError ? (
         <div className="panel growth-workspace-error" role="alert">

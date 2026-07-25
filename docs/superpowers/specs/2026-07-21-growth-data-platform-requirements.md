@@ -4,6 +4,7 @@
 
 - 状态：V1 需求基线，待产品与技术评审。
 - 日期：2026-07-21。
+- 归因规则修订：2026-07-25；第 8 节及相关统计口径统一采用“注册前 30 天全局末次有效触发”，替代本文早期版本中的旧归因规则。
 - 范围：增长数据的存储边界、逻辑表结构、同步投影、统计口径和验收要求。
 - 前置条件：全局 Growth PostgreSQL 连接配置已经完成，配置仍保存在 MongoDB `app_settings._id = "growth_database"` 中。
 - 本文不包含：页面视觉设计、具体 SQL migration、Sub2API/NewAPI 实际字段映射和部署脚本。
@@ -43,8 +44,8 @@ V1 不做以下事项：
 | --- | --- | --- |
 | 客户站点身份、系统类型、业务库 DSN | 现有 MongoDB `client_sites` | 保存可建立外键的 Growth 站点目录和分析配置，不保存 DSN |
 | 渠道、活动、具体来源、推广链接 | Growth PostgreSQL | 权威事实源 |
-| 匿名访问和首次触达 | Growth PostgreSQL | 权威事实源 |
-| 账号与推广链接的归因 | Growth PostgreSQL | 权威事实源，注册成功后不可改写 |
+| 匿名访问和末次有效触发 | Growth PostgreSQL | 权威事实源 |
+| 账号来源分类与推广链接归因 | Growth PostgreSQL | 权威事实源，注册成功后不可改写 |
 | 注册时间、成功调用、充值和退款 | 各站点业务数据库 | 保存最小标准化投影 |
 | 账号汇总指标 | Growth PostgreSQL | 派生结果，可删除后重建 |
 | 后台操作者与权限 | 现有管理后台 MongoDB | Growth 只保存操作者 ID 快照，不管理登录和权限 |
@@ -63,6 +64,9 @@ growth
 ├── campaigns                渠道下的推广活动
 ├── tracking_links           具体帖子、群、推荐人对应的唯一链接
 ├── link_visits              外链访问事件
+├── attribution_sessions     匿名归因 Session（由 traffic-analysis 迁移管理）
+├── session_attributions     Session 当前全局末次邀请（由 traffic-analysis 迁移管理）
+├── homepage_visits          主页访问与直接/搜索/引荐来源（由 traffic-analysis 迁移管理）
 ├── user_attributions        站点账号的唯一归因
 ├── user_exclusions          内部、测试账号排除名单
 ├── user_usage_daily         按账号、按 UTC 日的成功调用投影
@@ -78,11 +82,12 @@ growth
 channel
   └── campaign + site
         └── tracking_link + concrete source
-              ├── link_visit + anonymous visitor
-              └── user_attribution + site account
-                    ├── user_usage_daily
-                    ├── billing_facts
-                    └── user_facts
+              └── link_visit + anonymous visitor
+site account + promotion/direct/search/referral source
+  └── user_attribution
+        ├── user_usage_daily
+        ├── billing_facts
+        └── user_facts
 ```
 
 ## 6. 全局建模规则
@@ -275,7 +280,7 @@ channel
 | `site_id` | `TEXT` | 非空；与链接组成复合外键 |
 | `anonymous_visitor_key` | `CHAR(64)` | 非空；服务端 HMAC 后的匿名访客键，不保存原始 Cookie token |
 | `visited_at` | `TIMESTAMPTZ` | 非空 |
-| `is_first_touch` | `BOOLEAN` | 是否为该匿名访客当前归因窗口内的首次有效触达 |
+| `is_first_touch` | `BOOLEAN` | 已弃用的旧迁移兼容列；末次触发逻辑不得读取该字段，运行时可固定写入 `false` |
 | `is_bot` | `BOOLEAN` | 机器人判断结果 |
 | `is_counted` | `BOOLEAN` | 是否进入正式点击统计 |
 | `exclusion_reason` | `TEXT` | 可空；机器人、内部探测、无效请求等原因 |
@@ -307,7 +312,7 @@ COUNT(DISTINCT anonymous_visitor_key) WHERE is_counted = true
 
 ### 7.6 `growth.user_attributions`
 
-用途：把注册成功的站点账号唯一绑定到一条推广链接。
+用途：保存注册成功站点账号的唯一、不可变来源；推广来源绑定到具体链接，非推广来源保存直接访问、自然搜索或引荐分类。
 
 主要字段：
 
@@ -315,13 +320,15 @@ COUNT(DISTINCT anonymous_visitor_key) WHERE is_counted = true
 | --- | --- | --- |
 | `site_id` | `TEXT` | 复合主键 |
 | `external_user_id` | `TEXT` | 复合主键 |
-| `tracking_link_id` | `UUID` | 非空；与站点组成复合外键 |
-| `anonymous_visitor_key` | `CHAR(64)` | 非空 |
-| `first_visit_id` | `UUID` | 可空；对应首次访问事件 |
+| `source_kind` | `TEXT` | 非空；`promotion`、`direct`、`organic_search` 或 `referral`，是分析查询的权威来源类型 |
+| `tracking_link_id` | `UUID` | 可空；`source_kind='promotion'` 时非空并与站点组成复合外键，其他来源必须为空 |
+| `anonymous_visitor_key` | `CHAR(64)` | 可空；存在 Session 事件证据时保存服务端摘要，无证据的直接注册为空 |
+| `source_link_visit_id` | `UUID` | 可空；推广来源对应的末次有效访问事件；由流量服务迁移从旧列 `first_visit_id` 重命名 |
+| `source_homepage_visit_id` | `UUID` | 可空；自然搜索、引荐或有事件证据的直接访问对应主页访问事件 |
 | `source_registration_id` | `TEXT` | 可空；来源系统注册事件或用户创建记录 ID |
 | `registered_at` | `TIMESTAMPTZ` | 非空；业务库注册成功时间 |
 | `attributed_at` | `TIMESTAMPTZ` | 非空；Growth 完成绑定时间 |
-| `attribution_method` | `TEXT` | `shared_cookie`、`signed_handoff`、`reconciled` |
+| `attribution_method` | `TEXT` | `shared_cookie`、`service_reported_direct`、`signed_handoff` 或 `reconciled` |
 | `evidence_hash` | `CHAR(64)` | 可空；归因凭据摘要，不保存原始 token |
 | `created_at` | `TIMESTAMPTZ` | 非空 |
 
@@ -331,19 +338,21 @@ COUNT(DISTINCT anonymous_visitor_key) WHERE is_counted = true
 PRIMARY KEY (site_id, external_user_id)
 ```
 
-该主键同时实现“一个站点账号只能归入一条推广链接”。
+该主键同时实现“一个站点账号只能拥有一个来源”；当来源为 `promotion` 时只能归入一条推广链接。
 
 其他约束与索引：
 
-- `FOREIGN KEY (tracking_link_id, site_id) REFERENCES tracking_links(tracking_link_id, site_id)`。
-- `FOREIGN KEY (first_visit_id) REFERENCES link_visits(visit_id)`，仅对非空值生效。
+- `FOREIGN KEY (tracking_link_id, site_id) REFERENCES tracking_links(tracking_link_id, site_id)`，仅对非空值生效。
+- `FOREIGN KEY (source_link_visit_id) REFERENCES link_visits(visit_id)`，仅对非空值生效。
+- `FOREIGN KEY (source_homepage_visit_id) REFERENCES homepage_visits(page_view_id)`，仅对非空值生效。
 - `UNIQUE (site_id, source_registration_id)`，仅对非空值生效。
 - `INDEX (tracking_link_id, registered_at DESC)`。
 - `INDEX (site_id, registered_at DESC)`。
+- `source_kind='promotion'` 时 `tracking_link_id` 非空且 `source_homepage_visit_id` 为空；非推广来源的 `tracking_link_id` 和 `source_link_visit_id` 均为空。
 
 不可变规则：
 
-- 首次成功插入后，不允许通过普通 API 修改 `tracking_link_id`、`site_id` 或 `external_user_id`。
+- 首次成功插入后，不允许通过普通 API 修改 `source_kind`、`tracking_link_id`、`site_id` 或 `external_user_id`。
 - 用户后来再次点击其他推广链接、登录或在其他设备访问，不改写既有归因。
 - 重复注册回调使用 `INSERT ... ON CONFLICT DO NOTHING`，返回现有归因，不生成第二条记录。
 - 只有有证据的管理员纠错流程可以通过受审计的离线修复执行；V1 管理页面不提供“改归因”按钮。
@@ -401,7 +410,7 @@ INDEX (site_id, source_updated_at)
 规则：
 
 - `FOREIGN KEY (site_id, external_user_id) REFERENCES user_attributions(site_id, external_user_id)`。
-- 只持久化已有推广归因的账号；适配器扫描到未归因账号时不得写入 Growth PostgreSQL。
+- 只持久化已有 `user_attributions` 的账号，包括推广、直接、自然搜索和引荐来源；尚无注册来源记录的账号不得写入本投影。
 - 只同步能确认“成功获得模型响应”的调用。
 - 不保存提示词、响应内容、完整请求体、API Key 或单次调用明细。
 - 同步采用覆盖式 upsert；来源日汇总变化时，用新快照替换旧快照，不做累加写入。
@@ -439,7 +448,7 @@ INDEX (site_id, source_updated_at)
 
 规则：
 
-- 只持久化已有推广归因账号的资金事实，不建设全站订单副本。
+- 只持久化已有 `user_attributions` 账号的资金事实，包括推广和非推广来源，不建设全站订单副本。
 - 只有独立、真实、成功到账且状态为 `settled` 的 `payment` 才参与充值次数和金额。
 - `currency` 必须与站点统计币种一致；不一致的事实进入同步拒绝计数并使资金能力显示错误，不能静默换算。
 - 同一订单的重复回调或状态更新不得形成第二笔充值。
@@ -457,7 +466,8 @@ INDEX (site_id, source_updated_at)
 | --- | --- | --- |
 | `site_id` | `TEXT` | 复合主键 |
 | `external_user_id` | `TEXT` | 复合主键 |
-| `tracking_link_id` | `UUID` | 非空 |
+| `source_kind` | `TEXT` | 非空；复制账号归因的权威来源类型 |
+| `tracking_link_id` | `UUID` | 可空；推广来源非空，非推广来源为空 |
 | `account_label` | `TEXT` | 可空；非敏感用户名或脱敏邮箱，供名单识别 |
 | `registered_at` | `TIMESTAMPTZ` | 非空 |
 | `successful_call_count` | `BIGINT` | 非负 |
@@ -492,7 +502,7 @@ INDEX (tracking_link_id, is_excluded, first_payment_at)
 规则：
 
 - `FOREIGN KEY (site_id, external_user_id) REFERENCES user_attributions(site_id, external_user_id)`。
-- `FOREIGN KEY (tracking_link_id, site_id) REFERENCES tracking_links(tracking_link_id, site_id)`。
+- `FOREIGN KEY (tracking_link_id, site_id) REFERENCES tracking_links(tracking_link_id, site_id)`，仅对非空值生效。
 - 仅为已有 `user_attributions` 的账号生成记录。
 - `has_continued_call = successful_call_count >= 2`。
 - 第一、第二笔充值按 `occurred_at`、再按稳定来源 ID 排序，且必须是两笔不同的 `settled payment`。
@@ -560,9 +570,11 @@ PRIMARY KEY (site_id, adapter_name, stream_name)
 
 ### 8.1 归因窗口
 
-- 匿名归因 Cookie 有效期为 30 天。
-- 同一个匿名访客在 30 天内访问多条推广链接时，采用首次有效触达。
-- 首次触达链接在点击时必须有效；之后普通暂停或归档不影响已签发凭据在原 30 天窗口内完成注册归因。
+- 匿名归因 Session 和父域 Cookie 的有效期为 30 天。
+- 每次有效 `/r/{code}` 访问都写入独立 `link_visits` 事件，并原子覆盖该 Session 当前的全局末次邀请，同时把 30 天窗口刷新为本次 `visited_at + 30 天`。
+- 注册绑定必须以业务事实 `registered_at` 重建来源：在该时间此前 30 天内，从同一匿名访客全部已计数访问中选择最后一条，排序为 `visited_at DESC, created_at DESC, visit_id DESC`。
+- 末次访问的 `site_id` 必须与注册站点一致；不一致时不回退到该站点更早的访问，该账号保持无推广归因。
+- 候选链接只要求在点击发生时有效；之后普通暂停或归档不影响已经记录且仍处于原 30 天窗口内的候选访问。
 - 安全事件导致链接被明确吊销时，可以拒绝尚未完成的归因，但必须保留历史数据和审计记录。
 
 ### 8.2 注册绑定
@@ -620,11 +632,11 @@ Sub2API / NewAPI 业务数据库
 - 每天至少执行一次滚动对账，重新读取最近 7 天来源数据并修复差异。
 - 支持按站点、数据流和时间范围手工回填。
 - 支持删除某个站点的派生 `user_facts` 后完整重建。
-- 对账只能更正同步投影和派生结果，不得自动改写已经锁定的推广归因。
+- 对账只能更正同步投影和派生结果，不得自动改写已经锁定的账号来源。
 
 ## 10. 统一统计口径
 
-所有正式账号指标必须排除 `user_facts.is_excluded = true` 的账号。
+普通用户正式指标必须排除 `growth.internal_users` 在注册时间生效的账号和其他 `user_facts.is_excluded = true` 的账号。内部人员视图只包含注册时间命中 `growth.internal_users` 的账号，即使同时存在通用排除记录也保留其调用和消耗；全部用户视图为普通用户与内部人员之和。
 
 | 指标 | 定义 |
 | --- | --- |
@@ -639,14 +651,14 @@ Sub2API / NewAPI 业务数据库
 | 注册率 | 注册账号数 / 点击人数 |
 | 成功调用率 | 成功调用账号数 / 注册账号数 |
 | 付费率 | 充值账号数 / 注册账号数 |
-| 二次付费率 | 二次充值账号数 / 充值账号数 |
-| 继续调用率 | 继续调用账号数 / 成功调用账号数 |
+| 二次付费率 | 二次充值账号数 / 注册账号数 |
+| 继续调用率 | 继续调用账号数 / 注册账号数 |
 
 分母为 0 时，API 返回 `null`，前端显示 `--`，不得返回虚假的 `0%`。
 
 点击人数按匿名浏览器标识计算，注册按账号计算。同一浏览器创建多个真实账号时注册率理论上可能超过 100%，这属于两种统计单位不同的结果，不能通过错误去重隐藏。
 
-带日期范围的转化看板默认使用“首次触达 cohort”：首次有效触达发生在所选区间的访客和归因账号进入 cohort，后续里程碑统计截至查询时刻。若未来增加“事件发生时间”口径，必须使用不同参数和清晰标签，不能混在同一指标中。
+带日期范围的转化看板默认使用“注册 Cohort”：`registered_at` 位于所选区间的归因账号进入 Cohort，后续里程碑统计截至查询时刻。访问 PV/UV 仍按访问事件时间独立筛选。若未来增加“触达 Cohort”或“事件发生时间”口径，必须使用不同参数和清晰标签，不能混在同一指标中。
 
 ## 11. 性能与容量
 
@@ -712,7 +724,7 @@ V1 默认建议：
 
 1. 所有 Growth 表位于独立 `growth` schema。
 2. 所有账号表均以 `(site_id, external_user_id)` 识别用户。
-3. `user_attributions` 能在数据库层阻止同一站点账号归入两条链接。
+3. `user_attributions` 能在数据库层阻止同一站点账号拥有两条来源；推广来源只能归入一条链接。
 4. 两个站点可以同时存在相同 `external_user_id`，且数据互不影响。
 5. 推广链接 `code` 全局唯一、不可修改、停用后不可复用。
 6. 所有金额为整数最小货币单位，所有业务事件时间为 `TIMESTAMPTZ`。

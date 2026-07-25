@@ -8,6 +8,18 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.database import db_dependency
+from app.modules.growth.analytics_schemas import (
+    Milestone,
+    SourceKind,
+    TrafficAnalyticsFilters,
+    TrafficRange,
+    TrafficUsersQuery,
+    UserSegment,
+)
+from app.modules.growth.analytics_service import (
+    get_traffic_analytics_overview,
+    get_traffic_analytics_users,
+)
 from app.modules.growth.repository import (
     GrowthConflictError,
     GrowthNotFoundError,
@@ -62,6 +74,68 @@ def _raise_http_error(exc: Exception) -> None:
             detail="Growth database is unavailable or not initialized",
         ) from exc
     raise exc
+
+
+@router.get("/analytics/overview")
+async def get_growth_analytics_overview_route(
+    range_key: TrafficRange = Query(default="7d", alias="range"),
+    segment: UserSegment = Query(default="ordinary"),
+    site_id: str | None = Query(default=None),
+    source_kind: SourceKind | None = Query(default=None),
+    channel_id: UUID | None = Query(default=None),
+    campaign_id: UUID | None = Query(default=None),
+    tracking_link_id: UUID | None = Query(default=None),
+    actor: dict = Depends(require_view_permission(GROWTH_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    del actor
+    filters = TrafficAnalyticsFilters(
+        range_key=range_key,
+        segment=segment,
+        site_id=site_id,
+        source_kind=source_kind,
+        channel_id=channel_id,
+        campaign_id=campaign_id,
+        tracking_link_id=tracking_link_id,
+    )
+    try:
+        return await get_traffic_analytics_overview(db, filters)
+    except Exception as exc:  # noqa: BLE001 - normalized into the public API contract.
+        _raise_http_error(exc)
+
+
+@router.get("/analytics/users")
+async def get_growth_analytics_users_route(
+    range_key: TrafficRange = Query(default="7d", alias="range"),
+    segment: UserSegment = Query(default="ordinary"),
+    milestone: Milestone = Query(default="registered"),
+    site_id: str | None = Query(default=None),
+    source_kind: SourceKind | None = Query(default=None),
+    channel_id: UUID | None = Query(default=None),
+    campaign_id: UUID | None = Query(default=None),
+    tracking_link_id: UUID | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    actor: dict = Depends(require_view_permission(GROWTH_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    del actor
+    query = TrafficUsersQuery(
+        range_key=range_key,
+        segment=segment,
+        milestone=milestone,
+        site_id=site_id,
+        source_kind=source_kind,
+        channel_id=channel_id,
+        campaign_id=campaign_id,
+        tracking_link_id=tracking_link_id,
+        limit=limit,
+        offset=offset,
+    )
+    try:
+        return await get_traffic_analytics_users(db, query)
+    except Exception as exc:  # noqa: BLE001 - normalized into the public API contract.
+        _raise_http_error(exc)
 
 
 @router.get("/sites")

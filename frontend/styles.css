@@ -112,7 +112,7 @@
 
 .growth-workspace-tabs {
   display: inline-grid;
-  grid-template-columns: repeat(4, minmax(108px, 1fr));
+  grid-template-columns: repeat(5, minmax(108px, 1fr));
   align-items: center;
   width: max-content;
   max-width: 100%;
@@ -1079,14 +1079,18 @@
 
 @media (max-width: 760px), (max-width: 900px) and (orientation: portrait), (max-aspect-ratio: 3 / 4) {
   .growth-workspace-tabs {
+    display: flex;
     width: 100%;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
   }
 
   .growth-workspace-tabs button {
-    min-width: 0;
+    flex: 0 0 auto;
+    min-width: 104px;
     padding-inline: 7px;
-    white-space: normal;
+    white-space: nowrap;
   }
 
   .growth-workspace-page .growth-list-page,
@@ -1106,6 +1110,482 @@
   .growth-site-context > span {
     align-self: flex-start;
     margin-bottom: 0;
+  }
+}
+
+/* Growth traffic analytics overview */
+.traffic-overview {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+}
+
+.traffic-overview-query {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: end;
+  gap: 9px 10px;
+  min-width: 0;
+  padding: 12px 14px;
+  border-block: 1px solid var(--line);
+  background: #f8fafb;
+}
+
+.traffic-overview-query label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.traffic-overview-query label > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.traffic-overview-query select {
+  width: 100%;
+  height: 38px;
+  min-width: 0;
+}
+
+.traffic-overview-query > button {
+  width: 100%;
+  height: 38px;
+  min-height: 38px;
+}
+
+.traffic-overview-query select:focus-visible,
+.traffic-overview-query > button:focus-visible,
+.traffic-overview-error > button:focus-visible,
+.traffic-overview-funnel button:focus-visible,
+.traffic-overview-pagination button:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 2px;
+}
+
+.traffic-overview-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 64px;
+  padding: 10px 14px;
+  border-left: 3px solid var(--danger);
+  background: #fff7f7;
+}
+
+.traffic-overview-error > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.traffic-overview-error strong {
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.traffic-overview-error span {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.traffic-overview-error > button {
+  flex: 0 0 auto;
+  background: #9f1239;
+  color: #fff;
+}
+
+.traffic-overview-error > button:hover {
+  background: #881337;
+}
+
+.traffic-overview-section {
+  min-width: 0;
+  border-block: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.traffic-overview-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+.traffic-overview-metric {
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  min-width: 140px;
+  min-height: 104px;
+  padding: 13px 15px;
+  border-right: 1px solid var(--line);
+}
+
+.traffic-overview-metric:last-child {
+  border-right: 0;
+}
+
+.traffic-overview-metric span,
+.traffic-overview-metric small {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.traffic-overview-metric strong {
+  color: var(--text);
+  font-size: 25px;
+  line-height: 1.2;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.traffic-overview-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 55px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.traffic-overview-section-head > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.traffic-overview-section-head h3 {
+  margin: 0;
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.traffic-overview-section-head span,
+.traffic-overview-section-head > small {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.traffic-overview-section-head > small {
+  flex: 0 0 auto;
+  text-align: right;
+}
+
+.traffic-overview-funnel {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(128px, 1fr));
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+.traffic-overview-funnel button {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 4px;
+  min-width: 128px;
+  min-height: 104px;
+  padding: 12px 14px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+  background: #fff;
+  box-shadow: none;
+  color: var(--text);
+  text-align: left;
+}
+
+.traffic-overview-funnel button:last-child {
+  border-right: 0;
+}
+
+.traffic-overview-funnel button:hover {
+  background: #f8fafb;
+}
+
+.traffic-overview-funnel button.is-active {
+  box-shadow: inset 0 3px 0 var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.traffic-overview-funnel button.is-active strong {
+  color: var(--accent-strong);
+}
+
+.traffic-overview-loading {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  border-block: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.traffic-overview-funnel button span,
+.traffic-overview-funnel button small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.traffic-overview-funnel button strong {
+  font-size: 22px;
+  line-height: 1.15;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.traffic-overview-amounts {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  min-height: 42px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--line);
+  background: #fafbfc;
+  font-size: 12px;
+}
+
+.traffic-overview-amounts > span,
+.traffic-overview-amounts small {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.traffic-overview-table-scroll {
+  width: 100%;
+  min-width: 0;
+  max-height: 440px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+}
+
+.traffic-overview-table-scroll:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: -2px;
+}
+
+.traffic-overview-table-scroll table {
+  min-width: 900px;
+  font-size: 12px;
+  table-layout: auto;
+}
+
+.traffic-overview-table-scroll th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  white-space: nowrap;
+}
+
+.traffic-overview-table-scroll td {
+  min-width: 84px;
+  max-width: 260px;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.traffic-overview-table-scroll th:first-child,
+.traffic-overview-table-scroll td:first-child {
+  min-width: 150px;
+}
+
+.traffic-overview-table-links table {
+  min-width: 1220px;
+}
+
+.traffic-overview-table-links th:first-child,
+.traffic-overview-table-links td:first-child,
+.traffic-overview-table-links th:nth-child(2),
+.traffic-overview-table-links td:nth-child(2) {
+  min-width: 210px;
+}
+
+.traffic-overview-table-users table {
+  min-width: 1680px;
+}
+
+.traffic-overview-table-users th:first-child,
+.traffic-overview-table-users td:first-child {
+  min-width: 190px;
+}
+
+.traffic-overview-table-users th:nth-child(4),
+.traffic-overview-table-users td:nth-child(4) {
+  min-width: 160px;
+}
+
+.traffic-overview-table-users th:nth-child(5),
+.traffic-overview-table-users td:nth-child(5) {
+  min-width: 190px;
+}
+
+.traffic-overview-table-users th:nth-child(n + 6),
+.traffic-overview-table-users td:nth-child(n + 6) {
+  min-width: 148px;
+  white-space: nowrap;
+}
+
+.traffic-overview-table-scroll tbody tr:hover td {
+  background: #fbfcfd;
+}
+
+.traffic-overview-empty {
+  height: 96px;
+  color: var(--muted);
+  text-align: center;
+  white-space: normal;
+}
+
+.traffic-overview-cell-subtext {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.traffic-overview-segment {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.traffic-overview-segment.ordinary {
+  background: #e8f6ee;
+  color: #166534;
+}
+
+.traffic-overview-segment.internal {
+  background: #fff3dd;
+  color: #8b5b13;
+}
+
+.traffic-overview-inline-error {
+  padding: 9px 12px;
+  border-left: 3px solid var(--danger);
+  background: #fff7f7;
+  color: var(--danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.traffic-overview-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.traffic-overview-pagination span {
+  min-width: 0;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.traffic-overview-pagination button {
+  min-height: 28px;
+  padding: 3px 9px;
+  font-size: 12px;
+}
+
+@media (max-width: 1000px) {
+  .traffic-overview-query {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .traffic-overview-query {
+    grid-template-columns: 1fr;
+    padding-inline: 10px;
+  }
+
+  .traffic-overview-query > button {
+    width: 100%;
+  }
+
+  .traffic-overview-metrics {
+    grid-template-columns: repeat(2, minmax(140px, 1fr));
+  }
+
+  .traffic-overview-metric:nth-child(2) {
+    border-right: 0;
+  }
+
+  .traffic-overview-metric:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--line);
+  }
+
+  .traffic-overview-funnel {
+    grid-template-columns: repeat(6, 132px);
+  }
+
+  .traffic-overview-funnel button {
+    min-width: 132px;
+    border-right: 1px solid var(--line);
+  }
+
+  .traffic-overview-funnel button:last-child {
+    border-right: 0;
+  }
+
+  .traffic-overview-section-head,
+  .traffic-overview-error {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .traffic-overview-section-head > small {
+    text-align: left;
+  }
+
+  .traffic-overview-error > button {
+    width: 100%;
+  }
+
+  .traffic-overview-pagination {
+    justify-content: space-between;
+  }
+}
+
+@media (max-width: 360px) {
+  .traffic-overview-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .traffic-overview-metric,
+  .traffic-overview-metric:nth-child(2) {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .traffic-overview-metric:last-child {
+    border-bottom: 0;
   }
 }
 

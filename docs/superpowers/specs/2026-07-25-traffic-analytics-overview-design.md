@@ -69,7 +69,7 @@ traffic-analysis 写访问与归因
 6. 注册成功后 `(site_id, external_user_id)` 来源不可覆盖。
 7. 注册后的新点击不能改变历史账号来源。
 
-页面统一显示“末次触发归因”，不再出现“首次触达”口径。
+页面统一显示“末次触发归因”，不再展示旧归因口径。
 
 ## 5. 内部人员与正式统计
 
@@ -169,7 +169,13 @@ GET /api/growth/analytics/overview
 ```json
 {
   "generated_at": "2026-07-25T08:00:00Z",
-  "window": {"range": "7d", "start_at": "...", "end_at": "...", "bucket": "day"},
+  "window": {
+    "range": "7d",
+    "start_at": "...",
+    "end_at": "...",
+    "bucket": "day",
+    "timezone": "UTC"
+  },
   "summary": {
     "homepage_pv": 0,
     "homepage_uv": 0,
@@ -219,7 +225,9 @@ GET /api/growth/analytics/users
 - `continued`；
 - `refunded`。
 
-每行返回站点、业务用户 ID、显示标签、普通/内部身份、来源类型、渠道、活动、推广链接、注册时间以及相关里程碑时间。列表不返回邮箱、密码、Cookie、API Key 或支付密钥。
+每行返回 `public_user_id`、站点、脱敏业务用户 ID、脱敏显示标签、普通/内部身份、来源类型、渠道、活动、推广链接、注册时间以及相关里程碑时间。服务端在形成公开响应时对邮箱形态的业务用户 ID 和显示标签脱敏，浏览器、网络响应和开发者工具均不得取得原始邮箱；列表也不返回密码、Cookie、API Key 或支付密钥。
+
+`public_user_id` 只用于在管理页面稳定区分账号行，不作为数据库主键或跨接口凭据。后端使用管理服务的 `app_secret_key` 计算 `HMAC-SHA256(site_id + "\0" + raw_external_user_id)`，返回 `usr_` 加前 32 位十六进制摘要；禁止使用无密钥哈希。密钥不变时同一站点账号必须稳定，同一脱敏展示值对应的不同原始账号必须得到不同 ID。前端账号行必须以 `public_user_id` 为 React key，不能使用可能碰撞的脱敏字段。
 
 所有接口使用现有 `traffic-analysis` 页面权限；查询接口只读，owner/admin/operator 均可访问。
 
@@ -257,9 +265,14 @@ GET /api/growth/analytics/users
 
 - 单次概览查询目标 P95 小于 500 ms。
 - 查询只读 Growth PostgreSQL，不访问业务站数据库。
+- 每次概览和名单查询在当前只读事务内设置 PostgreSQL `statement_timeout=5s`，超时按数据库不可用响应处理，不影响 `/r/*` 写入事务。
 - 时间范围最大 90 天，链接排行最多 50 条，账号名单分页最大 100 条。
+- 链接排行的站点、链接、活动和渠道条件必须在访问事件聚合前下推，单链接查询不得先扫描并分组整个时间窗。
+- 所有 SQLAlchemy 分析语句必须为可空筛选参数显式绑定 PostgreSQL 类型：站点和来源为 `TEXT`，渠道、活动和链接为 `UUID`；时间窗使用带时区的 `TIMESTAMPTZ`，趋势 bucket 为 `TEXT`，分页参数为 `INTEGER`。不能依赖 asyncpg 从 `NULL IS NULL` 推断参数类型。
 - 使用已有访问、来源、注册和内部人员索引；若生产 `EXPLAIN` 显示全表扫描，再增加针对查询条件的组合索引。
 - V1 不新增第二套聚合表；数据量达到单次查询目标上限后再设计小时/日流量汇总。
+
+趋势切桶与所有可见时间必须使用同一报表时区：选择单个站点时使用 `growth.sites.timezone`，跨站点汇总使用 `UTC`。后端以 PostgreSQL 三参数 `date_trunc` 显式传入该时区，并通过 `window.timezone` 返回；前端按该字段格式化趋势桶、`generated_at` 以及账号注册、调用、付费和退款时间，不使用浏览器默认时区重新解释。概览尚未返回但账号请求已完成时，账号时间固定回退 `UTC`。
 
 ## 12. 测试
 
@@ -272,6 +285,10 @@ GET /api/growth/analytics/users
 - 内部人员调用保留但不伪造付费；
 - 通用排除账号不进入普通统计；
 - 来源、站点、渠道、活动和链接过滤；
+- 分析语句超时与链接访问过滤下推；
+- 所有分析语句的可空筛选、时间、bucket 和分页参数都有明确 SQLAlchemy/PostgreSQL 类型；
+- 单站点时区和跨站 UTC 趋势切桶；
+- 账号名单在服务端响应边界完成邮箱形态脱敏，并为同形脱敏账号返回稳定且不同的 HMAC `public_user_id`；
 - 跨币种金额分组；
 - 账号里程碑过滤和分页；
 - 缺少运行时表时返回 `503`；
@@ -284,6 +301,8 @@ GET /api/growth/analytics/users
 - 指标、漏斗、趋势、来源和链接排行；
 - 点击指标切换账号名单；
 - 内部人员切换不改变匿名 PV/UV；
+- 趋势、生成时间和账号里程碑统一使用 `window.timezone`，无概览时明确回退 `UTC`；
+- 脱敏值碰撞的账号行使用不同 `public_user_id` 作为稳定 key；
 - 空数据、加载、失败和重试状态；
 - 配置数据成功但概览失败时仍可切换配置页签；
 - 桌面和移动视口无重叠，表格允许水平滚动。
