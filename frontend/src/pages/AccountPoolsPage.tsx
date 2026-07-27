@@ -4,6 +4,13 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import { errorMessage, formatDateTime } from "../utils/format";
 import { safeHttpUrl } from "../utils/url";
+import {
+  buildSmartSchedulingPayload,
+  defaultSmartSchedulingRules,
+  smartSchedulingRulesToForm,
+  type SmartSchedulingForm,
+  type SmartSchedulingRules,
+} from "./smartScheduling";
 
 type Props = {
   token: string;
@@ -109,6 +116,8 @@ type GroupObservabilitySetting = {
   group_name?: string;
   enabled: boolean;
   detailed_enabled: boolean;
+  type_priority_enabled?: boolean;
+  quota_acceleration_enabled?: boolean;
   probe_interval_seconds?: number;
   record_usage_samples?: boolean;
   record_status_events?: boolean;
@@ -137,6 +146,26 @@ type ProbeResponse = {
   duplicate_email_count?: number;
   accounts_removed_confirmed?: number;
   message?: string;
+};
+
+type SmartSchedulingRunSummary = {
+  status?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  scanned?: number;
+  changed?: number;
+  unchanged?: number;
+  skipped?: number;
+  failed?: number;
+};
+
+type SmartSchedulingResponse = {
+  site_id: string;
+  rules: SmartSchedulingRules;
+  default_rules: SmartSchedulingRules;
+  last_run?: SmartSchedulingRunSummary | null;
+  updated_at?: string | null;
+  updated_by_name?: string | null;
 };
 
 type RefreshResponse = {
@@ -234,6 +263,19 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   const quotaDetectionRequestRef = useRef(0);
   const [observabilitySettings, setObservabilitySettings] = useState<GroupObservabilitySetting[]>([]);
   const [savingObservabilityKey, setSavingObservabilityKey] = useState<string | null>(null);
+  const [smartSchedulingForm, setSmartSchedulingForm] = useState<SmartSchedulingForm>(() =>
+    smartSchedulingRulesToForm(defaultSmartSchedulingRules),
+  );
+  const [smartSchedulingMeta, setSmartSchedulingMeta] = useState<{
+    lastRun?: SmartSchedulingRunSummary | null;
+    updatedAt?: string | null;
+    updatedByName?: string | null;
+  }>({});
+  const [loadingSmartScheduling, setLoadingSmartScheduling] = useState(false);
+  const [savingSmartScheduling, setSavingSmartScheduling] = useState(false);
+  const [smartSchedulingDirty, setSmartSchedulingDirty] = useState(false);
+  const [smartSchedulingError, setSmartSchedulingError] = useState("");
+  const smartSchedulingRequestRef = useRef(0);
   const [probing, setProbing] = useState(false);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 
@@ -396,11 +438,89 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     }
   };
 
+  const loadSmartScheduling = async (siteId = selectedSiteId) => {
+    const requestId = ++smartSchedulingRequestRef.current;
+    if (!siteId) {
+      setSmartSchedulingForm(smartSchedulingRulesToForm(defaultSmartSchedulingRules));
+      setSmartSchedulingMeta({});
+      setSmartSchedulingDirty(false);
+      setSmartSchedulingError("");
+      setLoadingSmartScheduling(false);
+      return;
+    }
+    setLoadingSmartScheduling(true);
+    try {
+      const data = await api<SmartSchedulingResponse>(
+        `/api-pools/smart-scheduling/settings?site_id=${encodeURIComponent(siteId)}`,
+        token,
+      );
+      if (requestId !== smartSchedulingRequestRef.current) return;
+      setSmartSchedulingForm(smartSchedulingRulesToForm(data.rules));
+      setSmartSchedulingMeta({
+        lastRun: data.last_run,
+        updatedAt: data.updated_at,
+        updatedByName: data.updated_by_name,
+      });
+      setSmartSchedulingDirty(false);
+      setSmartSchedulingError("");
+    } finally {
+      if (requestId === smartSchedulingRequestRef.current) setLoadingSmartScheduling(false);
+    }
+  };
+
+  const saveSmartScheduling = async () => {
+    if (!selectedSiteId) return;
+    const result = buildSmartSchedulingPayload(smartSchedulingForm);
+    if (!result.ok) {
+      setSmartSchedulingError(result.error);
+      return;
+    }
+    setSavingSmartScheduling(true);
+    setSmartSchedulingError("");
+    try {
+      const data = await api<SmartSchedulingResponse>(
+        `/api-pools/smart-scheduling/settings?site_id=${encodeURIComponent(selectedSiteId)}`,
+        token,
+        {
+          method: "PATCH",
+          body: JSON.stringify(result.payload),
+        },
+      );
+      setSmartSchedulingForm(smartSchedulingRulesToForm(data.rules));
+      setSmartSchedulingMeta({
+        lastRun: data.last_run,
+        updatedAt: data.updated_at,
+        updatedByName: data.updated_by_name,
+      });
+      setSmartSchedulingDirty(false);
+      showToast("智能调度规则已保存");
+    } catch (error) {
+      const message = errorMessage(error);
+      setSmartSchedulingError(message);
+      showToast(message, true);
+    } finally {
+      setSavingSmartScheduling(false);
+    }
+  };
+
   usePageAutoRefresh(
-    () => Promise.all([loadObservabilitySettings(selectedSiteId), loadQuotaDetection(selectedSiteId)]).then(() => undefined),
+    () => Promise.all([
+      loadObservabilitySettings(selectedSiteId),
+      loadQuotaDetection(selectedSiteId),
+      loadSmartScheduling(selectedSiteId),
+    ]).then(() => undefined),
     {
       enabled: Boolean(selectedSiteId),
-      paused: Boolean(refreshing || savingSite || savingCapacityLimits || savingObservabilityKey || probing || confirmState),
+      paused: Boolean(
+        refreshing
+        || savingSite
+        || savingCapacityLimits
+        || savingObservabilityKey
+        || savingSmartScheduling
+        || smartSchedulingDirty
+        || probing
+        || confirmState
+      ),
     },
   );
 
@@ -469,7 +589,11 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     setRefreshing(true);
     try {
       const result = await api<RefreshResponse>(`/sub2api-sites/${selectedSiteId}/refresh`, token, { method: "POST" });
-      await Promise.all([loadObservabilitySettings(selectedSiteId), loadQuotaDetection(selectedSiteId)]);
+      await Promise.all([
+        loadObservabilitySettings(selectedSiteId),
+        loadQuotaDetection(selectedSiteId),
+        loadSmartScheduling(selectedSiteId),
+      ]);
       showToast(
         typeof result.groups === "number" || typeof result.accounts === "number"
           ? `同步完成：${result.groups || 0} 个分组，${result.accounts || 0} 个账号`
@@ -494,6 +618,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       }
       loadObservabilitySettings(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
       loadQuotaDetection(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
+      loadSmartScheduling(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
     };
     window.addEventListener("sub2api-cache-updated", handleCacheUpdated);
     return () => window.removeEventListener("sub2api-cache-updated", handleCacheUpdated);
@@ -504,6 +629,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       setObservabilitySettings([]);
       loadCapacityLimits("").catch((error) => showToast(errorMessage(error), true));
       loadQuotaDetection("").catch((error) => showToast(errorMessage(error), true));
+      loadSmartScheduling("").catch((error) => showToast(errorMessage(error), true));
       return;
     }
     const site = sites.find((item) => item.id === selectedSiteId);
@@ -514,6 +640,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     loadObservabilitySettings(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
     loadCapacityLimits(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
     loadQuotaDetection(selectedSiteId, true).catch((error) => showToast(errorMessage(error), true));
+    loadSmartScheduling(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
   }, [selectedSiteId, sites]);
 
   return (
