@@ -32,6 +32,7 @@ from app.modules.sub2api.cache import (
     list_sites,
 )
 from app.modules.sub2api.postgres_repository import fetch_pool_snapshot
+from app.modules.sub2api.smart_scheduling_service import run_smart_scheduling
 from app.utils import now_utc, serialize_doc
 
 
@@ -398,10 +399,26 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
     }
     try:
         settings = await _settings_for_site(db, site_id)
-        enabled_group_ids = {group_id for group_id, setting in settings.items() if setting.get("enabled") is not False}
+        selected_group_ids = set(settings)
         if group_ids is not None:
-            enabled_group_ids &= set(group_ids)
-        if settings and not enabled_group_ids:
+            selected_group_ids &= set(group_ids)
+        selected_settings = {
+            group_id: settings[group_id]
+            for group_id in selected_group_ids
+        }
+        enabled_group_ids = {
+            group_id
+            for group_id, setting in selected_settings.items()
+            if setting.get("enabled") is not False
+        }
+        scheduling_group_ids = {
+            group_id
+            for group_id, setting in selected_settings.items()
+            if setting.get("type_priority_enabled") is True
+            or setting.get("quota_acceleration_enabled") is True
+        }
+        checked_group_ids = enabled_group_ids | scheduling_group_ids
+        if settings and not checked_group_ids:
             finished_at = now_utc()
             await db.remote_account_probe_runs.update_one(
                 {"_id": run_id},
@@ -433,6 +450,15 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
             )
             for item in raw_accounts
         ]
+        counters.update(
+            await _run_smart_scheduling_for_probe(
+                db,
+                site=site,
+                accounts=accounts,
+                group_settings=selected_settings,
+                probe_run_id=run_id,
+            )
+        )
         fetched_at = now_utc()
         identity_accounts = [account for account in accounts if not _is_spark_shadow_account(account)]
         all_seen_identity_ids = {
@@ -440,7 +466,15 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
             for account in identity_accounts
             if account.get("normalized_email")
         }
-        filtered_accounts = [account for account in identity_accounts if _account_in_enabled_groups(account, enabled_group_ids)]
+        filtered_accounts = (
+            [
+                account
+                for account in identity_accounts
+                if _account_in_enabled_groups(account, enabled_group_ids)
+            ]
+            if enabled_group_ids
+            else ([] if settings else identity_accounts)
+        )
         counters["accounts_seen"] = len(filtered_accounts)
 
         by_email: dict[str, list[dict[str, Any]]] = {}
@@ -558,7 +592,7 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
         )
         counters.update(missing_counts)
         finished_at = now_utc()
-        group_ids_checked = sorted(enabled_group_ids)
+        group_ids_checked = sorted(checked_group_ids)
         await db.remote_account_probe_runs.update_one(
             {"_id": run_id},
             {
@@ -602,13 +636,38 @@ async def _due_group_ids(db: AsyncIOMotorDatabase, site_id: str) -> list[int]:
     now = now_utc()
     due: list[int] = []
     for group_id, setting in settings.items():
-        if setting.get("enabled") is False:
+        scheduling_enabled = (
+            setting.get("type_priority_enabled") is True
+            or setting.get("quota_acceleration_enabled") is True
+        )
+        if setting.get("enabled") is False and not scheduling_enabled:
             continue
         last_probe_at = _parse_datetime(setting.get("last_probe_at"))
         interval_seconds = max(60, int(setting.get("probe_interval_seconds") or DEFAULT_PROBE_INTERVAL_SECONDS))
         if not last_probe_at or now - last_probe_at >= timedelta(seconds=interval_seconds):
             due.append(group_id)
     return due
+
+
+async def _run_smart_scheduling_for_probe(
+    db: AsyncIOMotorDatabase,
+    *,
+    site: dict[str, Any],
+    accounts: list[dict[str, Any]],
+    group_settings: dict[int, dict[str, Any]],
+    probe_run_id: str,
+) -> dict[str, int]:
+    result = await run_smart_scheduling(
+        db,
+        site=site,
+        accounts=accounts,
+        group_settings=group_settings,
+        probe_run_id=probe_run_id,
+    )
+    return {
+        f"smart_scheduling_{key}": int(result.get(key) or 0)
+        for key in ("scanned", "changed", "unchanged", "skipped", "failed")
+    }
 
 
 async def _settings_for_site(db: AsyncIOMotorDatabase, site_id: str) -> dict[int, dict[str, Any]]:
@@ -658,6 +717,8 @@ def _normalize_probe_account(account: dict[str, Any]) -> dict[str, Any]:
         inferred_source = "name_prefix" if inferred_plan_type else None
     normalized = {
         "remote_account_id": account.get("id"),
+        "priority": account.get("priority"),
+        "concurrency": account.get("concurrency"),
         "email": str(email).strip() if email else "",
         "normalized_email": str(email).strip().lower() if email else "",
         "name": account.get("name"),
