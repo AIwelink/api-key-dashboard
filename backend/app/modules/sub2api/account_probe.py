@@ -84,6 +84,8 @@ def default_group_observability_setting(site_id: str, group_id: int, group_name:
         "group_name": group_name or f"#{group_id}",
         "enabled": True,
         "detailed_enabled": not likely_free,
+        "type_priority_enabled": False,
+        "quota_acceleration_enabled": False,
         "probe_interval_seconds": DEFAULT_PROBE_INTERVAL_SECONDS,
         "sample_retention_days": 7 if likely_free else DEFAULT_SAMPLE_RETENTION_DAYS,
         "record_usage_samples": not likely_free,
@@ -123,6 +125,8 @@ async def list_group_observability_settings(db: AsyncIOMotorDatabase, site_id: s
         group_name = str(group.get("name") or f"#{group_id}")
         setting = settings.get(group_id) or default_group_observability_setting(site_id, group_id, group_name)
         setting["group_name"] = setting.get("group_name") or group_name
+        setting.setdefault("type_priority_enabled", False)
+        setting.setdefault("quota_acceleration_enabled", False)
         setting["group_account_count"] = group.get("account_count")
         setting["group_active_account_count"] = group.get("active_account_count")
         meta = notification_meta.get(group_id, {})
@@ -132,6 +136,8 @@ async def list_group_observability_settings(db: AsyncIOMotorDatabase, site_id: s
         items.append(serialize_doc(setting))
     for group_id, setting in settings.items():
         if group_id not in seen:
+            setting.setdefault("type_priority_enabled", False)
+            setting.setdefault("quota_acceleration_enabled", False)
             items.append(serialize_doc(setting))
     return {"items": items, "total": len(items)}
 
@@ -152,6 +158,8 @@ async def update_group_observability_setting(
     allowed = {
         "enabled",
         "detailed_enabled",
+        "type_priority_enabled",
+        "quota_acceleration_enabled",
         "probe_interval_seconds",
         "sample_retention_days",
         "record_usage_samples",
@@ -173,6 +181,9 @@ async def update_group_observability_setting(
         upsert=True,
     )
     doc = await db.group_observability_settings.find_one({"_id": base["_id"]})
+    if doc is not None:
+        doc.setdefault("type_priority_enabled", False)
+        doc.setdefault("quota_acceleration_enabled", False)
     return serialize_doc(doc or {})
 
 

@@ -35,6 +35,28 @@ async def ensure_capacity_sample_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.sub2api_capacity_samples.create_index([("site_id", 1), ("group_id", 1), ("sampled_at", -1)])
 
 
+async def ensure_smart_scheduling_indexes(db: AsyncIOMotorDatabase) -> None:
+    await db.sub2api_smart_scheduling_states.create_index(
+        [("site_id", 1), ("remote_account_id", 1)],
+        unique=True,
+    )
+    await db.sub2api_smart_scheduling_runs.create_index(
+        [("site_id", 1), ("started_at", -1)]
+    )
+    await db.sub2api_smart_scheduling_runs.create_index(
+        "expires_at",
+        expireAfterSeconds=0,
+    )
+    await db.sub2api_smart_scheduling_outcomes.create_index(
+        [("site_id", 1), ("run_id", 1), ("remote_account_id", 1)],
+        unique=True,
+    )
+    await db.sub2api_smart_scheduling_outcomes.create_index(
+        "expires_at",
+        expireAfterSeconds=0,
+    )
+
+
 async def ensure_forecast_evaluation_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.sub2api_forecast_evaluations.create_index(
         [("site_id", 1), ("group_id", 1), ("kind", 1), ("status", 1), ("target_at", -1)]
@@ -211,6 +233,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.sub2api_hourly_forecasts.create_index("expires_at", expireAfterSeconds=0)
     await ensure_tpm_indexes(db)
     await ensure_capacity_sample_indexes(db)
+    await ensure_smart_scheduling_indexes(db)
     await ensure_forecast_evaluation_indexes(db)
     await ensure_quota_detection_indexes(db)
     await ensure_plus_self_produced_indexes(db)
