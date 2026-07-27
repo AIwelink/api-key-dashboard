@@ -450,12 +450,17 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
             )
             for item in raw_accounts
         ]
+        await _resolve_scheduling_account_types(
+            db,
+            site_id=site_id,
+            accounts=accounts,
+        )
         counters.update(
             await _run_smart_scheduling_for_probe(
                 db,
                 site=site,
                 accounts=accounts,
-                group_settings=selected_settings,
+                group_settings=settings,
                 probe_run_id=run_id,
             )
         )
@@ -668,6 +673,44 @@ async def _run_smart_scheduling_for_probe(
         f"smart_scheduling_{key}": int(result.get(key) or 0)
         for key in ("scanned", "changed", "unchanged", "skipped", "failed")
     }
+
+
+async def _resolve_scheduling_account_types(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    accounts: list[dict[str, Any]],
+) -> None:
+    identity_ids = sorted(
+        {
+            _identity_id(site_id, str(account.get("normalized_email")))
+            for account in accounts
+            if account.get("normalized_email")
+        }
+    )
+    identities: dict[str, dict[str, Any]] = {}
+    if identity_ids:
+        cursor = db.remote_account_identities.find(
+            {"_id": {"$in": identity_ids}},
+            {"plan_type": 1, "plan_type_source": 1},
+        )
+        identities = {
+            str(document["_id"]): document
+            async for document in cursor
+            if document.get("_id") is not None
+        }
+
+    for account in accounts:
+        normalized_email = str(account.get("normalized_email") or "")
+        previous = identities.get(_identity_id(site_id, normalized_email), {})
+        account["plan_type"], account["plan_type_source"] = _resolved_probe_plan_type(
+            account.get("plan_type"),
+            previous.get("plan_type"),
+            current_source=account.get("plan_type_source"),
+            previous_source=previous.get("plan_type_source"),
+        )
+        if account.get("account_type") not in {"special_plus", "special_team"}:
+            account["account_type"] = account.get("plan_type") or "unknown"
 
 
 async def _settings_for_site(db: AsyncIOMotorDatabase, site_id: str) -> dict[int, dict[str, Any]]:

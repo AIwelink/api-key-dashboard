@@ -4,9 +4,23 @@ import asyncio
 import unittest
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import ANY, AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from app.modules.sub2api import account_probe
+
+
+class AsyncCursor:
+    def __init__(self, items: list[dict[str, object]]) -> None:
+        self._items = iter(items)
+
+    def __aiter__(self) -> "AsyncCursor":
+        return self
+
+    async def __anext__(self) -> dict[str, object]:
+        try:
+            return next(self._items)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
 
 
 class AccountProbeSchedulingTests(unittest.IsolatedAsyncioTestCase):
@@ -94,10 +108,10 @@ class AccountProbeSchedulingTests(unittest.IsolatedAsyncioTestCase):
             {
                 "id": 7,
                 "email": "plus@example.com",
-                "group_ids": [3],
+                "group_ids": [3, 4],
                 "priority": 250,
                 "concurrency": 20,
-                "credentials": {"plan_type": "plus"},
+                "credentials": {},
                 "extra": {},
             }
         ]
@@ -107,7 +121,13 @@ class AccountProbeSchedulingTests(unittest.IsolatedAsyncioTestCase):
                 "type_priority_enabled": True,
                 "quota_acceleration_enabled": False,
                 "probe_interval_seconds": 60,
-            }
+            },
+            4: {
+                "enabled": False,
+                "type_priority_enabled": False,
+                "quota_acceleration_enabled": True,
+                "probe_interval_seconds": 60,
+            },
         }
         fetch_accounts = AsyncMock(return_value=raw_accounts)
         schedule = AsyncMock(
@@ -124,7 +144,10 @@ class AccountProbeSchedulingTests(unittest.IsolatedAsyncioTestCase):
                 insert_one=AsyncMock(),
                 update_one=AsyncMock(),
             ),
-            remote_account_identities=SimpleNamespace(find_one=AsyncMock(return_value=None)),
+            remote_account_identities=SimpleNamespace(
+                find=MagicMock(return_value=AsyncCursor([])),
+                find_one=AsyncMock(return_value=None),
+            ),
             group_observability_settings=SimpleNamespace(update_many=AsyncMock()),
             remote_account_probe_meta=SimpleNamespace(update_one=AsyncMock()),
         )
@@ -157,9 +180,48 @@ class AccountProbeSchedulingTests(unittest.IsolatedAsyncioTestCase):
 
         fetch_accounts.assert_awaited_once()
         schedule.assert_awaited_once()
+        scheduled_account = schedule.await_args.kwargs["accounts"][0]
+        self.assertEqual(scheduled_account["plan_type"], "k12")
+        self.assertEqual(scheduled_account["account_type"], "k12")
+        self.assertEqual(schedule.await_args.kwargs["group_settings"], settings)
         self.assertEqual(result["smart_scheduling_unchanged"], 1)
         self.assertEqual(result["accounts_seen"], 0)
         self.assertEqual(result["group_ids_checked"], [3])
+
+    async def test_cached_plan_type_is_resolved_before_scheduling(self) -> None:
+        accounts = [
+            {
+                "normalized_email": "cached@example.com",
+                "plan_type": "",
+                "plan_type_source": None,
+                "account_type": "unknown",
+            }
+        ]
+        db = SimpleNamespace(
+            remote_account_identities=SimpleNamespace(
+                find=MagicMock(
+                    return_value=AsyncCursor(
+                        [
+                            {
+                                "_id": "api-5001:cached@example.com",
+                                "plan_type": "plus",
+                                "plan_type_source": "remote",
+                            }
+                        ]
+                    )
+                )
+            )
+        )
+
+        await account_probe._resolve_scheduling_account_types(
+            db,
+            site_id="api-5001",
+            accounts=accounts,
+        )
+
+        self.assertEqual(accounts[0]["plan_type"], "plus")
+        self.assertEqual(accounts[0]["plan_type_source"], "cached")
+        self.assertEqual(accounts[0]["account_type"], "plus")
 
 
 class AccountProbeDatabaseSourceTests(unittest.IsolatedAsyncioTestCase):

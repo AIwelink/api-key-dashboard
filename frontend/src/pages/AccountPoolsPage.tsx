@@ -7,6 +7,7 @@ import { safeHttpUrl } from "../utils/url";
 import {
   buildSmartSchedulingPayload,
   defaultSmartSchedulingRules,
+  isCurrentSiteRequest,
   smartSchedulingAccountTypes,
   smartSchedulingRulesToForm,
   type SmartSchedulingAccountRuleForm,
@@ -258,6 +259,7 @@ const smartSchedulingTypeLabels: Record<SmartSchedulingAccountType, string> = {
 export function AccountPoolsPage({ token, showToast }: Props) {
   const [sites, setSites] = useState<Site[]>([]);
   const [selectedSiteId, setSelectedSiteId] = useState("");
+  const selectedSiteIdRef = useRef("");
   const [refreshing, setRefreshing] = useState(false);
   const [editingSiteId, setEditingSiteId] = useState<string | null>(null);
   const [siteForm, setSiteForm] = useState<SiteForm>(emptySiteForm);
@@ -273,6 +275,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   const quotaDetectionRequestRef = useRef(0);
   const [observabilitySettings, setObservabilitySettings] = useState<GroupObservabilitySetting[]>([]);
   const [savingObservabilityKey, setSavingObservabilityKey] = useState<string | null>(null);
+  const observabilityRequestRef = useRef(0);
   const [smartSchedulingForm, setSmartSchedulingForm] = useState<SmartSchedulingForm>(() =>
     smartSchedulingRulesToForm(defaultSmartSchedulingRules),
   );
@@ -290,6 +293,24 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 
   const selectedSite = sites.find((site) => site.id === selectedSiteId) || null;
+  const siteSwitchingDisabled = Boolean(
+    savingSite
+    || testingDatabase
+    || savingCapacityLimits
+    || savingObservabilityKey
+    || savingSmartScheduling
+    || probing
+    || refreshing
+  );
+
+  const selectSite = (siteId: string) => {
+    selectedSiteIdRef.current = siteId;
+    capacityLimitsRequestRef.current += 1;
+    quotaDetectionRequestRef.current += 1;
+    observabilityRequestRef.current += 1;
+    smartSchedulingRequestRef.current += 1;
+    setSelectedSiteId(siteId);
+  };
 
   const updateSmartSchedulingRule = (
     accountType: SmartSchedulingAccountType,
@@ -326,12 +347,12 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     const data = await api<SitesResponse>("/sub2api-sites?site_type=sub2api", token);
     setSites(data.items);
     if (!selectedSiteId && data.items[0]) {
-      setSelectedSiteId(data.items[0].id);
+      selectSite(data.items[0].id);
     }
   };
 
   const startCreateSite = () => {
-    setSelectedSiteId("");
+    selectSite("");
     setEditingSiteId(null);
     setSiteForm(emptySiteForm);
   };
@@ -367,7 +388,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
           });
       const data = await api<SitesResponse>("/sub2api-sites", token);
       setSites(data.items);
-      setSelectedSiteId(saved.id);
+      selectSite(saved.id);
       setEditingSiteId(saved.id);
       setSiteForm(siteToForm(saved));
       showToast("账号池站点已保存");
@@ -419,7 +440,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
           const data = await api<SitesResponse>("/sub2api-sites", token);
           setSites(data.items);
           const nextSite = data.items[0] || null;
-          setSelectedSiteId(nextSite?.id || "");
+          selectSite(nextSite?.id || "");
           setEditingSiteId(nextSite?.id || null);
           setSiteForm(nextSite ? siteToForm(nextSite) : emptySiteForm);
           showToast("站点已删除");
@@ -444,22 +465,35 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     setLoadingCapacityLimits(true);
     try {
       const data = await api<CapacityLimitsResponse>(`/api-pools/capacity-limits?site_id=${encodeURIComponent(siteId)}`, token);
-      if (requestId !== capacityLimitsRequestRef.current) return;
+      if (!isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, capacityLimitsRequestRef.current)) return;
       setCapacityLimits(capacityLimitsToForm(data.limits));
       setCapacityLimitsMeta({
         updated_at: data.updated_at,
         updated_by_name: data.updated_by_name,
         inherited_from_global: data.inherited_from_global,
       });
+    } catch (error) {
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, capacityLimitsRequestRef.current)) throw error;
     } finally {
-      if (requestId === capacityLimitsRequestRef.current) setLoadingCapacityLimits(false);
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, capacityLimitsRequestRef.current)) {
+        setLoadingCapacityLimits(false);
+      }
     }
   };
 
   const loadObservabilitySettings = async (siteId = selectedSiteId) => {
-    if (!siteId) return;
-    const data = await api<GroupObservabilityResponse>(`/api-pools/observability/groups?site_id=${encodeURIComponent(siteId)}`, token);
-    setObservabilitySettings(data.items);
+    const requestId = ++observabilityRequestRef.current;
+    if (!siteId) {
+      setObservabilitySettings([]);
+      return;
+    }
+    try {
+      const data = await api<GroupObservabilityResponse>(`/api-pools/observability/groups?site_id=${encodeURIComponent(siteId)}`, token);
+      if (!isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, observabilityRequestRef.current)) return;
+      setObservabilitySettings(data.items);
+    } catch (error) {
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, observabilityRequestRef.current)) throw error;
+    }
   };
 
   const loadQuotaDetection = async (siteId = selectedSiteId, clear = false) => {
@@ -473,9 +507,15 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     setLoadingQuotaDetection(true);
     try {
       const data = await api<QuotaDetectionResponse>(`/api-pools/quota-detection?site_id=${encodeURIComponent(siteId)}`, token);
-      if (requestId === quotaDetectionRequestRef.current) setQuotaDetection(data);
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, quotaDetectionRequestRef.current)) {
+        setQuotaDetection(data);
+      }
+    } catch (error) {
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, quotaDetectionRequestRef.current)) throw error;
     } finally {
-      if (requestId === quotaDetectionRequestRef.current) setLoadingQuotaDetection(false);
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, quotaDetectionRequestRef.current)) {
+        setLoadingQuotaDetection(false);
+      }
     }
   };
 
@@ -495,7 +535,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
         `/api-pools/smart-scheduling/settings?site_id=${encodeURIComponent(siteId)}`,
         token,
       );
-      if (requestId !== smartSchedulingRequestRef.current) return;
+      if (!isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, smartSchedulingRequestRef.current)) return;
       setSmartSchedulingForm(smartSchedulingRulesToForm(data.rules));
       setSmartSchedulingMeta({
         lastRun: data.last_run,
@@ -504,38 +544,48 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       });
       setSmartSchedulingDirty(false);
       setSmartSchedulingError("");
+    } catch (error) {
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, smartSchedulingRequestRef.current)) throw error;
     } finally {
-      if (requestId === smartSchedulingRequestRef.current) setLoadingSmartScheduling(false);
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, smartSchedulingRequestRef.current)) {
+        setLoadingSmartScheduling(false);
+      }
     }
   };
 
   const saveSmartScheduling = async () => {
     if (!selectedSiteId) return;
+    const siteId = selectedSiteId;
     const result = buildSmartSchedulingPayload(smartSchedulingForm);
     if (!result.ok) {
       setSmartSchedulingError(result.error);
       return;
     }
+    const requestId = ++smartSchedulingRequestRef.current;
+    setLoadingSmartScheduling(false);
     setSavingSmartScheduling(true);
     setSmartSchedulingError("");
     try {
       const data = await api<SmartSchedulingResponse>(
-        `/api-pools/smart-scheduling/settings?site_id=${encodeURIComponent(selectedSiteId)}`,
+        `/api-pools/smart-scheduling/settings?site_id=${encodeURIComponent(siteId)}`,
         token,
         {
           method: "PATCH",
           body: JSON.stringify(result.payload),
         },
       );
-      setSmartSchedulingForm(smartSchedulingRulesToForm(data.rules));
-      setSmartSchedulingMeta({
-        lastRun: data.last_run,
-        updatedAt: data.updated_at,
-        updatedByName: data.updated_by_name,
-      });
-      setSmartSchedulingDirty(false);
-      showToast("智能调度规则已保存");
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, smartSchedulingRequestRef.current)) {
+        setSmartSchedulingForm(smartSchedulingRulesToForm(data.rules));
+        setSmartSchedulingMeta({
+          lastRun: data.last_run,
+          updatedAt: data.updated_at,
+          updatedByName: data.updated_by_name,
+        });
+        setSmartSchedulingDirty(false);
+      }
+      if (siteId === selectedSiteIdRef.current) showToast("智能调度规则已保存");
     } catch (error) {
+      if (siteId !== selectedSiteIdRef.current) return;
       const message = errorMessage(error);
       setSmartSchedulingError(message);
       showToast(message, true);
@@ -567,19 +617,23 @@ export function AccountPoolsPage({ token, showToast }: Props) {
 
   const saveObservabilitySetting = async (setting: GroupObservabilitySetting, updates: Partial<GroupObservabilitySetting>) => {
     if (!selectedSiteId) return;
-    const key = `${selectedSiteId}:${setting.group_id}`;
+    const siteId = selectedSiteId;
+    const key = `${siteId}:${setting.group_id}`;
+    observabilityRequestRef.current += 1;
     setSavingObservabilityKey(key);
     try {
-      const updated = await api<GroupObservabilitySetting>(`/api-pools/observability/groups/${setting.group_id}?site_id=${encodeURIComponent(selectedSiteId)}`, token, {
+      const updated = await api<GroupObservabilitySetting>(`/api-pools/observability/groups/${setting.group_id}?site_id=${encodeURIComponent(siteId)}`, token, {
         method: "PATCH",
         body: JSON.stringify(updates),
       });
+      if (siteId !== selectedSiteIdRef.current) return;
       setObservabilitySettings((current) => current.map((item) => (item.group_id === updated.group_id ? updated : item)));
       showToast("探测配置已保存");
     } catch (error) {
+      if (siteId !== selectedSiteIdRef.current) return;
       showToast(errorMessage(error), true);
     } finally {
-      setSavingObservabilityKey(null);
+      setSavingObservabilityKey((current) => (current === key ? null : current));
     }
   };
 
@@ -705,13 +759,13 @@ export function AccountPoolsPage({ token, showToast }: Props) {
             <p>这里只配置承载账号与调度状态的 Sub2API，不包含向客户提供服务的站点。</p>
           </div>
           <div className="button-row">
-            <button className="compact-button" type="button" onClick={saveSiteForm} disabled={savingSite}>
+            <button className="compact-button" type="button" onClick={saveSiteForm} disabled={siteSwitchingDisabled}>
               {savingSite ? "保存中..." : editingSiteId ? "保存站点" : "创建站点"}
             </button>
-            <button className="ghost compact-button" type="button" onClick={startCreateSite}>
+            <button className="ghost compact-button" type="button" onClick={startCreateSite} disabled={siteSwitchingDisabled}>
               新增站点
             </button>
-            <button className="ghost compact-button danger-button" type="button" onClick={deleteCurrentSite} disabled={!editingSiteId || savingSite}>
+            <button className="ghost compact-button danger-button" type="button" onClick={deleteCurrentSite} disabled={!editingSiteId || siteSwitchingDisabled}>
               删除站点
             </button>
           </div>
@@ -721,7 +775,11 @@ export function AccountPoolsPage({ token, showToast }: Props) {
             <span className="field-label">
               <strong>已有站点</strong>
             </span>
-            <select value={editingSiteId || ""} onChange={(event) => event.target.value && setSelectedSiteId(event.target.value)}>
+            <select
+              value={editingSiteId || ""}
+              disabled={siteSwitchingDisabled}
+              onChange={(event) => event.target.value && selectSite(event.target.value)}
+            >
               <option value="">选择已有站点</option>
               {sites.map((site) => (
                 <option key={site.id} value={site.id}>

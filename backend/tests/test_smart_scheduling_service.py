@@ -104,7 +104,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             get_account=AsyncMock(
                 return_value={"id": 7, "priority": 250, "concurrency": 20}
             ),
-            update_account=AsyncMock(
+            update_account_runtime=AsyncMock(
                 return_value={"id": 7, "priority": 250, "concurrency": 30}
             ),
         )
@@ -131,7 +131,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         client.get_account.assert_awaited_once_with(7)
-        client.update_account.assert_awaited_once_with(
+        client.update_account_runtime.assert_awaited_once_with(
             7,
             {"priority": 250, "concurrency": 30},
         )
@@ -154,7 +154,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             get_account=AsyncMock(
                 return_value={"id": 7, "priority": 250, "concurrency": 20}
             ),
-            update_account=AsyncMock(),
+            update_account_runtime=AsyncMock(),
         )
 
         result = await run_smart_scheduling(
@@ -177,7 +177,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             now=self.now,
         )
 
-        client.update_account.assert_awaited_once_with(
+        client.update_account_runtime.assert_awaited_once_with(
             7,
             {"priority": 10, "concurrency": 100},
         )
@@ -189,7 +189,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             get_account=AsyncMock(
                 return_value={"id": 7, "priority": 220, "concurrency": 30}
             ),
-            update_account=AsyncMock(),
+            update_account_runtime=AsyncMock(),
         )
 
         result = await run_smart_scheduling(
@@ -209,14 +209,14 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         client.get_account.assert_awaited_once_with(7)
-        client.update_account.assert_not_awaited()
+        client.update_account_runtime.assert_not_awaited()
         self.assertEqual(result["unchanged"], 1)
 
     async def test_default_off_does_not_acquire_lease_or_call_remote_api(self) -> None:
         db = self.db()
         client = SimpleNamespace(
             get_account=AsyncMock(),
-            update_account=AsyncMock(),
+            update_account_runtime=AsyncMock(),
         )
 
         with (
@@ -251,14 +251,14 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         fetch_key.assert_not_awaited()
         client_constructor.assert_not_called()
         client.get_account.assert_not_awaited()
-        client.update_account.assert_not_awaited()
+        client.update_account_runtime.assert_not_awaited()
 
     async def test_client_is_built_lazily_for_first_candidate_change(self) -> None:
         client = SimpleNamespace(
             get_account=AsyncMock(
                 return_value={"id": 7, "priority": 250, "concurrency": 20}
             ),
-            update_account=AsyncMock(),
+            update_account_runtime=AsyncMock(),
         )
         fetch_key = AsyncMock(return_value="admin-key")
 
@@ -295,7 +295,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             token="admin-key",
         )
         client.get_account.assert_awaited_once_with(7)
-        client.update_account.assert_awaited_once_with(
+        client.update_account_runtime.assert_awaited_once_with(
             7,
             {"priority": 250, "concurrency": 30},
         )
@@ -309,7 +309,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
                     {"id": 8, "priority": 250, "concurrency": 20},
                 ]
             ),
-            update_account=AsyncMock(
+            update_account_runtime=AsyncMock(
                 side_effect=[
                     RuntimeError("remote body must not be persisted"),
                     {"id": 8, "priority": 250, "concurrency": 30},
@@ -336,7 +336,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["failed"], 1)
         self.assertEqual(result["changed"], 1)
-        self.assertEqual(client.update_account.await_count, 2)
+        self.assertEqual(client.update_account_runtime.await_count, 2)
         first_outcome = (
             db.sub2api_smart_scheduling_outcomes.update_one.await_args_list[0]
             .args[1]["$set"]
@@ -358,7 +358,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
                     {"id": 8, "priority": 250, "concurrency": 20},
                 ]
             ),
-            update_account=AsyncMock(),
+            update_account_runtime=AsyncMock(),
         )
         db = self.db()
 
@@ -379,7 +379,8 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(client.get_account.await_count, 1)
-        client.update_account.assert_not_awaited()
+        client.update_account_runtime.assert_not_awaited()
+        self.assertEqual(result["scanned"], 1)
         self.assertEqual(result["failed"], 1)
         self.assertEqual(result["changed"], 0)
         self.assertEqual(
@@ -429,6 +430,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
 
         fetch_key.assert_awaited_once_with(self.site()["sql_dsn"])
         client_constructor.assert_not_called()
+        self.assertEqual(result["scanned"], 1)
         self.assertEqual(result["failed"], 1)
         self.assertEqual(result["changed"], 0)
         self.assertEqual(
@@ -456,7 +458,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             get_account=AsyncMock(
                 return_value={"id": 7, "priority": 250, "concurrency": 20}
             ),
-            update_account=AsyncMock(),
+            update_account_runtime=AsyncMock(),
         )
 
         with (
@@ -516,7 +518,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         ).isoformat()
         client = SimpleNamespace(
             get_account=AsyncMock(),
-            update_account=AsyncMock(),
+            update_account_runtime=AsyncMock(),
         )
 
         result = await run_smart_scheduling(
@@ -537,7 +539,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["skipped"], 1)
         client.get_account.assert_not_awaited()
-        client.update_account.assert_not_awaited()
+        client.update_account_runtime.assert_not_awaited()
 
     async def test_states_are_preloaded_once_with_compact_projection(self) -> None:
         reset_at = self.now + timedelta(days=3)
@@ -575,7 +577,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             rules=self.rules,
             client=SimpleNamespace(
                 get_account=AsyncMock(),
-                update_account=AsyncMock(),
+                update_account_runtime=AsyncMock(),
             ),
             now=self.now,
         )
@@ -598,7 +600,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             get_account=AsyncMock(
                 return_value={"id": 7, "priority": 250, "concurrency": 30}
             ),
-            update_account=AsyncMock(
+            update_account_runtime=AsyncMock(
                 return_value={"id": 7, "priority": 10, "concurrency": 100}
             ),
         )
@@ -649,7 +651,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         db = self.db(lease_document={"owner": "other-worker"})
         client = SimpleNamespace(
             get_account=AsyncMock(),
-            update_account=AsyncMock(),
+            update_account_runtime=AsyncMock(),
         )
 
         result = await run_smart_scheduling(
@@ -672,7 +674,53 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         db.sub2api_smart_scheduling_runs.insert_one.assert_not_awaited()
         db.operation_locks.delete_one.assert_not_awaited()
         client.get_account.assert_not_awaited()
-        client.update_account.assert_not_awaited()
+        client.update_account_runtime.assert_not_awaited()
+
+    async def test_lease_loss_stops_before_the_next_remote_write(self) -> None:
+        db = self.db()
+        client = SimpleNamespace(
+            get_account=AsyncMock(
+                return_value={"id": 7, "priority": 250, "concurrency": 20}
+            ),
+            update_account_runtime=AsyncMock(),
+        )
+
+        with (
+            patch.object(
+                smart_scheduling_service,
+                "monotonic",
+                side_effect=[0.0, 151.0],
+                create=True,
+            ),
+            patch.object(
+                smart_scheduling_service,
+                "renew_smart_scheduling_lease",
+                AsyncMock(return_value=False),
+                create=True,
+            ) as renew,
+        ):
+            result = await run_smart_scheduling(
+                db,
+                site=self.site(),
+                accounts=[self.account(7)],
+                group_settings={
+                    3: {
+                        "type_priority_enabled": True,
+                        "quota_acceleration_enabled": False,
+                    }
+                },
+                probe_run_id="probe-1",
+                rules=self.rules,
+                client=client,
+                now=self.now,
+            )
+
+        renew.assert_awaited_once()
+        client.get_account.assert_not_awaited()
+        client.update_account_runtime.assert_not_awaited()
+        self.assertEqual(result["failed"], 1)
+        outcome = db.sub2api_smart_scheduling_outcomes.update_one.await_args.args[1]["$set"]
+        self.assertEqual(outcome["error_code"], "scheduling_lease_lost")
 
     async def test_lease_release_failure_does_not_mask_run_result(self) -> None:
         db = self.db()
@@ -754,6 +802,33 @@ class SmartSchedulingLeaseTests(unittest.IsolatedAsyncioTestCase):
         query = db.operation_locks.find_one_and_update.await_args.args[0]
         self.assertEqual(query["_id"], "smart-scheduling:api-5001")
         self.assertIn("$or", query)
+
+    async def test_renewal_requires_the_unexpired_current_owner(self) -> None:
+        now = datetime(2026, 7, 27, 7, 2, 31, tzinfo=UTC)
+        update_one = AsyncMock(
+            return_value=SimpleNamespace(matched_count=0)
+        )
+        db = SimpleNamespace(
+            operation_locks=SimpleNamespace(update_one=update_one)
+        )
+
+        renewed = await smart_scheduling_service.renew_smart_scheduling_lease(
+            db,
+            site_id="api-5001",
+            owner="worker-a",
+            now=now,
+        )
+
+        self.assertFalse(renewed)
+        query = update_one.await_args.args[0]
+        self.assertEqual(
+            query,
+            {
+                "_id": "smart-scheduling:api-5001",
+                "owner": "worker-a",
+                "expires_at": {"$gt": now},
+            },
+        )
 
     async def test_release_only_deletes_the_current_owner(self) -> None:
         db = SimpleNamespace(

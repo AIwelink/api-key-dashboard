@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 
@@ -21,9 +22,14 @@ from app.utils import now_utc, serialize_doc
 
 SMART_SCHEDULING_SETTING_PREFIX = "smart_scheduling"
 SMART_SCHEDULING_LEASE_SECONDS = 300
+SMART_SCHEDULING_LEASE_RENEWAL_SECONDS = SMART_SCHEDULING_LEASE_SECONDS // 2
 RUN_RETENTION = timedelta(days=90)
 OUTCOME_RETENTION = timedelta(days=30)
 logger = logging.getLogger("app.sub2api_smart_scheduling")
+
+
+class _SmartSchedulingLeaseLostError(RuntimeError):
+    pass
 
 
 def smart_scheduling_setting_id(site_id: str) -> str:
@@ -140,6 +146,31 @@ async def release_smart_scheduling_lease(
     )
 
 
+async def renew_smart_scheduling_lease(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    owner: str,
+    now: datetime | None = None,
+) -> bool:
+    renewed_at = _as_utc(now or now_utc())
+    result = await db.operation_locks.update_one(
+        {
+            "_id": f"smart-scheduling:{site_id}",
+            "owner": owner,
+            "expires_at": {"$gt": renewed_at},
+        },
+        {
+            "$set": {
+                "expires_at": renewed_at
+                + timedelta(seconds=SMART_SCHEDULING_LEASE_SECONDS),
+                "updated_at": renewed_at,
+            }
+        },
+    )
+    return bool(result and result.matched_count == 1)
+
+
 async def run_smart_scheduling(
     db: AsyncIOMotorDatabase,
     *,
@@ -165,6 +196,7 @@ async def run_smart_scheduling(
         now=evaluated_at,
     ):
         return _empty_summary(site_id, status="locked")
+    lease_renewed_monotonic = monotonic()
     try:
         return await _run_smart_scheduling_locked(
             db,
@@ -175,6 +207,8 @@ async def run_smart_scheduling(
             rules=rules,
             client=client,
             now=evaluated_at,
+            lease_owner=owner,
+            lease_renewed_monotonic=lease_renewed_monotonic,
         )
     finally:
         try:
@@ -201,6 +235,8 @@ async def _run_smart_scheduling_locked(
     rules: dict[str, Any] | None,
     client: Sub2ApiClient | Any | None,
     now: datetime,
+    lease_owner: str,
+    lease_renewed_monotonic: float,
 ) -> dict[str, Any]:
     effective_rules = (
         normalize_smart_scheduling_rules(rules)
@@ -215,7 +251,7 @@ async def _run_smart_scheduling_locked(
         "site_id": site_id,
         "run_id": run_id,
         "probe_run_id": probe_run_id,
-        "scanned": len(eligible),
+        "scanned": 0,
         "changed": 0,
         "unchanged": 0,
         "skipped": 0,
@@ -240,7 +276,28 @@ async def _run_smart_scheduling_locked(
     )
     effective_client = client
 
+    async def ensure_live_lease() -> bool:
+        nonlocal lease_renewed_monotonic
+        checked_monotonic = monotonic()
+        if (
+            checked_monotonic - lease_renewed_monotonic
+            < SMART_SCHEDULING_LEASE_RENEWAL_SECONDS
+        ):
+            return True
+        try:
+            renewed = await renew_smart_scheduling_lease(
+                db,
+                site_id=site_id,
+                owner=lease_owner,
+            )
+        except Exception:  # noqa: BLE001 - any renewal failure must stop writes.
+            return False
+        if renewed:
+            lease_renewed_monotonic = checked_monotonic
+        return renewed
+
     for item in eligible.values():
+        summary["scanned"] += 1
         account = item["account"]
         remote_account_id = item["remote_account_id"]
         state = states.get(str(remote_account_id))
@@ -261,6 +318,8 @@ async def _run_smart_scheduling_locked(
 
         try:
             if decision["status"] == "change":
+                if not await ensure_live_lease():
+                    raise _SmartSchedulingLeaseLostError
                 if effective_client is None:
                     try:
                         effective_client = await _build_site_client(site)
@@ -283,7 +342,9 @@ async def _run_smart_scheduling_locked(
                     now=now,
                 )
             if decision["status"] == "change":
-                await effective_client.update_account(
+                if not await ensure_live_lease():
+                    raise _SmartSchedulingLeaseLostError
+                await effective_client.update_account_runtime(
                     remote_account_id,
                     decision["target"],
                 )
@@ -319,8 +380,13 @@ async def _run_smart_scheduling_locked(
             summary["failed"] += 1
             outcome_status = "failed"
             admin_auth_failed = isinstance(exc, InvalidAdminApiKeyError)
-            stop_remote_updates = admin_auth_failed or client_configuration_failed
-            if admin_auth_failed:
+            lease_lost = isinstance(exc, _SmartSchedulingLeaseLostError)
+            stop_remote_updates = (
+                admin_auth_failed or client_configuration_failed or lease_lost
+            )
+            if lease_lost:
+                error_code = "scheduling_lease_lost"
+            elif admin_auth_failed:
                 error_code = "admin_auth_error"
             elif client_configuration_failed:
                 error_code = "admin_api_configuration_error"

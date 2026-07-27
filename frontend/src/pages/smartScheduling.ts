@@ -39,6 +39,15 @@ export type SmartSchedulingPayloadResult =
   | { ok: true; payload: { rules: SmartSchedulingRules } }
   | { ok: false; error: string };
 
+export function isCurrentSiteRequest(
+  requestSiteId: string,
+  currentSiteId: string,
+  requestGeneration: number,
+  currentGeneration: number,
+): boolean {
+  return requestSiteId === currentSiteId && requestGeneration === currentGeneration;
+}
+
 export const defaultSmartSchedulingRules: SmartSchedulingRules = {
   account_types: {
     pro: {

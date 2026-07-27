@@ -3,12 +3,19 @@ import { describe, expect, it } from "vitest";
 import {
   buildSmartSchedulingPayload,
   defaultSmartSchedulingRules,
+  isCurrentSiteRequest,
   smartSchedulingRulesToForm,
 } from "./smartScheduling";
 
 const accountPoolsSource = readFileSync(new URL("./AccountPoolsPage.tsx", import.meta.url), "utf8");
 
 describe("smart scheduling form", () => {
+  it("rejects responses from an old site or request generation", () => {
+    expect(isCurrentSiteRequest("site-a", "site-a", 3, 3)).toBe(true);
+    expect(isCurrentSiteRequest("site-a", "site-b", 3, 3)).toBe(false);
+    expect(isCurrentSiteRequest("site-a", "site-a", 2, 3)).toBe(false);
+  });
+
   it("creates the confirmed defaults", () => {
     const form = smartSchedulingRulesToForm(defaultSmartSchedulingRules);
 
@@ -91,5 +98,7 @@ describe("smart scheduling operator controls", () => {
   it("uses the settings and group endpoints without a frontend account scan", () => {
     expect(accountPoolsSource).toContain("/api-pools/smart-scheduling/settings?site_id=");
     expect(accountPoolsSource).toContain("/api-pools/observability/groups?site_id=");
+    expect(accountPoolsSource).toContain("isCurrentSiteRequest(");
+    expect(accountPoolsSource).toContain("disabled={siteSwitchingDisabled}");
   });
 });
