@@ -7,7 +7,10 @@ import { safeHttpUrl } from "../utils/url";
 import {
   buildSmartSchedulingPayload,
   defaultSmartSchedulingRules,
+  smartSchedulingAccountTypes,
   smartSchedulingRulesToForm,
+  type SmartSchedulingAccountRuleForm,
+  type SmartSchedulingAccountType,
   type SmartSchedulingForm,
   type SmartSchedulingRules,
 } from "./smartScheduling";
@@ -245,6 +248,13 @@ const defaultCapacityLimitForm: CapacityLimitForm = {
   pro: { five_hour_usd: "360", seven_day_usd: "2100" },
 };
 
+const smartSchedulingTypeLabels: Record<SmartSchedulingAccountType, string> = {
+  pro: "Pro",
+  plus: "Plus",
+  k12: "K12",
+  team: "Team / BugTeam",
+};
+
 export function AccountPoolsPage({ token, showToast }: Props) {
   const [sites, setSites] = useState<Site[]>([]);
   const [selectedSiteId, setSelectedSiteId] = useState("");
@@ -280,6 +290,37 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 
   const selectedSite = sites.find((site) => site.id === selectedSiteId) || null;
+
+  const updateSmartSchedulingRule = (
+    accountType: SmartSchedulingAccountType,
+    field: keyof SmartSchedulingAccountRuleForm,
+    value: string,
+  ) => {
+    setSmartSchedulingForm((current) => ({
+      ...current,
+      [accountType]: {
+        ...current[accountType],
+        [field]: value,
+      },
+    }));
+    setSmartSchedulingDirty(true);
+    setSmartSchedulingError("");
+  };
+
+  const updateSmartSchedulingExtreme = (
+    field: keyof SmartSchedulingForm["extreme"],
+    value: string,
+  ) => {
+    setSmartSchedulingForm((current) => ({
+      ...current,
+      extreme: {
+        ...current.extreme,
+        [field]: value,
+      },
+    }));
+    setSmartSchedulingDirty(true);
+    setSmartSchedulingError("");
+  };
 
   const loadSites = async () => {
     const data = await api<SitesResponse>("/sub2api-sites?site_type=sub2api", token);
@@ -957,6 +998,312 @@ export function AccountPoolsPage({ token, showToast }: Props) {
         />
       </section>
 
+      <section className="panel smart-scheduling-panel">
+        <div className="panel-header">
+          <div>
+            <h3>智能调度</h3>
+            <p>
+              {selectedSiteId
+                ? `${selectedSite?.name || selectedSiteId} · PostgreSQL 账号快照`
+                : "请先选择站点"}
+            </p>
+          </div>
+          <div className="button-row">
+            <button
+              className="ghost compact-button"
+              type="button"
+              onClick={() => loadSmartScheduling().catch((error) => showToast(errorMessage(error), true))}
+              disabled={!selectedSiteId || loadingSmartScheduling || savingSmartScheduling}
+            >
+              重新载入
+            </button>
+            <button
+              className="compact-button"
+              type="button"
+              onClick={saveSmartScheduling}
+              disabled={!selectedSiteId || loadingSmartScheduling || savingSmartScheduling || !smartSchedulingDirty}
+            >
+              {savingSmartScheduling ? "保存中..." : "保存规则"}
+            </button>
+          </div>
+        </div>
+
+        <div className="smart-scheduling-toolbar">
+          <strong>极限并发调度</strong>
+          <label>
+            <span>保留区间</span>
+            <span className="smart-scheduling-range">
+              <input
+                aria-label="极限优先级下限"
+                disabled={!selectedSiteId || loadingSmartScheduling || savingSmartScheduling}
+                min={1}
+                type="number"
+                value={smartSchedulingForm.extreme.priority_min}
+                onChange={(event) => updateSmartSchedulingExtreme("priority_min", event.target.value)}
+              />
+              <span aria-hidden="true">-</span>
+              <input
+                aria-label="极限优先级上限"
+                disabled={!selectedSiteId || loadingSmartScheduling || savingSmartScheduling}
+                min={1}
+                type="number"
+                value={smartSchedulingForm.extreme.priority_max}
+                onChange={(event) => updateSmartSchedulingExtreme("priority_max", event.target.value)}
+              />
+            </span>
+          </label>
+          <label>
+            <span>固定优先级</span>
+            <input
+              aria-label="极限固定优先级"
+              disabled={!selectedSiteId || loadingSmartScheduling || savingSmartScheduling}
+              min={1}
+              type="number"
+              value={smartSchedulingForm.extreme.priority}
+              onChange={(event) => updateSmartSchedulingExtreme("priority", event.target.value)}
+            />
+          </label>
+          <span className="smart-scheduling-updated">
+            {smartSchedulingMeta.updatedAt
+              ? `保存于 ${formatDateTime(smartSchedulingMeta.updatedAt)}${smartSchedulingMeta.updatedByName ? ` · ${smartSchedulingMeta.updatedByName}` : ""}`
+              : loadingSmartScheduling
+                ? "正在读取规则"
+                : "默认规则"}
+          </span>
+        </div>
+
+        {smartSchedulingError && (
+          <div className="smart-scheduling-error" role="alert">
+            {smartSchedulingError}
+          </div>
+        )}
+
+        <div className="table-wrap smart-scheduling-rule-wrap" aria-busy={loadingSmartScheduling}>
+          <table className="smart-scheduling-rule-table">
+            <thead>
+              <tr>
+                <th>账号类型</th>
+                <th>手动优先级区间</th>
+                <th>系统优先级区间</th>
+                <th>固定自动优先级</th>
+                <th>普通并发</th>
+                <th>7d 极限阈值</th>
+                <th>恢复阈值</th>
+                <th>极限并发</th>
+              </tr>
+            </thead>
+            <tbody>
+              {smartSchedulingAccountTypes.map((accountType) => {
+                const rule = smartSchedulingForm[accountType];
+                const disabled = !selectedSiteId || loadingSmartScheduling || savingSmartScheduling;
+                return (
+                  <tr key={accountType}>
+                    <td>
+                      <strong>{smartSchedulingTypeLabels[accountType]}</strong>
+                    </td>
+                    <td>
+                      <span className="smart-scheduling-range">
+                        <input
+                          aria-label={`${smartSchedulingTypeLabels[accountType]} 手动优先级下限`}
+                          disabled={disabled}
+                          min={1}
+                          type="number"
+                          value={rule.manual_priority_min}
+                          onChange={(event) => updateSmartSchedulingRule(accountType, "manual_priority_min", event.target.value)}
+                        />
+                        <span aria-hidden="true">-</span>
+                        <input
+                          aria-label={`${smartSchedulingTypeLabels[accountType]} 手动优先级上限`}
+                          disabled={disabled}
+                          min={1}
+                          type="number"
+                          value={rule.manual_priority_max}
+                          onChange={(event) => updateSmartSchedulingRule(accountType, "manual_priority_max", event.target.value)}
+                        />
+                      </span>
+                    </td>
+                    <td>
+                      <span className="smart-scheduling-range">
+                        <input
+                          aria-label={`${smartSchedulingTypeLabels[accountType]} 系统优先级下限`}
+                          disabled={disabled}
+                          min={1}
+                          type="number"
+                          value={rule.system_priority_min}
+                          onChange={(event) => updateSmartSchedulingRule(accountType, "system_priority_min", event.target.value)}
+                        />
+                        <span aria-hidden="true">-</span>
+                        <input
+                          aria-label={`${smartSchedulingTypeLabels[accountType]} 系统优先级上限`}
+                          disabled={disabled}
+                          min={1}
+                          type="number"
+                          value={rule.system_priority_max}
+                          onChange={(event) => updateSmartSchedulingRule(accountType, "system_priority_max", event.target.value)}
+                        />
+                      </span>
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`${smartSchedulingTypeLabels[accountType]} 固定自动优先级`}
+                        disabled={disabled}
+                        min={1}
+                        type="number"
+                        value={rule.automatic_priority}
+                        onChange={(event) => updateSmartSchedulingRule(accountType, "automatic_priority", event.target.value)}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`${smartSchedulingTypeLabels[accountType]} 普通并发`}
+                        disabled={disabled}
+                        min={1}
+                        type="number"
+                        value={rule.normal_concurrency}
+                        onChange={(event) => updateSmartSchedulingRule(accountType, "normal_concurrency", event.target.value)}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`${smartSchedulingTypeLabels[accountType]} 7d 极限阈值`}
+                        disabled={disabled}
+                        max={100}
+                        min={0}
+                        step="0.1"
+                        type="number"
+                        value={rule.extreme_entry_percent}
+                        onChange={(event) => updateSmartSchedulingRule(accountType, "extreme_entry_percent", event.target.value)}
+                      />
+                      <span className="smart-scheduling-unit">%</span>
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`${smartSchedulingTypeLabels[accountType]} 恢复阈值`}
+                        disabled={disabled}
+                        max={100}
+                        min={0}
+                        step="0.1"
+                        type="number"
+                        value={rule.recovery_percent}
+                        onChange={(event) => updateSmartSchedulingRule(accountType, "recovery_percent", event.target.value)}
+                      />
+                      <span className="smart-scheduling-unit">%</span>
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`${smartSchedulingTypeLabels[accountType]} 极限并发`}
+                        disabled={disabled}
+                        min={1}
+                        type="number"
+                        value={rule.extreme_concurrency}
+                        onChange={(event) => updateSmartSchedulingRule(accountType, "extreme_concurrency", event.target.value)}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <dl className="smart-scheduling-run-strip">
+          <div>
+            <dt>扫描</dt>
+            <dd>{numberValue(smartSchedulingMeta.lastRun?.scanned)}</dd>
+          </div>
+          <div>
+            <dt>调整</dt>
+            <dd>{numberValue(smartSchedulingMeta.lastRun?.changed)}</dd>
+          </div>
+          <div>
+            <dt>不变</dt>
+            <dd>{numberValue(smartSchedulingMeta.lastRun?.unchanged)}</dd>
+          </div>
+          <div>
+            <dt>跳过</dt>
+            <dd>{numberValue(smartSchedulingMeta.lastRun?.skipped)}</dd>
+          </div>
+          <div className={numberValue(smartSchedulingMeta.lastRun?.failed) > 0 ? "is-error" : ""}>
+            <dt>失败</dt>
+            <dd>{numberValue(smartSchedulingMeta.lastRun?.failed)}</dd>
+          </div>
+          <div className="smart-scheduling-run-time">
+            <dt>最近运行</dt>
+            <dd>
+              {formatDateTime(smartSchedulingMeta.lastRun?.finished_at || smartSchedulingMeta.lastRun?.started_at)}
+            </dd>
+          </div>
+        </dl>
+
+        <div className="smart-scheduling-group-head">
+          <div>
+            <h4>分组策略</h4>
+            <span>{observabilitySettings.length ? `${observabilitySettings.length} 个数据库分组` : "暂无数据库分组"}</span>
+          </div>
+          <span>探测间隔按分组配置</span>
+        </div>
+        <div className="table-wrap smart-scheduling-group-wrap">
+          <table className="smart-scheduling-group-table">
+            <thead>
+              <tr>
+                <th>分组</th>
+                <th>账号</th>
+                <th>账号类型自动归档</th>
+                <th>7d 极限加速</th>
+                <th>快照间隔</th>
+                <th>配置更新</th>
+              </tr>
+            </thead>
+            <tbody>
+              {observabilitySettings.map((setting) => {
+                const rowKey = `${setting.site_id}:${setting.group_id}`;
+                const busy = savingObservabilityKey === rowKey;
+                return (
+                  <tr key={`smart-scheduling:${rowKey}`}>
+                    <td>
+                      <div className="cell-main">{setting.group_name || `#${setting.group_id}`}</div>
+                      <div className="cell-sub">#{setting.group_id}</div>
+                    </td>
+                    <td>{numberValue(setting.group_active_account_count)} / {numberValue(setting.group_account_count)}</td>
+                    <td>
+                      <label className="switch-field smart-strategy-switch">
+                        <input
+                          checked={setting.type_priority_enabled === true}
+                          disabled={busy}
+                          type="checkbox"
+                          onChange={(event) => saveObservabilitySetting(setting, { type_priority_enabled: event.target.checked })}
+                        />
+                        <span className="switch-track" aria-hidden="true"><span className="switch-thumb" /></span>
+                        <span className="switch-copy"><strong>{setting.type_priority_enabled === true ? "开启" : "关闭"}</strong></span>
+                      </label>
+                    </td>
+                    <td>
+                      <label className="switch-field smart-strategy-switch">
+                        <input
+                          checked={setting.quota_acceleration_enabled === true}
+                          disabled={busy}
+                          type="checkbox"
+                          onChange={(event) => saveObservabilitySetting(setting, { quota_acceleration_enabled: event.target.checked })}
+                        />
+                        <span className="switch-track" aria-hidden="true"><span className="switch-thumb" /></span>
+                        <span className="switch-copy"><strong>{setting.quota_acceleration_enabled === true ? "开启" : "关闭"}</strong></span>
+                      </label>
+                    </td>
+                    <td><strong>{formatProbeInterval(setting.probe_interval_seconds)}</strong></td>
+                    <td>{formatDateTime(setting.updated_at)}</td>
+                  </tr>
+                );
+              })}
+              {!observabilitySettings.length && (
+                <tr>
+                  <td className="muted" colSpan={6}>请先同步 Sub2API 分组。</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <section className="panel observability-config-panel">
         <div className="panel-header">
           <div>
@@ -1194,6 +1541,11 @@ export function AccountPoolsPage({ token, showToast }: Props) {
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function formatProbeInterval(value: unknown) {
+  const seconds = typeof value === "number" && Number.isFinite(value) ? Math.max(60, Math.round(value)) : 180;
+  return seconds === 60 ? "60 秒" : `${Math.round(seconds / 60)} 分钟`;
 }
 
 function QuotaWindowResult({ label, value }: { label: string; value: QuotaDetectionWindow }) {

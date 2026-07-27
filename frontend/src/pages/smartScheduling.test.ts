@@ -1,9 +1,12 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   buildSmartSchedulingPayload,
   defaultSmartSchedulingRules,
   smartSchedulingRulesToForm,
 } from "./smartScheduling";
+
+const accountPoolsSource = readFileSync(new URL("./AccountPoolsPage.tsx", import.meta.url), "utf8");
 
 describe("smart scheduling form", () => {
   it("creates the confirmed defaults", () => {
@@ -64,5 +67,29 @@ describe("smart scheduling form", () => {
         error: expect.stringContaining("并发"),
       });
     }
+  });
+});
+
+describe("smart scheduling operator controls", () => {
+  it("renders the site rule editor and database-backed group strategies", () => {
+    const schedulingSection = accountPoolsSource.match(
+      /<section className="panel smart-scheduling-panel">[\s\S]*?<\/section>/,
+    )?.[0] || "";
+
+    expect(schedulingSection).toContain("智能调度");
+    expect(schedulingSection).toContain("账号类型自动归档");
+    expect(schedulingSection).toContain("7d 极限加速");
+    expect(schedulingSection).toContain("type_priority_enabled");
+    expect(schedulingSection).toContain("quota_acceleration_enabled");
+    expect(schedulingSection).toContain("smartSchedulingMeta.lastRun?.scanned");
+    expect(schedulingSection).toContain("smartSchedulingMeta.lastRun?.changed");
+    expect(schedulingSection).toContain("smartSchedulingMeta.lastRun?.skipped");
+    expect(schedulingSection).toContain("smartSchedulingMeta.lastRun?.failed");
+    expect(schedulingSection).not.toMatch(/api-pools\/accounts|sub2api-sites\/[^`]*accounts/);
+  });
+
+  it("uses the settings and group endpoints without a frontend account scan", () => {
+    expect(accountPoolsSource).toContain("/api-pools/smart-scheduling/settings?site_id=");
+    expect(accountPoolsSource).toContain("/api-pools/observability/groups?site_id=");
   });
 });
