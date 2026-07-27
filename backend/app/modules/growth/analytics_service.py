@@ -18,18 +18,6 @@ from app.modules.growth.analytics_schemas import (
 from app.modules.growth.database import growth_connection
 
 
-_PUBLIC_SUMMARY_KEYS = (
-    "homepage_pv",
-    "homepage_uv",
-    "link_pv",
-    "link_uv",
-    "registered_accounts",
-    "called_accounts",
-    "paid_accounts",
-    "second_paid_accounts",
-    "continued_accounts",
-    "refunded_accounts",
-)
 _ANALYTICS_STATEMENT_TIMEOUT = "5s"
 
 
@@ -91,12 +79,18 @@ async def get_traffic_analytics_overview(
         await _configure_analytics_connection(connection)
         summary_row = await repository.load_traffic_summary(connection, filters, window)
         trends = await repository.load_traffic_trends(connection, filters, window)
-        source_breakdown = await repository.load_source_breakdown(connection, filters, window)
+        active_sources = await repository.load_active_source_breakdown(
+            connection, filters, window
+        )
+        classified_sources = await repository.load_classified_source_breakdown(
+            connection, filters, window
+        )
         link_performance = await repository.load_link_performance(connection, filters, window)
-        amounts = await repository.load_amounts(connection, filters, window)
+        quality = await repository.load_data_quality(connection, filters, window)
 
-    summary = {key: int(summary_row.get(key) or 0) for key in _PUBLIC_SUMMARY_KEYS}
-    registered = summary["registered_accounts"]
+    homepage_recorded = int(summary_row.get("homepage_recorded_visits") or 0)
+    homepage_counted = int(summary_row.get("homepage_counted_pv") or 0)
+    facts_pending = int(summary_row.get("facts_pending_accounts") or 0)
     return {
         "generated_at": generated_at,
         "window": {
@@ -106,22 +100,38 @@ async def get_traffic_analytics_overview(
             "bucket": window.bucket,
             "timezone": str(summary_row.get("bucket_timezone") or "UTC"),
         },
-        "summary": summary,
-        "rates": {
-            "homepage_registration_rate": safe_rate(registered, summary["homepage_uv"]),
-            "link_registration_rate": safe_rate(
-                int(summary_row.get("promotion_registered_accounts") or 0),
-                summary["link_uv"],
-            ),
-            "call_rate": safe_rate(summary["called_accounts"], registered),
-            "payment_rate": safe_rate(summary["paid_accounts"], registered),
-            "second_payment_rate": safe_rate(summary["second_paid_accounts"], registered),
-            "continued_rate": safe_rate(summary["continued_accounts"], registered),
+        "capabilities": {
+            "homepage_traffic": "available",
+            "link_traffic": "available",
+            "registration_attribution": "available",
+            "downstream_facts": "unavailable",
         },
-        "amounts": amounts,
-        "trends": trends,
-        "source_breakdown": source_breakdown,
+        "homepage_summary": {
+            "recorded_visits": homepage_recorded,
+            "counted_pv": homepage_counted,
+            "session_uv": int(summary_row.get("homepage_session_uv") or 0),
+            "excluded_visits": int(summary_row.get("homepage_excluded_visits") or 0),
+            "valid_rate": safe_rate(homepage_counted, homepage_recorded),
+            "latest_event_at": summary_row.get("homepage_latest_event_at"),
+        },
+        "link_summary": {
+            "recorded_visits": int(summary_row.get("link_recorded_visits") or 0),
+            "counted_pv": int(summary_row.get("link_counted_pv") or 0),
+            "session_uv": int(summary_row.get("link_session_uv") or 0),
+            "excluded_visits": int(summary_row.get("link_excluded_visits") or 0),
+            "attribution_updates": int(summary_row.get("link_attribution_updates") or 0),
+            "latest_event_at": summary_row.get("link_latest_event_at"),
+        },
+        "registration_summary": {
+            "attributed_accounts": int(summary_row.get("attributed_accounts") or 0),
+            "excluded_accounts": int(summary_row.get("excluded_accounts") or 0),
+            "facts_pending_accounts": facts_pending,
+        },
+        "traffic_trends": trends,
+        "active_source_breakdown": active_sources,
+        "classified_source_breakdown": classified_sources,
         "link_performance": link_performance,
+        "quality": {**quality, "facts_pending_accounts": facts_pending},
     }
 
 
@@ -135,7 +145,9 @@ async def get_traffic_analytics_users(
     window = resolve_traffic_window(query.range_key, now=generated_at)
     async with growth_connection(mongo_db) as connection:
         await _configure_analytics_connection(connection)
-        items, total = await repository.list_milestone_users(connection, query, window)
+        items, total = await repository.list_registration_attributions(
+            connection, query, window
+        )
 
     secret_key = get_settings().app_secret_key
     return {

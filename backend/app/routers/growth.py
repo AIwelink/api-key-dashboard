@@ -9,7 +9,6 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.database import db_dependency
 from app.modules.growth.analytics_schemas import (
-    Milestone,
     SourceKind,
     TrafficAnalyticsFilters,
     TrafficRange,
@@ -108,7 +107,6 @@ async def get_growth_analytics_overview_route(
 async def get_growth_analytics_users_route(
     range_key: TrafficRange = Query(default="7d", alias="range"),
     segment: UserSegment = Query(default="ordinary"),
-    milestone: Milestone = Query(default="registered"),
     site_id: str | None = Query(default=None),
     source_kind: SourceKind | None = Query(default=None),
     channel_id: UUID | None = Query(default=None),
@@ -123,7 +121,6 @@ async def get_growth_analytics_users_route(
     query = TrafficUsersQuery(
         range_key=range_key,
         segment=segment,
-        milestone=milestone,
         site_id=site_id,
         source_kind=source_kind,
         channel_id=channel_id,

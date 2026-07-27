@@ -11,16 +11,6 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 TrafficRange = Literal["24h", "7d", "30d", "90d"]
 UserSegment = Literal["ordinary", "internal", "all"]
 SourceKind = Literal["promotion", "direct", "organic_search", "referral"]
-Milestone = Literal[
-    "registered",
-    "called",
-    "paid",
-    "second_paid",
-    "continued",
-    "refunded",
-]
-
-
 class TrafficAnalyticsFilters(BaseModel):
     range_key: TrafficRange = "7d"
     segment: UserSegment = "ordinary"
@@ -44,7 +34,6 @@ class TrafficAnalyticsFilters(BaseModel):
 
 
 class TrafficUsersQuery(TrafficAnalyticsFilters):
-    milestone: Milestone = "registered"
     limit: int = Field(default=50, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
 

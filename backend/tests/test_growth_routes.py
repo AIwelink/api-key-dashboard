@@ -197,7 +197,6 @@ class GrowthConfigurationRouteTests(unittest.IsolatedAsyncioTestCase):
                 await growth_router.get_growth_analytics_users_route(
                     range_key="7d",
                     segment="ordinary",
-                    milestone="registered",
                     site_id=None,
                     source_kind=None,
                     channel_id=None,
