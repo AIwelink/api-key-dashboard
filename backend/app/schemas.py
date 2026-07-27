@@ -287,6 +287,47 @@ class CapacityAccountLimitsUpdate(BaseModel):
     limits: dict[Literal["free", "plus", "team", "bug_team", "k12", "pro"], CapacityAccountLimit]
 
 
+class SmartSchedulingAccountRule(BaseModel):
+    manual_priority_min: int = Field(ge=1, le=100_000)
+    manual_priority_max: int = Field(ge=1, le=100_000)
+    system_priority_min: int = Field(ge=1, le=100_000)
+    system_priority_max: int = Field(ge=1, le=100_000)
+    automatic_priority: int = Field(ge=1, le=100_000)
+    normal_concurrency: int = Field(ge=1, le=10_000)
+    extreme_entry_percent: float = Field(ge=0, le=100)
+    recovery_percent: float = Field(ge=0, le=100)
+    extreme_concurrency: int = Field(ge=1, le=10_000)
+
+
+class SmartSchedulingAccountTypes(BaseModel):
+    pro: SmartSchedulingAccountRule
+    plus: SmartSchedulingAccountRule
+    k12: SmartSchedulingAccountRule
+    team: SmartSchedulingAccountRule
+
+
+class SmartSchedulingExtremeRule(BaseModel):
+    priority_min: int = Field(ge=1, le=100_000)
+    priority_max: int = Field(ge=1, le=100_000)
+    priority: int = Field(ge=1, le=100_000)
+
+
+class SmartSchedulingRules(BaseModel):
+    account_types: SmartSchedulingAccountTypes
+    extreme: SmartSchedulingExtremeRule
+
+    @model_validator(mode="after")
+    def validate_rule_relationships(self) -> "SmartSchedulingRules":
+        from app.modules.sub2api.smart_scheduling import normalize_smart_scheduling_rules
+
+        normalize_smart_scheduling_rules(self.model_dump())
+        return self
+
+
+class SmartSchedulingSettingsUpdate(BaseModel):
+    rules: SmartSchedulingRules
+
+
 class ApiPoolStatusPreferenceUpdate(BaseModel):
     pinned_site_id: str | None = None
     pinned_group_id: int | None = None
@@ -304,6 +345,8 @@ class PlusSelfProducedSettingsUpdate(BaseModel):
 class GroupObservabilitySettingUpdate(BaseModel):
     enabled: bool | None = None
     detailed_enabled: bool | None = None
+    type_priority_enabled: bool | None = None
+    quota_acceleration_enabled: bool | None = None
     probe_interval_seconds: int | None = Field(default=None, ge=60, le=3600)
     sample_retention_days: int | None = Field(default=None, ge=1, le=90)
     record_usage_samples: bool | None = None

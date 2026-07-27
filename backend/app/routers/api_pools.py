@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.schemas import AlertReadRequest, ApiPoolCreate, ApiPoolStatusPreferenceUpdate, ApiPoolUpdate, CapacityAccountLimitsUpdate, GroupObservabilitySettingUpdate
+from app.schemas import AlertReadRequest, ApiPoolCreate, ApiPoolStatusPreferenceUpdate, ApiPoolUpdate, CapacityAccountLimitsUpdate, GroupObservabilitySettingUpdate, SmartSchedulingSettingsUpdate
 from app.modules.system.permissions import require_any_view_permission, require_view_permission
 from app.modules.api_pools.pools import create_api_pool, list_api_pools, update_api_pool
 from app.modules.api_pools.status_preferences import get_api_pool_status_preferences, update_api_pool_status_preferences
@@ -17,6 +17,11 @@ from app.modules.sub2api.account_health_analysis import get_account_health_analy
 from app.modules.sub2api.auto_refill import list_auto_refill_logs
 from app.modules.sub2api.cache import get_site
 from app.modules.sub2api.quota_detection import get_quota_detection_summary
+from app.modules.sub2api.smart_scheduling_service import (
+    get_smart_scheduling_settings as load_smart_scheduling_settings,
+    smart_scheduling_setting_id,
+    update_smart_scheduling_settings as save_smart_scheduling_settings,
+)
 
 
 router = APIRouter(prefix="/api-pools", tags=["api-pools"])
@@ -107,6 +112,50 @@ async def get_quota_detection(
     else:
         health_analysis = health_result
     return {**quota_summary, "account_health_analysis": health_analysis}
+
+
+@router.get("/smart-scheduling/settings")
+async def get_smart_scheduling_settings_route(
+    site_id: str,
+    _: dict = Depends(require_view_permission("pool-lifecycle")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    if not await get_site(db, site_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="sub2api site not found",
+        )
+    return await load_smart_scheduling_settings(db, site_id)
+
+
+@router.patch("/smart-scheduling/settings")
+async def patch_smart_scheduling_settings(
+    payload: SmartSchedulingSettingsUpdate,
+    site_id: str,
+    actor: dict = Depends(require_view_permission("pool-lifecycle")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    if not await get_site(db, site_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="sub2api site not found",
+        )
+    rules = payload.rules.model_dump()
+    updated = await save_smart_scheduling_settings(
+        db,
+        site_id=site_id,
+        rules=rules,
+        actor=actor,
+    )
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="api_pool.smart_scheduling.update",
+        resource_type="setting",
+        resource_id=smart_scheduling_setting_id(site_id),
+        after=updated,
+    )
+    return updated
 
 
 @router.get("/status-preferences")

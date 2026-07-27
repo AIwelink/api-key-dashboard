@@ -173,6 +173,22 @@ class Sub2ApiClient:
             )
         return self._admin_response_payload(response, operation="update")
 
+    async def update_account_runtime(
+        self,
+        account_id: int | str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        unexpected_fields = set(payload) - {"priority", "concurrency"}
+        if unexpected_fields:
+            raise ValueError("runtime account updates only accept priority and concurrency")
+        response = await self._request_admin_response_with_retries(
+            "PATCH",
+            f"/accounts/{account_id}",
+            json={key: payload[key] for key in ("priority", "concurrency") if key in payload},
+            timeout=15,
+        )
+        return self._admin_response_payload(response, operation="update runtime fields")
+
     async def set_account_schedulable(self, account_id: int | str, schedulable: bool) -> dict[str, Any]:
         response = await self._request_admin_response_with_retries(
             "POST",

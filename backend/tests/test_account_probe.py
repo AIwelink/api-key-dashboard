@@ -4,9 +4,23 @@ import asyncio
 import unittest
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import ANY, AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from app.modules.sub2api import account_probe
+
+
+class AsyncCursor:
+    def __init__(self, items: list[dict[str, object]]) -> None:
+        self._items = iter(items)
+
+    def __aiter__(self) -> "AsyncCursor":
+        return self
+
+    async def __anext__(self) -> dict[str, object]:
+        try:
+            return next(self._items)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
 
 
 class AccountProbeSchedulingTests(unittest.IsolatedAsyncioTestCase):
@@ -33,6 +47,181 @@ class AccountProbeSchedulingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first_result, second_result)
         runner.assert_awaited_once_with(ANY, site_id="api-5001", group_ids=[3])
+
+    async def test_scheduling_enabled_group_is_due_when_observability_is_disabled(self) -> None:
+        settings = {
+            3: {
+                "enabled": False,
+                "type_priority_enabled": True,
+                "quota_acceleration_enabled": False,
+                "probe_interval_seconds": 60,
+            }
+        }
+
+        with patch.object(
+            account_probe,
+            "_settings_for_site",
+            AsyncMock(return_value=settings),
+        ):
+            due = await account_probe._due_group_ids(object(), "api-5001")
+
+        self.assertEqual(due, [3])
+
+    async def test_probe_scheduling_adapter_passes_the_already_fetched_accounts(self) -> None:
+        snapshot_accounts = [
+            {
+                "remote_account_id": 7,
+                "group_ids": [3],
+                "priority": 250,
+                "concurrency": 20,
+                "account_type": "plus",
+                "usage_snapshot": {},
+            }
+        ]
+        schedule_result = {
+            "scanned": 1,
+            "changed": 1,
+            "unchanged": 0,
+            "skipped": 0,
+            "failed": 0,
+        }
+
+        with patch.object(
+            account_probe,
+            "run_smart_scheduling",
+            AsyncMock(return_value=schedule_result),
+            create=True,
+        ) as schedule:
+            result = await account_probe._run_smart_scheduling_for_probe(
+                object(),
+                site={"id": "api-5001"},
+                accounts=snapshot_accounts,
+                group_settings={3: {"type_priority_enabled": True}},
+                probe_run_id="probe-1",
+            )
+
+        self.assertIs(schedule.await_args.kwargs["accounts"], snapshot_accounts)
+        self.assertEqual(result["smart_scheduling_changed"], 1)
+
+    async def test_site_probe_fetches_postgres_snapshot_once_when_scheduling_runs(self) -> None:
+        raw_accounts = [
+            {
+                "id": 7,
+                "email": "plus@example.com",
+                "group_ids": [3, 4],
+                "priority": 250,
+                "concurrency": 20,
+                "credentials": {},
+                "extra": {},
+            }
+        ]
+        settings = {
+            3: {
+                "enabled": False,
+                "type_priority_enabled": True,
+                "quota_acceleration_enabled": False,
+                "probe_interval_seconds": 60,
+            },
+            4: {
+                "enabled": False,
+                "type_priority_enabled": False,
+                "quota_acceleration_enabled": True,
+                "probe_interval_seconds": 60,
+            },
+        }
+        fetch_accounts = AsyncMock(return_value=raw_accounts)
+        schedule = AsyncMock(
+            return_value={
+                "scanned": 1,
+                "changed": 0,
+                "unchanged": 1,
+                "skipped": 0,
+                "failed": 0,
+            }
+        )
+        db = SimpleNamespace(
+            remote_account_probe_runs=SimpleNamespace(
+                insert_one=AsyncMock(),
+                update_one=AsyncMock(),
+            ),
+            remote_account_identities=SimpleNamespace(
+                find=MagicMock(return_value=AsyncCursor([])),
+                find_one=AsyncMock(return_value=None),
+            ),
+            group_observability_settings=SimpleNamespace(update_many=AsyncMock()),
+            remote_account_probe_meta=SimpleNamespace(update_one=AsyncMock()),
+        )
+
+        with (
+            patch.object(account_probe, "get_site", AsyncMock(return_value={"id": "api-5001", "site_type": "sub2api"})),
+            patch.object(account_probe, "is_sub2api_site", return_value=True),
+            patch.object(account_probe, "_settings_for_site", AsyncMock(return_value=settings)),
+            patch.object(account_probe, "_fetch_probe_accounts", fetch_accounts),
+            patch.object(account_probe, "_load_verified_plan_states", AsyncMock(return_value={})),
+            patch.object(account_probe, "run_smart_scheduling", schedule, create=True),
+            patch.object(
+                account_probe,
+                "persist_history_changes",
+                AsyncMock(return_value={"changed_accounts": 0, "changed_fields": 0, "batches": 0}),
+            ),
+            patch.object(account_probe, "_ensure_session", AsyncMock(return_value={})),
+            patch.object(account_probe, "_update_identity_and_events", AsyncMock(return_value=False)),
+            patch.object(
+                account_probe,
+                "_mark_missing_identities",
+                AsyncMock(return_value={"accounts_missing_suspected": 0, "accounts_removed_confirmed": 0}),
+            ),
+        ):
+            result = await account_probe._run_site_account_probe(
+                db,
+                site_id="api-5001",
+                group_ids=[3],
+            )
+
+        fetch_accounts.assert_awaited_once()
+        schedule.assert_awaited_once()
+        scheduled_account = schedule.await_args.kwargs["accounts"][0]
+        self.assertEqual(scheduled_account["plan_type"], "k12")
+        self.assertEqual(scheduled_account["account_type"], "k12")
+        self.assertEqual(schedule.await_args.kwargs["group_settings"], settings)
+        self.assertEqual(result["smart_scheduling_unchanged"], 1)
+        self.assertEqual(result["accounts_seen"], 0)
+        self.assertEqual(result["group_ids_checked"], [3])
+
+    async def test_cached_plan_type_is_resolved_before_scheduling(self) -> None:
+        accounts = [
+            {
+                "normalized_email": "cached@example.com",
+                "plan_type": "",
+                "plan_type_source": None,
+                "account_type": "unknown",
+            }
+        ]
+        db = SimpleNamespace(
+            remote_account_identities=SimpleNamespace(
+                find=MagicMock(
+                    return_value=AsyncCursor(
+                        [
+                            {
+                                "_id": "api-5001:cached@example.com",
+                                "plan_type": "plus",
+                                "plan_type_source": "remote",
+                            }
+                        ]
+                    )
+                )
+            )
+        )
+
+        await account_probe._resolve_scheduling_account_types(
+            db,
+            site_id="api-5001",
+            accounts=accounts,
+        )
+
+        self.assertEqual(accounts[0]["plan_type"], "plus")
+        self.assertEqual(accounts[0]["plan_type_source"], "cached")
+        self.assertEqual(accounts[0]["account_type"], "plus")
 
 
 class AccountProbeDatabaseSourceTests(unittest.IsolatedAsyncioTestCase):
@@ -79,6 +268,20 @@ class AccountProbeDatabaseSourceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AccountProbePlanTypeTests(unittest.TestCase):
+    def test_normalized_account_keeps_scheduling_runtime_values(self) -> None:
+        account = account_probe._normalize_probe_account(
+            {
+                "id": 7,
+                "priority": 250,
+                "concurrency": 20,
+                "credentials": {"plan_type": "plus"},
+                "extra": {},
+            }
+        )
+
+        self.assertEqual(account["priority"], 250)
+        self.assertEqual(account["concurrency"], 20)
+
     def test_normalized_account_keeps_special_quota_classification(self) -> None:
         account = account_probe._normalize_probe_account(
             {

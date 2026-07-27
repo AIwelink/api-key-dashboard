@@ -4,6 +4,17 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import { errorMessage, formatDateTime } from "../utils/format";
 import { safeHttpUrl } from "../utils/url";
+import {
+  buildSmartSchedulingPayload,
+  defaultSmartSchedulingRules,
+  isCurrentSiteRequest,
+  smartSchedulingAccountTypes,
+  smartSchedulingRulesToForm,
+  type SmartSchedulingAccountRuleForm,
+  type SmartSchedulingAccountType,
+  type SmartSchedulingForm,
+  type SmartSchedulingRules,
+} from "./smartScheduling";
 
 type Props = {
   token: string;
@@ -109,6 +120,8 @@ type GroupObservabilitySetting = {
   group_name?: string;
   enabled: boolean;
   detailed_enabled: boolean;
+  type_priority_enabled?: boolean;
+  quota_acceleration_enabled?: boolean;
   probe_interval_seconds?: number;
   record_usage_samples?: boolean;
   record_status_events?: boolean;
@@ -137,6 +150,26 @@ type ProbeResponse = {
   duplicate_email_count?: number;
   accounts_removed_confirmed?: number;
   message?: string;
+};
+
+type SmartSchedulingRunSummary = {
+  status?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  scanned?: number;
+  changed?: number;
+  unchanged?: number;
+  skipped?: number;
+  failed?: number;
+};
+
+type SmartSchedulingResponse = {
+  site_id: string;
+  rules: SmartSchedulingRules;
+  default_rules: SmartSchedulingRules;
+  last_run?: SmartSchedulingRunSummary | null;
+  updated_at?: string | null;
+  updated_by_name?: string | null;
 };
 
 type RefreshResponse = {
@@ -216,9 +249,17 @@ const defaultCapacityLimitForm: CapacityLimitForm = {
   pro: { five_hour_usd: "360", seven_day_usd: "2100" },
 };
 
+const smartSchedulingTypeLabels: Record<SmartSchedulingAccountType, string> = {
+  pro: "Pro",
+  plus: "Plus",
+  k12: "K12",
+  team: "Team / BugTeam",
+};
+
 export function AccountPoolsPage({ token, showToast }: Props) {
   const [sites, setSites] = useState<Site[]>([]);
   const [selectedSiteId, setSelectedSiteId] = useState("");
+  const selectedSiteIdRef = useRef("");
   const [refreshing, setRefreshing] = useState(false);
   const [editingSiteId, setEditingSiteId] = useState<string | null>(null);
   const [siteForm, setSiteForm] = useState<SiteForm>(emptySiteForm);
@@ -234,21 +275,84 @@ export function AccountPoolsPage({ token, showToast }: Props) {
   const quotaDetectionRequestRef = useRef(0);
   const [observabilitySettings, setObservabilitySettings] = useState<GroupObservabilitySetting[]>([]);
   const [savingObservabilityKey, setSavingObservabilityKey] = useState<string | null>(null);
+  const observabilityRequestRef = useRef(0);
+  const [smartSchedulingForm, setSmartSchedulingForm] = useState<SmartSchedulingForm>(() =>
+    smartSchedulingRulesToForm(defaultSmartSchedulingRules),
+  );
+  const [smartSchedulingMeta, setSmartSchedulingMeta] = useState<{
+    lastRun?: SmartSchedulingRunSummary | null;
+    updatedAt?: string | null;
+    updatedByName?: string | null;
+  }>({});
+  const [loadingSmartScheduling, setLoadingSmartScheduling] = useState(false);
+  const [savingSmartScheduling, setSavingSmartScheduling] = useState(false);
+  const [smartSchedulingDirty, setSmartSchedulingDirty] = useState(false);
+  const [smartSchedulingError, setSmartSchedulingError] = useState("");
+  const smartSchedulingRequestRef = useRef(0);
   const [probing, setProbing] = useState(false);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 
   const selectedSite = sites.find((site) => site.id === selectedSiteId) || null;
+  const siteSwitchingDisabled = Boolean(
+    savingSite
+    || testingDatabase
+    || savingCapacityLimits
+    || savingObservabilityKey
+    || savingSmartScheduling
+    || probing
+    || refreshing
+  );
+
+  const selectSite = (siteId: string) => {
+    selectedSiteIdRef.current = siteId;
+    capacityLimitsRequestRef.current += 1;
+    quotaDetectionRequestRef.current += 1;
+    observabilityRequestRef.current += 1;
+    smartSchedulingRequestRef.current += 1;
+    setSelectedSiteId(siteId);
+  };
+
+  const updateSmartSchedulingRule = (
+    accountType: SmartSchedulingAccountType,
+    field: keyof SmartSchedulingAccountRuleForm,
+    value: string,
+  ) => {
+    setSmartSchedulingForm((current) => ({
+      ...current,
+      [accountType]: {
+        ...current[accountType],
+        [field]: value,
+      },
+    }));
+    setSmartSchedulingDirty(true);
+    setSmartSchedulingError("");
+  };
+
+  const updateSmartSchedulingExtreme = (
+    field: keyof SmartSchedulingForm["extreme"],
+    value: string,
+  ) => {
+    setSmartSchedulingForm((current) => ({
+      ...current,
+      extreme: {
+        ...current.extreme,
+        [field]: value,
+      },
+    }));
+    setSmartSchedulingDirty(true);
+    setSmartSchedulingError("");
+  };
 
   const loadSites = async () => {
     const data = await api<SitesResponse>("/sub2api-sites?site_type=sub2api", token);
     setSites(data.items);
     if (!selectedSiteId && data.items[0]) {
-      setSelectedSiteId(data.items[0].id);
+      selectSite(data.items[0].id);
     }
   };
 
   const startCreateSite = () => {
-    setSelectedSiteId("");
+    selectSite("");
     setEditingSiteId(null);
     setSiteForm(emptySiteForm);
   };
@@ -284,7 +388,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
           });
       const data = await api<SitesResponse>("/sub2api-sites", token);
       setSites(data.items);
-      setSelectedSiteId(saved.id);
+      selectSite(saved.id);
       setEditingSiteId(saved.id);
       setSiteForm(siteToForm(saved));
       showToast("账号池站点已保存");
@@ -336,7 +440,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
           const data = await api<SitesResponse>("/sub2api-sites", token);
           setSites(data.items);
           const nextSite = data.items[0] || null;
-          setSelectedSiteId(nextSite?.id || "");
+          selectSite(nextSite?.id || "");
           setEditingSiteId(nextSite?.id || null);
           setSiteForm(nextSite ? siteToForm(nextSite) : emptySiteForm);
           showToast("站点已删除");
@@ -361,22 +465,35 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     setLoadingCapacityLimits(true);
     try {
       const data = await api<CapacityLimitsResponse>(`/api-pools/capacity-limits?site_id=${encodeURIComponent(siteId)}`, token);
-      if (requestId !== capacityLimitsRequestRef.current) return;
+      if (!isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, capacityLimitsRequestRef.current)) return;
       setCapacityLimits(capacityLimitsToForm(data.limits));
       setCapacityLimitsMeta({
         updated_at: data.updated_at,
         updated_by_name: data.updated_by_name,
         inherited_from_global: data.inherited_from_global,
       });
+    } catch (error) {
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, capacityLimitsRequestRef.current)) throw error;
     } finally {
-      if (requestId === capacityLimitsRequestRef.current) setLoadingCapacityLimits(false);
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, capacityLimitsRequestRef.current)) {
+        setLoadingCapacityLimits(false);
+      }
     }
   };
 
   const loadObservabilitySettings = async (siteId = selectedSiteId) => {
-    if (!siteId) return;
-    const data = await api<GroupObservabilityResponse>(`/api-pools/observability/groups?site_id=${encodeURIComponent(siteId)}`, token);
-    setObservabilitySettings(data.items);
+    const requestId = ++observabilityRequestRef.current;
+    if (!siteId) {
+      setObservabilitySettings([]);
+      return;
+    }
+    try {
+      const data = await api<GroupObservabilityResponse>(`/api-pools/observability/groups?site_id=${encodeURIComponent(siteId)}`, token);
+      if (!isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, observabilityRequestRef.current)) return;
+      setObservabilitySettings(data.items);
+    } catch (error) {
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, observabilityRequestRef.current)) throw error;
+    }
   };
 
   const loadQuotaDetection = async (siteId = selectedSiteId, clear = false) => {
@@ -390,35 +507,133 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     setLoadingQuotaDetection(true);
     try {
       const data = await api<QuotaDetectionResponse>(`/api-pools/quota-detection?site_id=${encodeURIComponent(siteId)}`, token);
-      if (requestId === quotaDetectionRequestRef.current) setQuotaDetection(data);
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, quotaDetectionRequestRef.current)) {
+        setQuotaDetection(data);
+      }
+    } catch (error) {
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, quotaDetectionRequestRef.current)) throw error;
     } finally {
-      if (requestId === quotaDetectionRequestRef.current) setLoadingQuotaDetection(false);
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, quotaDetectionRequestRef.current)) {
+        setLoadingQuotaDetection(false);
+      }
+    }
+  };
+
+  const loadSmartScheduling = async (siteId = selectedSiteId) => {
+    const requestId = ++smartSchedulingRequestRef.current;
+    if (!siteId) {
+      setSmartSchedulingForm(smartSchedulingRulesToForm(defaultSmartSchedulingRules));
+      setSmartSchedulingMeta({});
+      setSmartSchedulingDirty(false);
+      setSmartSchedulingError("");
+      setLoadingSmartScheduling(false);
+      return;
+    }
+    setLoadingSmartScheduling(true);
+    try {
+      const data = await api<SmartSchedulingResponse>(
+        `/api-pools/smart-scheduling/settings?site_id=${encodeURIComponent(siteId)}`,
+        token,
+      );
+      if (!isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, smartSchedulingRequestRef.current)) return;
+      setSmartSchedulingForm(smartSchedulingRulesToForm(data.rules));
+      setSmartSchedulingMeta({
+        lastRun: data.last_run,
+        updatedAt: data.updated_at,
+        updatedByName: data.updated_by_name,
+      });
+      setSmartSchedulingDirty(false);
+      setSmartSchedulingError("");
+    } catch (error) {
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, smartSchedulingRequestRef.current)) throw error;
+    } finally {
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, smartSchedulingRequestRef.current)) {
+        setLoadingSmartScheduling(false);
+      }
+    }
+  };
+
+  const saveSmartScheduling = async () => {
+    if (!selectedSiteId) return;
+    const siteId = selectedSiteId;
+    const result = buildSmartSchedulingPayload(smartSchedulingForm);
+    if (!result.ok) {
+      setSmartSchedulingError(result.error);
+      return;
+    }
+    const requestId = ++smartSchedulingRequestRef.current;
+    setLoadingSmartScheduling(false);
+    setSavingSmartScheduling(true);
+    setSmartSchedulingError("");
+    try {
+      const data = await api<SmartSchedulingResponse>(
+        `/api-pools/smart-scheduling/settings?site_id=${encodeURIComponent(siteId)}`,
+        token,
+        {
+          method: "PATCH",
+          body: JSON.stringify(result.payload),
+        },
+      );
+      if (isCurrentSiteRequest(siteId, selectedSiteIdRef.current, requestId, smartSchedulingRequestRef.current)) {
+        setSmartSchedulingForm(smartSchedulingRulesToForm(data.rules));
+        setSmartSchedulingMeta({
+          lastRun: data.last_run,
+          updatedAt: data.updated_at,
+          updatedByName: data.updated_by_name,
+        });
+        setSmartSchedulingDirty(false);
+      }
+      if (siteId === selectedSiteIdRef.current) showToast("智能调度规则已保存");
+    } catch (error) {
+      if (siteId !== selectedSiteIdRef.current) return;
+      const message = errorMessage(error);
+      setSmartSchedulingError(message);
+      showToast(message, true);
+    } finally {
+      setSavingSmartScheduling(false);
     }
   };
 
   usePageAutoRefresh(
-    () => Promise.all([loadObservabilitySettings(selectedSiteId), loadQuotaDetection(selectedSiteId)]).then(() => undefined),
+    () => Promise.all([
+      loadObservabilitySettings(selectedSiteId),
+      loadQuotaDetection(selectedSiteId),
+      loadSmartScheduling(selectedSiteId),
+    ]).then(() => undefined),
     {
       enabled: Boolean(selectedSiteId),
-      paused: Boolean(refreshing || savingSite || savingCapacityLimits || savingObservabilityKey || probing || confirmState),
+      paused: Boolean(
+        refreshing
+        || savingSite
+        || savingCapacityLimits
+        || savingObservabilityKey
+        || savingSmartScheduling
+        || smartSchedulingDirty
+        || probing
+        || confirmState
+      ),
     },
   );
 
   const saveObservabilitySetting = async (setting: GroupObservabilitySetting, updates: Partial<GroupObservabilitySetting>) => {
     if (!selectedSiteId) return;
-    const key = `${selectedSiteId}:${setting.group_id}`;
+    const siteId = selectedSiteId;
+    const key = `${siteId}:${setting.group_id}`;
+    observabilityRequestRef.current += 1;
     setSavingObservabilityKey(key);
     try {
-      const updated = await api<GroupObservabilitySetting>(`/api-pools/observability/groups/${setting.group_id}?site_id=${encodeURIComponent(selectedSiteId)}`, token, {
+      const updated = await api<GroupObservabilitySetting>(`/api-pools/observability/groups/${setting.group_id}?site_id=${encodeURIComponent(siteId)}`, token, {
         method: "PATCH",
         body: JSON.stringify(updates),
       });
+      if (siteId !== selectedSiteIdRef.current) return;
       setObservabilitySettings((current) => current.map((item) => (item.group_id === updated.group_id ? updated : item)));
       showToast("探测配置已保存");
     } catch (error) {
+      if (siteId !== selectedSiteIdRef.current) return;
       showToast(errorMessage(error), true);
     } finally {
-      setSavingObservabilityKey(null);
+      setSavingObservabilityKey((current) => (current === key ? null : current));
     }
   };
 
@@ -469,7 +684,11 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     setRefreshing(true);
     try {
       const result = await api<RefreshResponse>(`/sub2api-sites/${selectedSiteId}/refresh`, token, { method: "POST" });
-      await Promise.all([loadObservabilitySettings(selectedSiteId), loadQuotaDetection(selectedSiteId)]);
+      await Promise.all([
+        loadObservabilitySettings(selectedSiteId),
+        loadQuotaDetection(selectedSiteId),
+        loadSmartScheduling(selectedSiteId),
+      ]);
       showToast(
         typeof result.groups === "number" || typeof result.accounts === "number"
           ? `同步完成：${result.groups || 0} 个分组，${result.accounts || 0} 个账号`
@@ -494,6 +713,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       }
       loadObservabilitySettings(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
       loadQuotaDetection(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
+      loadSmartScheduling(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
     };
     window.addEventListener("sub2api-cache-updated", handleCacheUpdated);
     return () => window.removeEventListener("sub2api-cache-updated", handleCacheUpdated);
@@ -504,6 +724,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
       setObservabilitySettings([]);
       loadCapacityLimits("").catch((error) => showToast(errorMessage(error), true));
       loadQuotaDetection("").catch((error) => showToast(errorMessage(error), true));
+      loadSmartScheduling("").catch((error) => showToast(errorMessage(error), true));
       return;
     }
     const site = sites.find((item) => item.id === selectedSiteId);
@@ -514,6 +735,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
     loadObservabilitySettings(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
     loadCapacityLimits(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
     loadQuotaDetection(selectedSiteId, true).catch((error) => showToast(errorMessage(error), true));
+    loadSmartScheduling(selectedSiteId).catch((error) => showToast(errorMessage(error), true));
   }, [selectedSiteId, sites]);
 
   return (
@@ -537,13 +759,13 @@ export function AccountPoolsPage({ token, showToast }: Props) {
             <p>这里只配置承载账号与调度状态的 Sub2API，不包含向客户提供服务的站点。</p>
           </div>
           <div className="button-row">
-            <button className="compact-button" type="button" onClick={saveSiteForm} disabled={savingSite}>
+            <button className="compact-button" type="button" onClick={saveSiteForm} disabled={siteSwitchingDisabled}>
               {savingSite ? "保存中..." : editingSiteId ? "保存站点" : "创建站点"}
             </button>
-            <button className="ghost compact-button" type="button" onClick={startCreateSite}>
+            <button className="ghost compact-button" type="button" onClick={startCreateSite} disabled={siteSwitchingDisabled}>
               新增站点
             </button>
-            <button className="ghost compact-button danger-button" type="button" onClick={deleteCurrentSite} disabled={!editingSiteId || savingSite}>
+            <button className="ghost compact-button danger-button" type="button" onClick={deleteCurrentSite} disabled={!editingSiteId || siteSwitchingDisabled}>
               删除站点
             </button>
           </div>
@@ -553,7 +775,11 @@ export function AccountPoolsPage({ token, showToast }: Props) {
             <span className="field-label">
               <strong>已有站点</strong>
             </span>
-            <select value={editingSiteId || ""} onChange={(event) => event.target.value && setSelectedSiteId(event.target.value)}>
+            <select
+              value={editingSiteId || ""}
+              disabled={siteSwitchingDisabled}
+              onChange={(event) => event.target.value && selectSite(event.target.value)}
+            >
               <option value="">选择已有站点</option>
               {sites.map((site) => (
                 <option key={site.id} value={site.id}>
@@ -830,6 +1056,312 @@ export function AccountPoolsPage({ token, showToast }: Props) {
         />
       </section>
 
+      <section className="panel smart-scheduling-panel">
+        <div className="panel-header">
+          <div>
+            <h3>智能调度</h3>
+            <p>
+              {selectedSiteId
+                ? `${selectedSite?.name || selectedSiteId} · PostgreSQL 账号快照`
+                : "请先选择站点"}
+            </p>
+          </div>
+          <div className="button-row">
+            <button
+              className="ghost compact-button"
+              type="button"
+              onClick={() => loadSmartScheduling().catch((error) => showToast(errorMessage(error), true))}
+              disabled={!selectedSiteId || loadingSmartScheduling || savingSmartScheduling}
+            >
+              重新载入
+            </button>
+            <button
+              className="compact-button"
+              type="button"
+              onClick={saveSmartScheduling}
+              disabled={!selectedSiteId || loadingSmartScheduling || savingSmartScheduling || !smartSchedulingDirty}
+            >
+              {savingSmartScheduling ? "保存中..." : "保存规则"}
+            </button>
+          </div>
+        </div>
+
+        <div className="smart-scheduling-toolbar">
+          <strong>极限并发调度</strong>
+          <label>
+            <span>保留区间</span>
+            <span className="smart-scheduling-range">
+              <input
+                aria-label="极限优先级下限"
+                disabled={!selectedSiteId || loadingSmartScheduling || savingSmartScheduling}
+                min={1}
+                type="number"
+                value={smartSchedulingForm.extreme.priority_min}
+                onChange={(event) => updateSmartSchedulingExtreme("priority_min", event.target.value)}
+              />
+              <span aria-hidden="true">-</span>
+              <input
+                aria-label="极限优先级上限"
+                disabled={!selectedSiteId || loadingSmartScheduling || savingSmartScheduling}
+                min={1}
+                type="number"
+                value={smartSchedulingForm.extreme.priority_max}
+                onChange={(event) => updateSmartSchedulingExtreme("priority_max", event.target.value)}
+              />
+            </span>
+          </label>
+          <label>
+            <span>固定优先级</span>
+            <input
+              aria-label="极限固定优先级"
+              disabled={!selectedSiteId || loadingSmartScheduling || savingSmartScheduling}
+              min={1}
+              type="number"
+              value={smartSchedulingForm.extreme.priority}
+              onChange={(event) => updateSmartSchedulingExtreme("priority", event.target.value)}
+            />
+          </label>
+          <span className="smart-scheduling-updated">
+            {smartSchedulingMeta.updatedAt
+              ? `保存于 ${formatDateTime(smartSchedulingMeta.updatedAt)}${smartSchedulingMeta.updatedByName ? ` · ${smartSchedulingMeta.updatedByName}` : ""}`
+              : loadingSmartScheduling
+                ? "正在读取规则"
+                : "默认规则"}
+          </span>
+        </div>
+
+        {smartSchedulingError && (
+          <div className="smart-scheduling-error" role="alert">
+            {smartSchedulingError}
+          </div>
+        )}
+
+        <div className="table-wrap smart-scheduling-rule-wrap" aria-busy={loadingSmartScheduling}>
+          <table className="smart-scheduling-rule-table">
+            <thead>
+              <tr>
+                <th>账号类型</th>
+                <th>手动优先级区间</th>
+                <th>系统优先级区间</th>
+                <th>固定自动优先级</th>
+                <th>普通并发</th>
+                <th>7d 极限阈值</th>
+                <th>恢复阈值</th>
+                <th>极限并发</th>
+              </tr>
+            </thead>
+            <tbody>
+              {smartSchedulingAccountTypes.map((accountType) => {
+                const rule = smartSchedulingForm[accountType];
+                const disabled = !selectedSiteId || loadingSmartScheduling || savingSmartScheduling;
+                return (
+                  <tr key={accountType}>
+                    <td>
+                      <strong>{smartSchedulingTypeLabels[accountType]}</strong>
+                    </td>
+                    <td>
+                      <span className="smart-scheduling-range">
+                        <input
+                          aria-label={`${smartSchedulingTypeLabels[accountType]} 手动优先级下限`}
+                          disabled={disabled}
+                          min={1}
+                          type="number"
+                          value={rule.manual_priority_min}
+                          onChange={(event) => updateSmartSchedulingRule(accountType, "manual_priority_min", event.target.value)}
+                        />
+                        <span aria-hidden="true">-</span>
+                        <input
+                          aria-label={`${smartSchedulingTypeLabels[accountType]} 手动优先级上限`}
+                          disabled={disabled}
+                          min={1}
+                          type="number"
+                          value={rule.manual_priority_max}
+                          onChange={(event) => updateSmartSchedulingRule(accountType, "manual_priority_max", event.target.value)}
+                        />
+                      </span>
+                    </td>
+                    <td>
+                      <span className="smart-scheduling-range">
+                        <input
+                          aria-label={`${smartSchedulingTypeLabels[accountType]} 系统优先级下限`}
+                          disabled={disabled}
+                          min={1}
+                          type="number"
+                          value={rule.system_priority_min}
+                          onChange={(event) => updateSmartSchedulingRule(accountType, "system_priority_min", event.target.value)}
+                        />
+                        <span aria-hidden="true">-</span>
+                        <input
+                          aria-label={`${smartSchedulingTypeLabels[accountType]} 系统优先级上限`}
+                          disabled={disabled}
+                          min={1}
+                          type="number"
+                          value={rule.system_priority_max}
+                          onChange={(event) => updateSmartSchedulingRule(accountType, "system_priority_max", event.target.value)}
+                        />
+                      </span>
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`${smartSchedulingTypeLabels[accountType]} 固定自动优先级`}
+                        disabled={disabled}
+                        min={1}
+                        type="number"
+                        value={rule.automatic_priority}
+                        onChange={(event) => updateSmartSchedulingRule(accountType, "automatic_priority", event.target.value)}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`${smartSchedulingTypeLabels[accountType]} 普通并发`}
+                        disabled={disabled}
+                        min={1}
+                        type="number"
+                        value={rule.normal_concurrency}
+                        onChange={(event) => updateSmartSchedulingRule(accountType, "normal_concurrency", event.target.value)}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`${smartSchedulingTypeLabels[accountType]} 7d 极限阈值`}
+                        disabled={disabled}
+                        max={100}
+                        min={0}
+                        step="0.1"
+                        type="number"
+                        value={rule.extreme_entry_percent}
+                        onChange={(event) => updateSmartSchedulingRule(accountType, "extreme_entry_percent", event.target.value)}
+                      />
+                      <span className="smart-scheduling-unit">%</span>
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`${smartSchedulingTypeLabels[accountType]} 恢复阈值`}
+                        disabled={disabled}
+                        max={100}
+                        min={0}
+                        step="0.1"
+                        type="number"
+                        value={rule.recovery_percent}
+                        onChange={(event) => updateSmartSchedulingRule(accountType, "recovery_percent", event.target.value)}
+                      />
+                      <span className="smart-scheduling-unit">%</span>
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`${smartSchedulingTypeLabels[accountType]} 极限并发`}
+                        disabled={disabled}
+                        min={1}
+                        type="number"
+                        value={rule.extreme_concurrency}
+                        onChange={(event) => updateSmartSchedulingRule(accountType, "extreme_concurrency", event.target.value)}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <dl className="smart-scheduling-run-strip">
+          <div>
+            <dt>扫描</dt>
+            <dd>{numberValue(smartSchedulingMeta.lastRun?.scanned)}</dd>
+          </div>
+          <div>
+            <dt>调整</dt>
+            <dd>{numberValue(smartSchedulingMeta.lastRun?.changed)}</dd>
+          </div>
+          <div>
+            <dt>不变</dt>
+            <dd>{numberValue(smartSchedulingMeta.lastRun?.unchanged)}</dd>
+          </div>
+          <div>
+            <dt>跳过</dt>
+            <dd>{numberValue(smartSchedulingMeta.lastRun?.skipped)}</dd>
+          </div>
+          <div className={numberValue(smartSchedulingMeta.lastRun?.failed) > 0 ? "is-error" : ""}>
+            <dt>失败</dt>
+            <dd>{numberValue(smartSchedulingMeta.lastRun?.failed)}</dd>
+          </div>
+          <div className="smart-scheduling-run-time">
+            <dt>最近运行</dt>
+            <dd>
+              {formatDateTime(smartSchedulingMeta.lastRun?.finished_at || smartSchedulingMeta.lastRun?.started_at)}
+            </dd>
+          </div>
+        </dl>
+
+        <div className="smart-scheduling-group-head">
+          <div>
+            <h4>分组策略</h4>
+            <span>{observabilitySettings.length ? `${observabilitySettings.length} 个数据库分组` : "暂无数据库分组"}</span>
+          </div>
+          <span>探测间隔按分组配置</span>
+        </div>
+        <div className="table-wrap smart-scheduling-group-wrap">
+          <table className="smart-scheduling-group-table">
+            <thead>
+              <tr>
+                <th>分组</th>
+                <th>账号</th>
+                <th>账号类型自动归档</th>
+                <th>7d 极限加速</th>
+                <th>快照间隔</th>
+                <th>配置更新</th>
+              </tr>
+            </thead>
+            <tbody>
+              {observabilitySettings.map((setting) => {
+                const rowKey = `${setting.site_id}:${setting.group_id}`;
+                const busy = savingObservabilityKey === rowKey;
+                return (
+                  <tr key={`smart-scheduling:${rowKey}`}>
+                    <td>
+                      <div className="cell-main">{setting.group_name || `#${setting.group_id}`}</div>
+                      <div className="cell-sub">#{setting.group_id}</div>
+                    </td>
+                    <td>{numberValue(setting.group_active_account_count)} / {numberValue(setting.group_account_count)}</td>
+                    <td>
+                      <label className="switch-field smart-strategy-switch">
+                        <input
+                          checked={setting.type_priority_enabled === true}
+                          disabled={busy}
+                          type="checkbox"
+                          onChange={(event) => saveObservabilitySetting(setting, { type_priority_enabled: event.target.checked })}
+                        />
+                        <span className="switch-track" aria-hidden="true"><span className="switch-thumb" /></span>
+                        <span className="switch-copy"><strong>{setting.type_priority_enabled === true ? "开启" : "关闭"}</strong></span>
+                      </label>
+                    </td>
+                    <td>
+                      <label className="switch-field smart-strategy-switch">
+                        <input
+                          checked={setting.quota_acceleration_enabled === true}
+                          disabled={busy}
+                          type="checkbox"
+                          onChange={(event) => saveObservabilitySetting(setting, { quota_acceleration_enabled: event.target.checked })}
+                        />
+                        <span className="switch-track" aria-hidden="true"><span className="switch-thumb" /></span>
+                        <span className="switch-copy"><strong>{setting.quota_acceleration_enabled === true ? "开启" : "关闭"}</strong></span>
+                      </label>
+                    </td>
+                    <td><strong>{formatProbeInterval(setting.probe_interval_seconds)}</strong></td>
+                    <td>{formatDateTime(setting.updated_at)}</td>
+                  </tr>
+                );
+              })}
+              {!observabilitySettings.length && (
+                <tr>
+                  <td className="muted" colSpan={6}>请先同步 Sub2API 分组。</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <section className="panel observability-config-panel">
         <div className="panel-header">
           <div>
@@ -1067,6 +1599,11 @@ export function AccountPoolsPage({ token, showToast }: Props) {
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function formatProbeInterval(value: unknown) {
+  const seconds = typeof value === "number" && Number.isFinite(value) ? Math.max(60, Math.round(value)) : 180;
+  return seconds === 60 ? "60 秒" : `${Math.round(seconds / 60)} 分钟`;
 }
 
 function QuotaWindowResult({ label, value }: { label: string; value: QuotaDetectionWindow }) {
