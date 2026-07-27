@@ -1,17 +1,29 @@
 from __future__ import annotations
 
+import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from app.modules.sub2api.smart_scheduling import (
     default_smart_scheduling_rules,
+    evaluate_account,
     normalize_smart_scheduling_rules,
 )
+from app.modules.sub2api.client import InvalidAdminApiKeyError, Sub2ApiClient
+from app.modules.sub2api.postgres_repository import fetch_admin_api_key
 from app.utils import now_utc, serialize_doc
 
 
 SMART_SCHEDULING_SETTING_PREFIX = "smart_scheduling"
+SMART_SCHEDULING_LEASE_SECONDS = 300
+RUN_RETENTION = timedelta(days=90)
+OUTCOME_RETENTION = timedelta(days=30)
+logger = logging.getLogger("app.sub2api_smart_scheduling")
 
 
 def smart_scheduling_setting_id(site_id: str) -> str:
@@ -73,3 +85,489 @@ async def update_smart_scheduling_settings(
         upsert=True,
     )
     return await get_smart_scheduling_settings(db, normalized_site_id)
+
+
+async def acquire_smart_scheduling_lease(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    owner: str,
+    now: datetime | None = None,
+) -> bool:
+    acquired_at = _as_utc(now or now_utc())
+    lock_id = f"smart-scheduling:{site_id}"
+    try:
+        document = await db.operation_locks.find_one_and_update(
+            {
+                "_id": lock_id,
+                "$or": [
+                    {"expires_at": {"$lte": acquired_at}},
+                    {"expires_at": {"$exists": False}},
+                    {"owner": owner},
+                ],
+            },
+            {
+                "$set": {
+                    "lock_type": "smart_scheduling",
+                    "site_id": site_id,
+                    "owner": owner,
+                    "locked_at": acquired_at,
+                    "expires_at": acquired_at
+                    + timedelta(seconds=SMART_SCHEDULING_LEASE_SECONDS),
+                    "updated_at": acquired_at,
+                },
+                "$setOnInsert": {"created_at": acquired_at},
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        return False
+    return bool(document and document.get("owner") == owner)
+
+
+async def release_smart_scheduling_lease(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    owner: str,
+) -> None:
+    await db.operation_locks.delete_one(
+        {
+            "_id": f"smart-scheduling:{site_id}",
+            "owner": owner,
+        }
+    )
+
+
+async def run_smart_scheduling(
+    db: AsyncIOMotorDatabase,
+    *,
+    site: dict[str, Any],
+    accounts: list[dict[str, Any]],
+    group_settings: dict[int, dict[str, Any]],
+    probe_run_id: str,
+    rules: dict[str, Any] | None = None,
+    client: Sub2ApiClient | Any | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    site_id = str(site.get("id") or site.get("_id") or "").strip()
+    evaluated_at = _as_utc(now or now_utc())
+    eligible = _eligible_accounts(accounts, group_settings)
+    if not eligible:
+        return _empty_summary(site_id, status="disabled")
+
+    owner = uuid4().hex
+    if not await acquire_smart_scheduling_lease(
+        db,
+        site_id=site_id,
+        owner=owner,
+        now=evaluated_at,
+    ):
+        return _empty_summary(site_id, status="locked")
+    try:
+        return await _run_smart_scheduling_locked(
+            db,
+            site=site,
+            site_id=site_id,
+            eligible=eligible,
+            probe_run_id=probe_run_id,
+            rules=rules,
+            client=client,
+            now=evaluated_at,
+        )
+    finally:
+        try:
+            await release_smart_scheduling_lease(
+                db,
+                site_id=site_id,
+                owner=owner,
+            )
+        except Exception as exc:  # noqa: BLE001 - the lease expires without masking the run result.
+            logger.error(
+                "smart_scheduling_lease_release_failed site_id=%s error_type=%s",
+                site_id,
+                type(exc).__name__,
+            )
+
+
+async def _run_smart_scheduling_locked(
+    db: AsyncIOMotorDatabase,
+    *,
+    site: dict[str, Any],
+    site_id: str,
+    eligible: dict[str, dict[str, Any]],
+    probe_run_id: str,
+    rules: dict[str, Any] | None,
+    client: Sub2ApiClient | Any | None,
+    now: datetime,
+) -> dict[str, Any]:
+    effective_rules = (
+        normalize_smart_scheduling_rules(rules)
+        if rules is not None
+        else (await get_smart_scheduling_settings(db, site_id))["rules"]
+    )
+    run_id = uuid4().hex
+    expires_at = now + RUN_RETENTION
+    summary = {
+        "ok": True,
+        "status": "completed",
+        "site_id": site_id,
+        "run_id": run_id,
+        "probe_run_id": probe_run_id,
+        "scanned": len(eligible),
+        "changed": 0,
+        "unchanged": 0,
+        "skipped": 0,
+        "failed": 0,
+    }
+    await db.sub2api_smart_scheduling_runs.insert_one(
+        {
+            "_id": run_id,
+            **summary,
+            "status": "running",
+            "started_at": now,
+            "created_at": now,
+            "expires_at": expires_at,
+        }
+    )
+    states = await _states_for_accounts(
+        db,
+        site_id=site_id,
+        remote_account_ids=[
+            item["remote_account_id"] for item in eligible.values()
+        ],
+    )
+    effective_client = client
+
+    for item in eligible.values():
+        account = item["account"]
+        remote_account_id = item["remote_account_id"]
+        state = states.get(str(remote_account_id))
+        decision = evaluate_account(
+            account=account,
+            rules=effective_rules,
+            type_priority_enabled=item["type_priority_enabled"],
+            quota_acceleration_enabled=item["quota_acceleration_enabled"],
+            state=state,
+            now=now,
+        )
+        before = _runtime_values(account)
+        outcome_status = decision["status"]
+        error_code = None
+        error_type = None
+        stop_remote_updates = False
+        client_configuration_failed = False
+
+        try:
+            if decision["status"] == "change":
+                if effective_client is None:
+                    try:
+                        effective_client = await _build_site_client(site)
+                    except Exception:
+                        client_configuration_failed = True
+                        raise
+                latest = await effective_client.get_account(remote_account_id)
+                latest_account = {
+                    **account,
+                    "priority": latest.get("priority"),
+                    "concurrency": latest.get("concurrency"),
+                }
+                before = _runtime_values(latest_account)
+                decision = evaluate_account(
+                    account=latest_account,
+                    rules=effective_rules,
+                    type_priority_enabled=item["type_priority_enabled"],
+                    quota_acceleration_enabled=item["quota_acceleration_enabled"],
+                    state=state,
+                    now=now,
+                )
+            if decision["status"] == "change":
+                await effective_client.update_account(
+                    remote_account_id,
+                    decision["target"],
+                )
+                summary["changed"] += 1
+                outcome_status = "changed"
+                await _persist_scheduler_state(
+                    db,
+                    site_id=site_id,
+                    remote_account_id=remote_account_id,
+                    decision=decision,
+                    probe_run_id=probe_run_id,
+                    run_id=run_id,
+                    evaluated_at=now,
+                    changed=True,
+                )
+            elif decision["status"] == "unchanged":
+                summary["unchanged"] += 1
+                outcome_status = "unchanged"
+                await _persist_scheduler_state(
+                    db,
+                    site_id=site_id,
+                    remote_account_id=remote_account_id,
+                    decision=decision,
+                    probe_run_id=probe_run_id,
+                    run_id=run_id,
+                    evaluated_at=now,
+                    changed=False,
+                )
+            else:
+                summary["skipped"] += 1
+                outcome_status = decision["status"]
+        except Exception as exc:  # noqa: BLE001 - isolate remote failures per account.
+            summary["failed"] += 1
+            outcome_status = "failed"
+            admin_auth_failed = isinstance(exc, InvalidAdminApiKeyError)
+            stop_remote_updates = admin_auth_failed or client_configuration_failed
+            if admin_auth_failed:
+                error_code = "admin_auth_error"
+            elif client_configuration_failed:
+                error_code = "admin_api_configuration_error"
+            else:
+                error_code = "remote_update_failed"
+            error_type = type(exc).__name__
+            logger.warning(
+                "smart_scheduling_account_failed site_id=%s remote_account_id=%s error_type=%s",
+                site_id,
+                remote_account_id,
+                error_type,
+            )
+
+        await _persist_outcome(
+            db,
+            site_id=site_id,
+            run_id=run_id,
+            probe_run_id=probe_run_id,
+            item=item,
+            decision=decision,
+            before=before,
+            status=outcome_status,
+            error_code=error_code,
+            error_type=error_type,
+            evaluated_at=now,
+        )
+        if stop_remote_updates:
+            break
+
+    finished_at = _as_utc(now_utc()) if now_utc is not None else now
+    summary["status"] = "partial" if summary["failed"] else "completed"
+    await db.sub2api_smart_scheduling_runs.update_one(
+        {"_id": run_id},
+        {
+            "$set": {
+                **summary,
+                "finished_at": finished_at,
+                "updated_at": finished_at,
+            }
+        },
+    )
+    return summary
+
+
+def _eligible_accounts(
+    accounts: list[dict[str, Any]],
+    group_settings: dict[int, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    eligible: dict[str, dict[str, Any]] = {}
+    for account in accounts:
+        remote_account_id = account.get("remote_account_id")
+        if remote_account_id is None:
+            remote_account_id = account.get("id")
+        if remote_account_id is None:
+            continue
+        group_ids = {
+            group_id
+            for value in account.get("group_ids") or []
+            if (group_id := _optional_int(value)) is not None
+        }
+        type_enabled = any(
+            group_settings.get(group_id, {}).get("type_priority_enabled") is True
+            for group_id in group_ids
+        )
+        quota_enabled = any(
+            group_settings.get(group_id, {}).get("quota_acceleration_enabled") is True
+            for group_id in group_ids
+        )
+        if not type_enabled and not quota_enabled:
+            continue
+        key = str(remote_account_id)
+        existing = eligible.get(key)
+        if existing is None:
+            eligible[key] = {
+                "account": account,
+                "remote_account_id": remote_account_id,
+                "group_ids": sorted(group_ids),
+                "type_priority_enabled": type_enabled,
+                "quota_acceleration_enabled": quota_enabled,
+            }
+        else:
+            existing["group_ids"] = sorted(set(existing["group_ids"]) | group_ids)
+            existing["type_priority_enabled"] = (
+                existing["type_priority_enabled"] or type_enabled
+            )
+            existing["quota_acceleration_enabled"] = (
+                existing["quota_acceleration_enabled"] or quota_enabled
+            )
+    return eligible
+
+
+async def _states_for_accounts(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    remote_account_ids: list[Any],
+) -> dict[str, dict[str, Any]]:
+    states: dict[str, dict[str, Any]] = {}
+    cursor = db.sub2api_smart_scheduling_states.find(
+        {
+            "site_id": site_id,
+            "remote_account_id": {"$in": remote_account_ids},
+        },
+        {
+            "remote_account_id": 1,
+            "mode": 1,
+            "seven_day_reset_at": 1,
+        },
+    )
+    async for document in cursor:
+        states[str(document.get("remote_account_id"))] = document
+    return states
+
+
+async def _persist_scheduler_state(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    remote_account_id: Any,
+    decision: dict[str, Any],
+    probe_run_id: str,
+    run_id: str,
+    evaluated_at: datetime,
+    changed: bool,
+) -> None:
+    updates = {
+        "site_id": site_id,
+        "remote_account_id": remote_account_id,
+        "adapted_type": decision.get("adapted_type"),
+        "mode": decision.get("mode"),
+        "last_strategy": decision.get("strategy"),
+        "last_reason": decision.get("reason"),
+        "last_target": decision.get("target"),
+        "seven_day_used_percent": decision.get("seven_day_used_percent"),
+        "seven_day_reset_at": decision.get("seven_day_reset_at"),
+        "last_probe_run_id": probe_run_id,
+        "last_run_id": run_id,
+        "last_evaluated_at": evaluated_at,
+        "updated_at": evaluated_at,
+    }
+    if changed:
+        updates["last_successful_update_at"] = evaluated_at
+    await db.sub2api_smart_scheduling_states.update_one(
+        {"_id": f"{site_id}:{remote_account_id}"},
+        {
+            "$set": updates,
+            "$setOnInsert": {"created_at": evaluated_at},
+        },
+        upsert=True,
+    )
+
+
+async def _persist_outcome(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    run_id: str,
+    probe_run_id: str,
+    item: dict[str, Any],
+    decision: dict[str, Any],
+    before: dict[str, int | None],
+    status: str,
+    error_code: str | None,
+    error_type: str | None,
+    evaluated_at: datetime,
+) -> None:
+    remote_account_id = item["remote_account_id"]
+    await db.sub2api_smart_scheduling_outcomes.update_one(
+        {"_id": f"{run_id}:{remote_account_id}"},
+        {
+            "$set": {
+                "site_id": site_id,
+                "run_id": run_id,
+                "probe_run_id": probe_run_id,
+                "remote_account_id": remote_account_id,
+                "group_ids": item["group_ids"],
+                "adapted_type": decision.get("adapted_type"),
+                "strategy": decision.get("strategy"),
+                "mode": decision.get("mode"),
+                "reason": decision.get("reason"),
+                "seven_day_used_percent": decision.get(
+                    "seven_day_used_percent"
+                ),
+                "seven_day_reset_at": decision.get("seven_day_reset_at"),
+                "quota_fresh": decision.get("quota_fresh"),
+                "before": before,
+                "target": decision.get("target"),
+                "status": status,
+                "error_code": error_code,
+                "error_type": error_type,
+                "evaluated_at": evaluated_at,
+                "expires_at": evaluated_at + OUTCOME_RETENTION,
+                "updated_at": evaluated_at,
+            },
+            "$setOnInsert": {"created_at": evaluated_at},
+        },
+        upsert=True,
+    )
+
+
+async def _build_site_client(site: dict[str, Any]) -> Sub2ApiClient:
+    sql_dsn = str(site.get("sql_dsn") or "").strip()
+    base_url = str(site.get("base_url") or "").strip()
+    if not sql_dsn:
+        raise ValueError("Sub2API site SQL_DSN is not configured")
+    if not base_url:
+        raise ValueError("Sub2API site base_url is not configured")
+    token = await fetch_admin_api_key(sql_dsn)
+    return Sub2ApiClient(
+        base_url=base_url,
+        token=token,
+    )
+
+
+def _runtime_values(account: dict[str, Any]) -> dict[str, int | None]:
+    return {
+        "priority": _optional_int(account.get("priority")),
+        "concurrency": _optional_int(account.get("concurrency")),
+    }
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed_float = float(value)
+        parsed = int(parsed_float)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed == parsed_float else None
+
+
+def _empty_summary(site_id: str, *, status: str) -> dict[str, Any]:
+    return {
+        "ok": status != "locked",
+        "status": status,
+        "site_id": site_id,
+        "run_id": None,
+        "scanned": 0,
+        "changed": 0,
+        "unchanged": 0,
+        "skipped": 0,
+        "failed": 0,
+    }
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
