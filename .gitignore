@@ -13,6 +13,7 @@ __pycache__/
 
 .vscode/
 .superpowers/
+.worktrees/
 
 node_modules/
 dist/
