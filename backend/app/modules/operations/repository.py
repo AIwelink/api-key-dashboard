@@ -851,6 +851,7 @@ async def finish_operations_sync_run(
 async def replace_affected_aggregates(
     connection: Any,
     *,
+    site_id: str,
     start_at: datetime,
     end_at: datetime,
     timezone: str = "Asia/Shanghai",
@@ -860,6 +861,11 @@ async def replace_affected_aggregates(
         table_name="ops_hourly_stats",
         bucket_expression="date_trunc('hour', event_at)",
         bucket_column="bucket_start",
+        bucket_start_expression="date_trunc('hour', CAST(:start_at AS TIMESTAMPTZ))",
+        bucket_end_expression="date_trunc('hour', CAST(:end_at AS TIMESTAMPTZ)) + INTERVAL '1 hour'",
+        event_start_expression="date_trunc('hour', CAST(:start_at AS TIMESTAMPTZ))",
+        event_end_expression="date_trunc('hour', CAST(:end_at AS TIMESTAMPTZ)) + INTERVAL '1 hour'",
+        site_id=site_id,
         start_at=start_at,
         end_at=end_at,
         timezone=timezone,
@@ -869,6 +875,11 @@ async def replace_affected_aggregates(
         table_name="ops_daily_stats",
         bucket_expression="(event_at AT TIME ZONE :timezone)::date",
         bucket_column="bucket_date",
+        bucket_start_expression="(CAST(:start_at AS TIMESTAMPTZ) AT TIME ZONE :timezone)::date",
+        bucket_end_expression="(CAST(:end_at AS TIMESTAMPTZ) AT TIME ZONE :timezone)::date + 1",
+        event_start_expression="((CAST(:start_at AS TIMESTAMPTZ) AT TIME ZONE :timezone)::date AT TIME ZONE :timezone)",
+        event_end_expression="(((CAST(:end_at AS TIMESTAMPTZ) AT TIME ZONE :timezone)::date + 1) AT TIME ZONE :timezone)",
+        site_id=site_id,
         start_at=start_at,
         end_at=end_at,
         timezone=timezone,
@@ -881,6 +892,11 @@ async def _replace_aggregate_table(
     table_name: str,
     bucket_expression: str,
     bucket_column: str,
+    bucket_start_expression: str,
+    bucket_end_expression: str,
+    event_start_expression: str,
+    event_end_expression: str,
+    site_id: str,
     start_at: datetime,
     end_at: datetime,
     timezone: str,
@@ -891,11 +907,13 @@ async def _replace_aggregate_table(
         text(
             f"""
             DELETE FROM growth.{table_name}
-            WHERE {bucket_column} >= :start_at AND {bucket_column} < :end_at
+            WHERE site_id = :site_id
+              AND {bucket_column} >= {bucket_start_expression}
+              AND {bucket_column} < {bucket_end_expression}
               {"AND timezone = :timezone" if table_name == "ops_daily_stats" else ""}
             """
         ),
-        {"start_at": start_at, "end_at": end_at, "timezone": timezone},
+        {"site_id": site_id, "start_at": start_at, "end_at": end_at, "timezone": timezone},
     )
     await connection.execute(
         text(
@@ -909,7 +927,9 @@ async def _replace_aggregate_table(
                        0::BIGINT AS sale_count, 0::NUMERIC AS income_cny,
                        0::NUMERIC AS refund_cny
                 FROM growth.ops_user_snapshots AS snapshot
-                WHERE snapshot.registered_at >= :start_at AND snapshot.registered_at < :end_at
+                WHERE snapshot.site_id = :site_id
+                  AND snapshot.registered_at >= {event_start_expression}
+                  AND snapshot.registered_at < {event_end_expression}
                 UNION ALL
                 SELECT usage.site_id, usage.external_user_id, usage.occurred_at,
                        snapshot.is_internal, 0, usage.successful_call_count,
@@ -918,7 +938,9 @@ async def _replace_aggregate_table(
                 JOIN growth.ops_user_snapshots AS snapshot
                   ON snapshot.site_id = usage.site_id
                  AND snapshot.external_user_id = usage.external_user_id
-                WHERE usage.occurred_at >= :start_at AND usage.occurred_at < :end_at
+                WHERE usage.site_id = :site_id
+                  AND usage.occurred_at >= {event_start_expression}
+                  AND usage.occurred_at < {event_end_expression}
                 UNION ALL
                 SELECT event.site_id, event.external_user_id, event.occurred_at,
                        snapshot.is_internal, 0, 0, 0, 0,
@@ -930,7 +952,9 @@ async def _replace_aggregate_table(
                   ON snapshot.site_id = event.site_id
                  AND snapshot.external_user_id = event.external_user_id
                 WHERE event.classification_status = 'classified'
-                  AND event.occurred_at >= :start_at AND event.occurred_at < :end_at
+                  AND event.site_id = :site_id
+                  AND event.occurred_at >= {event_start_expression}
+                  AND event.occurred_at < {event_end_expression}
             ), segmented AS (
                 SELECT raw.*, segment.user_segment
                 FROM raw_events AS raw
@@ -954,5 +978,18 @@ async def _replace_aggregate_table(
             GROUP BY site_id, {bucket_expression}, user_segment
             """
         ),
-        {"start_at": start_at, "end_at": end_at, "timezone": timezone},
+        {"site_id": site_id, "start_at": start_at, "end_at": end_at, "timezone": timezone},
+    )
+
+
+async def acquire_operations_sync_lock(connection: Any, *, site_id: str) -> None:
+    await connection.execute(
+        text(
+            """
+            SELECT pg_advisory_xact_lock(
+                hashtext('growth-operations-sync:' || CAST(:site_id AS TEXT))
+            )
+            """
+        ),
+        {"site_id": site_id},
     )

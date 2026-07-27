@@ -23,6 +23,9 @@ from app.modules.operations.sync import request_operations_refresh
 from app.modules.system.client_sites import get_client_site, list_client_sites
 
 
+HISTORICAL_CONVERSION_RATE_START = datetime(1970, 1, 1, tzinfo=UTC)
+
+
 class CreditCapabilityUnavailable(RuntimeError):
     code = "capability_unavailable"
 
@@ -257,7 +260,20 @@ async def create_conversion_rate_config(
     actor_id: str,
 ) -> dict[str, Any]:
     async with growth_connection(mongo_db, write=True) as connection:
-        result = await repository.create_conversion_rate(connection, payload, actor_id=actor_id)
+        existing_rates = await repository.list_conversion_rates(
+            connection,
+            site_id=payload.site_id,
+        )
+        selected_payload = payload
+        if not existing_rates and "effective_from" not in payload.model_fields_set:
+            selected_payload = payload.model_copy(
+                update={"effective_from": HISTORICAL_CONVERSION_RATE_START}
+            )
+        result = await repository.create_conversion_rate(
+            connection,
+            selected_payload,
+            actor_id=actor_id,
+        )
     operations_response_cache.invalidate(site_id=payload.site_id)
     return result
 

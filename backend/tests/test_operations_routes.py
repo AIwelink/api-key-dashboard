@@ -212,6 +212,31 @@ class OperationsServiceCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/api/operations/classification-tasks/{classification_task_id}", paths)
 
 
+class OperationsConversionRateServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_first_implicit_rate_covers_all_historical_data(self) -> None:
+        from app.modules.operations import service
+        from app.modules.operations.schemas import ConversionRateCreate
+
+        payload = ConversionRateCreate(
+            site_id="aiwelink",
+            balance_units_per_cny=Decimal("10"),
+        )
+        create_rate = AsyncMock(return_value={"conversion_rate_id": "rate-1"})
+
+        with (
+            patch.object(service, "growth_connection", lambda db, write=True: _async_context(object())),
+            patch.object(service.repository, "list_conversion_rates", AsyncMock(return_value=[])),
+            patch.object(service.repository, "create_conversion_rate", create_rate),
+        ):
+            await service.create_conversion_rate_config(object(), payload, actor_id="owner")
+
+        saved_payload = create_rate.await_args.args[1]
+        self.assertEqual(
+            saved_payload.effective_from,
+            datetime(1970, 1, 1, tzinfo=UTC),
+        )
+
+
 @asynccontextmanager
 async def _async_context(value):
     yield value

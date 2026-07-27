@@ -13,6 +13,14 @@ NOW = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
 
 
 class OperationsSyncRuleTests(unittest.TestCase):
+    def test_first_sync_reads_30_days_when_no_cursor_or_override_exists(self) -> None:
+        from app.modules.operations.sync import reconciliation_start
+
+        self.assertEqual(
+            reconciliation_start(now=NOW, last_success_at=None),
+            NOW - timedelta(days=30),
+        )
+
     def test_reconciliation_rewinds_cursor_by_48_hours(self) -> None:
         from app.modules.operations.sync import reconciliation_start
 
@@ -149,6 +157,7 @@ class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         aggregate = AsyncMock()
 
         with (
+            patch.object(sync.repository, "acquire_operations_sync_lock", AsyncMock()),
             patch.object(sync.repository, "list_conversion_rates", AsyncMock(return_value=[])),
             patch.object(sync.repository, "upsert_user_snapshots", AsyncMock(return_value=0)),
             patch.object(
@@ -169,6 +178,38 @@ class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         aggregate.assert_not_awaited()
+
+    async def test_adapter_sync_acquires_site_lock_before_source_reads(self) -> None:
+        from app.modules.operations import sync
+
+        calls = []
+        adapter = AsyncMock()
+        adapter.site_id = "aiwelink"
+        adapter.read_users.side_effect = lambda **kwargs: calls.append("read") or []
+        adapter.read_usage.return_value = []
+        adapter.read_credit_events.return_value = []
+
+        async def lock(connection, *, site_id):
+            calls.append(f"lock:{site_id}")
+
+        with (
+            patch.object(sync.repository, "acquire_operations_sync_lock", lock),
+            patch.object(sync.repository, "list_conversion_rates", AsyncMock(return_value=[])),
+            patch.object(sync.repository, "upsert_user_snapshots", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "upsert_usage_facts", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "upsert_credit_events", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "create_pending_classification_tasks", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "replace_affected_aggregates", AsyncMock()),
+        ):
+            await sync.sync_adapter_records(
+                adapter=adapter,
+                source_connection=object(),
+                growth_connection=object(),
+                since=NOW - timedelta(hours=48),
+                now=NOW,
+            )
+
+        self.assertEqual(calls[:2], ["lock:aiwelink", "read"])
 
     async def test_site_sync_records_success_and_uses_reconciled_since(self) -> None:
         from app.modules.operations import sync

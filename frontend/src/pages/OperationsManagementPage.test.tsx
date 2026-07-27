@@ -6,7 +6,9 @@ import {
   buildOperationsQuery,
   buildRedemptionPayload,
   canManageOperations,
+  conversionRateEffectiveHint,
   emptyRedemptionForm,
+  refreshFailureMessage,
 } from "./OperationsManagementPage";
 
 
@@ -51,6 +53,21 @@ describe("operations management workspace", () => {
       note: "团队额度",
       idempotency_key: "batch-1",
     });
+  });
+
+  it("surfaces failed source refreshes with the affected site", () => {
+    expect(refreshFailureMessage([
+      { site_id: "aiwelink", status: "failed", error: "no conversion rate" },
+      { site_id: "aigclink", status: "succeeded" },
+    ])).toBe("AIWeLink：no conversion rate");
+    expect(refreshFailureMessage([
+      { site_id: "aiwelink", status: "succeeded" },
+    ])).toBe("");
+  });
+
+  it("explains the first-rate historical coverage rule", () => {
+    expect(conversionRateEffectiveHint).toContain("首次配置留空将覆盖全部历史数据");
+    expect(conversionRateEffectiveHint).toContain("以后调整留空将从当前时间生效");
   });
 
   it("renders the overview as a full-width query-first workspace", () => {

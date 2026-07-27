@@ -95,6 +95,14 @@ type ClassificationTask = {
 
 type ListResponse<T> = { items: T[]; total: number; generated_at?: string };
 
+type RefreshResultItem = {
+  site_id: string;
+  status: string;
+  error?: string;
+};
+
+export const conversionRateEffectiveHint = "首次配置留空将覆盖全部历史数据；以后调整留空将从当前时间生效。";
+
 export type RedemptionForm = {
   site_id: string;
   purpose: Purpose;
@@ -277,6 +285,13 @@ function siteLabel(siteId: string) {
   return siteOptions.find((site) => site.value === siteId)?.label || siteId;
 }
 
+export function refreshFailureMessage(items: RefreshResultItem[]) {
+  return items
+    .filter((item) => item.status === "failed")
+    .map((item) => `${siteLabel(item.site_id)}：${item.error || "同步失败"}`)
+    .join("；");
+}
+
 function comparison(current: number | undefined, previous: number | undefined) {
   const currentValue = Number(current || 0);
   const previousValue = Number(previous || 0);
@@ -432,9 +447,14 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
   async function refreshSources() {
     setRefreshing(true);
     try {
-      await api("/operations/refresh", token, { method: "POST", body: JSON.stringify({ site_ids: query.siteId ? [query.siteId] : null }) });
-      showToast("同步任务已提交，现有缓存数据会继续保留");
-      window.setTimeout(() => void loadOverview(true), 1200);
+      const result = await api<ListResponse<RefreshResultItem>>("/operations/refresh", token, { method: "POST", body: JSON.stringify({ site_ids: query.siteId ? [query.siteId] : null }) });
+      const failure = refreshFailureMessage(result.items);
+      if (failure) {
+        showToast(`源数据同步失败：${failure}`, true);
+      } else {
+        showToast("源数据同步完成");
+      }
+      await loadOverview(true);
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
@@ -572,6 +592,7 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
   const previous = overview?.previous_summary || {};
   const visibleSyncStatuses = query.siteId ? syncStatuses.filter((item) => item.site_id === query.siteId) : syncStatuses;
   const syncHealth = visibleSyncStatuses.some((item) => item.health === "delayed" || item.health === "never") ? "delayed" : visibleSyncStatuses.some((item) => item.health === "running") ? "running" : "healthy";
+  const syncErrorDetails = visibleSyncStatuses.filter((item) => item.error_message).map((item) => `${siteLabel(item.site_id)}：${item.error_message}`).join(" · ");
 
   return (
     <section className="view operations-workspace-page">
@@ -603,7 +624,7 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
 
           <div className={`operations-freshness-banner ${syncHealth}`}>
             <div><span className="operations-freshness-dot" /><strong>{syncHealth === "healthy" ? "数据同步正常" : syncHealth === "running" ? "正在同步" : "数据同步延迟"}</strong></div>
-            <span>{visibleSyncStatuses.length ? visibleSyncStatuses.map((item) => `${siteLabel(item.site_id)} ${formatDateTime(item.last_success_at)}`).join(" · ") : "等待首次同步记录"}</span>
+            <span>{syncErrorDetails || (visibleSyncStatuses.length ? visibleSyncStatuses.map((item) => `${siteLabel(item.site_id)} ${formatDateTime(item.last_success_at)}`).join(" · ") : "等待首次同步记录")}</span>
             <small>页面查询缓存 60 秒，源数据每 15 分钟同步</small>
           </div>
 
@@ -683,7 +704,7 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
 
       {modal?.kind === "adjustment" && <GrowthCreateModal title="调整余额" submitLabel="提交调整" saving={saving} submitDisabled={!adjustmentForm.site_id || !adjustmentForm.external_user_id.trim() || Number(adjustmentForm.balance_units) === 0 || (adjustmentForm.purpose === "sale" && Number(adjustmentForm.cash_amount_cny) <= 0)} onClose={() => setModal(null)} onSubmit={saveAdjustment}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect includeAll={false} value={adjustmentForm.site_id} onChange={(site_id) => setAdjustmentForm({ ...adjustmentForm, site_id })} /></label><label><span className="field-label"><strong>业务用户 ID</strong></span><input value={adjustmentForm.external_user_id} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, external_user_id: event.target.value })} /></label><PurposeFields purpose={adjustmentForm.purpose} cash={adjustmentForm.cash_amount_cny} onPurpose={(purpose) => setAdjustmentForm({ ...adjustmentForm, purpose, cash_amount_cny: purpose === "sale" ? adjustmentForm.cash_amount_cny : "0" })} onCash={(cash_amount_cny) => setAdjustmentForm({ ...adjustmentForm, cash_amount_cny })} /><label><span className="field-label"><strong>调整额度</strong></span><input type="number" step="any" value={adjustmentForm.balance_units} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, balance_units: event.target.value })} /><span className="growth-field-message is-muted">增加填正数，扣减填负数</span></label><label className="span-2"><span className="field-label"><strong>备注</strong><span>（可选）</span></span><textarea value={adjustmentForm.note} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
 
-      {modal?.kind === "rate" && <GrowthCreateModal title="新增换算比例" submitLabel="确认生效" saving={saving} submitDisabled={!conversionForm.site_id || Number(conversionForm.balance_units_per_cny) <= 0} onClose={() => setModal(null)} onSubmit={saveRate}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect includeAll={false} value={conversionForm.site_id} onChange={(site_id) => setConversionForm({ ...conversionForm, site_id, balance_units_per_cny: site_id === "aigclink" ? "1" : "10" })} /></label><label><span className="field-label"><strong>每 1 CNY 对应余额</strong></span><input type="number" min="0" step="any" value={conversionForm.balance_units_per_cny} onChange={(event) => setConversionForm({ ...conversionForm, balance_units_per_cny: event.target.value })} /></label><label><span className="field-label"><strong>生效时间</strong></span><input type="datetime-local" value={conversionForm.effective_from} onChange={(event) => setConversionForm({ ...conversionForm, effective_from: event.target.value })} /></label><label className="span-2"><span className="field-label"><strong>备注</strong><span>（可选）</span></span><textarea value={conversionForm.note} onChange={(event) => setConversionForm({ ...conversionForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
+      {modal?.kind === "rate" && <GrowthCreateModal title="新增换算比例" submitLabel="确认生效" saving={saving} submitDisabled={!conversionForm.site_id || Number(conversionForm.balance_units_per_cny) <= 0} onClose={() => setModal(null)} onSubmit={saveRate}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect includeAll={false} value={conversionForm.site_id} onChange={(site_id) => setConversionForm({ ...conversionForm, site_id, balance_units_per_cny: site_id === "aigclink" ? "1" : "10" })} /></label><label><span className="field-label"><strong>每 1 CNY 对应余额</strong></span><input type="number" min="0" step="any" value={conversionForm.balance_units_per_cny} onChange={(event) => setConversionForm({ ...conversionForm, balance_units_per_cny: event.target.value })} /></label><label><span className="field-label"><strong>生效时间</strong><span>（可选）</span></span><input type="datetime-local" value={conversionForm.effective_from} onChange={(event) => setConversionForm({ ...conversionForm, effective_from: event.target.value })} /><span className="growth-field-message is-muted">{conversionRateEffectiveHint}</span></label><label className="span-2"><span className="field-label"><strong>备注</strong><span>（可选）</span></span><textarea value={conversionForm.note} onChange={(event) => setConversionForm({ ...conversionForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
 
       {modal?.kind === "classification" && <GrowthCreateModal title="补录额度用途" submitLabel={classificationForm.status === "ignored" ? "确认忽略" : "完成分类"} saving={saving} submitDisabled={classificationForm.status === "resolved" && classificationForm.purpose === "sale" && Number(classificationForm.cash_amount_cny) <= 0} onClose={() => setModal(null)} onSubmit={saveClassification}><div className="operations-classification-context"><div><span>站点</span><strong>{siteLabel(modal.item.site_id)}</strong></div><div><span>业务用户 ID</span><strong>{modal.item.external_user_id}</strong></div><div><span>来源类型</span><strong>{modal.item.source_type}</strong></div><div><span>额度</span><strong>{formatNumber(modal.item.balance_units, 10)}</strong></div></div><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>处理方式</strong></span><select value={classificationForm.status} onChange={(event) => setClassificationForm({ ...classificationForm, status: event.target.value as "resolved" | "ignored" })}><option value="resolved">完成分类</option><option value="ignored">忽略记录</option></select></label>{classificationForm.status === "resolved" && <PurposeFields purpose={classificationForm.purpose} cash={classificationForm.cash_amount_cny} onPurpose={(purpose) => setClassificationForm({ ...classificationForm, purpose, cash_amount_cny: purpose === "sale" ? classificationForm.cash_amount_cny : "0" })} onCash={(cash_amount_cny) => setClassificationForm({ ...classificationForm, cash_amount_cny })} />}<label className="span-2"><span className="field-label"><strong>补录说明</strong><span>（可选）</span></span><textarea value={classificationForm.note} onChange={(event) => setClassificationForm({ ...classificationForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
     </section>

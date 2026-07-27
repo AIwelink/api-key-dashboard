@@ -77,6 +77,56 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parameters["balance_units_per_cny"], Decimal("10"))
         self.assertEqual(row["conversion_rate_id"], str(rate_id))
 
+    async def test_aggregate_replacement_is_scoped_to_one_site(self) -> None:
+        from app.modules.operations.repository import replace_affected_aggregates
+
+        connection = _FakeConnection([None, None, None, None])
+
+        await replace_affected_aggregates(
+            connection,
+            site_id="aigclink",
+            start_at=NOW,
+            end_at=NOW,
+        )
+
+        statements = "\n".join(statement for statement, _ in connection.calls)
+        self.assertIn("WHERE site_id = :site_id", statements)
+        self.assertIn("snapshot.site_id = :site_id", statements)
+        self.assertIn("usage.site_id = :site_id", statements)
+        self.assertIn("event.site_id = :site_id", statements)
+        self.assertGreaterEqual(
+            statements.count("date_trunc('hour', CAST(:start_at AS TIMESTAMPTZ))"),
+            2,
+        )
+        self.assertGreaterEqual(
+            statements.count("date_trunc('hour', CAST(:end_at AS TIMESTAMPTZ))"),
+            2,
+        )
+        self.assertGreaterEqual(statements.count("CAST(:start_at AS TIMESTAMPTZ)"), 2)
+        self.assertGreaterEqual(statements.count("CAST(:end_at AS TIMESTAMPTZ)"), 2)
+        self.assertGreaterEqual(
+            statements.count("(CAST(:start_at AS TIMESTAMPTZ) AT TIME ZONE :timezone)::date"),
+            2,
+        )
+        self.assertGreaterEqual(
+            statements.count("(CAST(:end_at AS TIMESTAMPTZ) AT TIME ZONE :timezone)::date + 1"),
+            2,
+        )
+        for _, parameters in connection.calls:
+            self.assertEqual(parameters["site_id"], "aigclink")
+
+    async def test_operations_sync_lock_uses_site_scoped_transaction_lock(self) -> None:
+        from app.modules.operations.repository import acquire_operations_sync_lock
+
+        connection = _FakeConnection([None])
+
+        await acquire_operations_sync_lock(connection, site_id="aiwelink")
+
+        statement, parameters = connection.calls[0]
+        self.assertIn("pg_advisory_xact_lock", statement)
+        self.assertIn(":site_id", statement)
+        self.assertEqual(parameters["site_id"], "aiwelink")
+
     async def test_fact_upserts_use_stable_source_identity(self) -> None:
         from app.modules.operations.repository import upsert_credit_events, upsert_usage_facts
 

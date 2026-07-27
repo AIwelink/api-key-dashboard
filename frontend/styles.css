@@ -1368,9 +1368,8 @@
 .traffic-overview-table-scroll {
   width: 100%;
   min-width: 0;
-  max-height: 440px;
-  overflow: auto;
-  overscroll-behavior: contain;
+  overflow-x: auto;
+  overflow-y: visible;
   scrollbar-width: thin;
   -webkit-overflow-scrolling: touch;
 }
@@ -1591,13 +1590,13 @@
 
 /* Confirmed traffic and attribution dashboard */
 .traffic-overview {
-  gap: 16px;
+  gap: 12px;
 }
 
 .traffic-overview-query {
   grid-template-columns: repeat(4, minmax(140px, 1fr));
-  gap: 10px 12px;
-  padding: 14px 16px;
+  gap: 8px 10px;
+  padding: 10px 12px;
   background: #fbfafb;
 }
 
@@ -1608,8 +1607,8 @@
 
 .traffic-overview-query select,
 .traffic-overview-query > button {
-  height: 36px;
-  min-height: 36px;
+  height: 34px;
+  min-height: 34px;
 }
 
 .traffic-overview-query > button {
@@ -1630,10 +1629,10 @@
 .traffic-overview-primary-metric {
   display: grid;
   align-content: center;
-  gap: 5px;
+  gap: 3px;
   min-width: 0;
-  min-height: 126px;
-  padding: 18px 20px;
+  min-height: 96px;
+  padding: 12px 16px;
   border-right: 1px solid var(--line);
   background: #fff;
 }
@@ -1650,7 +1649,7 @@
 
 .traffic-overview-primary-metric > strong {
   color: #241920;
-  font-size: 32px;
+  font-size: 28px;
   line-height: 1.1;
   letter-spacing: 0;
   font-variant-numeric: tabular-nums;
@@ -1675,10 +1674,10 @@
 
 .traffic-overview-context > div {
   display: grid;
-  gap: 3px;
+  gap: 2px;
   min-width: 0;
-  min-height: 62px;
-  padding: 10px 14px;
+  min-height: 52px;
+  padding: 8px 12px;
   border-right: 1px solid var(--line);
 }
 
@@ -1706,8 +1705,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  min-height: 58px;
-  padding: 10px 14px;
+  min-height: 48px;
+  padding: 8px 12px;
   border-left: 3px solid #ca8a04;
   background: #fff9e9;
 }
@@ -1749,80 +1748,87 @@
 }
 
 .traffic-overview-section-head {
-  min-height: 58px;
-  padding: 10px 14px;
+  min-height: 48px;
+  padding: 8px 12px;
 }
 
 .traffic-overview-section-head h3 {
   color: #30232a;
-  font-size: 14px;
+  font-size: 13px;
+}
+
+.traffic-overview-table-scroll {
+  overflow-x: auto;
+  overflow-y: visible;
 }
 
 .traffic-overview-table-scroll table {
-  min-width: 760px;
+  min-width: 720px;
 }
 
 .traffic-overview-table-scroll th {
+  padding: 7px 10px;
   background: #faf8f9;
   color: #594751;
   font-size: 11px;
 }
 
 .traffic-overview-table-scroll td {
-  height: 48px;
+  height: 40px;
+  padding: 6px 10px;
   color: #392c33;
 }
 
 .traffic-overview-table-active-sources table,
 .traffic-overview-table-classified-sources table {
-  min-width: 680px;
+  min-width: 620px;
 }
 
 .traffic-overview-table-links table {
-  min-width: 1320px;
+  min-width: 1180px;
 }
 
 .traffic-overview-table-links th:first-child,
 .traffic-overview-table-links td:first-child,
 .traffic-overview-table-links th:nth-child(2),
 .traffic-overview-table-links td:nth-child(2) {
-  min-width: 190px;
+  min-width: 168px;
 }
 
 .traffic-overview-table-links th:nth-child(4),
 .traffic-overview-table-links td:nth-child(4) {
-  min-width: 176px;
+  min-width: 160px;
 }
 
 .traffic-overview-table-users table {
-  min-width: 1460px;
+  min-width: 1320px;
 }
 
 .traffic-overview-table-users th:first-child,
 .traffic-overview-table-users td:first-child {
-  min-width: 168px;
+  min-width: 152px;
 }
 
 .traffic-overview-table-users th:nth-child(5),
 .traffic-overview-table-users td:nth-child(5),
 .traffic-overview-table-users th:nth-child(6),
 .traffic-overview-table-users td:nth-child(6) {
-  min-width: 180px;
+  min-width: 164px;
 }
 
 .traffic-overview-table-users th:nth-child(n + 7),
 .traffic-overview-table-users td:nth-child(n + 7) {
-  min-width: 132px;
+  min-width: 120px;
   white-space: nowrap;
 }
 
 .traffic-overview-trend-value,
 .traffic-overview-share {
   display: grid;
-  grid-template-columns: 42px minmax(64px, 1fr);
+  grid-template-columns: 38px minmax(54px, 1fr);
   align-items: center;
-  gap: 8px;
-  min-width: 120px;
+  gap: 6px;
+  min-width: 104px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1863,8 +1869,8 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
-  min-height: 48px;
-  padding: 10px 14px;
+  min-height: 40px;
+  padding: 7px 12px;
   border-right: 1px solid var(--line);
 }
 
@@ -1878,7 +1884,7 @@
 }
 
 .traffic-overview-summary-datum strong {
-  font-size: 17px;
+  font-size: 16px;
   letter-spacing: 0;
   font-variant-numeric: tabular-nums;
 }
@@ -1895,8 +1901,8 @@
 .traffic-overview-fact-state {
   display: inline-flex;
   align-items: center;
-  min-height: 22px;
-  padding: 2px 7px;
+  min-height: 20px;
+  padding: 1px 6px;
   border: 1px solid transparent;
   border-radius: 5px;
   font-size: 11px;
@@ -1935,9 +1941,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  min-height: 58px;
-  padding: 10px 14px;
+  gap: 12px;
+  min-height: 48px;
+  padding: 8px 12px;
   cursor: pointer;
   list-style-position: inside;
 }
@@ -1960,7 +1966,7 @@
 }
 
 .traffic-overview-quality-body {
-  padding: 0 14px 14px;
+  padding: 0 12px 10px;
   border-top: 1px solid var(--line);
 }
 
@@ -1972,9 +1978,9 @@
 
 .traffic-overview-quality-stats > div {
   display: grid;
-  gap: 4px;
+  gap: 2px;
   min-width: 0;
-  padding: 12px 10px;
+  padding: 9px 8px;
   border-bottom: 1px solid #eee4e8;
 }
 
@@ -1995,13 +2001,13 @@
 .traffic-overview-quality-groups {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  padding-top: 12px;
+  gap: 10px;
+  padding-top: 10px;
 }
 
 .traffic-overview-quality-group {
   min-width: 0;
-  padding: 10px;
+  padding: 8px;
   border: 1px solid #e8dce1;
   border-radius: 6px;
   background: #fff;
@@ -2014,8 +2020,8 @@
 
 .traffic-overview-quality-group ul {
   display: grid;
-  gap: 6px;
-  margin: 8px 0 0;
+  gap: 4px;
+  margin: 6px 0 0;
   padding: 0;
   list-style: none;
 }
@@ -2052,7 +2058,7 @@
 @media (max-width: 700px) {
   .traffic-overview-query {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    padding-inline: 12px;
+    padding-inline: 10px;
   }
 
   .traffic-overview-context {
@@ -2101,7 +2107,7 @@
   }
 
   .traffic-overview-primary-metric {
-    min-height: 108px;
+    min-height: 88px;
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }

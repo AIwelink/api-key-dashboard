@@ -28,6 +28,7 @@ from app.modules.system.sql_dsn import parse_sql_dsn, redact_sql_error
 
 OPERATIONS_SYNC_INTERVAL_SECONDS = 900
 OPERATIONS_RECONCILIATION_WINDOW = timedelta(hours=48)
+OPERATIONS_INITIAL_SYNC_WINDOW = timedelta(days=30)
 SOURCE_DATABASE_TIMEOUT_SECONDS = 30
 NEWAPI_DEFAULT_QUOTA_PER_UNIT = Decimal("500000")
 logger = logging.getLogger("app.operations.sync")
@@ -46,7 +47,7 @@ def reconciliation_start(
         return last_success_at - OPERATIONS_RECONCILIATION_WINDOW
     if initial_sync_from is not None:
         return initial_sync_from
-    return now - OPERATIONS_RECONCILIATION_WINDOW
+    return now - OPERATIONS_INITIAL_SYNC_WINDOW
 
 
 def _datetime(value: Any) -> datetime | None:
@@ -115,6 +116,10 @@ async def sync_adapter_records(
     since: datetime,
     now: datetime,
 ) -> dict[str, int]:
+    await repository.acquire_operations_sync_lock(
+        growth_connection,
+        site_id=adapter.site_id,
+    )
     users = await adapter.read_users(connection=source_connection, since=since)
     usage = await adapter.read_usage(connection=source_connection, since=since)
     credits = await adapter.read_credit_events(connection=source_connection, since=since)
@@ -133,6 +138,7 @@ async def sync_adapter_records(
     )
     await repository.replace_affected_aggregates(
         growth_connection,
+        site_id=adapter.site_id,
         start_at=since,
         end_at=now,
     )
