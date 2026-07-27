@@ -1,0 +1,363 @@
+from __future__ import annotations
+
+import unittest
+from datetime import UTC, datetime, timedelta
+
+from app.modules.sub2api.smart_scheduling import (
+    adapted_scheduling_type,
+    default_smart_scheduling_rules,
+    evaluate_account,
+    normalize_smart_scheduling_rules,
+)
+
+
+class SmartSchedulingDefaultsTests(unittest.TestCase):
+    def test_defaults_match_confirmed_priority_and_concurrency_rules(self) -> None:
+        rules = default_smart_scheduling_rules()
+
+        self.assertEqual(rules["account_types"]["plus"]["automatic_priority"], 191)
+        self.assertEqual(rules["account_types"]["k12"]["automatic_priority"], 91)
+        self.assertEqual(rules["account_types"]["team"]["automatic_priority"], 41)
+        self.assertEqual(rules["account_types"]["pro"]["automatic_priority"], 991)
+        self.assertEqual(rules["account_types"]["plus"]["extreme_entry_percent"], 90.0)
+        self.assertEqual(rules["account_types"]["pro"]["extreme_entry_percent"], 95.0)
+        self.assertEqual(rules["account_types"]["pro"]["normal_concurrency"], 30)
+        self.assertEqual(rules["account_types"]["pro"]["extreme_concurrency"], 100)
+        self.assertEqual(
+            rules["extreme"],
+            {"priority_min": 1, "priority_max": 20, "priority": 10},
+        )
+
+    def test_defaults_are_returned_as_an_independent_copy(self) -> None:
+        first = default_smart_scheduling_rules()
+        first["account_types"]["plus"]["automatic_priority"] = 9999
+
+        second = default_smart_scheduling_rules()
+
+        self.assertEqual(second["account_types"]["plus"]["automatic_priority"], 191)
+
+    def test_normalizer_fills_missing_values_from_defaults(self) -> None:
+        rules = normalize_smart_scheduling_rules(
+            {"account_types": {"plus": {"normal_concurrency": 40}}}
+        )
+
+        self.assertEqual(rules["account_types"]["plus"]["normal_concurrency"], 40)
+        self.assertEqual(rules["account_types"]["plus"]["automatic_priority"], 191)
+        self.assertEqual(rules["account_types"]["pro"]["automatic_priority"], 991)
+
+    def test_rejects_overlapping_priority_bands(self) -> None:
+        rules = default_smart_scheduling_rules()
+        rules["account_types"]["plus"]["system_priority_max"] = 205
+
+        with self.assertRaisesRegex(ValueError, "priority bands"):
+            normalize_smart_scheduling_rules(rules)
+
+    def test_rejects_fixed_priority_outside_system_band(self) -> None:
+        rules = default_smart_scheduling_rules()
+        rules["account_types"]["k12"]["automatic_priority"] = 100
+
+        with self.assertRaisesRegex(ValueError, "automatic priority"):
+            normalize_smart_scheduling_rules(rules)
+
+    def test_rejects_recovery_at_or_above_entry_threshold(self) -> None:
+        rules = default_smart_scheduling_rules()
+        rules["account_types"]["plus"]["recovery_percent"] = 90
+
+        with self.assertRaisesRegex(ValueError, "recovery"):
+            normalize_smart_scheduling_rules(rules)
+
+    def test_rejects_extreme_band_that_is_not_ahead_of_normal_bands(self) -> None:
+        rules = default_smart_scheduling_rules()
+        rules["extreme"] = {"priority_min": 40, "priority_max": 60, "priority": 50}
+
+        with self.assertRaisesRegex(ValueError, "extreme"):
+            normalize_smart_scheduling_rules(rules)
+
+    def test_rejects_cross_type_band_overlap(self) -> None:
+        rules = default_smart_scheduling_rules()
+        rules["account_types"]["plus"]["system_priority_min"] = 180
+
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            normalize_smart_scheduling_rules(rules)
+
+
+class SmartSchedulingDecisionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.now = datetime(2026, 7, 27, 7, 0, tzinfo=UTC)
+        self.rules = default_smart_scheduling_rules()
+
+    def account(
+        self,
+        account_type: str,
+        *,
+        priority: int,
+        concurrency: int = 30,
+        used: float | None = 20,
+        sampled_at: datetime | None = None,
+        reset_at: datetime | None = None,
+    ) -> dict[str, object]:
+        usage: dict[str, object] = {}
+        if used is not None:
+            usage["codex_7d_used_percent"] = used
+        if sampled_at is not None or used is not None:
+            usage["codex_usage_synced_at"] = (sampled_at or self.now).isoformat()
+        if reset_at is not None or used is not None:
+            usage["codex_7d_reset_at"] = (
+                reset_at or (self.now + timedelta(days=3))
+            ).isoformat()
+        return {
+            "remote_account_id": 7,
+            "account_type": account_type,
+            "priority": priority,
+            "concurrency": concurrency,
+            "group_ids": [3],
+            "usage_snapshot": usage,
+        }
+
+    def evaluate(
+        self,
+        account: dict[str, object],
+        *,
+        type_enabled: bool = True,
+        quota_enabled: bool = True,
+        state: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        return evaluate_account(
+            account=account,
+            rules=self.rules,
+            type_priority_enabled=type_enabled,
+            quota_acceleration_enabled=quota_enabled,
+            state=state,
+            now=self.now,
+        )
+
+    def test_adapted_types_use_the_supported_scheduling_tiers(self) -> None:
+        self.assertEqual(adapted_scheduling_type("plus"), "plus")
+        self.assertEqual(adapted_scheduling_type("special_plus"), "plus")
+        self.assertEqual(adapted_scheduling_type("team"), "team")
+        self.assertEqual(adapted_scheduling_type("bug_team"), "team")
+        self.assertEqual(adapted_scheduling_type("special_team"), "team")
+        self.assertEqual(adapted_scheduling_type("k12"), "k12")
+        self.assertEqual(adapted_scheduling_type("pro"), "pro")
+        self.assertIsNone(adapted_scheduling_type("free"))
+        self.assertIsNone(adapted_scheduling_type("unknown"))
+
+    def test_both_disabled_skips_without_a_target(self) -> None:
+        decision = self.evaluate(
+            self.account("plus", priority=300),
+            type_enabled=False,
+            quota_enabled=False,
+        )
+
+        self.assertEqual(decision["status"], "skipped")
+        self.assertEqual(decision["reason"], "strategies_disabled")
+        self.assertIsNone(decision["target"])
+
+    def test_legal_manual_priority_is_preserved_while_concurrency_is_corrected(self) -> None:
+        decision = self.evaluate(
+            self.account("plus", priority=250, concurrency=20),
+            quota_enabled=False,
+        )
+
+        self.assertEqual(decision["status"], "change")
+        self.assertEqual(decision["strategy"], "type_priority")
+        self.assertEqual(decision["mode"], "normal")
+        self.assertEqual(decision["target"], {"priority": 250, "concurrency": 30})
+
+    def test_legal_system_priority_is_preserved(self) -> None:
+        decision = self.evaluate(
+            self.account("k12", priority=95, concurrency=30),
+            quota_enabled=False,
+        )
+
+        self.assertEqual(decision["status"], "unchanged")
+        self.assertEqual(decision["target"], {"priority": 95, "concurrency": 30})
+
+    def test_out_of_band_priority_uses_fixed_automatic_value(self) -> None:
+        expected = {"pro": 991, "plus": 191, "k12": 91, "team": 41}
+
+        for account_type, priority in expected.items():
+            with self.subTest(account_type=account_type):
+                decision = self.evaluate(
+                    self.account(account_type, priority=5000),
+                    quota_enabled=False,
+                )
+                self.assertEqual(
+                    decision["target"], {"priority": priority, "concurrency": 30}
+                )
+
+    def test_extreme_precedes_type_normalization_at_exact_threshold(self) -> None:
+        decision = self.evaluate(self.account("plus", priority=250, used=90))
+
+        self.assertEqual(decision["status"], "change")
+        self.assertEqual(decision["strategy"], "quota_acceleration")
+        self.assertEqual(decision["mode"], "extreme")
+        self.assertEqual(decision["target"], {"priority": 10, "concurrency": 100})
+
+    def test_k12_and_team_enter_extreme_at_ninety_percent(self) -> None:
+        for account_type in ("k12", "team", "bug_team", "special_team"):
+            with self.subTest(account_type=account_type):
+                decision = self.evaluate(
+                    self.account(account_type, priority=100, used=90)
+                )
+                self.assertEqual(decision["mode"], "extreme")
+                self.assertEqual(
+                    decision["target"], {"priority": 10, "concurrency": 100}
+                )
+
+    def test_pro_enters_extreme_at_ninety_five_not_ninety(self) -> None:
+        normal = self.evaluate(self.account("pro", priority=1000, used=94.9))
+        extreme = self.evaluate(self.account("pro", priority=1000, used=95))
+
+        self.assertEqual(normal["mode"], "normal")
+        self.assertEqual(normal["target"], {"priority": 1000, "concurrency": 30})
+        self.assertEqual(extreme["mode"], "extreme")
+        self.assertEqual(extreme["target"], {"priority": 10, "concurrency": 100})
+
+    def test_quota_strategy_alone_does_nothing_below_threshold(self) -> None:
+        decision = self.evaluate(
+            self.account("plus", priority=300, concurrency=20, used=89.9),
+            type_enabled=False,
+            quota_enabled=True,
+        )
+
+        self.assertEqual(decision["status"], "skipped")
+        self.assertEqual(decision["reason"], "quota_below_threshold")
+        self.assertIsNone(decision["target"])
+
+    def test_stale_quota_does_not_enter_extreme_but_type_strategy_still_runs(self) -> None:
+        decision = self.evaluate(
+            self.account(
+                "plus",
+                priority=300,
+                used=99,
+                sampled_at=self.now - timedelta(minutes=6),
+            )
+        )
+
+        self.assertEqual(decision["mode"], "normal")
+        self.assertEqual(decision["reason"], "quota_stale_type_normalized")
+        self.assertEqual(decision["target"], {"priority": 191, "concurrency": 30})
+
+    def test_stale_quota_holds_a_scheduler_owned_extreme_state(self) -> None:
+        reset_at = self.now + timedelta(days=3)
+        decision = self.evaluate(
+            self.account(
+                "plus",
+                priority=10,
+                concurrency=100,
+                used=20,
+                sampled_at=self.now - timedelta(minutes=6),
+                reset_at=reset_at,
+            ),
+            state={
+                "mode": "extreme",
+                "seven_day_reset_at": reset_at.isoformat(),
+            },
+        )
+
+        self.assertEqual(decision["status"], "held")
+        self.assertEqual(decision["reason"], "quota_stale_extreme_held")
+        self.assertIsNone(decision["target"])
+
+    def test_disabling_quota_strategy_does_not_roll_back_owned_extreme_state(self) -> None:
+        reset_at = self.now + timedelta(days=3)
+        decision = self.evaluate(
+            self.account(
+                "plus",
+                priority=10,
+                concurrency=100,
+                used=20,
+                reset_at=reset_at,
+            ),
+            type_enabled=True,
+            quota_enabled=False,
+            state={
+                "mode": "extreme",
+                "seven_day_reset_at": reset_at.isoformat(),
+            },
+        )
+
+        self.assertEqual(decision["status"], "held")
+        self.assertEqual(decision["reason"], "quota_strategy_disabled_extreme_held")
+        self.assertIsNone(decision["target"])
+
+    def test_extreme_state_recovers_below_eighty_percent(self) -> None:
+        reset_at = self.now + timedelta(days=3)
+        decision = self.evaluate(
+            self.account(
+                "plus",
+                priority=10,
+                concurrency=100,
+                used=79.9,
+                reset_at=reset_at,
+            ),
+            state={
+                "mode": "extreme",
+                "seven_day_reset_at": reset_at.isoformat(),
+            },
+        )
+
+        self.assertEqual(decision["strategy"], "quota_recovery")
+        self.assertEqual(decision["mode"], "normal")
+        self.assertEqual(decision["target"], {"priority": 191, "concurrency": 30})
+
+    def test_extreme_state_does_not_recover_at_exactly_eighty_percent(self) -> None:
+        reset_at = self.now + timedelta(days=3)
+        decision = self.evaluate(
+            self.account(
+                "plus",
+                priority=10,
+                concurrency=100,
+                used=80,
+                reset_at=reset_at,
+            ),
+            state={
+                "mode": "extreme",
+                "seven_day_reset_at": reset_at.isoformat(),
+            },
+        )
+
+        self.assertEqual(decision["mode"], "extreme")
+        self.assertEqual(decision["target"], {"priority": 10, "concurrency": 100})
+
+    def test_extreme_state_recovers_when_reset_identity_changes(self) -> None:
+        old_reset = self.now + timedelta(hours=1)
+        new_reset = self.now + timedelta(days=7)
+        decision = self.evaluate(
+            self.account(
+                "pro",
+                priority=10,
+                concurrency=100,
+                used=10,
+                reset_at=new_reset,
+            ),
+            state={
+                "mode": "extreme",
+                "seven_day_reset_at": old_reset.isoformat(),
+            },
+        )
+
+        self.assertEqual(decision["strategy"], "quota_recovery")
+        self.assertEqual(decision["target"], {"priority": 991, "concurrency": 30})
+        self.assertEqual(decision["seven_day_reset_at"], new_reset.isoformat())
+
+    def test_missing_quota_cannot_trigger_extreme(self) -> None:
+        decision = self.evaluate(
+            self.account("plus", priority=250, used=None),
+            type_enabled=False,
+            quota_enabled=True,
+        )
+
+        self.assertEqual(decision["status"], "skipped")
+        self.assertEqual(decision["reason"], "quota_missing")
+
+    def test_unsupported_type_is_skipped(self) -> None:
+        decision = self.evaluate(self.account("free", priority=1))
+
+        self.assertEqual(decision["status"], "skipped")
+        self.assertEqual(decision["reason"], "unsupported_account_type")
+
+
+if __name__ == "__main__":
+    unittest.main()
