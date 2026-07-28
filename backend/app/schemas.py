@@ -114,6 +114,37 @@ class RolePermissionsUpdate(BaseModel):
     roles: dict[UserRoleId, RolePermissionEntry] = Field(min_length=1)
 
 
+OperationsSiteId = Literal["aiwelink", "aigclink"]
+
+
+class OperationsSitePermissionEntry(BaseModel):
+    user_id: str = Field(min_length=1, max_length=320)
+    operations_site_ids: list[OperationsSiteId] = Field(default_factory=list, max_length=2)
+
+    @field_validator("operations_site_ids", mode="before")
+    @classmethod
+    def normalize_operations_site_ids(cls, values: object) -> object:
+        if not isinstance(values, list):
+            return values
+        supported_ids = {"aiwelink", "aigclink"}
+        if any(not isinstance(site_id, str) or site_id not in supported_ids for site_id in values):
+            raise ValueError("operations_site_ids contains an unsupported site")
+        selected_ids = set(values)
+        return [site_id for site_id in ("aiwelink", "aigclink") if site_id in selected_ids]
+
+
+class OperationsSitePermissionsUpdate(BaseModel):
+    users: list[OperationsSitePermissionEntry] = Field(default_factory=list)
+
+    @field_validator("users")
+    @classmethod
+    def reject_duplicate_user_ids(cls, users: list[OperationsSitePermissionEntry]) -> list[OperationsSitePermissionEntry]:
+        user_ids = [entry.user_id for entry in users]
+        if len(set(user_ids)) != len(user_ids):
+            raise ValueError("users must not contain duplicate user_id values")
+        return users
+
+
 class UserRoleCreate(BaseModel):
     id: UserRoleId
     label: str = Field(min_length=1, max_length=40)

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
-from app.schemas import AgentLlmSettingsUpdate, GrowthDatabaseSettingsUpdate, RolePermissionsUpdate, UserRoleCreate
+from app.schemas import AgentLlmSettingsUpdate, GrowthDatabaseSettingsUpdate, OperationsSitePermissionsUpdate, RolePermissionsUpdate, UserRoleCreate
 from app.modules.agent.llm_client import AgentLlmConfigError, test_agent_llm_connection
 from app.modules.agent.settings import (
     AgentLlmSettingsValidationError,
@@ -33,6 +33,13 @@ from app.modules.system.permissions import (
     update_role_permissions_settings,
 )
 
+
+from app.modules.operations.site_permissions import (
+    OperationsSitePermissionsConflictError,
+    OperationsSitePermissionsValidationError,
+    get_operations_site_permissions,
+    update_operations_site_permissions,
+)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -166,6 +173,38 @@ async def get_role_permissions_settings_route(
 ) -> dict:
     return await get_role_permissions_settings(db)
 
+
+@router.get("/operations-site-permissions")
+async def get_operations_site_permissions_route(
+    _: dict = Depends(require_view_permission("system-management")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    return await get_operations_site_permissions(db)
+
+
+@router.put("/operations-site-permissions")
+async def put_operations_site_permissions(
+    payload: OperationsSitePermissionsUpdate,
+    actor: dict = Depends(require_view_permission("system-management")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    before = await get_operations_site_permissions(db)
+    try:
+        updated = await update_operations_site_permissions(db, payload=payload)
+    except OperationsSitePermissionsValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except OperationsSitePermissionsConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="settings.operations_site_permissions.update",
+        resource_type="setting",
+        resource_id="operations_site_permissions",
+        before=before,
+        after=updated,
+    )
+    return updated
 
 @router.get("/user-roles")
 async def get_user_roles(
