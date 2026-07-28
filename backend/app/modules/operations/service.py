@@ -20,7 +20,7 @@ from app.modules.operations.schemas import (
     RefreshRequest,
 )
 from app.modules.operations.sync import request_operations_refresh
-from app.modules.system.client_sites import get_client_site, list_client_sites
+from app.modules.system.client_sites import get_client_site
 
 
 HISTORICAL_CONVERSION_RATE_START = datetime(1970, 1, 1, tzinfo=UTC)
@@ -28,6 +28,10 @@ HISTORICAL_CONVERSION_RATE_START = datetime(1970, 1, 1, tzinfo=UTC)
 
 class CreditCapabilityUnavailable(RuntimeError):
     code = "capability_unavailable"
+
+
+class OperationsSiteAccessDenied(PermissionError):
+    pass
 
 
 class CreditCommandAdapter(Protocol):
@@ -58,11 +62,13 @@ def _window(query: OperationsQuery, now: datetime | None = None):
 async def get_operations_overview(
     mongo_db: Any,
     query: OperationsQuery,
+    *,
+    allowed_site_ids: tuple[str, ...],
 ) -> dict[str, Any]:
     window = _window(query)
     key = (
         "overview",
-        query.site_id,
+        allowed_site_ids,
         query.segment.value,
         window.start_at.isoformat(),
         window.end_at.isoformat(),
@@ -72,14 +78,14 @@ async def get_operations_overview(
         async with growth_connection(mongo_db) as connection:
             current = await repository.get_operations_summary(
                 connection,
-                site_id=query.site_id,
+                allowed_site_ids=allowed_site_ids,
                 segment=query.segment.value,
                 start_at=window.start_at,
                 end_at=window.end_at,
             )
             previous = await repository.get_operations_summary(
                 connection,
-                site_id=query.site_id,
+                allowed_site_ids=allowed_site_ids,
                 segment=query.segment.value,
                 start_at=window.previous_start_at,
                 end_at=window.previous_end_at,
@@ -102,11 +108,13 @@ async def get_operations_overview(
 async def get_operations_trend_data(
     mongo_db: Any,
     query: OperationsQuery,
+    *,
+    allowed_site_ids: tuple[str, ...],
 ) -> dict[str, Any]:
     window = _window(query)
     key = (
         "trends",
-        query.site_id,
+        allowed_site_ids,
         query.segment.value,
         window.start_at.isoformat(),
         window.end_at.isoformat(),
@@ -116,7 +124,7 @@ async def get_operations_trend_data(
         async with growth_connection(mongo_db) as connection:
             items = await repository.get_operations_trends(
                 connection,
-                site_id=query.site_id,
+                allowed_site_ids=allowed_site_ids,
                 segment=query.segment.value,
                 start_at=window.start_at,
                 end_at=window.end_at,
@@ -133,11 +141,12 @@ async def get_operations_user_data(
     search: str | None,
     limit: int,
     offset: int,
+    allowed_site_ids: tuple[str, ...],
 ) -> dict[str, Any]:
     window = _window(query)
     key = (
         "users",
-        query.site_id,
+        allowed_site_ids,
         query.segment.value,
         window.start_at.isoformat(),
         window.end_at.isoformat(),
@@ -150,7 +159,7 @@ async def get_operations_user_data(
         async with growth_connection(mongo_db) as connection:
             items = await repository.list_operations_users(
                 connection,
-                site_id=query.site_id,
+                allowed_site_ids=allowed_site_ids,
                 segment=query.segment.value,
                 start_at=window.start_at,
                 end_at=window.end_at,
@@ -163,13 +172,17 @@ async def get_operations_user_data(
     return await operations_response_cache.get_or_load(key, load)
 
 
-async def get_operations_sync_status(mongo_db: Any) -> dict[str, Any]:
-    key = ("sync-status",)
+async def get_operations_sync_status(
+    mongo_db: Any,
+    *,
+    allowed_site_ids: tuple[str, ...],
+) -> dict[str, Any]:
+    key = ("sync-status", allowed_site_ids)
 
     async def load():
         now = datetime.now(UTC)
         async with growth_connection(mongo_db) as connection:
-            items = await repository.get_sync_status(connection)
+            items = await repository.get_sync_status(connection, allowed_site_ids=allowed_site_ids)
         for item in items:
             last_success_at = item.get("last_success_at")
             if isinstance(last_success_at, str):
@@ -184,11 +197,14 @@ async def get_operations_sync_status(mongo_db: Any) -> dict[str, Any]:
     return await operations_response_cache.get_or_load(key, load)
 
 
-async def refresh_operations(mongo_db: Any, payload: RefreshRequest) -> dict[str, Any]:
-    site_ids = payload.site_ids
-    if site_ids is None:
-        configured = await list_client_sites(mongo_db)
-        site_ids = [item["id"] for item in configured["items"] if item.get("status") == "active"]
+async def refresh_operations(
+    mongo_db: Any,
+    payload: RefreshRequest,
+    *,
+    allowed_site_ids: tuple[str, ...],
+) -> dict[str, Any]:
+    del payload
+    site_ids = list(allowed_site_ids)
     results = await asyncio.gather(
         *(request_operations_refresh(mongo_db, site_id=site_id) for site_id in site_ids),
         return_exceptions=True,
@@ -207,9 +223,15 @@ async def list_internal_user_configs(
     *,
     site_id: str | None,
     query: str | None,
+    allowed_site_ids: tuple[str, ...],
 ) -> dict[str, Any]:
+    del site_id
     async with growth_connection(mongo_db) as connection:
-        items = await repository.list_internal_users(connection, site_id=site_id, query=query)
+        items = await repository.list_internal_users(
+            connection,
+            allowed_site_ids=allowed_site_ids,
+            query=query,
+        )
     return {"items": items, "total": len(items)}
 
 
@@ -231,8 +253,14 @@ async def update_internal_user_config(
     payload: InternalUserUpdate,
     *,
     actor_id: str,
+    allowed_site_ids: tuple[str, ...],
 ) -> dict[str, Any]:
     async with growth_connection(mongo_db, write=True) as connection:
+        site_id = await repository.get_internal_user_site_id(connection, internal_user_id)
+        if site_id is None:
+            raise repository.OperationsNotFoundError("internal user not found")
+        if site_id not in allowed_site_ids:
+            raise OperationsSiteAccessDenied("Operations site access denied")
         result = await repository.update_internal_user(
             connection,
             internal_user_id,
@@ -247,9 +275,14 @@ async def list_conversion_rate_configs(
     mongo_db: Any,
     *,
     site_id: str | None,
+    allowed_site_ids: tuple[str, ...],
 ) -> dict[str, Any]:
+    del site_id
     async with growth_connection(mongo_db) as connection:
-        items = await repository.list_conversion_rates(connection, site_id=site_id)
+        items = await repository.list_conversion_rates(
+            connection,
+            allowed_site_ids=allowed_site_ids,
+        )
     return {"items": items, "total": len(items)}
 
 
@@ -262,7 +295,7 @@ async def create_conversion_rate_config(
     async with growth_connection(mongo_db, write=True) as connection:
         existing_rates = await repository.list_conversion_rates(
             connection,
-            site_id=payload.site_id,
+            allowed_site_ids=(payload.site_id,),
         )
         selected_payload = payload
         if not existing_rates and "effective_from" not in payload.model_fields_set:
@@ -283,11 +316,13 @@ async def list_classification_task_configs(
     *,
     site_id: str | None,
     status: str,
+    allowed_site_ids: tuple[str, ...],
 ) -> dict[str, Any]:
+    del site_id
     async with growth_connection(mongo_db) as connection:
         items = await repository.list_classification_tasks(
             connection,
-            site_id=site_id,
+            allowed_site_ids=allowed_site_ids,
             status=status,
         )
     return {"items": items, "total": len(items)}
@@ -299,8 +334,17 @@ async def resolve_classification_task_config(
     payload: ClassificationUpdate,
     *,
     actor_id: str,
+    allowed_site_ids: tuple[str, ...],
 ) -> dict[str, Any]:
     async with growth_connection(mongo_db, write=True) as connection:
+        site_id = await repository.get_classification_task_site_id(
+            connection,
+            classification_task_id,
+        )
+        if site_id is None:
+            raise repository.OperationsNotFoundError("classification task not found")
+        if site_id not in allowed_site_ids:
+            raise OperationsSiteAccessDenied("Operations site access denied")
         result = await repository.resolve_classification_task(
             connection,
             classification_task_id,

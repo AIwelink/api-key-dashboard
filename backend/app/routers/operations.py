@@ -22,6 +22,7 @@ from app.modules.operations.schemas import (
 )
 from app.modules.system.audit import write_audit_log
 from app.modules.system.permissions import require_view_permission
+from app.modules.operations.site_permissions import normalize_operations_site_ids
 
 
 router = APIRouter(prefix="/operations", tags=["operations"])
@@ -40,7 +41,30 @@ def _require_operations_writer(actor: dict[str, Any]) -> None:
         )
 
 
+def _resolve_operations_site_ids(
+    actor: dict[str, Any],
+    requested_site_ids: list[str] | tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
+    allowed_site_ids = tuple(normalize_operations_site_ids(actor.get("operations_site_ids")))
+    if not allowed_site_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No operations site access has been assigned",
+        )
+    if requested_site_ids is None:
+        return allowed_site_ids
+    requested = tuple(dict.fromkeys(requested_site_ids))
+    if any(site_id not in allowed_site_ids for site_id in requested):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Operations site access denied",
+        )
+    return requested
+
+
 def _raise_http_error(exc: Exception) -> None:
+    if isinstance(exc, service.OperationsSiteAccessDenied):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     if isinstance(exc, service.CreditCapabilityUnavailable):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -69,9 +93,16 @@ async def get_operations_summary(
     actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
-    del actor
+    allowed_site_ids = _resolve_operations_site_ids(
+        actor,
+        [query.site_id] if query.site_id else None,
+    )
     try:
-        return await service.get_operations_overview(db, query)
+        return await service.get_operations_overview(
+            db,
+            query,
+            allowed_site_ids=allowed_site_ids,
+        )
     except Exception as exc:  # noqa: BLE001
         _raise_http_error(exc)
 
@@ -82,9 +113,16 @@ async def get_operations_trends(
     actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
-    del actor
+    allowed_site_ids = _resolve_operations_site_ids(
+        actor,
+        [query.site_id] if query.site_id else None,
+    )
     try:
-        return await service.get_operations_trend_data(db, query)
+        return await service.get_operations_trend_data(
+            db,
+            query,
+            allowed_site_ids=allowed_site_ids,
+        )
     except Exception as exc:  # noqa: BLE001
         _raise_http_error(exc)
 
@@ -98,7 +136,10 @@ async def get_operations_users(
     actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
-    del actor
+    allowed_site_ids = _resolve_operations_site_ids(
+        actor,
+        [query.site_id] if query.site_id else None,
+    )
     try:
         return await service.get_operations_user_data(
             db,
@@ -106,6 +147,7 @@ async def get_operations_users(
             search=search,
             limit=limit,
             offset=offset,
+            allowed_site_ids=allowed_site_ids,
         )
     except Exception as exc:  # noqa: BLE001
         _raise_http_error(exc)
@@ -116,9 +158,12 @@ async def get_operations_sync_status(
     actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
-    del actor
+    allowed_site_ids = _resolve_operations_site_ids(actor)
     try:
-        return await service.get_operations_sync_status(db)
+        return await service.get_operations_sync_status(
+            db,
+            allowed_site_ids=allowed_site_ids,
+        )
     except Exception as exc:  # noqa: BLE001
         _raise_http_error(exc)
 
@@ -129,8 +174,13 @@ async def post_operations_refresh(
     actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
+    allowed_site_ids = _resolve_operations_site_ids(actor, payload.site_ids)
     try:
-        result = await service.refresh_operations(db, payload)
+        result = await service.refresh_operations(
+            db,
+            payload,
+            allowed_site_ids=allowed_site_ids,
+        )
     except Exception as exc:  # noqa: BLE001
         _raise_http_error(exc)
     await write_audit_log(
@@ -138,7 +188,7 @@ async def post_operations_refresh(
         actor=actor,
         action="operations.refresh",
         resource_type="operations_sync",
-        after={"site_ids": payload.site_ids},
+        after={"site_ids": list(allowed_site_ids)},
     )
     return result
 
@@ -150,9 +200,14 @@ async def get_internal_users(
     actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
-    del actor
+    allowed_site_ids = _resolve_operations_site_ids(actor, [site_id] if site_id else None)
     try:
-        return await service.list_internal_user_configs(db, site_id=site_id, query=query)
+        return await service.list_internal_user_configs(
+            db,
+            site_id=site_id,
+            query=query,
+            allowed_site_ids=allowed_site_ids,
+        )
     except Exception as exc:  # noqa: BLE001
         _raise_http_error(exc)
 
@@ -164,6 +219,7 @@ async def post_internal_user(
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     _require_operations_writer(actor)
+    _resolve_operations_site_ids(actor, [payload.site_id])
     try:
         result = await service.create_internal_user_config(
             db,
@@ -191,12 +247,14 @@ async def patch_internal_user(
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     _require_operations_writer(actor)
+    allowed_site_ids = _resolve_operations_site_ids(actor)
     try:
         result = await service.update_internal_user_config(
             db,
             internal_user_id,
             payload,
             actor_id=_actor_id(actor),
+            allowed_site_ids=allowed_site_ids,
         )
     except Exception as exc:  # noqa: BLE001
         _raise_http_error(exc)
@@ -217,9 +275,13 @@ async def get_conversion_rates(
     actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
-    del actor
+    allowed_site_ids = _resolve_operations_site_ids(actor, [site_id] if site_id else None)
     try:
-        return await service.list_conversion_rate_configs(db, site_id=site_id)
+        return await service.list_conversion_rate_configs(
+            db,
+            site_id=site_id,
+            allowed_site_ids=allowed_site_ids,
+        )
     except Exception as exc:  # noqa: BLE001
         _raise_http_error(exc)
 
@@ -231,6 +293,7 @@ async def post_conversion_rate(
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     _require_operations_writer(actor)
+    _resolve_operations_site_ids(actor, [payload.site_id])
     try:
         result = await service.create_conversion_rate_config(
             db,
@@ -257,12 +320,13 @@ async def get_classification_tasks(
     actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
-    del actor
+    allowed_site_ids = _resolve_operations_site_ids(actor, [site_id] if site_id else None)
     try:
         return await service.list_classification_task_configs(
             db,
             site_id=site_id,
             status=task_status,
+            allowed_site_ids=allowed_site_ids,
         )
     except Exception as exc:  # noqa: BLE001
         _raise_http_error(exc)
@@ -276,12 +340,14 @@ async def patch_classification_task(
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     _require_operations_writer(actor)
+    allowed_site_ids = _resolve_operations_site_ids(actor)
     try:
         result = await service.resolve_classification_task_config(
             db,
             classification_task_id,
             payload,
             actor_id=_actor_id(actor),
+            allowed_site_ids=allowed_site_ids,
         )
     except Exception as exc:  # noqa: BLE001
         _raise_http_error(exc)
@@ -303,6 +369,7 @@ async def post_redemption_batch(
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     _require_operations_writer(actor)
+    _resolve_operations_site_ids(actor, [payload.site_id])
     try:
         result = await service.create_redemption_batch(
             db,
@@ -329,6 +396,7 @@ async def post_balance_adjustment(
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     _require_operations_writer(actor)
+    _resolve_operations_site_ids(actor, [payload.site_id])
     try:
         result = await service.create_balance_adjustment(
             db,

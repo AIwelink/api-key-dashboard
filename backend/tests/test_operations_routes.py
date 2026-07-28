@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 from fastapi import HTTPException
 
@@ -25,12 +26,57 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
         ) as read:
             result = await operations.get_operations_summary(
                 query=query,
-                actor={"_id": "operator-1", "role": "operator"},
+                actor={"_id": "operator-1", "role": "operator", "operations_site_ids": ["aiwelink"]},
                 db=object(),
             )
 
         self.assertEqual(result["summary"]["registered_user_count"], 1)
-        read.assert_awaited_once()
+        self.assertEqual(read.await_args.kwargs["allowed_site_ids"], ("aiwelink",))
+
+    async def test_missing_site_permissions_deny_operations_reads(self) -> None:
+        from app.routers import operations
+
+        with self.assertRaises(HTTPException) as raised:
+            await operations.get_operations_summary(
+                query=operations.OperationsQuery(),
+                actor={"_id": "operator-1", "role": "operator"},
+                db=object(),
+            )
+
+        self.assertEqual(raised.exception.status_code, 403)
+
+    async def test_explicit_unauthorized_site_is_denied(self) -> None:
+        from app.routers import operations
+
+        with self.assertRaises(HTTPException) as raised:
+            await operations.get_operations_summary(
+                query=operations.OperationsQuery(site_id="aigclink"),
+                actor={"_id": "operator-1", "role": "operator", "operations_site_ids": ["aiwelink"]},
+                db=object(),
+            )
+
+        self.assertEqual(raised.exception.status_code, 403)
+
+    async def test_all_sites_query_passes_only_actor_scope(self) -> None:
+        from app.routers import operations
+
+        query = operations.OperationsQuery()
+        with patch.object(
+            operations.service,
+            "get_operations_trend_data",
+            AsyncMock(return_value={"items": []}),
+        ) as read:
+            await operations.get_operations_trends(
+                query=query,
+                actor={
+                    "_id": "operator-1",
+                    "role": "operator",
+                    "operations_site_ids": ["aigclink", "unknown", "aiwelink"],
+                },
+                db=object(),
+            )
+
+        self.assertEqual(read.await_args.kwargs["allowed_site_ids"], ("aiwelink", "aigclink"))
 
     async def test_operator_can_trigger_refresh(self) -> None:
         from app.routers import operations
@@ -43,12 +89,26 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
         ):
             result = await operations.post_operations_refresh(
                 payload=RefreshRequest(site_ids=["aiwelink"]),
-                actor={"_id": "operator-1", "role": "operator"},
+                actor={"_id": "operator-1", "role": "operator", "operations_site_ids": ["aiwelink"]},
                 db=object(),
             )
 
         self.assertEqual(result["items"][0]["site_id"], "aiwelink")
+        self.assertEqual(refresh.await_args.kwargs["allowed_site_ids"], ("aiwelink",))
         audit.assert_awaited_once()
+
+    async def test_refresh_rejects_any_unauthorized_requested_site(self) -> None:
+        from app.routers import operations
+        from app.modules.operations.schemas import RefreshRequest
+
+        with self.assertRaises(HTTPException) as raised:
+            await operations.post_operations_refresh(
+                payload=RefreshRequest(site_ids=["aiwelink", "aigclink"]),
+                actor={"_id": "operator-1", "role": "operator", "operations_site_ids": ["aiwelink"]},
+                db=object(),
+            )
+
+        self.assertEqual(raised.exception.status_code, 403)
 
     async def test_operator_cannot_create_internal_user(self) -> None:
         from app.routers import operations
@@ -57,7 +117,7 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as raised:
             await operations.post_internal_user(
                 payload=InternalUserCreate(site_id="aiwelink", external_user_id="42"),
-                actor={"_id": "operator-1", "role": "operator"},
+                actor={"_id": "operator-1", "role": "operator", "operations_site_ids": ["aiwelink"]},
                 db=object(),
             )
 
@@ -82,12 +142,129 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
         ):
             result = await operations.post_internal_user(
                 payload=InternalUserCreate(site_id="aiwelink", external_user_id="42"),
-                actor={"_id": "admin-1", "role": "admin"},
+                actor={"_id": "admin-1", "role": "admin", "operations_site_ids": ["aiwelink"]},
                 db=object(),
             )
 
         self.assertEqual(result, created)
         self.assertEqual(audit.await_args.kwargs["action"], "operations.internal_user.create")
+
+    async def test_admin_cannot_write_an_unauthorized_site(self) -> None:
+        from app.routers import operations
+        from app.modules.operations.schemas import InternalUserCreate
+
+        with self.assertRaises(HTTPException) as raised:
+            await operations.post_internal_user(
+                payload=InternalUserCreate(site_id="aigclink", external_user_id="42"),
+                actor={"_id": "admin-1", "role": "admin", "operations_site_ids": ["aiwelink"]},
+                db=object(),
+            )
+
+        self.assertEqual(raised.exception.status_code, 403)
+
+    async def test_missing_internal_user_uuid_returns_not_found(self) -> None:
+        from app.routers import operations
+        from app.modules.operations.schemas import InternalUserUpdate
+
+        with (
+            patch.object(
+                operations.service,
+                "growth_connection",
+                lambda db, write=True: _async_context(object()),
+            ),
+            patch.object(
+                operations.service.repository,
+                "get_internal_user_site_id",
+                AsyncMock(return_value=None),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await operations.patch_internal_user(
+                    internal_user_id=uuid4(),
+                    payload=InternalUserUpdate(reason="updated"),
+                    actor={"_id": "admin-1", "role": "admin", "operations_site_ids": ["aiwelink"]},
+                    db=object(),
+                )
+
+        self.assertEqual(raised.exception.status_code, 404)
+
+    async def test_internal_user_at_unauthorized_site_returns_forbidden(self) -> None:
+        from app.routers import operations
+        from app.modules.operations.schemas import InternalUserUpdate
+
+        with (
+            patch.object(
+                operations.service,
+                "growth_connection",
+                lambda db, write=True: _async_context(object()),
+            ),
+            patch.object(
+                operations.service.repository,
+                "get_internal_user_site_id",
+                AsyncMock(return_value="aigclink"),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await operations.patch_internal_user(
+                    internal_user_id=uuid4(),
+                    payload=InternalUserUpdate(reason="updated"),
+                    actor={"_id": "admin-1", "role": "admin", "operations_site_ids": ["aiwelink"]},
+                    db=object(),
+                )
+
+        self.assertEqual(raised.exception.status_code, 403)
+
+    async def test_missing_classification_task_uuid_returns_not_found(self) -> None:
+        from app.routers import operations
+        from app.modules.operations.schemas import ClassificationUpdate
+
+        with (
+            patch.object(
+                operations.service,
+                "growth_connection",
+                lambda db, write=True: _async_context(object()),
+            ),
+            patch.object(
+                operations.service.repository,
+                "get_classification_task_site_id",
+                AsyncMock(return_value=None),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await operations.patch_classification_task(
+                    classification_task_id=uuid4(),
+                    payload=ClassificationUpdate(status="ignored"),
+                    actor={"_id": "admin-1", "role": "admin", "operations_site_ids": ["aiwelink"]},
+                    db=object(),
+                )
+
+        self.assertEqual(raised.exception.status_code, 404)
+
+    async def test_classification_task_at_unauthorized_site_returns_forbidden(self) -> None:
+        from app.routers import operations
+        from app.modules.operations.schemas import ClassificationUpdate
+
+        with (
+            patch.object(
+                operations.service,
+                "growth_connection",
+                lambda db, write=True: _async_context(object()),
+            ),
+            patch.object(
+                operations.service.repository,
+                "get_classification_task_site_id",
+                AsyncMock(return_value="aigclink"),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await operations.patch_classification_task(
+                    classification_task_id=uuid4(),
+                    payload=ClassificationUpdate(status="ignored"),
+                    actor={"_id": "admin-1", "role": "admin", "operations_site_ids": ["aiwelink"]},
+                    db=object(),
+                )
+
+        self.assertEqual(raised.exception.status_code, 403)
 
     async def test_owner_conversion_rate_write_is_audited(self) -> None:
         from app.routers import operations
@@ -108,7 +285,7 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
                     balance_units_per_cny=Decimal("10"),
                     effective_from=NOW,
                 ),
-                actor={"_id": "owner-1", "role": "owner"},
+                actor={"_id": "owner-1", "role": "owner", "operations_site_ids": ["aiwelink"]},
                 db=object(),
             )
 
@@ -135,7 +312,7 @@ class OperationsCreditBoundaryTests(unittest.IsolatedAsyncioTestCase):
                         balance_units_per_code=Decimal("100"),
                         idempotency_key="batch-1",
                     ),
-                    actor={"_id": "owner-1", "role": "owner"},
+                    actor={"_id": "owner-1", "role": "owner", "operations_site_ids": ["aiwelink"]},
                     db=object(),
                 )
 
@@ -168,11 +345,36 @@ class OperationsServiceCacheTests(unittest.IsolatedAsyncioTestCase):
             patch.object(service, "growth_connection", lambda db: _async_context(object())),
             patch.object(service.repository, "get_operations_summary", summary),
         ):
-            first = await service.get_operations_overview(object(), query)
-            second = await service.get_operations_overview(object(), query)
+            first = await service.get_operations_overview(object(), query, allowed_site_ids=("aiwelink",))
+            second = await service.get_operations_overview(object(), query, allowed_site_ids=("aiwelink",))
 
         self.assertEqual(first, second)
         self.assertEqual(summary.await_count, 2)
+        self.assertEqual(summary.await_args_list[0].kwargs["allowed_site_ids"], ("aiwelink",))
+
+    async def test_different_site_scopes_do_not_share_summary_cache(self) -> None:
+        from app.modules.operations import service
+        from app.modules.operations.schemas import OperationsQuery
+
+        summary = AsyncMock(side_effect=[
+            {"registered_user_count": 2},
+            {"registered_user_count": 1},
+            {"registered_user_count": 4},
+            {"registered_user_count": 3},
+        ])
+        query = OperationsQuery(
+            range="custom",
+            start_at="2026-07-18T00:00:00Z",
+            end_at="2026-07-25T00:00:00Z",
+        )
+        with (
+            patch.object(service, "growth_connection", lambda db: _async_context(object())),
+            patch.object(service.repository, "get_operations_summary", summary),
+        ):
+            await service.get_operations_overview(object(), query, allowed_site_ids=("aiwelink",))
+            await service.get_operations_overview(object(), query, allowed_site_ids=("aigclink",))
+
+        self.assertEqual(summary.await_count, 4)
 
     async def test_summary_does_not_run_concurrent_queries_on_one_connection(self) -> None:
         from app.modules.operations import service
@@ -198,7 +400,7 @@ class OperationsServiceCacheTests(unittest.IsolatedAsyncioTestCase):
             patch.object(service, "growth_connection", lambda db: _async_context(object())),
             patch.object(service.repository, "get_operations_summary", guarded_summary),
         ):
-            result = await service.get_operations_overview(object(), query)
+            result = await service.get_operations_overview(object(), query, allowed_site_ids=("aiwelink",))
 
         self.assertEqual(result["summary"]["registered_user_count"], 1)
 

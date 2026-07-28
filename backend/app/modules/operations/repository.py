@@ -67,7 +67,7 @@ def _record_dict(record: Any) -> dict[str, Any]:
 async def list_internal_users(
     connection: Any,
     *,
-    site_id: str | None = None,
+    allowed_site_ids: tuple[str, ...],
     query: str | None = None,
 ) -> list[dict[str, Any]]:
     result = await connection.execute(
@@ -75,7 +75,7 @@ async def list_internal_users(
             """
             SELECT internal_user.*
             FROM growth.internal_users AS internal_user
-            WHERE (CAST(:site_id AS TEXT) IS NULL OR internal_user.site_id = :site_id)
+            WHERE internal_user.site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
               AND (
                   CAST(:query AS TEXT) IS NULL
                   OR internal_user.external_user_id ILIKE '%' || :query || '%'
@@ -84,7 +84,7 @@ async def list_internal_users(
             ORDER BY internal_user.created_at DESC, internal_user.internal_user_id
             """
         ),
-        {"site_id": site_id, "query": query.strip() if query else None},
+        {"allowed_site_ids": allowed_site_ids, "query": query.strip() if query else None},
     )
     return _all(result)
 
@@ -129,6 +129,18 @@ async def create_internal_user(
         },
     )
     return row or {}
+
+
+async def get_internal_user_site_id(
+    connection: Any,
+    internal_user_id: UUID,
+) -> str | None:
+    result = await connection.execute(
+        text("SELECT site_id FROM growth.internal_users WHERE internal_user_id = :internal_user_id"),
+        {"internal_user_id": internal_user_id},
+    )
+    value = result.scalar_one_or_none()
+    return str(value) if value is not None else None
 
 
 async def update_internal_user(
@@ -205,17 +217,17 @@ async def deactivate_internal_user(
 async def list_conversion_rates(
     connection: Any,
     *,
-    site_id: str | None = None,
+    allowed_site_ids: tuple[str, ...],
 ) -> list[dict[str, Any]]:
     result = await connection.execute(
         text(
             """
             SELECT * FROM growth.balance_conversion_rates
-            WHERE CAST(:site_id AS TEXT) IS NULL OR site_id = :site_id
+            WHERE site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
             ORDER BY site_id, effective_from DESC
             """
         ),
-        {"site_id": site_id},
+        {"allowed_site_ids": allowed_site_ids},
     )
     return _all(result)
 
@@ -472,7 +484,7 @@ async def create_pending_classification_tasks(connection: Any, *, site_id: str) 
 async def list_classification_tasks(
     connection: Any,
     *,
-    site_id: str | None = None,
+    allowed_site_ids: tuple[str, ...],
     status: str = "pending",
 ) -> list[dict[str, Any]]:
     result = await connection.execute(
@@ -486,14 +498,29 @@ async def list_classification_tasks(
             LEFT JOIN growth.ops_user_snapshots AS snapshot
               ON snapshot.site_id = event.site_id
              AND snapshot.external_user_id = event.external_user_id
-            WHERE (CAST(:site_id AS TEXT) IS NULL OR task.site_id = :site_id)
+            WHERE task.site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
               AND task.status = :status
             ORDER BY task.created_at DESC
             """
         ),
-        {"site_id": site_id, "status": status},
+        {"allowed_site_ids": allowed_site_ids, "status": status},
     )
     return _all(result)
+
+
+async def get_classification_task_site_id(
+    connection: Any,
+    classification_task_id: UUID,
+) -> str | None:
+    result = await connection.execute(
+        text(
+            "SELECT site_id FROM growth.classification_tasks "
+            "WHERE classification_task_id = :classification_task_id"
+        ),
+        {"classification_task_id": classification_task_id},
+    )
+    value = result.scalar_one_or_none()
+    return str(value) if value is not None else None
 
 
 async def resolve_classification_task(
@@ -558,7 +585,7 @@ def _segment_filter(alias: str) -> str:
 async def get_operations_summary(
     connection: Any,
     *,
-    site_id: str | None,
+    allowed_site_ids: tuple[str, ...],
     segment: str,
     start_at: datetime,
     end_at: datetime,
@@ -570,7 +597,7 @@ async def get_operations_summary(
             WITH scoped_users AS (
                 SELECT snapshot.*
                 FROM growth.ops_user_snapshots AS snapshot
-                WHERE (CAST(:site_id AS TEXT) IS NULL OR snapshot.site_id = :site_id)
+                WHERE snapshot.site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
                   AND {segment_filter}
             ), user_metrics AS (
                 SELECT COUNT(*) FILTER (
@@ -613,7 +640,7 @@ async def get_operations_summary(
             """
         ),
         {
-            "site_id": site_id,
+            "allowed_site_ids": allowed_site_ids,
             "segment": segment,
             "start_at": start_at,
             "end_at": end_at,
@@ -625,7 +652,7 @@ async def get_operations_summary(
 async def get_operations_trends(
     connection: Any,
     *,
-    site_id: str | None,
+    allowed_site_ids: tuple[str, ...],
     segment: str,
     start_at: datetime,
     end_at: datetime,
@@ -642,14 +669,14 @@ async def get_operations_trends(
                    gross_income_cny, refund_cny,
                    gross_income_cny - refund_cny AS net_income_cny, computed_at
             FROM growth.{table_name}
-            WHERE (CAST(:site_id AS TEXT) IS NULL OR site_id = :site_id)
+            WHERE site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
               AND user_segment = :segment
               AND {bucket_name} >= :start_at AND {bucket_name} < :end_at
             ORDER BY {bucket_name}, site_id
             """
         ),
         {
-            "site_id": site_id,
+            "allowed_site_ids": allowed_site_ids,
             "segment": segment,
             "start_at": start_at,
             "end_at": end_at,
@@ -661,7 +688,7 @@ async def get_operations_trends(
 async def list_operations_users(
     connection: Any,
     *,
-    site_id: str | None,
+    allowed_site_ids: tuple[str, ...],
     segment: str,
     start_at: datetime,
     end_at: datetime,
@@ -683,7 +710,7 @@ async def list_operations_users(
               ON usage.site_id = snapshot.site_id
              AND usage.external_user_id = snapshot.external_user_id
              AND usage.occurred_at >= :start_at AND usage.occurred_at < :end_at
-            WHERE (CAST(:site_id AS TEXT) IS NULL OR snapshot.site_id = :site_id)
+            WHERE snapshot.site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
               AND {segment_filter}
               AND (
                   CAST(:query AS TEXT) IS NULL
@@ -696,7 +723,7 @@ async def list_operations_users(
             """
         ),
         {
-            "site_id": site_id,
+            "allowed_site_ids": allowed_site_ids,
             "segment": segment,
             "start_at": start_at,
             "end_at": end_at,
@@ -708,7 +735,7 @@ async def list_operations_users(
     return _all(result)
 
 
-async def get_sync_status(connection: Any) -> list[dict[str, Any]]:
+async def get_sync_status(connection: Any, *, allowed_site_ids: tuple[str, ...]) -> list[dict[str, Any]]:
     result = await connection.execute(
         text(
             """
@@ -718,6 +745,7 @@ async def get_sync_status(connection: Any) -> list[dict[str, Any]]:
                        rows_scanned, rows_upserted, rows_rejected, error_code, error_message
                 FROM growth.sync_runs
                 WHERE stream_name = 'operations'
+                  AND site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
                 ORDER BY site_id, started_at DESC
             )
             SELECT latest.*, cursor.last_success_at, cursor.watermark_at
@@ -728,7 +756,8 @@ async def get_sync_status(connection: Any) -> list[dict[str, Any]]:
              AND cursor.stream_name = 'operations'
             ORDER BY latest.site_id
             """
-        )
+        ),
+        {"allowed_site_ids": allowed_site_ids},
     )
     return _all(result)
 

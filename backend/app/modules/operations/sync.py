@@ -125,7 +125,7 @@ async def sync_adapter_records(
     credits = await adapter.read_credit_events(connection=source_connection, since=since)
     rates = await repository.list_conversion_rates(
         growth_connection,
-        site_id=adapter.site_id,
+        allowed_site_ids=(adapter.site_id,),
     )
     converted_usage = apply_usage_conversion_rates(usage, rates)
 

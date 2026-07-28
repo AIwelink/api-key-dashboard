@@ -232,18 +232,48 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         connection = _FakeConnection([{"registered_user_count": 1}])
         await get_operations_summary(
             connection,
-            site_id="aiwelink",
+            allowed_site_ids=("aiwelink",),
             segment="ordinary",
             start_at=NOW,
             end_at=NOW,
         )
 
         statement, parameters = connection.calls[0]
-        self.assertIn(":site_id", statement)
+        self.assertIn("ANY(CAST(:allowed_site_ids AS TEXT[]))", statement)
         self.assertIn(":segment", statement)
         self.assertNotIn("aiwelink'", statement)
-        self.assertEqual(parameters["site_id"], "aiwelink")
+        self.assertEqual(parameters["allowed_site_ids"], ("aiwelink",))
         self.assertEqual(parameters["segment"], "ordinary")
+
+    async def test_all_user_facing_reads_require_bound_site_collections(self) -> None:
+        from app.modules.operations import repository
+
+        connection = _FakeConnection([None, None, None, None, None, None])
+        allowed = ("aiwelink",)
+        await repository.get_operations_trends(
+            connection,
+            allowed_site_ids=allowed,
+            segment="ordinary",
+            start_at=NOW,
+            end_at=NOW,
+        )
+        await repository.list_operations_users(
+            connection,
+            allowed_site_ids=allowed,
+            segment="ordinary",
+            start_at=NOW,
+            end_at=NOW,
+        )
+        await repository.get_sync_status(connection, allowed_site_ids=allowed)
+        await repository.list_internal_users(connection, allowed_site_ids=allowed)
+        await repository.list_conversion_rates(connection, allowed_site_ids=allowed)
+        await repository.list_classification_tasks(connection, allowed_site_ids=allowed)
+
+        self.assertEqual(len(connection.calls), 6)
+        for statement, parameters in connection.calls:
+            self.assertIn("ANY(CAST(:allowed_site_ids AS TEXT[]))", statement)
+            self.assertEqual(parameters["allowed_site_ids"], allowed)
+            self.assertNotIn("CAST(:site_id AS TEXT) IS NULL", statement)
 
     async def test_credit_command_requests_are_persisted_as_pending(self) -> None:
         from app.modules.operations.repository import (
@@ -349,7 +379,7 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
-        result = await get_sync_status(connection)
+        result = await get_sync_status(connection, allowed_site_ids=("aiwelink",))
 
         self.assertEqual(result[0]["last_success_at"], NOW.isoformat())
         statement, _ = connection.calls[0]
