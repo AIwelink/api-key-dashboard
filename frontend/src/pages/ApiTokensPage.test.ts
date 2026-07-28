@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildOperationsSitePermissionsPayload,
   mergeRolePermissionsSettings,
+  shouldApplyOperationsSitePermissionsRefresh,
   shouldApplyRolePermissionsRefresh,
   shouldPauseSystemAutoRefresh,
 } from "./ApiTokensPage";
-import type { RolePermissionsSettings } from "../types";
+import type { OperationsSitePermissionsSettings, RolePermissionsSettings } from "../types";
 
 
 describe("system management auto refresh", () => {
@@ -45,5 +47,46 @@ describe("system management auto refresh", () => {
 
     expect(merged.roles.support).toEqual(local.roles.support);
     expect(merged.roles.sales).toEqual(remote.roles.sales);
+  });
+});
+
+describe("operations site permission settings", () => {
+  it("pauses the permissions tab while personal site edits are unsaved", () => {
+    expect(shouldPauseSystemAutoRefresh("permissions", false, null, false, true)).toBe(true);
+    expect(shouldPauseSystemAutoRefresh("notifications", false, null, false, true)).toBe(false);
+  });
+
+  it("protects unsaved personal site edits from automatic refresh", () => {
+    expect(shouldApplyOperationsSitePermissionsRefresh(true, false)).toBe(false);
+    expect(shouldApplyOperationsSitePermissionsRefresh(true, true)).toBe(true);
+  });
+
+  it("builds a complete user mapping without presentation fields", () => {
+    const settings: OperationsSitePermissionsSettings = {
+      available_sites: [
+        { id: "aiwelink", label: "AIWeLink" },
+        { id: "aigclink", label: "AIGCLink" },
+      ],
+      users: [
+        {
+          user_id: "owner@example.com",
+          email: "owner@example.com",
+          role: "owner",
+          status: "active",
+          operations_site_ids: ["aiwelink"],
+        },
+        {
+          user_id: "operator@example.com",
+          operations_site_ids: [],
+        },
+      ],
+    };
+
+    expect(buildOperationsSitePermissionsPayload(settings)).toEqual({
+      users: [
+        { user_id: "owner@example.com", operations_site_ids: ["aiwelink"] },
+        { user_id: "operator@example.com", operations_site_ids: [] },
+      ],
+    });
   });
 });

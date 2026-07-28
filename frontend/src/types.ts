@@ -40,6 +40,27 @@ export type RolePermissionsSettings = {
   updated_by?: string;
 };
 
+export type OperationsSiteId = "aiwelink" | "aigclink";
+
+export type OperationsSitePermissionSite = {
+  id: OperationsSiteId;
+  label: string;
+};
+
+export type OperationsSitePermissionUser = {
+  user_id: string;
+  email?: string | null;
+  name?: string | null;
+  role?: UserRole | null;
+  status?: UserStatus | null;
+  operations_site_ids: OperationsSiteId[];
+};
+
+export type OperationsSitePermissionsSettings = {
+  available_sites: OperationsSitePermissionSite[];
+  users: OperationsSitePermissionUser[];
+};
+
 export type UserRoleCatalogEntry = {
   label: string;
   builtin: boolean;
@@ -62,6 +83,7 @@ export type User = {
   role: UserRole;
   status?: UserStatus;
   permissions?: UserPermissions;
+  operations_site_ids?: OperationsSiteId[];
 };
 
 export type AccountDocument = {

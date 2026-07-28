@@ -1,8 +1,9 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
-import type { ApiPool, RolePermissionsSettings } from "../types";
+import type { ApiPool, OperationsSitePermissionsSettings, RolePermissionsSettings } from "../types";
 import { errorMessage, formatDateTime } from "../utils/format";
+import { OperationsSitePermissionsPanel } from "./OperationsSitePermissionsPanel";
 import { RolePermissionsPanel } from "./RolePermissionsPanel";
 
 type Props = {
@@ -66,12 +67,35 @@ export function shouldPauseSystemAutoRefresh(
   busy: boolean,
   editingChannelId: string | null,
   rolePermissionsDirty: boolean,
+  operationsSitePermissionsDirty = false,
 ) {
-  return Boolean(busy || editingChannelId || (activeTab === "permissions" && rolePermissionsDirty));
+  return Boolean(
+    busy
+    || editingChannelId
+    || (activeTab === "permissions" && (rolePermissionsDirty || operationsSitePermissionsDirty))
+  );
 }
 
 export function shouldApplyRolePermissionsRefresh(rolePermissionsDirty: boolean, discardUnsaved: boolean) {
   return discardUnsaved || !rolePermissionsDirty;
+}
+
+export function shouldApplyOperationsSitePermissionsRefresh(
+  operationsSitePermissionsDirty: boolean,
+  discardUnsaved: boolean,
+) {
+  return discardUnsaved || !operationsSitePermissionsDirty;
+}
+
+export function buildOperationsSitePermissionsPayload(
+  settings: OperationsSitePermissionsSettings,
+) {
+  return {
+    users: settings.users.map((user) => ({
+      user_id: user.user_id,
+      operations_site_ids: [...user.operations_site_ids],
+    })),
+  };
 }
 
 export function mergeRolePermissionsSettings(
@@ -223,11 +247,19 @@ export function ApiTokensPage({ canManageApiTokens, token, showToast }: Props) {
   const [rolePermissionsSettings, setRolePermissionsSettings] = useState<RolePermissionsSettings | null>(null);
   const [rolePermissionsDirty, setRolePermissionsDirty] = useState(false);
   const rolePermissionsDirtyRef = useRef(false);
+  const [operationsSitePermissionsSettings, setOperationsSitePermissionsSettings] = useState<OperationsSitePermissionsSettings | null>(null);
+  const [operationsSitePermissionsDirty, setOperationsSitePermissionsDirty] = useState(false);
+  const operationsSitePermissionsDirtyRef = useRef(false);
   const [busy, setBusy] = useState(false);
 
   const updateRolePermissionsDirty = (dirty: boolean) => {
     rolePermissionsDirtyRef.current = dirty;
     setRolePermissionsDirty(dirty);
+  };
+
+  const updateOperationsSitePermissionsDirty = (dirty: boolean) => {
+    operationsSitePermissionsDirtyRef.current = dirty;
+    setOperationsSitePermissionsDirty(dirty);
   };
 
   const loadTokens = async () => {
@@ -250,6 +282,13 @@ export function ApiTokensPage({ canManageApiTokens, token, showToast }: Props) {
     if (!shouldApplyRolePermissionsRefresh(rolePermissionsDirtyRef.current, discardUnsaved)) return;
     setRolePermissionsSettings(data);
     updateRolePermissionsDirty(false);
+  };
+
+  const loadOperationsSitePermissionsSettings = async (discardUnsaved = false) => {
+    const data = await api<OperationsSitePermissionsSettings>("/settings/operations-site-permissions", token);
+    if (!shouldApplyOperationsSitePermissionsRefresh(operationsSitePermissionsDirtyRef.current, discardUnsaved)) return;
+    setOperationsSitePermissionsSettings(data);
+    updateOperationsSitePermissionsDirty(false);
   };
 
   const loadAgentLlmSettings = async () => {
@@ -291,7 +330,13 @@ export function ApiTokensPage({ canManageApiTokens, token, showToast }: Props) {
   };
 
   useEffect(() => {
-    const loaders = [loadNotificationChannels(), loadAgentLlmSettings(), loadAgentPools(), loadRolePermissionsSettings()];
+    const loaders = [
+      loadNotificationChannels(),
+      loadAgentLlmSettings(),
+      loadAgentPools(),
+      loadRolePermissionsSettings(),
+      loadOperationsSitePermissionsSettings(),
+    ];
     if (canManageApiTokens) loaders.push(loadTokens());
     Promise.all(loaders).catch((error) => showToast(errorMessage(error), true));
   }, []);
@@ -563,6 +608,24 @@ export function ApiTokensPage({ canManageApiTokens, token, showToast }: Props) {
     }
   };
 
+  const saveOperationsSitePermissionsSettings = async () => {
+    if (!operationsSitePermissionsSettings) return;
+    setBusy(true);
+    try {
+      const updated = await api<OperationsSitePermissionsSettings>("/settings/operations-site-permissions", token, {
+        method: "PUT",
+        body: JSON.stringify(buildOperationsSitePermissionsPayload(operationsSitePermissionsSettings)),
+      });
+      setOperationsSitePermissionsSettings(updated);
+      updateOperationsSitePermissionsDirty(false);
+      showToast("\u8fd0\u8425\u7ad9\u70b9\u6743\u9650\u5df2\u4fdd\u5b58");
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const createUserRole = async (roleId: string, label: string) => {
     setBusy(true);
     try {
@@ -612,7 +675,7 @@ export function ApiTokensPage({ canManageApiTokens, token, showToast }: Props) {
       : activeTab === "notifications"
         ? loadNotificationChannels
         : activeTab === "permissions"
-          ? () => loadRolePermissionsSettings(true)
+          ? () => Promise.all([loadRolePermissionsSettings(true), loadOperationsSitePermissionsSettings(true)])
           : loadAgentLlmSettings;
     loader().catch((error) => showToast(errorMessage(error), true));
   };
@@ -621,10 +684,12 @@ export function ApiTokensPage({ canManageApiTokens, token, showToast }: Props) {
     async () => {
       if (activeTab === "tokens") await loadTokens();
       if (activeTab === "notifications") await loadNotificationChannels();
-      if (activeTab === "permissions") await loadRolePermissionsSettings();
+      if (activeTab === "permissions") {
+        await Promise.all([loadRolePermissionsSettings(), loadOperationsSitePermissionsSettings()]);
+      }
       if (activeTab === "agent-llm") await loadAgentPools();
     },
-    { paused: shouldPauseSystemAutoRefresh(activeTab, busy, editingChannelId, rolePermissionsDirty) },
+    { paused: shouldPauseSystemAutoRefresh(activeTab, busy, editingChannelId, rolePermissionsDirty, operationsSitePermissionsDirty) },
   );
 
   const channelLabel = (item: NotificationChannel) => {
@@ -744,6 +809,7 @@ export function ApiTokensPage({ canManageApiTokens, token, showToast }: Props) {
       )}
 
       {activeTab === "permissions" && (
+        <div className="system-permissions-workspace">
         <RolePermissionsPanel
           settings={rolePermissionsSettings}
           busy={busy}
@@ -755,6 +821,16 @@ export function ApiTokensPage({ canManageApiTokens, token, showToast }: Props) {
           onDelete={deleteUserRole}
           onSave={saveRolePermissionsSettings}
         />
+          <OperationsSitePermissionsPanel
+            settings={operationsSitePermissionsSettings}
+            busy={busy}
+            onChange={(settings) => {
+              setOperationsSitePermissionsSettings(settings);
+              updateOperationsSitePermissionsDirty(true);
+            }}
+            onSave={saveOperationsSitePermissionsSettings}
+          />
+        </div>
       )}
 
       {activeTab === "notifications" && (
