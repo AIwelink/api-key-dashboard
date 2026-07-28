@@ -89,7 +89,7 @@ For each due site:
 5. Pass the same normalized snapshot to the smart scheduling evaluator.
 6. Produce at most one decision per remote account ID, with extreme acceleration taking precedence.
 7. For decisions that differ from the PostgreSQL snapshot, fetch the latest account through the Admin API and evaluate again against its current priority and concurrency.
-8. PATCH only `priority` and `concurrency` when the re-evaluated target still differs.
+8. Group re-evaluated changes by target `priority`, `concurrency`, and the latest unchanged `group_ids`, then POST each batch to `/accounts/bulk-update`.
 9. Record the run, per-account outcomes, and scheduler state, then release the lease.
 
 The backend reads groups and accounts directly from PostgreSQL. The frontend never scans accounts or performs scheduling calculations.
@@ -143,7 +143,7 @@ Controls save through the backend API, show validation errors without discarding
 
 - A MongoDB lease prevents duplicate writers for the same site across processes.
 - Remote state is re-read only for candidate changes, limiting Admin API traffic while avoiding stale-snapshot overwrites of recent manual edits.
-- Updates contain only `priority` and `concurrency`.
+- Bulk updates contain target `priority` and `concurrency` plus each batch's unchanged latest `group_ids`, so accounts with different group memberships are never mixed.
 - One account failure does not stop other accounts. An unavailable Admin API ends remote updates for the run and retries on the next probe.
 - Missing type, quota, or reset data produces explicit skip outcomes instead of guessed decisions.
 - Identical target and current values do not call the Admin API.
@@ -166,7 +166,7 @@ Backend decision tests cover:
 - Free and unknown types are skipped;
 - extreme precedence, multi-group deduplication, and default-off behavior.
 
-Orchestration tests cover one PostgreSQL snapshot per probe, site lease behavior, latest-account revalidation, minimal PATCH payloads, no-op suppression, per-account failure isolation, sanitized records, state persistence, and retention indexes.
+Orchestration tests cover one PostgreSQL snapshot per probe, site lease behavior, latest-account revalidation, bulk grouping by target and group membership, partial per-account failures, no-op suppression, sanitized records, state persistence, and retention indexes.
 
 API tests cover normalized defaults, complete configuration validation, atomic rejection of invalid ranges, group toggle persistence, backward-compatible false defaults, and audit writes.
 

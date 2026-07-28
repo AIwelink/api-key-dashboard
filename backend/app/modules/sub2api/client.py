@@ -173,21 +173,37 @@ class Sub2ApiClient:
             )
         return self._admin_response_payload(response, operation="update")
 
-    async def update_account_runtime(
+    async def bulk_update_accounts_runtime(
         self,
-        account_id: int | str,
+        account_ids: list[int | str],
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        unexpected_fields = set(payload) - {"priority", "concurrency"}
-        if unexpected_fields:
-            raise ValueError("runtime account updates only accept priority and concurrency")
+        if set(payload) != {"priority", "concurrency", "group_ids"}:
+            raise ValueError(
+                "bulk runtime account updates require priority, concurrency, and group_ids"
+            )
+        if not account_ids:
+            return {
+                "success": 0,
+                "failed": 0,
+                "success_ids": [],
+                "failed_ids": [],
+                "results": [],
+            }
+        if not isinstance(payload["group_ids"], list):
+            raise ValueError("bulk runtime account group_ids must be a list")
         response = await self._request_admin_response_with_retries(
-            "PATCH",
-            f"/accounts/{account_id}",
-            json={key: payload[key] for key in ("priority", "concurrency") if key in payload},
+            "POST",
+            "/accounts/bulk-update",
+            json={
+                "account_ids": account_ids,
+                "concurrency": payload["concurrency"],
+                "priority": payload["priority"],
+                "group_ids": payload["group_ids"],
+            },
             timeout=15,
         )
-        return self._admin_response_payload(response, operation="update runtime fields")
+        return self._admin_response_payload(response, operation="bulk update runtime fields")
 
     async def set_account_schedulable(self, account_id: int | str, schedulable: bool) -> dict[str, Any]:
         response = await self._request_admin_response_with_retries(

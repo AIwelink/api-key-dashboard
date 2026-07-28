@@ -10,30 +10,49 @@ from app.modules.sub2api.client import Sub2ApiClient
 
 
 class Sub2ApiClientUpdateTests(unittest.IsolatedAsyncioTestCase):
-    async def test_runtime_update_never_falls_back_to_full_put(self) -> None:
+    async def test_bulk_runtime_update_posts_the_admin_api_payload(self) -> None:
         client = Sub2ApiClient(base_url="http://sub2.example.com", token="admin-key")
-        patch_response = httpx.Response(
-            405,
-            json={"message": "PATCH is not supported"},
-            request=httpx.Request("PATCH", "http://sub2.example.com/api/v1/admin/accounts/3418"),
+        response = httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "message": "success",
+                "data": {
+                    "success": 2,
+                    "failed": 0,
+                    "success_ids": [5864, 5863],
+                    "failed_ids": [],
+                    "results": [
+                        {"account_id": 5864, "success": True},
+                        {"account_id": 5863, "success": True},
+                    ],
+                },
+            },
+            request=httpx.Request(
+                "POST",
+                "http://sub2.example.com/api/v1/admin/accounts/bulk-update",
+            ),
         )
-        request = AsyncMock(return_value=patch_response)
+        request = AsyncMock(return_value=response)
 
-        with (
-            patch.object(client, "_request_admin_response_with_retries", request),
-            self.assertRaises(HTTPException),
-        ):
-            await client.update_account_runtime(
-                3418,
-                {"priority": 191, "concurrency": 30},
+        with patch.object(client, "_request_admin_response_with_retries", request):
+            result = await client.bulk_update_accounts_runtime(
+                [5864, 5863],
+                {"concurrency": 30, "priority": 100, "group_ids": [3]},
             )
 
         request.assert_awaited_once_with(
-            "PATCH",
-            "/accounts/3418",
-            json={"priority": 191, "concurrency": 30},
+            "POST",
+            "/accounts/bulk-update",
+            json={
+                "account_ids": [5864, 5863],
+                "concurrency": 30,
+                "priority": 100,
+                "group_ids": [3],
+            },
             timeout=15,
         )
+        self.assertEqual(result["success_ids"], [5864, 5863])
 
     async def test_patch_404_fetches_current_account_and_retries_with_full_put(self) -> None:
         client = Sub2ApiClient(base_url="http://sub2.example.com", token="admin-key")

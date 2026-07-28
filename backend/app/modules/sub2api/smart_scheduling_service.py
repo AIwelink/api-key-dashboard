@@ -275,6 +275,7 @@ async def _run_smart_scheduling_locked(
         ],
     )
     effective_client = client
+    pending_updates: list[dict[str, Any]] = []
 
     async def ensure_live_lease() -> bool:
         nonlocal lease_renewed_monotonic
@@ -315,6 +316,7 @@ async def _run_smart_scheduling_locked(
         error_type = None
         stop_remote_updates = False
         client_configuration_failed = False
+        latest: dict[str, Any] | None = None
 
         try:
             if decision["status"] == "change":
@@ -342,24 +344,18 @@ async def _run_smart_scheduling_locked(
                     now=now,
                 )
             if decision["status"] == "change":
-                if not await ensure_live_lease():
-                    raise _SmartSchedulingLeaseLostError
-                await effective_client.update_account_runtime(
-                    remote_account_id,
-                    decision["target"],
+                pending_updates.append(
+                    {
+                        "item": item,
+                        "decision": decision,
+                        "before": before,
+                        "group_ids": _account_group_ids(
+                            latest,
+                            fallback=item["group_ids"],
+                        ),
+                    }
                 )
-                summary["changed"] += 1
-                outcome_status = "changed"
-                await _persist_scheduler_state(
-                    db,
-                    site_id=site_id,
-                    remote_account_id=remote_account_id,
-                    decision=decision,
-                    probe_run_id=probe_run_id,
-                    run_id=run_id,
-                    evaluated_at=now,
-                    changed=True,
-                )
+                continue
             elif decision["status"] == "unchanged":
                 summary["unchanged"] += 1
                 outcome_status = "unchanged"
@@ -415,6 +411,99 @@ async def _run_smart_scheduling_locked(
         )
         if stop_remote_updates:
             break
+
+    batches: dict[tuple[int, int, tuple[int, ...]], list[dict[str, Any]]] = {}
+    for pending in pending_updates:
+        target = pending["decision"]["target"]
+        key = (
+            int(target["priority"]),
+            int(target["concurrency"]),
+            tuple(pending["group_ids"]),
+        )
+        batches.setdefault(key, []).append(pending)
+
+    stopped_error: tuple[str, str] | None = None
+    for (priority, concurrency, group_ids), batch in batches.items():
+        account_ids = [pending["item"]["remote_account_id"] for pending in batch]
+        successful_ids: set[str] = set()
+        batch_error_code: str | None = None
+        batch_error_type: str | None = None
+        try:
+            if stopped_error is not None:
+                batch_error_code, batch_error_type = stopped_error
+            else:
+                if not await ensure_live_lease():
+                    raise _SmartSchedulingLeaseLostError
+                response = await effective_client.bulk_update_accounts_runtime(
+                    account_ids,
+                    {
+                        "priority": priority,
+                        "concurrency": concurrency,
+                        "group_ids": list(group_ids),
+                    },
+                )
+                successful_ids = _successful_bulk_account_ids(
+                    response,
+                    requested_ids=account_ids,
+                )
+        except Exception as exc:  # noqa: BLE001 - isolate remote failures per batch.
+            admin_auth_failed = isinstance(exc, InvalidAdminApiKeyError)
+            lease_lost = isinstance(exc, _SmartSchedulingLeaseLostError)
+            batch_error_code = (
+                "scheduling_lease_lost"
+                if lease_lost
+                else "admin_auth_error"
+                if admin_auth_failed
+                else "remote_update_failed"
+            )
+            batch_error_type = type(exc).__name__
+            if admin_auth_failed or lease_lost:
+                stopped_error = (batch_error_code, batch_error_type)
+            logger.warning(
+                "smart_scheduling_batch_failed site_id=%s account_count=%s error_type=%s",
+                site_id,
+                len(account_ids),
+                batch_error_type,
+            )
+
+        for pending in batch:
+            item = pending["item"]
+            decision = pending["decision"]
+            remote_account_id = item["remote_account_id"]
+            changed = str(remote_account_id) in successful_ids
+            if changed:
+                summary["changed"] += 1
+                outcome_status = "changed"
+                error_code = None
+                error_type = None
+                await _persist_scheduler_state(
+                    db,
+                    site_id=site_id,
+                    remote_account_id=remote_account_id,
+                    decision=decision,
+                    probe_run_id=probe_run_id,
+                    run_id=run_id,
+                    evaluated_at=now,
+                    changed=True,
+                )
+            else:
+                summary["failed"] += 1
+                outcome_status = "failed"
+                error_code = batch_error_code or "remote_update_failed"
+                error_type = batch_error_type or "BulkUpdateAccountFailed"
+            await _persist_outcome(
+                db,
+                site_id=site_id,
+                run_id=run_id,
+                probe_run_id=probe_run_id,
+                item=item,
+                decision=decision,
+                before=pending["before"],
+                status=outcome_status,
+                error_code=error_code,
+                error_type=error_type,
+                evaluated_at=now,
+            )
 
     finished_at = _as_utc(now_utc()) if now_utc is not None else now
     summary["status"] = "partial" if summary["failed"] else "completed"
@@ -606,6 +695,57 @@ def _runtime_values(account: dict[str, Any]) -> dict[str, int | None]:
         "priority": _optional_int(account.get("priority")),
         "concurrency": _optional_int(account.get("concurrency")),
     }
+
+
+def _account_group_ids(
+    account: dict[str, Any] | None,
+    *,
+    fallback: list[int],
+) -> list[int]:
+    raw_values = account.get("group_ids") if isinstance(account, dict) else None
+    values = raw_values if isinstance(raw_values, list) else fallback
+    return sorted(
+        {
+            group_id
+            for value in values
+            if (group_id := _optional_int(value)) is not None
+        }
+    )
+
+
+def _successful_bulk_account_ids(
+    response: dict[str, Any],
+    *,
+    requested_ids: list[Any],
+) -> set[str]:
+    requested = {str(account_id) for account_id in requested_ids}
+    successful = {
+        str(account_id)
+        for account_id in response.get("success_ids") or []
+        if str(account_id) in requested
+    }
+    failed = {
+        str(account_id)
+        for account_id in response.get("failed_ids") or []
+        if str(account_id) in requested
+    }
+    for result in response.get("results") or []:
+        if not isinstance(result, dict) or result.get("account_id") is None:
+            continue
+        account_id = str(result["account_id"])
+        if account_id not in requested:
+            continue
+        if result.get("success") is True:
+            successful.add(account_id)
+        elif result.get("success") is False:
+            failed.add(account_id)
+    successful -= failed
+    if not successful and not failed:
+        success_count = _optional_int(response.get("success"))
+        failed_count = _optional_int(response.get("failed"))
+        if success_count == len(requested) and failed_count == 0:
+            return requested
+    return successful
 
 
 def _optional_int(value: Any) -> int | None:
