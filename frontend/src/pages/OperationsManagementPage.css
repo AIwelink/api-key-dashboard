@@ -1,0 +1,26 @@
+.operations-access-empty {
+  display: grid;
+  min-height: 260px;
+  place-items: center;
+  padding: 48px 24px;
+  border-block: 1px solid var(--line);
+  background: var(--panel);
+  text-align: center;
+}
+
+.operations-access-empty > div {
+  display: grid;
+  gap: 8px;
+  max-width: 480px;
+}
+
+.operations-access-empty strong {
+  color: var(--text);
+  font-size: 18px;
+}
+
+.operations-access-empty span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}

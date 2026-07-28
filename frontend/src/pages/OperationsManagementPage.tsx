@@ -2,13 +2,23 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import { GrowthCreateModal } from "../components/GrowthCreateModal";
+import type { OperationsSiteId } from "../types";
 import { errorMessage } from "../utils/format";
+import "./OperationsManagementPage.css";
 
 type OperationsTab = "overview" | "internal-users" | "credits" | "classification";
 type OperationsRange = "today" | "7d" | "30d" | "custom";
 type UserSegment = "all" | "ordinary" | "internal";
 type Purpose = "sale" | "promotion" | "internal" | "compensation" | "other";
 type Toast = (message: string, isError?: boolean) => void;
+
+type OperationsManagementProps = {
+  token: string;
+  role: string;
+  allowedSiteIds: OperationsSiteId[];
+  showToast: Toast;
+  initialTab?: OperationsTab;
+};
 
 type OperationsQueryState = {
   siteId: string;
@@ -152,7 +162,7 @@ type ModalState =
   | { kind: "classification"; item: ClassificationTask }
   | null;
 
-const siteOptions = [
+const siteOptions: Array<{ value: OperationsSiteId; label: string }> = [
   { value: "aiwelink", label: "AIWeLink" },
   { value: "aigclink", label: "AIGCLink" },
 ];
@@ -300,11 +310,11 @@ function comparison(current: number | undefined, previous: number | undefined) {
   return `较上期 ${percent >= 0 ? "+" : ""}${percent.toFixed(1)}%`;
 }
 
-function SiteSelect({ value, onChange, includeAll = true }: { value: string; onChange: (value: string) => void; includeAll?: boolean }) {
+function SiteSelect({ value, onChange, sites, includeAll = true }: { value: string; onChange: (value: string) => void; sites: Array<{ value: OperationsSiteId; label: string }>; includeAll?: boolean }) {
   return (
     <select value={value} onChange={(event) => onChange(event.target.value)}>
       {includeAll && <option value="">全部站点</option>}
-      {siteOptions.map((site) => <option value={site.value} key={site.value}>{site.label}</option>)}
+      {sites.map((site) => <option value={site.value} key={site.value}>{site.label}</option>)}
     </select>
   );
 }
@@ -332,9 +342,28 @@ function PurposeFields({ purpose, cash, onPurpose, onCash }: { purpose: Purpose;
   );
 }
 
-export function OperationsManagementPage({ token, role, showToast, initialTab = "overview" }: { token: string; role: string; showToast: Toast; initialTab?: OperationsTab }) {
+export function OperationsManagementPage(
+  {
+    token,
+    role,
+    allowedSiteIds,
+    showToast,
+    initialTab = "overview",
+  }: OperationsManagementProps,
+) {
+  const allowedSiteKey = allowedSiteIds.join("|");
+  const allowedSites = useMemo(
+    () => siteOptions.filter((site) => allowedSiteIds.includes(site.value)),
+    [allowedSiteKey],
+  );
+  const firstAllowedSiteId = allowedSites[0]?.value || "";
+  const defaultSiteFilter = allowedSites.length === 1 ? firstAllowedSiteId : "";
+  const hasSiteAccess = allowedSites.length > 0;
+  const showAllSites = allowedSites.length > 1;
+  const allowedSiteSet = new Set(allowedSites.map((site) => site.value));
+  const normalizeSiteFilter = (siteId: string) => allowedSiteSet.has(siteId as OperationsSiteId) ? siteId : defaultSiteFilter;
   const [tab, setTab] = useState<OperationsTab>(initialTab);
-  const [query, setQuery] = useState<OperationsQueryState>({ siteId: "", segment: "all", range: "7d" });
+  const [query, setQuery] = useState<OperationsQueryState>({ siteId: defaultSiteFilter, segment: "all", range: "7d" });
   const [overview, setOverview] = useState<OverviewResponse | null>(null);
   const [trends, setTrends] = useState<TrendItem[]>([]);
   const [users, setUsers] = useState<UserItem[]>([]);
@@ -343,27 +372,67 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
   const [rates, setRates] = useState<ConversionRate[]>([]);
   const [classificationTasks, setClassificationTasks] = useState<ClassificationTask[]>([]);
   const [internalSearch, setInternalSearch] = useState("");
-  const [internalSite, setInternalSite] = useState("");
-  const [creditSite, setCreditSite] = useState("");
-  const [classificationSite, setClassificationSite] = useState("");
+  const [internalSite, setInternalSite] = useState(defaultSiteFilter);
+  const [creditSite, setCreditSite] = useState(defaultSiteFilter);
+  const [classificationSite, setClassificationSite] = useState(defaultSiteFilter);
   const [classificationStatus, setClassificationStatus] = useState("pending");
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [modal, setModal] = useState<ModalState>(null);
   const [saving, setSaving] = useState(false);
-  const [internalForm, setInternalForm] = useState(emptyInternalUserForm);
-  const [redemptionForm, setRedemptionForm] = useState(emptyRedemptionForm);
-  const [adjustmentForm, setAdjustmentForm] = useState(emptyAdjustmentForm);
-  const [conversionForm, setConversionForm] = useState(emptyConversionForm);
+  const [internalForm, setInternalForm] = useState<InternalUserForm>(() => ({ ...emptyInternalUserForm, site_id: firstAllowedSiteId }));
+  const [redemptionForm, setRedemptionForm] = useState<RedemptionForm>(() => ({ ...emptyRedemptionForm, site_id: firstAllowedSiteId }));
+  const [adjustmentForm, setAdjustmentForm] = useState<AdjustmentForm>(() => ({ ...emptyAdjustmentForm, site_id: firstAllowedSiteId }));
+  const [conversionForm, setConversionForm] = useState<ConversionForm>(() => ({
+    ...emptyConversionForm,
+    site_id: firstAllowedSiteId,
+    balance_units_per_cny: firstAllowedSiteId === "aigclink" ? "1" : "10",
+  }));
   const [classificationForm, setClassificationForm] = useState(emptyClassificationForm);
   const canWrite = canManageOperations(role);
 
   const queryIsValid = query.range !== "custom" || Boolean(query.startAt && query.endAt && new Date(query.startAt) < new Date(query.endAt));
-  const operationsQuery = useMemo(() => queryIsValid ? buildOperationsQuery(query) : "", [query, queryIsValid]);
+  const effectiveQuery = useMemo(
+    () => ({ ...query, siteId: normalizeSiteFilter(query.siteId) }),
+    [query, allowedSiteKey],
+  );
+  const effectiveInternalSite = normalizeSiteFilter(internalSite);
+  const effectiveCreditSite = normalizeSiteFilter(creditSite);
+  const effectiveClassificationSite = normalizeSiteFilter(classificationSite);
+  const operationsQuery = useMemo(
+    () => queryIsValid ? buildOperationsQuery(effectiveQuery) : "",
+    [effectiveQuery, queryIsValid],
+  );
+
+  useEffect(() => {
+    setQuery({ siteId: defaultSiteFilter, segment: "all", range: "7d" });
+    setInternalSite(defaultSiteFilter);
+    setCreditSite(defaultSiteFilter);
+    setClassificationSite(defaultSiteFilter);
+    setClassificationStatus("pending");
+    setInternalSearch("");
+    setOverview(null);
+    setTrends([]);
+    setUsers([]);
+    setSyncStatuses([]);
+    setInternalUsers([]);
+    setRates([]);
+    setClassificationTasks([]);
+    setLoadError("");
+    setModal(null);
+    setInternalForm({ ...emptyInternalUserForm, site_id: firstAllowedSiteId });
+    setRedemptionForm({ ...emptyRedemptionForm, site_id: firstAllowedSiteId });
+    setAdjustmentForm({ ...emptyAdjustmentForm, site_id: firstAllowedSiteId });
+    setConversionForm({
+      ...emptyConversionForm,
+      site_id: firstAllowedSiteId,
+      balance_units_per_cny: firstAllowedSiteId === "aigclink" ? "1" : "10",
+    });
+  }, [allowedSiteKey]);
 
   async function loadOverview(background = false) {
-    if (!operationsQuery) return;
+    if (!hasSiteAccess || !operationsQuery) return;
     if (!background) setLoading(true);
     setLoadError("");
     try {
@@ -387,10 +456,11 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
   }
 
   async function loadInternalUsers(background = false) {
+    if (!hasSiteAccess) return;
     if (!background) setLoading(true);
     setLoadError("");
     const params = new URLSearchParams();
-    if (internalSite) params.set("site_id", internalSite);
+    if (effectiveInternalSite) params.set("site_id", effectiveInternalSite);
     if (internalSearch.trim()) params.set("query", internalSearch.trim());
     try {
       const data = await api<ListResponse<InternalUser>>(`/operations/internal-users?${params}`, token);
@@ -405,9 +475,10 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
   }
 
   async function loadRates(background = false) {
+    if (!hasSiteAccess) return;
     if (!background) setLoading(true);
     setLoadError("");
-    const suffix = creditSite ? `?site_id=${encodeURIComponent(creditSite)}` : "";
+    const suffix = effectiveCreditSite ? `?site_id=${encodeURIComponent(effectiveCreditSite)}` : "";
     try {
       const data = await api<ListResponse<ConversionRate>>(`/operations/conversion-rates${suffix}`, token);
       setRates(data.items);
@@ -421,10 +492,11 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
   }
 
   async function loadClassification(background = false) {
+    if (!hasSiteAccess) return;
     if (!background) setLoading(true);
     setLoadError("");
     const params = new URLSearchParams({ task_status: classificationStatus });
-    if (classificationSite) params.set("site_id", classificationSite);
+    if (effectiveClassificationSite) params.set("site_id", effectiveClassificationSite);
     try {
       const data = await api<ListResponse<ClassificationTask>>(`/operations/classification-tasks?${params}`, token);
       setClassificationTasks(data.items);
@@ -438,16 +510,19 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
   }
 
   useEffect(() => {
+    if (!hasSiteAccess) return;
     if (tab === "overview") void loadOverview();
     if (tab === "internal-users") void loadInternalUsers();
     if (tab === "credits") void loadRates();
     if (tab === "classification") void loadClassification();
-  }, [tab, operationsQuery, internalSite, creditSite, classificationSite, classificationStatus, token]);
+  }, [tab, operationsQuery, effectiveInternalSite, effectiveCreditSite, effectiveClassificationSite, classificationStatus, token, hasSiteAccess]);
 
   async function refreshSources() {
+    if (!hasSiteAccess) return;
     setRefreshing(true);
     try {
-      const result = await api<ListResponse<RefreshResultItem>>("/operations/refresh", token, { method: "POST", body: JSON.stringify({ site_ids: query.siteId ? [query.siteId] : null }) });
+      const siteIds = effectiveQuery.siteId ? [effectiveQuery.siteId] : allowedSites.map((site) => site.value);
+      const result = await api<ListResponse<RefreshResultItem>>("/operations/refresh", token, { method: "POST", body: JSON.stringify({ site_ids: siteIds }) });
       const failure = refreshFailureMessage(result.items);
       if (failure) {
         showToast(`源数据同步失败：${failure}`, true);
@@ -463,6 +538,7 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
   }
 
   function openInternal(item?: InternalUser) {
+    if (!canWrite || (item && !allowedSiteSet.has(item.site_id as OperationsSiteId))) return;
     setInternalForm(item ? {
       site_id: item.site_id,
       external_user_id: item.external_user_id,
@@ -470,12 +546,12 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
       reason: item.reason || "",
       active_from: item.active_from?.slice(0, 16) || "",
       active_until: item.active_until?.slice(0, 16) || "",
-    } : emptyInternalUserForm);
+    } : { ...emptyInternalUserForm, site_id: firstAllowedSiteId });
     setModal({ kind: "internal", item });
   }
 
   async function saveInternal() {
-    if (modal?.kind !== "internal") return;
+    if (!canWrite || modal?.kind !== "internal" || !allowedSiteSet.has(internalForm.site_id as OperationsSiteId)) return;
     setSaving(true);
     try {
       const payload = modal.item ? {
@@ -506,6 +582,7 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
   }
 
   async function saveRedemption() {
+    if (!canWrite || !allowedSiteSet.has(redemptionForm.site_id as OperationsSiteId)) return;
     setSaving(true);
     try {
       await api("/operations/redemption-batches", token, { method: "POST", body: JSON.stringify(buildRedemptionPayload(redemptionForm, idempotencyKey("redemption"))) });
@@ -519,6 +596,7 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
   }
 
   async function saveAdjustment() {
+    if (!canWrite || !allowedSiteSet.has(adjustmentForm.site_id as OperationsSiteId)) return;
     setSaving(true);
     try {
       await api("/operations/balance-adjustments", token, {
@@ -543,6 +621,7 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
   }
 
   async function saveRate() {
+    if (!canWrite || !allowedSiteSet.has(conversionForm.site_id as OperationsSiteId)) return;
     setSaving(true);
     try {
       await api("/operations/conversion-rates", token, {
@@ -565,7 +644,7 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
   }
 
   async function saveClassification() {
-    if (modal?.kind !== "classification") return;
+    if (!canWrite || modal?.kind !== "classification" || !allowedSiteSet.has(modal.item.site_id as OperationsSiteId)) return;
     setSaving(true);
     try {
       const ignored = classificationForm.status === "ignored";
@@ -588,16 +667,43 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
     }
   }
 
+  if (!hasSiteAccess) {
+    return (
+      <section className="view operations-workspace-page">
+        <div className="topbar operations-page-head">
+          <div><h2>运营管理</h2><p>查看已授权站点的运营数据、内部人员与额度记录</p></div>
+        </div>
+        <div className="operations-access-empty" role="status">
+          <div>
+            <strong>尚未分配运营站点权限</strong>
+            <span>请联系 owner 或 admin，在权限管理中分配可访问的运营站点。</span>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
   const summary = overview?.summary || {};
   const previous = overview?.previous_summary || {};
-  const visibleSyncStatuses = query.siteId ? syncStatuses.filter((item) => item.site_id === query.siteId) : syncStatuses;
+  const visibleSyncStatuses = syncStatuses.filter((item) => (
+    allowedSiteSet.has(item.site_id as OperationsSiteId)
+    && (!effectiveQuery.siteId || item.site_id === effectiveQuery.siteId)
+  ));
+  const visibleTrends = trends.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
+  const visibleUsers = users.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
+  const visibleInternalUsers = internalUsers.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
+  const visibleRates = rates.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
+  const visibleClassificationTasks = classificationTasks.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
   const syncHealth = visibleSyncStatuses.some((item) => item.health === "delayed" || item.health === "never") ? "delayed" : visibleSyncStatuses.some((item) => item.health === "running") ? "running" : "healthy";
   const syncErrorDetails = visibleSyncStatuses.filter((item) => item.error_message).map((item) => `${siteLabel(item.site_id)}：${item.error_message}`).join(" · ");
+  const pageDescription = allowedSites.length === 1
+    ? `查看 ${allowedSites[0].label} 的收入、消耗和用户构成`
+    : "统一查看 AIWeLink 与 AIGCLink 的收入、消耗和用户构成";
 
   return (
     <section className="view operations-workspace-page">
       <div className="topbar operations-page-head">
-        <div><h2>运营管理</h2><p>统一查看 AIWeLink 与 AIGCLink 的收入、消耗和用户构成</p></div>
+        <div><h2>运营管理</h2><p>{pageDescription}</p></div>
         {tab === "overview" && <button className="ghost" type="button" disabled={refreshing} onClick={refreshSources}>{refreshing ? "提交中..." : "刷新源数据"}</button>}
       </div>
 
@@ -615,7 +721,7 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
       {tab === "overview" && (
         <div className="operations-tab-content">
           <div className="operations-query-bar">
-            <label><span>站点</span><SiteSelect value={query.siteId} onChange={(siteId) => setQuery({ ...query, siteId })} /></label>
+            <label><span>站点</span><SiteSelect sites={allowedSites} includeAll={showAllSites} value={effectiveQuery.siteId} onChange={(siteId) => setQuery({ ...query, siteId })} /></label>
             <label><span>用户群体</span><select value={query.segment} onChange={(event) => setQuery({ ...query, segment: event.target.value as UserSegment })}>{Object.entries(segmentLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
             <label><span>统计周期</span><select value={query.range} onChange={(event) => setQuery({ ...query, range: event.target.value as OperationsRange })}>{Object.entries(rangeLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
             {query.range === "custom" && <><label><span>开始时间</span><input type="datetime-local" value={query.startAt || ""} onChange={(event) => setQuery({ ...query, startAt: event.target.value })} /></label><label><span>结束时间</span><input type="datetime-local" value={query.endAt || ""} onChange={(event) => setQuery({ ...query, endAt: event.target.value })} /></label></>}
@@ -641,17 +747,17 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
           <div className="operations-trend-grid">
             <section className="operations-data-section">
               <div className="operations-section-head"><div><h3>收入趋势</h3><span>48 小时内按小时，更长周期按天汇总</span></div></div>
-              <div className="operations-table-scroll"><table><thead><tr><th>时间</th><th>站点</th><th>净收入</th><th>活跃用户</th></tr></thead><tbody>{trends.length ? trends.map((item, index) => <tr key={`${item.site_id}-${item.bucket}-${index}`}><td>{formatBucket(item.bucket)}</td><td>{siteLabel(item.site_id)}</td><td>{formatCurrency(item.net_income_cny)}</td><td>{formatNumber(item.active_user_count, 0)}</td></tr>) : <EmptyRow columns={4} text={loading ? "正在加载趋势..." : "当前周期暂无趋势数据"} />}</tbody></table></div>
+              <div className="operations-table-scroll"><table><thead><tr><th>时间</th><th>站点</th><th>净收入</th><th>活跃用户</th></tr></thead><tbody>{visibleTrends.length ? visibleTrends.map((item, index) => <tr key={`${item.site_id}-${item.bucket}-${index}`}><td>{formatBucket(item.bucket)}</td><td>{siteLabel(item.site_id)}</td><td>{formatCurrency(item.net_income_cny)}</td><td>{formatNumber(item.active_user_count, 0)}</td></tr>) : <EmptyRow columns={4} text={loading ? "正在加载趋势..." : "当前周期暂无趋势数据"} />}</tbody></table></div>
             </section>
             <section className="operations-data-section">
               <div className="operations-section-head"><div><h3>用户活动趋势</h3><span>注册、调用和付费人数</span></div></div>
-              <div className="operations-table-scroll"><table><thead><tr><th>时间</th><th>注册</th><th>成功调用</th><th>付费用户</th><th>充值笔数</th></tr></thead><tbody>{trends.length ? trends.map((item, index) => <tr key={`${item.site_id}-${item.bucket}-usage-${index}`}><td>{formatBucket(item.bucket)}</td><td>{formatNumber(item.registered_user_count, 0)}</td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatNumber(item.payer_count, 0)}</td><td>{formatNumber(item.sale_event_count, 0)}</td></tr>) : <EmptyRow columns={5} text={loading ? "正在加载趋势..." : "当前周期暂无趋势数据"} />}</tbody></table></div>
+              <div className="operations-table-scroll"><table><thead><tr><th>时间</th><th>注册</th><th>成功调用</th><th>付费用户</th><th>充值笔数</th></tr></thead><tbody>{visibleTrends.length ? visibleTrends.map((item, index) => <tr key={`${item.site_id}-${item.bucket}-usage-${index}`}><td>{formatBucket(item.bucket)}</td><td>{formatNumber(item.registered_user_count, 0)}</td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatNumber(item.payer_count, 0)}</td><td>{formatNumber(item.sale_event_count, 0)}</td></tr>) : <EmptyRow columns={5} text={loading ? "正在加载趋势..." : "当前周期暂无趋势数据"} />}</tbody></table></div>
             </section>
           </div>
 
           <section className="operations-data-section">
-            <div className="operations-section-head"><div><h3>账号运营明细</h3><span>当前查询周期内的注册与调用情况</span></div><span>{users.length} 个账号</span></div>
-            <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>业务用户 ID</th><th>用户群体</th><th>注册时间</th><th>成功调用</th><th>最近调用</th></tr></thead><tbody>{users.length ? users.map((item) => <tr key={`${item.site_id}-${item.external_user_id}`}><td>{siteLabel(item.site_id)}</td><td><strong>{item.account_label || item.external_user_id}</strong>{item.account_label && <small className="operations-cell-subtext">{item.external_user_id}</small>}</td><td><span className={`operations-status-tag ${item.is_internal ? "internal" : "ordinary"}`}>{item.is_internal ? "内部人员" : "普通用户"}</span></td><td>{formatDateTime(item.registered_at)}</td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatDateTime(item.last_used_at)}</td></tr>) : <EmptyRow columns={6} text={loading ? "正在加载账号..." : "当前周期暂无账号数据"} />}</tbody></table></div>
+            <div className="operations-section-head"><div><h3>账号运营明细</h3><span>当前查询周期内的注册与调用情况</span></div><span>{visibleUsers.length} 个账号</span></div>
+            <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>业务用户 ID</th><th>用户群体</th><th>注册时间</th><th>成功调用</th><th>最近调用</th></tr></thead><tbody>{visibleUsers.length ? visibleUsers.map((item) => <tr key={`${item.site_id}-${item.external_user_id}`}><td>{siteLabel(item.site_id)}</td><td><strong>{item.account_label || item.external_user_id}</strong>{item.account_label && <small className="operations-cell-subtext">{item.external_user_id}</small>}</td><td><span className={`operations-status-tag ${item.is_internal ? "internal" : "ordinary"}`}>{item.is_internal ? "内部人员" : "普通用户"}</span></td><td>{formatDateTime(item.registered_at)}</td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatDateTime(item.last_used_at)}</td></tr>) : <EmptyRow columns={6} text={loading ? "正在加载账号..." : "当前周期暂无账号数据"} />}</tbody></table></div>
           </section>
         </div>
       )}
@@ -659,13 +765,13 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
       {tab === "internal-users" && (
         <div className="operations-tab-content">
           <div className="operations-query-bar operations-list-query">
-            <label><span>站点</span><SiteSelect value={internalSite} onChange={setInternalSite} /></label>
+            <label><span>站点</span><SiteSelect sites={allowedSites} includeAll={showAllSites} value={effectiveInternalSite} onChange={setInternalSite} /></label>
             <label className="operations-search-field"><span>账号查询</span><input value={internalSearch} onChange={(event) => setInternalSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void loadInternalUsers(); }} placeholder="用户 ID 或账号名称" /></label>
             <button className="ghost" type="button" onClick={() => void loadInternalUsers()} disabled={loading}>查询</button>
           </div>
           <section className="operations-data-section">
             <div className="operations-section-head"><div><h3>内部人员名单</h3><span>内部人员消耗计入成本，不进入普通用户收入与付费指标</span></div>{canWrite && <button type="button" onClick={() => openInternal()}>添加内部人员</button>}</div>
-            <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>业务用户 ID</th><th>账号名称</th><th>标记原因</th><th>生效时间</th><th>失效时间</th>{canWrite && <th>操作</th>}</tr></thead><tbody>{internalUsers.length ? internalUsers.map((item) => <tr key={item.internal_user_id}><td>{siteLabel(item.site_id)}</td><td>{item.external_user_id}</td><td>{item.account_label || "-"}</td><td>{item.reason || "-"}</td><td>{formatDateTime(item.active_from)}</td><td>{formatDateTime(item.active_until)}</td>{canWrite && <td><button className="ghost operations-row-button" type="button" onClick={() => openInternal(item)}>编辑</button></td>}</tr>) : <EmptyRow columns={canWrite ? 7 : 6} text={loading ? "正在加载..." : "暂无内部人员配置"} />}</tbody></table></div>
+            <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>业务用户 ID</th><th>账号名称</th><th>标记原因</th><th>生效时间</th><th>失效时间</th>{canWrite && <th>操作</th>}</tr></thead><tbody>{visibleInternalUsers.length ? visibleInternalUsers.map((item) => <tr key={item.internal_user_id}><td>{siteLabel(item.site_id)}</td><td>{item.external_user_id}</td><td>{item.account_label || "-"}</td><td>{item.reason || "-"}</td><td>{formatDateTime(item.active_from)}</td><td>{formatDateTime(item.active_until)}</td>{canWrite && <td><button className="ghost operations-row-button" type="button" onClick={() => openInternal(item)}>编辑</button></td>}</tr>) : <EmptyRow columns={canWrite ? 7 : 6} text={loading ? "正在加载..." : "暂无内部人员配置"} />}</tbody></table></div>
           </section>
         </div>
       )}
@@ -673,12 +779,12 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
       {tab === "credits" && (
         <div className="operations-tab-content">
           <div className="operations-query-bar operations-list-query">
-            <label><span>站点</span><SiteSelect value={creditSite} onChange={setCreditSite} /></label>
-            {canWrite && <div className="operations-command-group"><button type="button" onClick={() => { setRedemptionForm(emptyRedemptionForm); setModal({ kind: "redemption" }); }}>生成兑换码</button><button className="ghost" type="button" onClick={() => { setAdjustmentForm(emptyAdjustmentForm); setModal({ kind: "adjustment" }); }}>调整余额</button><button className="ghost" type="button" onClick={() => { setConversionForm(emptyConversionForm); setModal({ kind: "rate" }); }}>新增换算比例</button></div>}
+            <label><span>站点</span><SiteSelect sites={allowedSites} includeAll={showAllSites} value={effectiveCreditSite} onChange={setCreditSite} /></label>
+            {canWrite && <div className="operations-command-group"><button type="button" onClick={() => { setRedemptionForm({ ...emptyRedemptionForm, site_id: firstAllowedSiteId }); setModal({ kind: "redemption" }); }}>生成兑换码</button><button className="ghost" type="button" onClick={() => { setAdjustmentForm({ ...emptyAdjustmentForm, site_id: firstAllowedSiteId }); setModal({ kind: "adjustment" }); }}>调整余额</button><button className="ghost" type="button" onClick={() => { setConversionForm({ ...emptyConversionForm, site_id: firstAllowedSiteId, balance_units_per_cny: firstAllowedSiteId === "aigclink" ? "1" : "10" }); setModal({ kind: "rate" }); }}>新增换算比例</button></div>}
           </div>
           <section className="operations-data-section">
-            <div className="operations-section-head"><div><h3>余额换算比例</h3><span>用于把不同系统的余额统一换算为 CNY 口径，按生效时间保留历史版本</span></div><span>{rates.length} 条记录</span></div>
-            <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>每 1 CNY 对应余额</th><th>生效时间</th><th>失效时间</th><th>备注</th></tr></thead><tbody>{rates.length ? rates.map((item) => <tr key={item.conversion_rate_id}><td>{siteLabel(item.site_id)}</td><td><strong>{formatNumber(item.balance_units_per_cny, 10)}</strong></td><td>{formatDateTime(item.effective_from)}</td><td>{formatDateTime(item.effective_until)}</td><td>{item.note || "-"}</td></tr>) : <EmptyRow columns={5} text={loading ? "正在加载..." : "暂无换算比例"} />}</tbody></table></div>
+            <div className="operations-section-head"><div><h3>余额换算比例</h3><span>用于把不同系统的余额统一换算为 CNY 口径，按生效时间保留历史版本</span></div><span>{visibleRates.length} 条记录</span></div>
+            <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>每 1 CNY 对应余额</th><th>生效时间</th><th>失效时间</th><th>备注</th></tr></thead><tbody>{visibleRates.length ? visibleRates.map((item) => <tr key={item.conversion_rate_id}><td>{siteLabel(item.site_id)}</td><td><strong>{formatNumber(item.balance_units_per_cny, 10)}</strong></td><td>{formatDateTime(item.effective_from)}</td><td>{formatDateTime(item.effective_until)}</td><td>{item.note || "-"}</td></tr>) : <EmptyRow columns={5} text={loading ? "正在加载..." : "暂无换算比例"} />}</tbody></table></div>
           </section>
           {!canWrite && <div className="operations-readonly-note">当前角色为只读权限。兑换码、余额调整和换算比例只能由 owner/admin 操作。</div>}
         </div>
@@ -687,23 +793,23 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
       {tab === "classification" && (
         <div className="operations-tab-content">
           <div className="operations-query-bar operations-list-query">
-            <label><span>站点</span><SiteSelect value={classificationSite} onChange={setClassificationSite} /></label>
+            <label><span>站点</span><SiteSelect sites={allowedSites} includeAll={showAllSites} value={effectiveClassificationSite} onChange={setClassificationSite} /></label>
             <label><span>处理状态</span><select value={classificationStatus} onChange={(event) => setClassificationStatus(event.target.value)}><option value="pending">待处理</option><option value="resolved">已分类</option><option value="ignored">已忽略</option></select></label>
           </div>
           <section className="operations-data-section">
-            <div className="operations-section-head"><div><h3>待分类额度记录</h3><span>来源用途无法自动识别时，在这里补录真实业务用途</span></div><span>{classificationTasks.length} 条记录</span></div>
-            <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>业务用户 ID</th><th>来源类型</th><th>来源记录</th><th>额度</th><th>发生时间</th><th>状态</th>{canWrite && <th>操作</th>}</tr></thead><tbody>{classificationTasks.length ? classificationTasks.map((item) => <tr key={item.classification_task_id}><td>{siteLabel(item.site_id)}</td><td><strong>{item.account_label || item.external_user_id}</strong>{item.account_label && <small className="operations-cell-subtext">{item.external_user_id}</small>}</td><td>{item.source_type}</td><td>{item.source_record_id || "-"}</td><td>{formatNumber(item.balance_units, 10)}</td><td>{formatDateTime(item.occurred_at)}</td><td><span className={`operations-status-tag ${item.status}`}>{item.status === "pending" ? "待处理" : item.status === "resolved" ? "已分类" : "已忽略"}</span></td>{canWrite && <td>{item.status === "pending" ? <button className="ghost operations-row-button" type="button" onClick={() => { setClassificationForm(emptyClassificationForm); setModal({ kind: "classification", item }); }}>补录</button> : "-"}</td>}</tr>) : <EmptyRow columns={canWrite ? 8 : 7} text={loading ? "正在加载..." : "当前筛选下暂无记录"} />}</tbody></table></div>
+            <div className="operations-section-head"><div><h3>待分类额度记录</h3><span>来源用途无法自动识别时，在这里补录真实业务用途</span></div><span>{visibleClassificationTasks.length} 条记录</span></div>
+            <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>业务用户 ID</th><th>来源类型</th><th>来源记录</th><th>额度</th><th>发生时间</th><th>状态</th>{canWrite && <th>操作</th>}</tr></thead><tbody>{visibleClassificationTasks.length ? visibleClassificationTasks.map((item) => <tr key={item.classification_task_id}><td>{siteLabel(item.site_id)}</td><td><strong>{item.account_label || item.external_user_id}</strong>{item.account_label && <small className="operations-cell-subtext">{item.external_user_id}</small>}</td><td>{item.source_type}</td><td>{item.source_record_id || "-"}</td><td>{formatNumber(item.balance_units, 10)}</td><td>{formatDateTime(item.occurred_at)}</td><td><span className={`operations-status-tag ${item.status}`}>{item.status === "pending" ? "待处理" : item.status === "resolved" ? "已分类" : "已忽略"}</span></td>{canWrite && <td>{item.status === "pending" ? <button className="ghost operations-row-button" type="button" onClick={() => { setClassificationForm(emptyClassificationForm); setModal({ kind: "classification", item }); }}>补录</button> : "-"}</td>}</tr>) : <EmptyRow columns={canWrite ? 8 : 7} text={loading ? "正在加载..." : "当前筛选下暂无记录"} />}</tbody></table></div>
           </section>
         </div>
       )}
 
-      {modal?.kind === "internal" && <GrowthCreateModal title={modal.item ? "编辑内部人员" : "添加内部人员"} submitLabel={modal.item ? "保存修改" : "确认添加"} saving={saving} submitDisabled={!internalForm.site_id || !internalForm.external_user_id.trim()} onClose={() => setModal(null)} onSubmit={saveInternal}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect includeAll={false} value={internalForm.site_id} onChange={(site_id) => setInternalForm({ ...internalForm, site_id })} /></label><label><span className="field-label"><strong>业务用户 ID</strong></span><input value={internalForm.external_user_id} disabled={Boolean(modal.item)} onChange={(event) => setInternalForm({ ...internalForm, external_user_id: event.target.value })} required /></label><label><span className="field-label"><strong>账号名称</strong><span>（可选）</span></span><input value={internalForm.account_label} onChange={(event) => setInternalForm({ ...internalForm, account_label: event.target.value })} /></label><label><span className="field-label"><strong>标记原因</strong><span>（可选）</span></span><input value={internalForm.reason} onChange={(event) => setInternalForm({ ...internalForm, reason: event.target.value })} /></label><label><span className="field-label"><strong>生效时间</strong></span><input type="datetime-local" value={internalForm.active_from} onChange={(event) => setInternalForm({ ...internalForm, active_from: event.target.value })} /></label><label><span className="field-label"><strong>失效时间</strong><span>（可选）</span></span><input type="datetime-local" value={internalForm.active_until} onChange={(event) => setInternalForm({ ...internalForm, active_until: event.target.value })} /></label></div></GrowthCreateModal>}
+      {modal?.kind === "internal" && <GrowthCreateModal title={modal.item ? "编辑内部人员" : "添加内部人员"} submitLabel={modal.item ? "保存修改" : "确认添加"} saving={saving} submitDisabled={!internalForm.site_id || !internalForm.external_user_id.trim()} onClose={() => setModal(null)} onSubmit={saveInternal}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect sites={allowedSites} includeAll={false} value={internalForm.site_id} onChange={(site_id) => setInternalForm({ ...internalForm, site_id })} /></label><label><span className="field-label"><strong>业务用户 ID</strong></span><input value={internalForm.external_user_id} disabled={Boolean(modal.item)} onChange={(event) => setInternalForm({ ...internalForm, external_user_id: event.target.value })} required /></label><label><span className="field-label"><strong>账号名称</strong><span>（可选）</span></span><input value={internalForm.account_label} onChange={(event) => setInternalForm({ ...internalForm, account_label: event.target.value })} /></label><label><span className="field-label"><strong>标记原因</strong><span>（可选）</span></span><input value={internalForm.reason} onChange={(event) => setInternalForm({ ...internalForm, reason: event.target.value })} /></label><label><span className="field-label"><strong>生效时间</strong></span><input type="datetime-local" value={internalForm.active_from} onChange={(event) => setInternalForm({ ...internalForm, active_from: event.target.value })} /></label><label><span className="field-label"><strong>失效时间</strong><span>（可选）</span></span><input type="datetime-local" value={internalForm.active_until} onChange={(event) => setInternalForm({ ...internalForm, active_until: event.target.value })} /></label></div></GrowthCreateModal>}
 
-      {modal?.kind === "redemption" && <GrowthCreateModal title="生成兑换码" submitLabel="生成兑换码" saving={saving} submitDisabled={!redemptionForm.site_id || Number(redemptionForm.code_count) <= 0 || Number(redemptionForm.balance_units_per_code) <= 0 || (redemptionForm.purpose === "sale" && Number(redemptionForm.cash_amount_cny) <= 0)} onClose={() => setModal(null)} onSubmit={saveRedemption}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect includeAll={false} value={redemptionForm.site_id} onChange={(site_id) => setRedemptionForm({ ...redemptionForm, site_id })} /></label><PurposeFields purpose={redemptionForm.purpose} cash={redemptionForm.cash_amount_cny} onPurpose={(purpose) => setRedemptionForm({ ...redemptionForm, purpose, cash_amount_cny: purpose === "sale" ? redemptionForm.cash_amount_cny : "0" })} onCash={(cash_amount_cny) => setRedemptionForm({ ...redemptionForm, cash_amount_cny })} /><label><span className="field-label"><strong>兑换码数量</strong></span><input type="number" min="1" max="10000" value={redemptionForm.code_count} onChange={(event) => setRedemptionForm({ ...redemptionForm, code_count: event.target.value })} /></label><label><span className="field-label"><strong>每个兑换码额度</strong></span><input type="number" min="0" step="any" value={redemptionForm.balance_units_per_code} onChange={(event) => setRedemptionForm({ ...redemptionForm, balance_units_per_code: event.target.value })} /></label><label className="span-2"><span className="field-label"><strong>备注</strong><span>（可选）</span></span><textarea value={redemptionForm.note} onChange={(event) => setRedemptionForm({ ...redemptionForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
+      {modal?.kind === "redemption" && <GrowthCreateModal title="生成兑换码" submitLabel="生成兑换码" saving={saving} submitDisabled={!redemptionForm.site_id || Number(redemptionForm.code_count) <= 0 || Number(redemptionForm.balance_units_per_code) <= 0 || (redemptionForm.purpose === "sale" && Number(redemptionForm.cash_amount_cny) <= 0)} onClose={() => setModal(null)} onSubmit={saveRedemption}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect sites={allowedSites} includeAll={false} value={redemptionForm.site_id} onChange={(site_id) => setRedemptionForm({ ...redemptionForm, site_id })} /></label><PurposeFields purpose={redemptionForm.purpose} cash={redemptionForm.cash_amount_cny} onPurpose={(purpose) => setRedemptionForm({ ...redemptionForm, purpose, cash_amount_cny: purpose === "sale" ? redemptionForm.cash_amount_cny : "0" })} onCash={(cash_amount_cny) => setRedemptionForm({ ...redemptionForm, cash_amount_cny })} /><label><span className="field-label"><strong>兑换码数量</strong></span><input type="number" min="1" max="10000" value={redemptionForm.code_count} onChange={(event) => setRedemptionForm({ ...redemptionForm, code_count: event.target.value })} /></label><label><span className="field-label"><strong>每个兑换码额度</strong></span><input type="number" min="0" step="any" value={redemptionForm.balance_units_per_code} onChange={(event) => setRedemptionForm({ ...redemptionForm, balance_units_per_code: event.target.value })} /></label><label className="span-2"><span className="field-label"><strong>备注</strong><span>（可选）</span></span><textarea value={redemptionForm.note} onChange={(event) => setRedemptionForm({ ...redemptionForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
 
-      {modal?.kind === "adjustment" && <GrowthCreateModal title="调整余额" submitLabel="提交调整" saving={saving} submitDisabled={!adjustmentForm.site_id || !adjustmentForm.external_user_id.trim() || Number(adjustmentForm.balance_units) === 0 || (adjustmentForm.purpose === "sale" && Number(adjustmentForm.cash_amount_cny) <= 0)} onClose={() => setModal(null)} onSubmit={saveAdjustment}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect includeAll={false} value={adjustmentForm.site_id} onChange={(site_id) => setAdjustmentForm({ ...adjustmentForm, site_id })} /></label><label><span className="field-label"><strong>业务用户 ID</strong></span><input value={adjustmentForm.external_user_id} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, external_user_id: event.target.value })} /></label><PurposeFields purpose={adjustmentForm.purpose} cash={adjustmentForm.cash_amount_cny} onPurpose={(purpose) => setAdjustmentForm({ ...adjustmentForm, purpose, cash_amount_cny: purpose === "sale" ? adjustmentForm.cash_amount_cny : "0" })} onCash={(cash_amount_cny) => setAdjustmentForm({ ...adjustmentForm, cash_amount_cny })} /><label><span className="field-label"><strong>调整额度</strong></span><input type="number" step="any" value={adjustmentForm.balance_units} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, balance_units: event.target.value })} /><span className="growth-field-message is-muted">增加填正数，扣减填负数</span></label><label className="span-2"><span className="field-label"><strong>备注</strong><span>（可选）</span></span><textarea value={adjustmentForm.note} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
+      {modal?.kind === "adjustment" && <GrowthCreateModal title="调整余额" submitLabel="提交调整" saving={saving} submitDisabled={!adjustmentForm.site_id || !adjustmentForm.external_user_id.trim() || Number(adjustmentForm.balance_units) === 0 || (adjustmentForm.purpose === "sale" && Number(adjustmentForm.cash_amount_cny) <= 0)} onClose={() => setModal(null)} onSubmit={saveAdjustment}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect sites={allowedSites} includeAll={false} value={adjustmentForm.site_id} onChange={(site_id) => setAdjustmentForm({ ...adjustmentForm, site_id })} /></label><label><span className="field-label"><strong>业务用户 ID</strong></span><input value={adjustmentForm.external_user_id} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, external_user_id: event.target.value })} /></label><PurposeFields purpose={adjustmentForm.purpose} cash={adjustmentForm.cash_amount_cny} onPurpose={(purpose) => setAdjustmentForm({ ...adjustmentForm, purpose, cash_amount_cny: purpose === "sale" ? adjustmentForm.cash_amount_cny : "0" })} onCash={(cash_amount_cny) => setAdjustmentForm({ ...adjustmentForm, cash_amount_cny })} /><label><span className="field-label"><strong>调整额度</strong></span><input type="number" step="any" value={adjustmentForm.balance_units} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, balance_units: event.target.value })} /><span className="growth-field-message is-muted">增加填正数，扣减填负数</span></label><label className="span-2"><span className="field-label"><strong>备注</strong><span>（可选）</span></span><textarea value={adjustmentForm.note} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
 
-      {modal?.kind === "rate" && <GrowthCreateModal title="新增换算比例" submitLabel="确认生效" saving={saving} submitDisabled={!conversionForm.site_id || Number(conversionForm.balance_units_per_cny) <= 0} onClose={() => setModal(null)} onSubmit={saveRate}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect includeAll={false} value={conversionForm.site_id} onChange={(site_id) => setConversionForm({ ...conversionForm, site_id, balance_units_per_cny: site_id === "aigclink" ? "1" : "10" })} /></label><label><span className="field-label"><strong>每 1 CNY 对应余额</strong></span><input type="number" min="0" step="any" value={conversionForm.balance_units_per_cny} onChange={(event) => setConversionForm({ ...conversionForm, balance_units_per_cny: event.target.value })} /></label><label><span className="field-label"><strong>生效时间</strong><span>（可选）</span></span><input type="datetime-local" value={conversionForm.effective_from} onChange={(event) => setConversionForm({ ...conversionForm, effective_from: event.target.value })} /><span className="growth-field-message is-muted">{conversionRateEffectiveHint}</span></label><label className="span-2"><span className="field-label"><strong>备注</strong><span>（可选）</span></span><textarea value={conversionForm.note} onChange={(event) => setConversionForm({ ...conversionForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
+      {modal?.kind === "rate" && <GrowthCreateModal title="新增换算比例" submitLabel="确认生效" saving={saving} submitDisabled={!conversionForm.site_id || Number(conversionForm.balance_units_per_cny) <= 0} onClose={() => setModal(null)} onSubmit={saveRate}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect sites={allowedSites} includeAll={false} value={conversionForm.site_id} onChange={(site_id) => setConversionForm({ ...conversionForm, site_id, balance_units_per_cny: site_id === "aigclink" ? "1" : "10" })} /></label><label><span className="field-label"><strong>每 1 CNY 对应余额</strong></span><input type="number" min="0" step="any" value={conversionForm.balance_units_per_cny} onChange={(event) => setConversionForm({ ...conversionForm, balance_units_per_cny: event.target.value })} /></label><label><span className="field-label"><strong>生效时间</strong><span>（可选）</span></span><input type="datetime-local" value={conversionForm.effective_from} onChange={(event) => setConversionForm({ ...conversionForm, effective_from: event.target.value })} /><span className="growth-field-message is-muted">{conversionRateEffectiveHint}</span></label><label className="span-2"><span className="field-label"><strong>备注</strong><span>（可选）</span></span><textarea value={conversionForm.note} onChange={(event) => setConversionForm({ ...conversionForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
 
       {modal?.kind === "classification" && <GrowthCreateModal title="补录额度用途" submitLabel={classificationForm.status === "ignored" ? "确认忽略" : "完成分类"} saving={saving} submitDisabled={classificationForm.status === "resolved" && classificationForm.purpose === "sale" && Number(classificationForm.cash_amount_cny) <= 0} onClose={() => setModal(null)} onSubmit={saveClassification}><div className="operations-classification-context"><div><span>站点</span><strong>{siteLabel(modal.item.site_id)}</strong></div><div><span>业务用户 ID</span><strong>{modal.item.external_user_id}</strong></div><div><span>来源类型</span><strong>{modal.item.source_type}</strong></div><div><span>额度</span><strong>{formatNumber(modal.item.balance_units, 10)}</strong></div></div><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>处理方式</strong></span><select value={classificationForm.status} onChange={(event) => setClassificationForm({ ...classificationForm, status: event.target.value as "resolved" | "ignored" })}><option value="resolved">完成分类</option><option value="ignored">忽略记录</option></select></label>{classificationForm.status === "resolved" && <PurposeFields purpose={classificationForm.purpose} cash={classificationForm.cash_amount_cny} onPurpose={(purpose) => setClassificationForm({ ...classificationForm, purpose, cash_amount_cny: purpose === "sale" ? classificationForm.cash_amount_cny : "0" })} onCash={(cash_amount_cny) => setClassificationForm({ ...classificationForm, cash_amount_cny })} />}<label className="span-2"><span className="field-label"><strong>补录说明</strong><span>（可选）</span></span><textarea value={classificationForm.note} onChange={(event) => setClassificationForm({ ...classificationForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
     </section>

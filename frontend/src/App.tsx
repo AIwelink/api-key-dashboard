@@ -204,8 +204,10 @@ function App() {
             {view === "traffic-analysis" && <TrafficAnalysisPage token={token} showToast={showToast} />}
             {view === "operations-management" && (
               <OperationsManagementPage
+                key={(user?.operations_site_ids || []).join("|")}
                 token={token}
                 role={user?.role || "viewer"}
+                allowedSiteIds={user?.operations_site_ids || []}
                 showToast={showToast}
               />
             )}

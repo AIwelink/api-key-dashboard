@@ -10,11 +10,13 @@ import {
   emptyRedemptionForm,
   refreshFailureMessage,
 } from "./OperationsManagementPage";
+import type { OperationsSiteId } from "../types";
 
 
 const props = {
   token: "token",
   role: "admin",
+  allowedSiteIds: ["aiwelink", "aigclink"] as OperationsSiteId[],
   showToast: () => undefined,
 };
 
@@ -135,5 +137,34 @@ describe("operations management workspace", () => {
     expect(html).toContain("来源类型");
     expect(html).toContain("额度");
     expect(html).toContain("发生时间");
+  });
+});
+describe("operations site access", () => {
+  it("renders a stable no-access state without the analytics workspace", () => {
+    const html = renderToStaticMarkup(
+      <OperationsManagementPage {...props} allowedSiteIds={[]} />,
+    );
+
+    expect(html).toContain("\u5c1a\u672a\u5206\u914d\u8fd0\u8425\u7ad9\u70b9\u6743\u9650");
+    expect(html).not.toContain('class="operations-metric-grid"');
+    expect(html).not.toContain("\u5237\u65b0\u6e90\u6570\u636e");
+  });
+
+  it("shows only the assigned site for a single-site user", () => {
+    const html = renderToStaticMarkup(
+      <OperationsManagementPage {...props} allowedSiteIds={["aiwelink"]} />,
+    );
+
+    expect(html).toContain("AIWeLink");
+    expect(html).not.toContain("AIGCLink");
+    expect(html).not.toContain("\u5168\u90e8\u7ad9\u70b9");
+  });
+
+  it("retains the all-sites option for a two-site user", () => {
+    const html = renderToStaticMarkup(<OperationsManagementPage {...props} />);
+
+    expect(html).toContain("\u5168\u90e8\u7ad9\u70b9");
+    expect(html).toContain("AIWeLink");
+    expect(html).toContain("AIGCLink");
   });
 });
