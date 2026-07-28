@@ -94,6 +94,8 @@ created_at DESC, sub2api_account_id DESC
 
 同一份 `capacity_summary` 也存储在 `sub2api_groups_cache.capacity_summary`，分组列表接口会随 group 返回该字段。
 
+动态可用只计入短期恢复：5h 额度恢复等待时间不超过 `1h`，7d 额度恢复等待时间不超过 `1d`。恰好位于边界时仍计入，超过边界后只保留当前实际可用额度，不再提前计算未来恢复额度。
+
 ## 3. 实时数据就绪条件
 
 `calculate_capacity_risk()` 只有同时满足以下条件才设置 `ready=true`：

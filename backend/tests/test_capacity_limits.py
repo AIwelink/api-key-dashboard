@@ -448,8 +448,8 @@ class BugTeamCapacityTests(unittest.TestCase):
         self.assertEqual(status["pool_seven_day_rate_limited_accounts"], 0)
         self.assertEqual(status["pool_excluded_bug_team_accounts"], 0)
 
-    def test_exhausted_bug_team_over_two_days_from_reset_is_excluded(self) -> None:
-        account = bug_team_account(used_percent=100, reset_after_seconds=3 * 24 * 60 * 60)
+    def test_exhausted_bug_team_beyond_one_day_from_reset_is_excluded(self) -> None:
+        account = bug_team_account(used_percent=100, reset_after_seconds=24 * 60 * 60 + 1)
         status = cache._pool_account_status_summary([account])
 
         self.assertTrue(cache._is_excluded_bug_team_account(account))
@@ -457,7 +457,7 @@ class BugTeamCapacityTests(unittest.TestCase):
         self.assertEqual(status["pool_normal_accounts"], 0)
         self.assertEqual(status["pool_excluded_bug_team_accounts"], 1)
 
-    def test_exhausted_bug_team_within_two_days_participates_in_dynamic_capacity(self) -> None:
+    def test_exhausted_bug_team_within_one_day_participates_in_dynamic_capacity(self) -> None:
         account = bug_team_account(used_percent=100, reset_after_seconds=24 * 60 * 60)
         limits = normalize_capacity_limits(None)
         status = cache._pool_account_status_summary([account])
@@ -577,6 +577,32 @@ class BugTeamCapacityTests(unittest.TestCase):
                 )
                 self.assertAlmostEqual(usage["actual_used_usd"], 90)
                 self.assertAlmostEqual(usage["actual_remaining_usd"], 10)
+
+    def test_five_hour_dynamic_recovery_stops_after_one_hour(self) -> None:
+        def usage(reset_after_seconds: int) -> dict[str, float]:
+            return cache._dynamic_five_hour_usage(
+                {
+                    "plan_type": "team",
+                    "extra": {
+                        "codex_5h_used_percent": 100,
+                        "codex_5h_reset_after_seconds": reset_after_seconds,
+                        "codex_5h_window_minutes": 300,
+                        "codex_7d_used_percent": 20,
+                        "codex_7d_reset_after_seconds": 4 * 24 * 60 * 60,
+                        "codex_7d_window_minutes": 10_080,
+                    },
+                },
+                five_hour_limit_usd=20,
+                seven_day_limit_usd=100,
+                five_hour_available=True,
+            )
+
+        at_boundary = usage(60 * 60)
+        beyond_boundary = usage(60 * 60 + 1)
+
+        self.assertGreater(at_boundary["remaining_usd"], 0)
+        self.assertEqual(beyond_boundary["remaining_usd"], beyond_boundary["actual_remaining_usd"])
+        self.assertEqual(beyond_boundary["remaining_usd"], 0)
 
 
 class SiteCapacityLimitTests(unittest.IsolatedAsyncioTestCase):
@@ -805,7 +831,7 @@ class FiveHourCapacityPercentageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["available_7d_percent"], 91)
         self.assertEqual(summary["actual_available_7d_percent"], 70)
 
-    async def test_plus_dynamic_capacity_includes_seven_day_reset_within_two_days(self) -> None:
+    async def test_plus_dynamic_capacity_includes_seven_day_reset_within_one_day(self) -> None:
         limits = normalize_capacity_limits({"plus": {"five_hour_usd": 120, "seven_day_usd": 600}})
         accounts = [
             {
