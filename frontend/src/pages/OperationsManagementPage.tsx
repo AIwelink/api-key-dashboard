@@ -636,13 +636,12 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
             <Metric label="流水收入" value={formatCurrency(summary.gross_income_cny)} previous={comparison(summary.gross_income_cny, previous.gross_income_cny)} />
             <Metric label="退款" value={formatCurrency(summary.refund_cny)} previous={comparison(summary.refund_cny, previous.refund_cny)} />
             <Metric label="净收入" value={formatCurrency(summary.net_income_cny)} previous={comparison(summary.net_income_cny, previous.net_income_cny)} />
-            <Metric label="调用成本" value={formatCurrency(summary.cost_cny)} previous={comparison(summary.cost_cny, previous.cost_cny)} />
           </div>
 
           <div className="operations-trend-grid">
             <section className="operations-data-section">
-              <div className="operations-section-head"><div><h3>收入与成本趋势</h3><span>48 小时内按小时，更长周期按天汇总</span></div></div>
-              <div className="operations-table-scroll"><table><thead><tr><th>时间</th><th>站点</th><th>净收入</th><th>调用成本</th><th>活跃用户</th></tr></thead><tbody>{trends.length ? trends.map((item, index) => <tr key={`${item.site_id}-${item.bucket}-${index}`}><td>{formatBucket(item.bucket)}</td><td>{siteLabel(item.site_id)}</td><td>{formatCurrency(item.net_income_cny)}</td><td>{formatCurrency(item.cost_cny)}</td><td>{formatNumber(item.active_user_count, 0)}</td></tr>) : <EmptyRow columns={5} text={loading ? "正在加载趋势..." : "当前周期暂无趋势数据"} />}</tbody></table></div>
+              <div className="operations-section-head"><div><h3>收入趋势</h3><span>48 小时内按小时，更长周期按天汇总</span></div></div>
+              <div className="operations-table-scroll"><table><thead><tr><th>时间</th><th>站点</th><th>净收入</th><th>活跃用户</th></tr></thead><tbody>{trends.length ? trends.map((item, index) => <tr key={`${item.site_id}-${item.bucket}-${index}`}><td>{formatBucket(item.bucket)}</td><td>{siteLabel(item.site_id)}</td><td>{formatCurrency(item.net_income_cny)}</td><td>{formatNumber(item.active_user_count, 0)}</td></tr>) : <EmptyRow columns={4} text={loading ? "正在加载趋势..." : "当前周期暂无趋势数据"} />}</tbody></table></div>
             </section>
             <section className="operations-data-section">
               <div className="operations-section-head"><div><h3>用户活动趋势</h3><span>注册、调用和付费人数</span></div></div>
@@ -651,8 +650,8 @@ export function OperationsManagementPage({ token, role, showToast, initialTab = 
           </div>
 
           <section className="operations-data-section">
-            <div className="operations-section-head"><div><h3>账号运营明细</h3><span>当前查询周期内的调用与成本</span></div><span>{users.length} 个账号</span></div>
-            <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>业务用户 ID</th><th>用户群体</th><th>注册时间</th><th>成功调用</th><th>调用成本</th><th>最近调用</th></tr></thead><tbody>{users.length ? users.map((item) => <tr key={`${item.site_id}-${item.external_user_id}`}><td>{siteLabel(item.site_id)}</td><td><strong>{item.account_label || item.external_user_id}</strong>{item.account_label && <small className="operations-cell-subtext">{item.external_user_id}</small>}</td><td><span className={`operations-status-tag ${item.is_internal ? "internal" : "ordinary"}`}>{item.is_internal ? "内部人员" : "普通用户"}</span></td><td>{formatDateTime(item.registered_at)}</td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatCurrency(item.cost_cny)}</td><td>{formatDateTime(item.last_used_at)}</td></tr>) : <EmptyRow columns={7} text={loading ? "正在加载账号..." : "当前周期暂无账号数据"} />}</tbody></table></div>
+            <div className="operations-section-head"><div><h3>账号运营明细</h3><span>当前查询周期内的注册与调用情况</span></div><span>{users.length} 个账号</span></div>
+            <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>业务用户 ID</th><th>用户群体</th><th>注册时间</th><th>成功调用</th><th>最近调用</th></tr></thead><tbody>{users.length ? users.map((item) => <tr key={`${item.site_id}-${item.external_user_id}`}><td>{siteLabel(item.site_id)}</td><td><strong>{item.account_label || item.external_user_id}</strong>{item.account_label && <small className="operations-cell-subtext">{item.external_user_id}</small>}</td><td><span className={`operations-status-tag ${item.is_internal ? "internal" : "ordinary"}`}>{item.is_internal ? "内部人员" : "普通用户"}</span></td><td>{formatDateTime(item.registered_at)}</td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatDateTime(item.last_used_at)}</td></tr>) : <EmptyRow columns={6} text={loading ? "正在加载账号..." : "当前周期暂无账号数据"} />}</tbody></table></div>
           </section>
         </div>
       )}

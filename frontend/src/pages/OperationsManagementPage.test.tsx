@@ -83,6 +83,7 @@ describe("operations management workspace", () => {
     expect(html).toContain('class="operations-freshness-banner');
     expect(html).toContain('class="operations-metric-grid"');
     expect(html).toContain('class="operations-trend-grid"');
+    expect(html).not.toContain("\u8c03\u7528\u6210\u672c");
     expect(html).toContain("注册用户");
     expect(html).toContain("净收入");
   });
