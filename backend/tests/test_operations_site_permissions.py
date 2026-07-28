@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import HTTPException
 from pydantic import ValidationError
+from pymongo.errors import OperationFailure
 
 from app.modules.operations import site_permissions
 from app.routers import auth as auth_router
@@ -182,6 +183,31 @@ class OperationsSitePermissionsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(documents[0]["operations_site_ids"], ["aiwelink"])
         self.assertEqual(documents[1]["operations_site_ids"], ["aigclink"])
+
+    async def test_standalone_mongo_rolls_back_partial_permission_updates(self) -> None:
+        documents = [
+            {"_id": "first@example.com", "email": "first@example.com", "operations_site_ids": ["aiwelink"]},
+            {"_id": "second@example.com", "email": "second@example.com", "operations_site_ids": ["aigclink"]},
+        ]
+        db = fake_db(documents)
+        db.client.start_session.side_effect = OperationFailure(
+            "Transaction numbers are only allowed on a replica set member or mongos",
+            code=20,
+        )
+        db.users.matched_count = 1
+        payload = OperationsSitePermissionsUpdate(
+            users=[
+                OperationsSitePermissionEntry(user_id="first@example.com", operations_site_ids=["aigclink"]),
+                OperationsSitePermissionEntry(user_id="second@example.com", operations_site_ids=["aiwelink"]),
+            ]
+        )
+
+        with self.assertRaises(site_permissions.OperationsSitePermissionsConflictError):
+            await site_permissions.update_operations_site_permissions(db, payload=payload)
+
+        self.assertEqual(documents[0]["operations_site_ids"], ["aiwelink"])
+        self.assertEqual(documents[1]["operations_site_ids"], ["aigclink"])
+        self.assertEqual(db.users.bulk_write.await_count, 2)
 
     async def test_successful_put_persists_canonical_mapping_and_writes_audit(self) -> None:
         documents = [
