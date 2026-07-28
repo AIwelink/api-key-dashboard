@@ -107,6 +107,30 @@ class OperationsDomainTests(unittest.TestCase):
 
 
 class OperationsSchemaTests(unittest.TestCase):
+    def test_internal_user_create_normalizes_email(self) -> None:
+        from app.modules.operations.schemas import InternalUserCreate
+
+        payload = InternalUserCreate(
+            site_id="aigclink",
+            email=" Staff@Example.com ",
+        )
+
+        self.assertEqual(payload.email, "staff@example.com")
+        self.assertFalse(hasattr(payload, "external_user_id"))
+
+    def test_internal_user_update_normalizes_email(self) -> None:
+        from app.modules.operations.schemas import InternalUserUpdate
+
+        payload = InternalUserUpdate(email=" Staff@Example.com ")
+
+        self.assertEqual(payload.email, "staff@example.com")
+
+    def test_internal_user_rejects_invalid_email(self) -> None:
+        from app.modules.operations.schemas import InternalUserCreate
+
+        with self.assertRaises(ValidationError):
+            InternalUserCreate(site_id="aigclink", email="not-an-email")
+
     def test_sale_redemption_requires_actual_cash_amount(self) -> None:
         from app.modules.operations.schemas import RedemptionBatchCreate
 
@@ -145,7 +169,7 @@ class OperationsSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             InternalUserCreate(
                 site_id="aigclink",
-                external_user_id="42",
+                email="staff@example.com",
                 active_from=NOW,
                 active_until=NOW - timedelta(days=1),
             )

@@ -24,3 +24,65 @@
   font-size: 13px;
   line-height: 1.7;
 }
+
+.operations-workspace-page .operations-metric-grid {
+  grid-template-columns: repeat(6, minmax(132px, 1fr));
+}
+
+.operations-overview-table-stack {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.operations-trend-section .operations-table-scroll table,
+.operations-site-comparison .operations-table-scroll table {
+  min-width: 1060px;
+}
+
+.operations-trend-section td:not(:first-child):not(:nth-child(2)),
+.operations-site-comparison td:not(:first-child) {
+  font-variant-numeric: tabular-nums;
+}
+
+.operations-workspace-page .operations-status-tag.recognized {
+  background: #e8f6ee;
+  color: var(--success);
+}
+
+@media (max-width: 1180px) {
+  .operations-workspace-page .operations-metric-grid {
+    grid-template-columns: repeat(3, minmax(140px, 1fr));
+  }
+
+  .operations-workspace-page .operations-metric {
+    border-bottom: 0;
+    border-right: 1px solid var(--line);
+  }
+
+  .operations-workspace-page .operations-metric:nth-child(3n) {
+    border-right: 0;
+  }
+
+  .operations-workspace-page .operations-metric:nth-child(-n + 3) {
+    border-bottom: 1px solid var(--line);
+  }
+}
+
+@media (max-width: 620px) {
+  .operations-workspace-page .operations-metric-grid {
+    grid-template-columns: repeat(2, minmax(140px, 1fr));
+  }
+
+  .operations-workspace-page .operations-metric:nth-child(3n) {
+    border-right: 1px solid var(--line);
+  }
+
+  .operations-workspace-page .operations-metric:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .operations-workspace-page .operations-metric:nth-child(-n + 4) {
+    border-bottom: 1px solid var(--line);
+  }
+}

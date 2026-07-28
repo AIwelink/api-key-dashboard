@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 
 class Purpose(str, Enum):
@@ -53,16 +53,20 @@ def _validate_purpose_cash(purpose: Purpose, cash_amount_cny: Decimal) -> None:
 
 class InternalUserCreate(BaseModel):
     site_id: str = Field(min_length=1, max_length=120)
-    external_user_id: str = Field(min_length=1, max_length=240)
-    account_label: str = Field(default="", max_length=240)
+    email: EmailStr
     reason: str = Field(default="", max_length=1000)
     active_from: datetime = Field(default_factory=lambda: datetime.now(UTC))
     active_until: datetime | None = None
 
-    @field_validator("site_id", "external_user_id", "account_label", "reason")
+    @field_validator("site_id", "reason")
     @classmethod
     def trim_text(cls, value: str) -> str:
         return _trim(value)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: EmailStr) -> str:
+        return str(value).strip().lower()
 
     @model_validator(mode="after")
     def validate_window(self):
@@ -71,15 +75,20 @@ class InternalUserCreate(BaseModel):
 
 
 class InternalUserUpdate(BaseModel):
-    account_label: str | None = Field(default=None, max_length=240)
+    email: EmailStr | None = None
     reason: str | None = Field(default=None, max_length=1000)
     active_from: datetime | None = None
     active_until: datetime | None = None
 
-    @field_validator("account_label", "reason")
+    @field_validator("reason")
     @classmethod
     def trim_optional_text(cls, value: str | None) -> str | None:
         return _trim(value) if value is not None else None
+
+    @field_validator("email")
+    @classmethod
+    def normalize_optional_email(cls, value: EmailStr | None) -> str | None:
+        return str(value).strip().lower() if value is not None else None
 
     @model_validator(mode="after")
     def validate_window(self):

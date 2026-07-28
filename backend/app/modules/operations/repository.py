@@ -73,12 +73,17 @@ async def list_internal_users(
     result = await connection.execute(
         text(
             """
-            SELECT internal_user.*
+            SELECT internal_user.*,
+                   CASE
+                       WHEN internal_user.external_user_id IS NULL THEN 'pending'
+                       ELSE 'recognized'
+                   END AS recognition_status
             FROM growth.internal_users AS internal_user
             WHERE internal_user.site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
               AND (
                   CAST(:query AS TEXT) IS NULL
                   OR internal_user.external_user_id ILIKE '%' || :query || '%'
+                  OR internal_user.email ILIKE '%' || :query || '%'
                   OR internal_user.account_label ILIKE '%' || :query || '%'
               )
             ORDER BY internal_user.created_at DESC, internal_user.internal_user_id
@@ -101,33 +106,57 @@ async def create_internal_user(
     result = await connection.execute(
         text(
             """
-            INSERT INTO growth.internal_users (
-                internal_user_id, site_id, external_user_id, account_label, reason,
-                active_from, active_until, created_by, updated_by
-            ) VALUES (
-                :internal_user_id, :site_id, :external_user_id, :account_label, :reason,
-                :active_from, :active_until, :actor_id, :actor_id
+            WITH email_matches AS (
+                SELECT snapshot.external_user_id,
+                       NOT EXISTS (
+                           SELECT 1
+                           FROM growth.internal_users AS existing
+                           WHERE existing.site_id = snapshot.site_id
+                             AND existing.external_user_id = snapshot.external_user_id
+                       ) AS available
+                FROM growth.ops_user_snapshots AS snapshot
+                WHERE snapshot.site_id = :site_id
+                  AND lower(trim(snapshot.account_label)) = lower(trim(:email))
+            ), candidate AS (
+                SELECT CASE
+                           WHEN COUNT(*) = 1 AND BOOL_AND(email_matches.available)
+                           THEN MIN(email_matches.external_user_id)
+                           ELSE NULL
+                       END AS external_user_id
+                FROM email_matches
+            ), inserted AS (
+                INSERT INTO growth.internal_users (
+                    internal_user_id, site_id, external_user_id, email, account_label,
+                    reason, active_from, active_until, recognized_at, created_by, updated_by
+                )
+                SELECT
+                    :internal_user_id, :site_id, candidate.external_user_id, :email, :email,
+                    :reason, :active_from, :active_until,
+                    CASE WHEN candidate.external_user_id IS NULL THEN NULL ELSE NOW() END,
+                    :actor_id, :actor_id
+                FROM candidate
+                RETURNING *
+            ), attached AS (
+                UPDATE growth.ops_user_snapshots AS snapshot
+                SET is_internal = TRUE,
+                    internal_user_id = inserted.internal_user_id,
+                    synced_at = NOW()
+                FROM inserted
+                WHERE inserted.external_user_id IS NOT NULL
+                  AND snapshot.site_id = inserted.site_id
+                  AND snapshot.external_user_id = inserted.external_user_id
             )
-            RETURNING *
+            SELECT inserted.*,
+                   CASE
+                       WHEN inserted.external_user_id IS NULL THEN 'pending'
+                       ELSE 'recognized'
+                   END AS recognition_status
+            FROM inserted
             """
         ),
         {"internal_user_id": selected_id, "actor_id": actor_id, **values},
     )
     row = _one(result)
-    await connection.execute(
-        text(
-            """
-            UPDATE growth.ops_user_snapshots
-            SET is_internal = TRUE, internal_user_id = :internal_user_id, synced_at = NOW()
-            WHERE site_id = :site_id AND external_user_id = :external_user_id
-            """
-        ),
-        {
-            "internal_user_id": selected_id,
-            "site_id": payload.site_id,
-            "external_user_id": payload.external_user_id,
-        },
-    )
     return row or {}
 
 
@@ -154,19 +183,116 @@ async def update_internal_user(
     if not updates:
         result = await connection.execute(
             text(
-                "SELECT * FROM growth.internal_users WHERE internal_user_id = :internal_user_id"
+                """
+                SELECT internal_user.*,
+                       CASE
+                           WHEN internal_user.external_user_id IS NULL THEN 'pending'
+                           ELSE 'recognized'
+                       END AS recognition_status
+                FROM growth.internal_users AS internal_user
+                WHERE internal_user.internal_user_id = :internal_user_id
+                """
             ),
             {"internal_user_id": internal_user_id},
+        )
+    elif "email" in updates:
+        additional_updates = {key: value for key, value in updates.items() if key != "email"}
+        additional_assignments = "".join(
+            f", {field} = :{field}" for field in additional_updates
+        )
+        result = await connection.execute(
+            text(
+                f"""
+                WITH cleared_identity AS (
+                    UPDATE growth.internal_users
+                    SET email = :email,
+                        account_label = :email,
+                        external_user_id = NULL,
+                        recognized_at = NULL
+                        {additional_assignments},
+                        updated_by = :actor_id,
+                        updated_at = NOW()
+                    WHERE internal_user_id = :internal_user_id
+                    RETURNING *
+                ), cleared_snapshot AS (
+                    UPDATE growth.ops_user_snapshots AS snapshot
+                    SET is_internal = FALSE,
+                        internal_user_id = NULL,
+                        synced_at = NOW()
+                    FROM cleared_identity
+                    WHERE snapshot.internal_user_id = cleared_identity.internal_user_id
+                ), email_matches AS (
+                    SELECT snapshot.external_user_id,
+                           NOT EXISTS (
+                               SELECT 1
+                               FROM growth.internal_users AS existing
+                               WHERE existing.site_id = snapshot.site_id
+                                 AND existing.external_user_id = snapshot.external_user_id
+                                 AND existing.internal_user_id <> :internal_user_id
+                           ) AS available
+                    FROM growth.ops_user_snapshots AS snapshot
+                    JOIN cleared_identity
+                      ON cleared_identity.site_id = snapshot.site_id
+                    WHERE lower(trim(snapshot.account_label)) = lower(trim(:email))
+                ), candidate AS (
+                    SELECT CASE
+                               WHEN COUNT(*) = 1 AND BOOL_AND(email_matches.available)
+                               THEN MIN(email_matches.external_user_id)
+                               ELSE NULL
+                           END AS external_user_id
+                    FROM email_matches
+                ), recognized AS (
+                    UPDATE growth.internal_users AS internal_user
+                    SET external_user_id = candidate.external_user_id,
+                        recognized_at = CASE
+                            WHEN candidate.external_user_id IS NULL THEN NULL
+                            ELSE NOW()
+                        END
+                    FROM candidate
+                    WHERE internal_user.internal_user_id = :internal_user_id
+                    RETURNING internal_user.*
+                ), attached AS (
+                    UPDATE growth.ops_user_snapshots AS snapshot
+                    SET is_internal = TRUE,
+                        internal_user_id = recognized.internal_user_id,
+                        synced_at = NOW()
+                    FROM recognized
+                    WHERE recognized.external_user_id IS NOT NULL
+                      AND snapshot.site_id = recognized.site_id
+                      AND snapshot.external_user_id = recognized.external_user_id
+                )
+                SELECT recognized.*,
+                       CASE
+                           WHEN recognized.external_user_id IS NULL THEN 'pending'
+                           ELSE 'recognized'
+                       END AS recognition_status
+                FROM recognized
+                """
+            ),
+            {
+                "internal_user_id": internal_user_id,
+                "actor_id": actor_id,
+                "email": updates["email"],
+                **additional_updates,
+            },
         )
     else:
         assignments = ", ".join(f"{field} = :{field}" for field in updates)
         result = await connection.execute(
             text(
                 f"""
-                UPDATE growth.internal_users
-                SET {assignments}, updated_by = :actor_id, updated_at = NOW()
-                WHERE internal_user_id = :internal_user_id
-                RETURNING *
+                WITH updated AS (
+                    UPDATE growth.internal_users
+                    SET {assignments}, updated_by = :actor_id, updated_at = NOW()
+                    WHERE internal_user_id = :internal_user_id
+                    RETURNING *
+                )
+                SELECT updated.*,
+                       CASE
+                           WHEN updated.external_user_id IS NULL THEN 'pending'
+                           ELSE 'recognized'
+                       END AS recognition_status
+                FROM updated
                 """
             ),
             {"internal_user_id": internal_user_id, "actor_id": actor_id, **updates},
@@ -373,6 +499,58 @@ async def upsert_user_snapshots(connection: Any, records: list[Any]) -> int:
             """
         ),
         parameters,
+    )
+    await connection.execute(
+        text(
+            """
+            WITH matches AS (
+                SELECT configured.internal_user_id,
+                       snapshot.external_user_id,
+                       NOT EXISTS (
+                           SELECT 1
+                           FROM growth.internal_users AS existing
+                           WHERE existing.site_id = snapshot.site_id
+                             AND existing.external_user_id = snapshot.external_user_id
+                             AND existing.internal_user_id <> configured.internal_user_id
+                       ) AS available
+                FROM growth.internal_users AS configured
+                JOIN growth.ops_user_snapshots AS snapshot
+                  ON snapshot.site_id = configured.site_id
+                 AND lower(trim(configured.email)) = lower(trim(snapshot.account_label))
+                WHERE configured.external_user_id IS NULL
+                  AND configured.email IS NOT NULL
+                  AND configured.active_from <= NOW()
+                  AND (configured.active_until IS NULL OR configured.active_until > NOW())
+            ), unique_matches AS (
+                SELECT matches.internal_user_id,
+                       MIN(matches.external_user_id) AS external_user_id
+                FROM matches
+                GROUP BY matches.internal_user_id
+                HAVING COUNT(*) = 1 AND BOOL_AND(matches.available)
+            ), recognized AS (
+                UPDATE growth.internal_users AS configured
+                SET external_user_id = unique_matches.external_user_id,
+                    recognized_at = NOW(),
+                    updated_at = NOW()
+                FROM unique_matches
+                WHERE configured.internal_user_id = unique_matches.internal_user_id
+                  AND (
+                      configured.external_user_id = unique_matches.external_user_id
+                      OR configured.external_user_id IS NULL
+                  )
+                RETURNING configured.internal_user_id,
+                          configured.site_id,
+                          configured.external_user_id
+            )
+            UPDATE growth.ops_user_snapshots AS snapshot
+            SET is_internal = TRUE,
+                internal_user_id = recognized.internal_user_id,
+                synced_at = NOW()
+            FROM recognized
+            WHERE snapshot.site_id = recognized.site_id
+              AND snapshot.external_user_id = recognized.external_user_id
+            """
+        )
     )
     return len(parameters)
 
@@ -608,7 +786,11 @@ async def get_operations_summary(
                 SELECT COUNT(DISTINCT usage.external_user_id) AS active_user_count,
                        COALESCE(SUM(usage.successful_call_count), 0) AS successful_call_count,
                        COALESCE(SUM(usage.consumed_balance_units), 0) AS consumed_balance_units,
-                       COALESCE(SUM(usage.cost_cny), 0) AS cost_cny
+                       COALESCE(SUM(usage.cost_cny), 0) AS cost_cny,
+                       COALESCE(SUM(usage.cost_cny) FILTER (
+                           WHERE usage.site_id = 'aigclink'
+                             AND NOT snapshot.is_internal
+                       ), 0) AS aigclink_income_cny
                 FROM growth.usage_facts AS usage
                 JOIN scoped_users AS snapshot
                   ON snapshot.site_id = usage.site_id
@@ -622,8 +804,10 @@ async def get_operations_summary(
                            WHERE event.direction = 'credit' AND event.purpose = 'sale'
                        ) AS sale_event_count,
                        COALESCE(SUM(event.cash_amount_cny) FILTER (
-                           WHERE event.direction = 'credit' AND event.purpose = 'sale'
-                       ), 0) AS gross_income_cny,
+                           WHERE event.direction = 'credit'
+                             AND event.purpose = 'sale'
+                             AND event.site_id <> 'aigclink'
+                       ), 0) AS aiwelink_income_cny,
                        COALESCE(SUM(event.cash_amount_cny) FILTER (
                            WHERE event.direction = 'debit' AND event.purpose = 'sale'
                        ), 0) AS refund_cny
@@ -634,8 +818,19 @@ async def get_operations_summary(
                 WHERE event.classification_status = 'classified'
                   AND event.occurred_at >= :start_at AND event.occurred_at < :end_at
             )
-            SELECT user_metrics.*, usage_metrics.*, credit_metrics.*,
-                   credit_metrics.gross_income_cny - credit_metrics.refund_cny AS net_income_cny
+            SELECT user_metrics.registered_user_count,
+                   usage_metrics.active_user_count,
+                   usage_metrics.successful_call_count,
+                   usage_metrics.consumed_balance_units,
+                   usage_metrics.cost_cny,
+                   credit_metrics.payer_count,
+                   credit_metrics.sale_event_count,
+                   usage_metrics.aigclink_income_cny
+                       + credit_metrics.aiwelink_income_cny AS gross_income_cny,
+                   credit_metrics.refund_cny,
+                   usage_metrics.aigclink_income_cny
+                       + credit_metrics.aiwelink_income_cny
+                       - credit_metrics.refund_cny AS net_income_cny
             FROM user_metrics, usage_metrics, credit_metrics
             """
         ),
@@ -649,6 +844,106 @@ async def get_operations_summary(
     return _one(result) or {}
 
 
+async def get_operations_site_breakdown(
+    connection: Any,
+    *,
+    allowed_site_ids: tuple[str, ...],
+    segment: str,
+    start_at: datetime,
+    end_at: datetime,
+) -> list[dict[str, Any]]:
+    segment_filter = _segment_filter("snapshot")
+    result = await connection.execute(
+        text(
+            f"""
+            WITH scoped_sites AS (
+                SELECT unnest(CAST(:allowed_site_ids AS TEXT[])) AS site_id
+            ), scoped_users AS (
+                SELECT snapshot.*
+                FROM growth.ops_user_snapshots AS snapshot
+                WHERE snapshot.site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
+                  AND {segment_filter}
+            ), user_metrics AS (
+                SELECT snapshot.site_id,
+                       COUNT(*) FILTER (
+                           WHERE snapshot.registered_at >= :start_at
+                             AND snapshot.registered_at < :end_at
+                       ) AS registered_user_count
+                FROM scoped_users AS snapshot
+                GROUP BY snapshot.site_id
+            ), usage_metrics AS (
+                SELECT usage.site_id,
+                       COUNT(DISTINCT usage.external_user_id) AS active_user_count,
+                       COALESCE(SUM(usage.successful_call_count), 0) AS successful_call_count,
+                       COALESCE(SUM(usage.consumed_balance_units), 0) AS consumed_balance_units,
+                       COALESCE(SUM(usage.cost_cny), 0) AS cost_cny,
+                       COALESCE(SUM(usage.cost_cny) FILTER (
+                           WHERE usage.site_id = 'aigclink'
+                             AND NOT snapshot.is_internal
+                       ), 0) AS aigclink_income_cny
+                FROM growth.usage_facts AS usage
+                JOIN scoped_users AS snapshot
+                  ON snapshot.site_id = usage.site_id
+                 AND snapshot.external_user_id = usage.external_user_id
+                WHERE usage.occurred_at >= :start_at
+                  AND usage.occurred_at < :end_at
+                GROUP BY usage.site_id
+            ), credit_metrics AS (
+                SELECT event.site_id,
+                       COUNT(DISTINCT event.external_user_id) FILTER (
+                           WHERE event.direction = 'credit' AND event.purpose = 'sale'
+                       ) AS payer_count,
+                       COUNT(*) FILTER (
+                           WHERE event.direction = 'credit' AND event.purpose = 'sale'
+                       ) AS sale_event_count,
+                       COALESCE(SUM(event.cash_amount_cny) FILTER (
+                           WHERE event.direction = 'credit'
+                             AND event.purpose = 'sale'
+                             AND event.site_id <> 'aigclink'
+                       ), 0) AS aiwelink_income_cny,
+                       COALESCE(SUM(event.cash_amount_cny) FILTER (
+                           WHERE event.direction = 'debit' AND event.purpose = 'sale'
+                       ), 0) AS refund_cny
+                FROM growth.credit_events AS event
+                JOIN scoped_users AS snapshot
+                  ON snapshot.site_id = event.site_id
+                 AND snapshot.external_user_id = event.external_user_id
+                WHERE event.classification_status = 'classified'
+                  AND event.occurred_at >= :start_at
+                  AND event.occurred_at < :end_at
+                GROUP BY event.site_id
+            )
+            SELECT site.site_id,
+                   COALESCE(users.registered_user_count, 0) AS registered_user_count,
+                   COALESCE(usage.active_user_count, 0) AS active_user_count,
+                   COALESCE(usage.successful_call_count, 0) AS successful_call_count,
+                   COALESCE(usage.consumed_balance_units, 0) AS consumed_balance_units,
+                   COALESCE(usage.cost_cny, 0) AS cost_cny,
+                   COALESCE(credit.payer_count, 0) AS payer_count,
+                   COALESCE(credit.sale_event_count, 0) AS sale_event_count,
+                   COALESCE(usage.aigclink_income_cny, 0)
+                       + COALESCE(credit.aiwelink_income_cny, 0) AS gross_income_cny,
+                   COALESCE(credit.refund_cny, 0) AS refund_cny,
+                   COALESCE(usage.aigclink_income_cny, 0)
+                       + COALESCE(credit.aiwelink_income_cny, 0)
+                       - COALESCE(credit.refund_cny, 0) AS net_income_cny
+            FROM scoped_sites AS site
+            LEFT JOIN user_metrics AS users ON users.site_id = site.site_id
+            LEFT JOIN usage_metrics AS usage ON usage.site_id = site.site_id
+            LEFT JOIN credit_metrics AS credit ON credit.site_id = site.site_id
+            ORDER BY site.site_id
+            """
+        ),
+        {
+            "allowed_site_ids": allowed_site_ids,
+            "segment": segment,
+            "start_at": start_at,
+            "end_at": end_at,
+        },
+    )
+    return _all(result)
+
+
 async def get_operations_trends(
     connection: Any,
     *,
@@ -660,19 +955,39 @@ async def get_operations_trends(
     hourly = end_at - start_at <= timedelta(hours=48)
     table_name = "ops_hourly_stats" if hourly else "ops_daily_stats"
     bucket_name = "bucket_start" if hourly else "bucket_date"
+    timezone_join = "AND ordinary.timezone = stats.timezone" if not hourly else ""
+    income_expression = """
+        COALESCE(
+            CASE
+                WHEN stats.site_id = 'aigclink' AND stats.user_segment = 'internal' THEN 0
+                WHEN stats.site_id = 'aigclink' THEN ordinary.cost_cny
+                ELSE stats.gross_income_cny
+            END,
+            0
+        )
+    """.strip()
     result = await connection.execute(
         text(
             f"""
-            SELECT {bucket_name} AS bucket, site_id, user_segment,
-                   registered_user_count, active_user_count, successful_call_count,
-                   consumed_balance_units, cost_cny, payer_count, sale_event_count,
-                   gross_income_cny, refund_cny,
-                   gross_income_cny - refund_cny AS net_income_cny, computed_at
-            FROM growth.{table_name}
-            WHERE site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
-              AND user_segment = :segment
-              AND {bucket_name} >= :start_at AND {bucket_name} < :end_at
-            ORDER BY {bucket_name}, site_id
+            SELECT stats.{bucket_name} AS bucket, stats.site_id, stats.user_segment,
+                   stats.registered_user_count, stats.active_user_count,
+                   stats.successful_call_count, stats.consumed_balance_units,
+                   stats.cost_cny, stats.payer_count, stats.sale_event_count,
+                   {income_expression} AS gross_income_cny,
+                   stats.refund_cny,
+                   {income_expression} - stats.refund_cny AS net_income_cny,
+                   stats.computed_at
+            FROM growth.{table_name} AS stats
+            LEFT JOIN growth.{table_name} AS ordinary
+              ON ordinary.site_id = stats.site_id
+             AND ordinary.{bucket_name} = stats.{bucket_name}
+             AND ordinary.user_segment = 'ordinary'
+             {timezone_join}
+            WHERE stats.site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
+              AND stats.user_segment = :segment
+              AND stats.{bucket_name} >= :start_at
+              AND stats.{bucket_name} < :end_at
+            ORDER BY stats.{bucket_name}, stats.site_id
             """
         ),
         {
@@ -962,7 +1277,13 @@ async def _replace_aggregate_table(
                 UNION ALL
                 SELECT usage.site_id, usage.external_user_id, usage.occurred_at,
                        snapshot.is_internal, 0, usage.successful_call_count,
-                       usage.consumed_balance_units, usage.cost_cny, 0, 0, 0
+                       usage.consumed_balance_units, usage.cost_cny, 0,
+                       CASE
+                           WHEN usage.site_id = 'aigclink' AND NOT snapshot.is_internal
+                           THEN usage.cost_cny
+                           ELSE 0
+                       END,
+                       0
                 FROM growth.usage_facts AS usage
                 JOIN growth.ops_user_snapshots AS snapshot
                   ON snapshot.site_id = usage.site_id
@@ -974,7 +1295,13 @@ async def _replace_aggregate_table(
                 SELECT event.site_id, event.external_user_id, event.occurred_at,
                        snapshot.is_internal, 0, 0, 0, 0,
                        CASE WHEN event.direction = 'credit' AND event.purpose = 'sale' THEN 1 ELSE 0 END,
-                       CASE WHEN event.direction = 'credit' AND event.purpose = 'sale' THEN event.cash_amount_cny ELSE 0 END,
+                       CASE
+                           WHEN event.site_id <> 'aigclink'
+                            AND event.direction = 'credit'
+                            AND event.purpose = 'sale'
+                           THEN event.cash_amount_cny
+                           ELSE 0
+                       END,
                        CASE WHEN event.direction = 'debit' AND event.purpose = 'sale' THEN event.cash_amount_cny ELSE 0 END
                 FROM growth.credit_events AS event
                 JOIN growth.ops_user_snapshots AS snapshot

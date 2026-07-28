@@ -90,9 +90,17 @@ async def get_operations_overview(
                 start_at=window.previous_start_at,
                 end_at=window.previous_end_at,
             )
+            site_breakdown = await repository.get_operations_site_breakdown(
+                connection,
+                allowed_site_ids=allowed_site_ids,
+                segment=query.segment.value,
+                start_at=window.start_at,
+                end_at=window.end_at,
+            )
         return {
             "summary": current,
             "previous_summary": previous,
+            "site_breakdown": site_breakdown,
             "window": {
                 "start_at": window.start_at.isoformat(),
                 "end_at": window.end_at.isoformat(),

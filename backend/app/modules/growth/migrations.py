@@ -592,7 +592,38 @@ OPERATIONS_MIGRATION = Migration(
 )
 
 
-MIGRATIONS = (INITIAL_MIGRATION, OPERATIONS_MIGRATION)
+INTERNAL_EMAIL_MIGRATION = Migration(
+    version="0003_operations_internal_email",
+    description="Support email-based internal user recognition",
+    statements=(
+        "ALTER TABLE growth.internal_users ADD COLUMN IF NOT EXISTS email TEXT",
+        "ALTER TABLE growth.internal_users ADD COLUMN IF NOT EXISTS recognized_at TIMESTAMPTZ",
+        "ALTER TABLE growth.internal_users ALTER COLUMN external_user_id DROP NOT NULL",
+        """
+        WITH unique_emails AS (
+            SELECT site_id, lower(trim(account_label)) AS email
+            FROM growth.internal_users
+            WHERE email IS NULL
+              AND account_label LIKE '%@%'
+            GROUP BY site_id, lower(trim(account_label))
+            HAVING COUNT(*) = 1
+        )
+        UPDATE growth.internal_users AS internal_user
+        SET email = unique_emails.email
+        FROM unique_emails
+        WHERE internal_user.site_id = unique_emails.site_id
+          AND lower(trim(internal_user.account_label)) = unique_emails.email
+        """.strip(),
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS growth_internal_users_site_email_unique_idx
+        ON growth.internal_users (site_id, lower(email))
+        WHERE email IS NOT NULL
+        """.strip(),
+    ),
+)
+
+
+MIGRATIONS = (INITIAL_MIGRATION, OPERATIONS_MIGRATION, INTERNAL_EMAIL_MIGRATION)
 
 
 async def apply_pending_migrations(connection: Any) -> dict[str, Any]:

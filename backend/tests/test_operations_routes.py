@@ -116,7 +116,7 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(HTTPException) as raised:
             await operations.post_internal_user(
-                payload=InternalUserCreate(site_id="aiwelink", external_user_id="42"),
+                payload=InternalUserCreate(site_id="aiwelink", email="staff@example.com"),
                 actor={"_id": "operator-1", "role": "operator", "operations_site_ids": ["aiwelink"]},
                 db=object(),
             )
@@ -130,7 +130,10 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
         created = {
             "internal_user_id": "internal-1",
             "site_id": "aiwelink",
+            "email": "staff@example.com",
             "external_user_id": "42",
+            "recognized_at": NOW.isoformat(),
+            "recognition_status": "recognized",
         }
         with (
             patch.object(
@@ -141,12 +144,14 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(operations, "write_audit_log", AsyncMock()) as audit,
         ):
             result = await operations.post_internal_user(
-                payload=InternalUserCreate(site_id="aiwelink", external_user_id="42"),
+                payload=InternalUserCreate(site_id="aiwelink", email="staff@example.com"),
                 actor={"_id": "admin-1", "role": "admin", "operations_site_ids": ["aiwelink"]},
                 db=object(),
             )
 
         self.assertEqual(result, created)
+        self.assertEqual(result["email"], "staff@example.com")
+        self.assertEqual(result["recognition_status"], "recognized")
         self.assertEqual(audit.await_args.kwargs["action"], "operations.internal_user.create")
 
     async def test_admin_cannot_write_an_unauthorized_site(self) -> None:
@@ -155,7 +160,7 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(HTTPException) as raised:
             await operations.post_internal_user(
-                payload=InternalUserCreate(site_id="aigclink", external_user_id="42"),
+                payload=InternalUserCreate(site_id="aigclink", email="staff@example.com"),
                 actor={"_id": "admin-1", "role": "admin", "operations_site_ids": ["aiwelink"]},
                 db=object(),
             )
@@ -344,12 +349,20 @@ class OperationsServiceCacheTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(service, "growth_connection", lambda db: _async_context(object())),
             patch.object(service.repository, "get_operations_summary", summary),
+            patch.object(
+                service.repository,
+                "get_operations_site_breakdown",
+                AsyncMock(return_value=[{"site_id": "aiwelink"}]),
+                create=True,
+            ) as breakdown,
         ):
             first = await service.get_operations_overview(object(), query, allowed_site_ids=("aiwelink",))
             second = await service.get_operations_overview(object(), query, allowed_site_ids=("aiwelink",))
 
         self.assertEqual(first, second)
         self.assertEqual(summary.await_count, 2)
+        self.assertEqual(breakdown.await_count, 1)
+        self.assertEqual(first["site_breakdown"], [{"site_id": "aiwelink"}])
         self.assertEqual(summary.await_args_list[0].kwargs["allowed_site_ids"], ("aiwelink",))
 
     async def test_different_site_scopes_do_not_share_summary_cache(self) -> None:
@@ -370,11 +383,18 @@ class OperationsServiceCacheTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(service, "growth_connection", lambda db: _async_context(object())),
             patch.object(service.repository, "get_operations_summary", summary),
+            patch.object(
+                service.repository,
+                "get_operations_site_breakdown",
+                AsyncMock(return_value=[]),
+                create=True,
+            ) as breakdown,
         ):
             await service.get_operations_overview(object(), query, allowed_site_ids=("aiwelink",))
             await service.get_operations_overview(object(), query, allowed_site_ids=("aigclink",))
 
         self.assertEqual(summary.await_count, 4)
+        self.assertEqual(breakdown.await_count, 2)
 
     async def test_summary_does_not_run_concurrent_queries_on_one_connection(self) -> None:
         from app.modules.operations import service
@@ -399,10 +419,17 @@ class OperationsServiceCacheTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(service, "growth_connection", lambda db: _async_context(object())),
             patch.object(service.repository, "get_operations_summary", guarded_summary),
+            patch.object(
+                service.repository,
+                "get_operations_site_breakdown",
+                AsyncMock(return_value=[{"site_id": "aiwelink"}]),
+                create=True,
+            ),
         ):
             result = await service.get_operations_overview(object(), query, allowed_site_ids=("aiwelink",))
 
         self.assertEqual(result["summary"]["registered_user_count"], 1)
+        self.assertEqual(result["site_breakdown"][0]["site_id"], "aiwelink")
 
     def test_operations_routes_are_mounted(self) -> None:
         from app.main import app

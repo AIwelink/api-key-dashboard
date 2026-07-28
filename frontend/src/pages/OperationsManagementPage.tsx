@@ -44,24 +44,18 @@ type OperationsSummary = {
 type OverviewResponse = {
   summary: OperationsSummary;
   previous_summary: OperationsSummary;
+  site_breakdown: SiteBreakdownItem[];
   generated_at: string;
+};
+
+type SiteBreakdownItem = OperationsSummary & {
+  site_id: string;
 };
 
 type TrendItem = OperationsSummary & {
   bucket: string;
   site_id: string;
   user_segment: UserSegment;
-};
-
-type UserItem = {
-  site_id: string;
-  external_user_id: string;
-  account_label?: string;
-  is_internal?: boolean;
-  registered_at?: string;
-  last_used_at?: string;
-  successful_call_count?: number;
-  cost_cny?: number;
 };
 
 type SyncStatus = {
@@ -75,8 +69,10 @@ type SyncStatus = {
 type InternalUser = {
   internal_user_id: string;
   site_id: string;
-  external_user_id: string;
-  account_label?: string;
+  email: string;
+  external_user_id: string | null;
+  recognition_status: "pending" | "recognized";
+  recognized_at?: string | null;
   reason?: string;
   active_from: string;
   active_until?: string | null;
@@ -124,8 +120,7 @@ export type RedemptionForm = {
 
 type InternalUserForm = {
   site_id: string;
-  external_user_id: string;
-  account_label: string;
+  email: string;
   reason: string;
   active_from: string;
   active_until: string;
@@ -190,8 +185,7 @@ const segmentLabels: Record<UserSegment, string> = {
 
 const emptyInternalUserForm: InternalUserForm = {
   site_id: "aiwelink",
-  external_user_id: "",
-  account_label: "",
+  email: "",
   reason: "",
   active_from: "",
   active_until: "",
@@ -310,6 +304,24 @@ function comparison(current: number | undefined, previous: number | undefined) {
   return `较上期 ${percent >= 0 ? "+" : ""}${percent.toFixed(1)}%`;
 }
 
+export function averageConsumption(
+  item: Pick<OperationsSummary, "consumed_balance_units" | "active_user_count">,
+) {
+  const activeUsers = Number(item.active_user_count || 0);
+  return activeUsers > 0 ? Number(item.consumed_balance_units || 0) / activeUsers : 0;
+}
+
+export function paymentRate(
+  item: Pick<OperationsSummary, "payer_count" | "active_user_count">,
+) {
+  const activeUsers = Number(item.active_user_count || 0);
+  return activeUsers > 0 ? (Number(item.payer_count || 0) / activeUsers) * 100 : 0;
+}
+
+export function recognitionStatusLabel(status: InternalUser["recognition_status"]) {
+  return status === "recognized" ? "识别成功" : "待识别";
+}
+
 function SiteSelect({ value, onChange, sites, includeAll = true }: { value: string; onChange: (value: string) => void; sites: Array<{ value: OperationsSiteId; label: string }>; includeAll?: boolean }) {
   return (
     <select value={value} onChange={(event) => onChange(event.target.value)}>
@@ -366,7 +378,6 @@ export function OperationsManagementPage(
   const [query, setQuery] = useState<OperationsQueryState>({ siteId: defaultSiteFilter, segment: "all", range: "7d" });
   const [overview, setOverview] = useState<OverviewResponse | null>(null);
   const [trends, setTrends] = useState<TrendItem[]>([]);
-  const [users, setUsers] = useState<UserItem[]>([]);
   const [syncStatuses, setSyncStatuses] = useState<SyncStatus[]>([]);
   const [internalUsers, setInternalUsers] = useState<InternalUser[]>([]);
   const [rates, setRates] = useState<ConversionRate[]>([]);
@@ -414,7 +425,6 @@ export function OperationsManagementPage(
     setInternalSearch("");
     setOverview(null);
     setTrends([]);
-    setUsers([]);
     setSyncStatuses([]);
     setInternalUsers([]);
     setRates([]);
@@ -436,15 +446,13 @@ export function OperationsManagementPage(
     if (!background) setLoading(true);
     setLoadError("");
     try {
-      const [summary, trendData, userData, syncData] = await Promise.all([
+      const [summary, trendData, syncData] = await Promise.all([
         api<OverviewResponse>(`/operations/summary${operationsQuery}`, token),
         api<ListResponse<TrendItem>>(`/operations/trends${operationsQuery}`, token),
-        api<ListResponse<UserItem>>(`/operations/users${operationsQuery}&limit=100`, token),
         api<ListResponse<SyncStatus>>("/operations/sync-status", token),
       ]);
       setOverview(summary);
       setTrends(trendData.items);
-      setUsers(userData.items);
       setSyncStatuses(syncData.items);
     } catch (error) {
       const message = errorMessage(error);
@@ -541,8 +549,7 @@ export function OperationsManagementPage(
     if (!canWrite || (item && !allowedSiteSet.has(item.site_id as OperationsSiteId))) return;
     setInternalForm(item ? {
       site_id: item.site_id,
-      external_user_id: item.external_user_id,
-      account_label: item.account_label || "",
+      email: item.email,
       reason: item.reason || "",
       active_from: item.active_from?.slice(0, 16) || "",
       active_until: item.active_until?.slice(0, 16) || "",
@@ -555,14 +562,13 @@ export function OperationsManagementPage(
     setSaving(true);
     try {
       const payload = modal.item ? {
-        account_label: internalForm.account_label.trim(),
+        email: internalForm.email.trim(),
         reason: internalForm.reason.trim(),
         active_from: optionalIso(internalForm.active_from),
         active_until: optionalIso(internalForm.active_until) || null,
       } : {
         site_id: internalForm.site_id.trim(),
-        external_user_id: internalForm.external_user_id.trim(),
-        account_label: internalForm.account_label.trim(),
+        email: internalForm.email.trim(),
         reason: internalForm.reason.trim(),
         ...(internalForm.active_from ? { active_from: optionalIso(internalForm.active_from) } : {}),
         active_until: optionalIso(internalForm.active_until) || null,
@@ -690,7 +696,9 @@ export function OperationsManagementPage(
     && (!effectiveQuery.siteId || item.site_id === effectiveQuery.siteId)
   ));
   const visibleTrends = trends.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
-  const visibleUsers = users.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
+  const visibleSiteBreakdown = (overview?.site_breakdown || []).filter((item) => (
+    allowedSiteSet.has(item.site_id as OperationsSiteId)
+  ));
   const visibleInternalUsers = internalUsers.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
   const visibleRates = rates.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
   const visibleClassificationTasks = classificationTasks.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
@@ -739,26 +747,21 @@ export function OperationsManagementPage(
             <Metric label="活跃用户" value={formatNumber(summary.active_user_count, 0)} previous={comparison(summary.active_user_count, previous.active_user_count)} />
             <Metric label="成功调用" value={formatNumber(summary.successful_call_count, 0)} previous={comparison(summary.successful_call_count, previous.successful_call_count)} />
             <Metric label="付费用户" value={formatNumber(summary.payer_count, 0)} previous={comparison(summary.payer_count, previous.payer_count)} />
-            <Metric label="流水收入" value={formatCurrency(summary.gross_income_cny)} previous={comparison(summary.gross_income_cny, previous.gross_income_cny)} />
+            <Metric label="收入" value={formatCurrency(summary.gross_income_cny)} previous={comparison(summary.gross_income_cny, previous.gross_income_cny)} />
             <Metric label="退款" value={formatCurrency(summary.refund_cny)} previous={comparison(summary.refund_cny, previous.refund_cny)} />
-            <Metric label="净收入" value={formatCurrency(summary.net_income_cny)} previous={comparison(summary.net_income_cny, previous.net_income_cny)} />
           </div>
 
-          <div className="operations-trend-grid">
-            <section className="operations-data-section">
-              <div className="operations-section-head"><div><h3>收入趋势</h3><span>48 小时内按小时，更长周期按天汇总</span></div></div>
-              <div className="operations-table-scroll"><table><thead><tr><th>时间</th><th>站点</th><th>净收入</th><th>活跃用户</th></tr></thead><tbody>{visibleTrends.length ? visibleTrends.map((item, index) => <tr key={`${item.site_id}-${item.bucket}-${index}`}><td>{formatBucket(item.bucket)}</td><td>{siteLabel(item.site_id)}</td><td>{formatCurrency(item.net_income_cny)}</td><td>{formatNumber(item.active_user_count, 0)}</td></tr>) : <EmptyRow columns={4} text={loading ? "正在加载趋势..." : "当前周期暂无趋势数据"} />}</tbody></table></div>
+          <div className="operations-overview-table-stack">
+            <section className="operations-data-section operations-trend-section">
+              <div className="operations-section-head"><div><h3>运营趋势</h3><span>48 小时内按小时，更长周期按天汇总</span></div></div>
+              <div className="operations-table-scroll"><table><thead><tr><th>时间</th><th>站点</th><th>注册</th><th>活跃</th><th>成功调用</th><th>消耗额度</th><th>付费用户</th><th>收入</th><th>退款</th></tr></thead><tbody>{visibleTrends.length ? visibleTrends.map((item, index) => <tr key={`${item.site_id}-${item.bucket}-${index}`}><td>{formatBucket(item.bucket)}</td><td>{siteLabel(item.site_id)}</td><td>{formatNumber(item.registered_user_count, 0)}</td><td>{formatNumber(item.active_user_count, 0)}</td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatNumber(item.consumed_balance_units, 2)}</td><td>{formatNumber(item.payer_count, 0)}</td><td>{formatCurrency(item.gross_income_cny)}</td><td>{formatCurrency(item.refund_cny)}</td></tr>) : <EmptyRow columns={9} text={loading ? "正在加载趋势..." : "当前周期暂无趋势数据"} />}</tbody></table></div>
             </section>
-            <section className="operations-data-section">
-              <div className="operations-section-head"><div><h3>用户活动趋势</h3><span>注册、调用和付费人数</span></div></div>
-              <div className="operations-table-scroll"><table><thead><tr><th>时间</th><th>注册</th><th>成功调用</th><th>付费用户</th><th>充值笔数</th></tr></thead><tbody>{visibleTrends.length ? visibleTrends.map((item, index) => <tr key={`${item.site_id}-${item.bucket}-usage-${index}`}><td>{formatBucket(item.bucket)}</td><td>{formatNumber(item.registered_user_count, 0)}</td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatNumber(item.payer_count, 0)}</td><td>{formatNumber(item.sale_event_count, 0)}</td></tr>) : <EmptyRow columns={5} text={loading ? "正在加载趋势..." : "当前周期暂无趋势数据"} />}</tbody></table></div>
+
+            <section className="operations-data-section operations-site-comparison">
+              <div className="operations-section-head"><div><h3>站点运营对比</h3><span>按当前查询周期和用户群体汇总</span></div><span>{visibleSiteBreakdown.length} 个站点</span></div>
+              <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>注册用户</th><th>活跃用户</th><th>成功调用</th><th>消耗额度</th><th>付费用户</th><th>收入</th><th>退款</th><th>人均消耗</th><th>付费率</th></tr></thead><tbody>{visibleSiteBreakdown.length ? visibleSiteBreakdown.map((item) => <tr key={item.site_id}><td><strong>{siteLabel(item.site_id)}</strong></td><td>{formatNumber(item.registered_user_count, 0)}</td><td>{formatNumber(item.active_user_count, 0)}</td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatNumber(item.consumed_balance_units, 2)}</td><td>{formatNumber(item.payer_count, 0)}</td><td>{formatCurrency(item.gross_income_cny)}</td><td>{formatCurrency(item.refund_cny)}</td><td>{formatNumber(averageConsumption(item), 2)}</td><td>{paymentRate(item).toFixed(1)}%</td></tr>) : <EmptyRow columns={10} text={loading ? "正在加载站点对比..." : "当前周期暂无站点汇总"} />}</tbody></table></div>
             </section>
           </div>
-
-          <section className="operations-data-section">
-            <div className="operations-section-head"><div><h3>账号运营明细</h3><span>当前查询周期内的注册与调用情况</span></div><span>{visibleUsers.length} 个账号</span></div>
-            <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>业务用户 ID</th><th>用户群体</th><th>注册时间</th><th>成功调用</th><th>最近调用</th></tr></thead><tbody>{visibleUsers.length ? visibleUsers.map((item) => <tr key={`${item.site_id}-${item.external_user_id}`}><td>{siteLabel(item.site_id)}</td><td><strong>{item.account_label || item.external_user_id}</strong>{item.account_label && <small className="operations-cell-subtext">{item.external_user_id}</small>}</td><td><span className={`operations-status-tag ${item.is_internal ? "internal" : "ordinary"}`}>{item.is_internal ? "内部人员" : "普通用户"}</span></td><td>{formatDateTime(item.registered_at)}</td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatDateTime(item.last_used_at)}</td></tr>) : <EmptyRow columns={6} text={loading ? "正在加载账号..." : "当前周期暂无账号数据"} />}</tbody></table></div>
-          </section>
         </div>
       )}
 
@@ -766,12 +769,12 @@ export function OperationsManagementPage(
         <div className="operations-tab-content">
           <div className="operations-query-bar operations-list-query">
             <label><span>站点</span><SiteSelect sites={allowedSites} includeAll={showAllSites} value={effectiveInternalSite} onChange={setInternalSite} /></label>
-            <label className="operations-search-field"><span>账号查询</span><input value={internalSearch} onChange={(event) => setInternalSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void loadInternalUsers(); }} placeholder="用户 ID 或账号名称" /></label>
+            <label className="operations-search-field"><span>人员查询</span><input value={internalSearch} onChange={(event) => setInternalSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void loadInternalUsers(); }} placeholder="邮箱或业务用户 ID" /></label>
             <button className="ghost" type="button" onClick={() => void loadInternalUsers()} disabled={loading}>查询</button>
           </div>
           <section className="operations-data-section">
-            <div className="operations-section-head"><div><h3>内部人员名单</h3><span>内部人员消耗计入成本，不进入普通用户收入与付费指标</span></div>{canWrite && <button type="button" onClick={() => openInternal()}>添加内部人员</button>}</div>
-            <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>业务用户 ID</th><th>账号名称</th><th>标记原因</th><th>生效时间</th><th>失效时间</th>{canWrite && <th>操作</th>}</tr></thead><tbody>{visibleInternalUsers.length ? visibleInternalUsers.map((item) => <tr key={item.internal_user_id}><td>{siteLabel(item.site_id)}</td><td>{item.external_user_id}</td><td>{item.account_label || "-"}</td><td>{item.reason || "-"}</td><td>{formatDateTime(item.active_from)}</td><td>{formatDateTime(item.active_until)}</td>{canWrite && <td><button className="ghost operations-row-button" type="button" onClick={() => openInternal(item)}>编辑</button></td>}</tr>) : <EmptyRow columns={canWrite ? 7 : 6} text={loading ? "正在加载..." : "暂无内部人员配置"} />}</tbody></table></div>
+            <div className="operations-section-head"><div><h3>内部人员名单</h3><span>内部人员消耗单独统计，不计入普通用户收入</span></div>{canWrite && <button type="button" onClick={() => openInternal()}>添加内部人员</button>}</div>
+            <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>邮箱</th><th>识别状态</th><th>业务用户 ID</th><th>识别时间</th><th>标记原因</th><th>生效时间</th><th>失效时间</th>{canWrite && <th>操作</th>}</tr></thead><tbody>{visibleInternalUsers.length ? visibleInternalUsers.map((item) => <tr key={item.internal_user_id}><td>{siteLabel(item.site_id)}</td><td><strong>{item.email}</strong></td><td><span className={`operations-status-tag ${item.recognition_status}`}>{recognitionStatusLabel(item.recognition_status)}</span></td><td>{item.external_user_id || "-"}</td><td>{formatDateTime(item.recognized_at)}</td><td>{item.reason || "-"}</td><td>{formatDateTime(item.active_from)}</td><td>{formatDateTime(item.active_until)}</td>{canWrite && <td><button className="ghost operations-row-button" type="button" onClick={() => openInternal(item)}>编辑</button></td>}</tr>) : <EmptyRow columns={canWrite ? 9 : 8} text={loading ? "正在加载..." : "暂无内部人员配置"} />}</tbody></table></div>
           </section>
         </div>
       )}
@@ -803,7 +806,7 @@ export function OperationsManagementPage(
         </div>
       )}
 
-      {modal?.kind === "internal" && <GrowthCreateModal title={modal.item ? "编辑内部人员" : "添加内部人员"} submitLabel={modal.item ? "保存修改" : "确认添加"} saving={saving} submitDisabled={!internalForm.site_id || !internalForm.external_user_id.trim()} onClose={() => setModal(null)} onSubmit={saveInternal}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect sites={allowedSites} includeAll={false} value={internalForm.site_id} onChange={(site_id) => setInternalForm({ ...internalForm, site_id })} /></label><label><span className="field-label"><strong>业务用户 ID</strong></span><input value={internalForm.external_user_id} disabled={Boolean(modal.item)} onChange={(event) => setInternalForm({ ...internalForm, external_user_id: event.target.value })} required /></label><label><span className="field-label"><strong>账号名称</strong><span>（可选）</span></span><input value={internalForm.account_label} onChange={(event) => setInternalForm({ ...internalForm, account_label: event.target.value })} /></label><label><span className="field-label"><strong>标记原因</strong><span>（可选）</span></span><input value={internalForm.reason} onChange={(event) => setInternalForm({ ...internalForm, reason: event.target.value })} /></label><label><span className="field-label"><strong>生效时间</strong></span><input type="datetime-local" value={internalForm.active_from} onChange={(event) => setInternalForm({ ...internalForm, active_from: event.target.value })} /></label><label><span className="field-label"><strong>失效时间</strong><span>（可选）</span></span><input type="datetime-local" value={internalForm.active_until} onChange={(event) => setInternalForm({ ...internalForm, active_until: event.target.value })} /></label></div></GrowthCreateModal>}
+      {modal?.kind === "internal" && <GrowthCreateModal title={modal.item ? "编辑内部人员" : "添加内部人员"} submitLabel={modal.item ? "保存修改" : "确认添加"} saving={saving} submitDisabled={!internalForm.site_id || !internalForm.email.trim()} onClose={() => setModal(null)} onSubmit={saveInternal}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect sites={allowedSites} includeAll={false} value={internalForm.site_id} onChange={(site_id) => setInternalForm({ ...internalForm, site_id })} /></label><label><span className="field-label"><strong>邮箱</strong></span><input type="email" autoComplete="off" value={internalForm.email} onChange={(event) => setInternalForm({ ...internalForm, email: event.target.value })} required /></label><label className="span-2"><span className="field-label"><strong>标记原因</strong><span>（可选）</span></span><input value={internalForm.reason} onChange={(event) => setInternalForm({ ...internalForm, reason: event.target.value })} /></label><label><span className="field-label"><strong>生效时间</strong></span><input type="datetime-local" value={internalForm.active_from} onChange={(event) => setInternalForm({ ...internalForm, active_from: event.target.value })} /></label><label><span className="field-label"><strong>失效时间</strong><span>（可选）</span></span><input type="datetime-local" value={internalForm.active_until} onChange={(event) => setInternalForm({ ...internalForm, active_until: event.target.value })} /></label></div></GrowthCreateModal>}
 
       {modal?.kind === "redemption" && <GrowthCreateModal title="生成兑换码" submitLabel="生成兑换码" saving={saving} submitDisabled={!redemptionForm.site_id || Number(redemptionForm.code_count) <= 0 || Number(redemptionForm.balance_units_per_code) <= 0 || (redemptionForm.purpose === "sale" && Number(redemptionForm.cash_amount_cny) <= 0)} onClose={() => setModal(null)} onSubmit={saveRedemption}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect sites={allowedSites} includeAll={false} value={redemptionForm.site_id} onChange={(site_id) => setRedemptionForm({ ...redemptionForm, site_id })} /></label><PurposeFields purpose={redemptionForm.purpose} cash={redemptionForm.cash_amount_cny} onPurpose={(purpose) => setRedemptionForm({ ...redemptionForm, purpose, cash_amount_cny: purpose === "sale" ? redemptionForm.cash_amount_cny : "0" })} onCash={(cash_amount_cny) => setRedemptionForm({ ...redemptionForm, cash_amount_cny })} /><label><span className="field-label"><strong>兑换码数量</strong></span><input type="number" min="1" max="10000" value={redemptionForm.code_count} onChange={(event) => setRedemptionForm({ ...redemptionForm, code_count: event.target.value })} /></label><label><span className="field-label"><strong>每个兑换码额度</strong></span><input type="number" min="0" step="any" value={redemptionForm.balance_units_per_code} onChange={(event) => setRedemptionForm({ ...redemptionForm, balance_units_per_code: event.target.value })} /></label><label className="span-2"><span className="field-label"><strong>备注</strong><span>（可选）</span></span><textarea value={redemptionForm.note} onChange={(event) => setRedemptionForm({ ...redemptionForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
 

@@ -13,7 +13,7 @@ NOW = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
 
 
 class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
-    async def test_create_internal_user_uses_site_and_external_user_identity(self) -> None:
+    async def test_create_internal_user_recognizes_unique_snapshot_email(self) -> None:
         from app.modules.operations.repository import create_internal_user
         from app.modules.operations.schemas import InternalUserCreate
 
@@ -22,28 +22,111 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
             [
                 {
                     "internal_user_id": internal_user_id,
-                    "site_id": "aiwelink",
+                    "site_id": "aigclink",
+                    "email": "staff@example.com",
                     "external_user_id": "42",
+                    "recognition_status": "recognized",
                 },
-                None,
             ]
         )
 
         row = await create_internal_user(
             connection,
-            InternalUserCreate(site_id="aiwelink", external_user_id="42"),
+            InternalUserCreate(site_id="aigclink", email="staff@example.com"),
             actor_id="owner",
             internal_user_id=internal_user_id,
         )
 
-        self.assertEqual(row["site_id"], "aiwelink")
+        self.assertEqual(row["site_id"], "aigclink")
         self.assertEqual(row["external_user_id"], "42")
+        self.assertEqual(row["recognition_status"], "recognized")
         statement, parameters = connection.calls[0]
         self.assertIn("growth.internal_users", statement)
-        self.assertEqual(parameters["site_id"], "aiwelink")
-        self.assertEqual(parameters["external_user_id"], "42")
-        self.assertNotIn("aiwelink'", statement)
-        self.assertIn("growth.ops_user_snapshots", connection.calls[1][0])
+        self.assertIn("lower(trim(snapshot.account_label))", statement)
+        self.assertIn("COUNT(*)", statement)
+        self.assertIn("NOT EXISTS", statement)
+        self.assertIn("existing.external_user_id = snapshot.external_user_id", statement)
+        self.assertIn("BOOL_AND(email_matches.available)", statement)
+        self.assertIn("growth.ops_user_snapshots", statement)
+        self.assertEqual(parameters["site_id"], "aigclink")
+        self.assertEqual(parameters["email"], "staff@example.com")
+        self.assertNotIn("aigclink'", statement)
+
+    async def test_create_internal_user_keeps_unknown_email_pending(self) -> None:
+        from app.modules.operations.repository import create_internal_user
+        from app.modules.operations.schemas import InternalUserCreate
+
+        connection = _FakeConnection(
+            [
+                {
+                    "internal_user_id": uuid4(),
+                    "site_id": "aigclink",
+                    "email": "later@example.com",
+                    "external_user_id": None,
+                    "recognized_at": None,
+                    "recognition_status": "pending",
+                }
+            ]
+        )
+
+        row = await create_internal_user(
+            connection,
+            InternalUserCreate(site_id="aigclink", email="later@example.com"),
+            actor_id="owner",
+        )
+
+        self.assertIsNone(row["external_user_id"])
+        self.assertEqual(row["recognition_status"], "pending")
+
+    async def test_internal_user_search_includes_email_and_recognition_status(self) -> None:
+        from app.modules.operations.repository import list_internal_users
+
+        connection = _FakeConnection([None])
+
+        await list_internal_users(
+            connection,
+            allowed_site_ids=("aigclink",),
+            query="staff@example.com",
+        )
+
+        statement, parameters = connection.calls[0]
+        self.assertIn("internal_user.email ILIKE", statement)
+        self.assertIn("AS recognition_status", statement)
+        self.assertEqual(parameters["query"], "staff@example.com")
+
+    async def test_updating_internal_user_email_retries_recognition(self) -> None:
+        from app.modules.operations.repository import update_internal_user
+        from app.modules.operations.schemas import InternalUserUpdate
+
+        internal_user_id = uuid4()
+        connection = _FakeConnection(
+            [
+                {
+                    "internal_user_id": internal_user_id,
+                    "site_id": "aigclink",
+                    "email": "new@example.com",
+                    "external_user_id": None,
+                    "recognized_at": None,
+                    "recognition_status": "pending",
+                }
+            ]
+        )
+
+        row = await update_internal_user(
+            connection,
+            internal_user_id,
+            InternalUserUpdate(email=" New@Example.com "),
+            actor_id="owner",
+        )
+
+        statement, parameters = connection.calls[0]
+        self.assertIn("external_user_id = NULL", statement)
+        self.assertIn("recognized_at = NULL", statement)
+        self.assertIn("lower(trim(snapshot.account_label))", statement)
+        self.assertIn("NOT EXISTS", statement)
+        self.assertIn("BOOL_AND(email_matches.available)", statement)
+        self.assertEqual(parameters["email"], "new@example.com")
+        self.assertEqual(row["recognition_status"], "pending")
 
     async def test_create_conversion_rate_closes_current_window_before_insert(self) -> None:
         from app.modules.operations.repository import create_conversion_rate
@@ -94,6 +177,9 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("snapshot.site_id = :site_id", statements)
         self.assertIn("usage.site_id = :site_id", statements)
         self.assertIn("event.site_id = :site_id", statements)
+        self.assertIn("usage.site_id = 'aigclink'", statements)
+        self.assertIn("NOT snapshot.is_internal", statements)
+        self.assertIn("event.site_id <> 'aigclink'", statements)
         self.assertGreaterEqual(
             statements.count("date_trunc('hour', CAST(:start_at AS TIMESTAMPTZ))"),
             2,
@@ -173,10 +259,10 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("ON CONFLICT (site_id, source_type, source_record_id)", statement)
             self.assertEqual(parameters[0]["source_record_id"], parameters[0]["source_record_id"])
 
-    async def test_user_snapshot_upsert_derives_internal_status_from_configuration(self) -> None:
+    async def test_user_snapshot_upsert_recognizes_pending_email_configuration(self) -> None:
         from app.modules.operations.repository import upsert_user_snapshots
 
-        connection = _FakeConnection([None])
+        connection = _FakeConnection([None, None])
         await upsert_user_snapshots(
             connection,
             [
@@ -193,10 +279,22 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-        statement, _ = connection.calls[0]
-        self.assertIn("growth.internal_users", statement)
-        self.assertIn("LEFT JOIN LATERAL", statement)
-        self.assertIn("ON CONFLICT (site_id, external_user_id)", statement)
+        upsert_statement, parameters = connection.calls[0]
+        recognition_statement, _ = connection.calls[1]
+        self.assertIn("growth.internal_users", upsert_statement)
+        self.assertIn("configured.external_user_id = :external_user_id", upsert_statement)
+        self.assertIn("ON CONFLICT (site_id, external_user_id)", upsert_statement)
+        self.assertEqual(parameters[0]["account_label"], "staff@example.com")
+        self.assertIn(
+            "lower(trim(configured.email)) = lower(trim(snapshot.account_label))",
+            recognition_statement,
+        )
+        self.assertIn("HAVING COUNT(*) = 1", recognition_statement)
+        self.assertIn("recognized_at = NOW()", recognition_statement)
+        self.assertIn("NOT EXISTS", recognition_statement)
+        self.assertIn("existing.external_user_id = snapshot.external_user_id", recognition_statement)
+        self.assertIn("BOOL_AND(matches.available)", recognition_statement)
+        self.assertIn("UPDATE growth.ops_user_snapshots", recognition_statement)
 
     async def test_resolve_classification_updates_task_and_credit_event_together(self) -> None:
         from app.modules.operations.repository import resolve_classification_task
@@ -244,6 +342,73 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("aiwelink'", statement)
         self.assertEqual(parameters["allowed_site_ids"], ("aiwelink",))
         self.assertEqual(parameters["segment"], "ordinary")
+
+    async def test_summary_uses_usage_revenue_only_for_ordinary_aigclink_users(self) -> None:
+        from app.modules.operations.repository import get_operations_summary
+
+        connection = _FakeConnection([{"gross_income_cny": Decimal("12") }])
+
+        await get_operations_summary(
+            connection,
+            allowed_site_ids=("aiwelink", "aigclink"),
+            segment="all",
+            start_at=NOW,
+            end_at=NOW,
+        )
+
+        statement, _ = connection.calls[0]
+        self.assertIn("usage.site_id = 'aigclink'", statement)
+        self.assertIn("NOT snapshot.is_internal", statement)
+        self.assertIn("SUM(usage.cost_cny)", statement)
+        self.assertIn("event.site_id <> 'aigclink'", statement)
+
+    async def test_trends_derive_historical_aigclink_revenue_from_ordinary_cost(self) -> None:
+        from app.modules.operations.repository import get_operations_trends
+
+        connection = _FakeConnection([None])
+
+        await get_operations_trends(
+            connection,
+            allowed_site_ids=("aigclink",),
+            segment="all",
+            start_at=NOW,
+            end_at=NOW,
+        )
+
+        statement, _ = connection.calls[0]
+        self.assertIn("FROM growth.ops_hourly_stats AS stats", statement)
+        self.assertIn("LEFT JOIN growth.ops_hourly_stats AS ordinary", statement)
+        self.assertIn("stats.site_id = 'aigclink'", statement)
+        self.assertIn("stats.user_segment = 'internal'", statement)
+        self.assertIn("THEN ordinary.cost_cny", statement)
+
+    async def test_site_breakdown_groups_current_metrics_by_authorized_site(self) -> None:
+        from app.modules.operations.repository import get_operations_site_breakdown
+
+        connection = _FakeConnection(
+            [
+                {
+                    "site_id": "aigclink",
+                    "registered_user_count": 3,
+                    "gross_income_cny": Decimal("12"),
+                }
+            ]
+        )
+
+        rows = await get_operations_site_breakdown(
+            connection,
+            allowed_site_ids=("aigclink",),
+            segment="all",
+            start_at=NOW,
+            end_at=NOW,
+        )
+
+        statement, parameters = connection.calls[0]
+        self.assertEqual(rows[0]["site_id"], "aigclink")
+        self.assertIn("GROUP BY usage.site_id", statement)
+        self.assertIn("event.site_id <> 'aigclink'", statement)
+        self.assertIn("NOT snapshot.is_internal", statement)
+        self.assertEqual(parameters["allowed_site_ids"], ("aigclink",))
 
     async def test_all_user_facing_reads_require_bound_site_collections(self) -> None:
         from app.modules.operations import repository

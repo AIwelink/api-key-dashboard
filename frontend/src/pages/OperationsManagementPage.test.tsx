@@ -3,11 +3,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   OperationsManagementPage,
+  averageConsumption,
   buildOperationsQuery,
   buildRedemptionPayload,
   canManageOperations,
   conversionRateEffectiveHint,
   emptyRedemptionForm,
+  paymentRate,
+  recognitionStatusLabel,
   refreshFailureMessage,
 } from "./OperationsManagementPage";
 import type { OperationsSiteId } from "../types";
@@ -84,10 +87,26 @@ describe("operations management workspace", () => {
     expect(html).toContain("全部用户");
     expect(html).toContain('class="operations-freshness-banner');
     expect(html).toContain('class="operations-metric-grid"');
-    expect(html).toContain('class="operations-trend-grid"');
+    expect(html).toContain('class="operations-overview-table-stack"');
     expect(html).not.toContain("\u8c03\u7528\u6210\u672c");
     expect(html).toContain("注册用户");
-    expect(html).toContain("净收入");
+    expect(html).toContain("运营趋势");
+    expect(html).toContain("站点运营对比");
+    expect(html).toContain("消耗额度");
+    expect(html).toContain("人均消耗");
+    expect(html).toContain("付费率");
+    expect(html).not.toContain("账号运营明细");
+    expect(html).not.toContain("收入趋势");
+    expect(html).not.toContain("用户活动趋势");
+    expect(html).not.toContain("流水收入");
+    expect(html).not.toContain("净收入");
+  });
+
+  it("calculates site comparison metrics with zero-denominator guards", () => {
+    expect(averageConsumption({ consumed_balance_units: 20, active_user_count: 4 })).toBe(5);
+    expect(paymentRate({ payer_count: 1, active_user_count: 4 })).toBe(25);
+    expect(averageConsumption({ consumed_balance_units: 20, active_user_count: 0 })).toBe(0);
+    expect(paymentRate({ payer_count: 1, active_user_count: 0 })).toBe(0);
   });
 
   it("renders internal-user management as a table-based page", () => {
@@ -98,8 +117,13 @@ describe("operations management workspace", () => {
     expect(html).toContain("内部人员名单");
     expect(html).toContain("添加内部人员");
     expect(html).toContain('class="operations-table-scroll"');
+    expect(html).toContain("邮箱");
+    expect(html).toContain("识别状态");
+    expect(html).toContain("识别时间");
     expect(html).toContain("业务用户 ID");
     expect(html).toContain("生效时间");
+    expect(recognitionStatusLabel("recognized")).toBe("识别成功");
+    expect(recognitionStatusLabel("pending")).toBe("待识别");
   });
 
   it("renders credit actions and conversion rates for admin", () => {
