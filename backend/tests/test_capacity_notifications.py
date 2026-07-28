@@ -6,11 +6,29 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.modules.sub2api.capacity_notifications import (
+    _active_feishu_channel_ids,
     _capacity_recovery_text,
+    _capacity_status_change_text,
     _capacity_notification_text,
     _evaluate_group_capacity_notification,
     capacity_notification_decision,
+    capacity_status_change_decision,
 )
+
+
+class AsyncCursor:
+    def __init__(self, items: list[dict[str, object]]) -> None:
+        self.items = items
+
+    def sort(self, *_args):
+        return self
+
+    def __aiter__(self):
+        return self._iterate()
+
+    async def _iterate(self):
+        for item in self.items:
+            yield item
 
 
 class CapacityNotificationDecisionTests(unittest.TestCase):
@@ -162,6 +180,78 @@ class CapacityNotificationDecisionTests(unittest.TestCase):
         self.assertEqual(decision["reason"], "realtime_runway_below_one_hour")
 
 
+class CapacityStatusChangeDecisionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.setting = {"capacity_notification_enabled": True}
+
+    def test_disabled_notification_does_not_report_status_change(self) -> None:
+        decision = capacity_status_change_decision(
+            setting={"capacity_notification_enabled": False},
+            summary={"health_status": "healthy"},
+            meta={"last_observed_status": "abundant"},
+        )
+
+        self.assertFalse(decision["send"])
+        self.assertEqual(decision["reason"], "disabled")
+
+    def test_first_valid_status_establishes_baseline_without_sending(self) -> None:
+        decision = capacity_status_change_decision(
+            setting=self.setting,
+            summary={"health_status": "abundant"},
+            meta={},
+        )
+
+        self.assertFalse(decision["send"])
+        self.assertEqual(decision["reason"], "baseline_created")
+
+    def test_unchanged_status_does_not_send(self) -> None:
+        decision = capacity_status_change_decision(
+            setting=self.setting,
+            summary={"health_status": "healthy"},
+            meta={"last_observed_status": "healthy"},
+        )
+
+        self.assertFalse(decision["send"])
+        self.assertEqual(decision["reason"], "unchanged")
+
+    def test_every_valid_improvement_or_deterioration_is_a_change(self) -> None:
+        transitions = (
+            ("abundant", "healthy"),
+            ("danger", "tight"),
+            ("healthy", "very_abundant"),
+            ("tight", "exhausted"),
+        )
+        for previous, current in transitions:
+            with self.subTest(previous=previous, current=current):
+                decision = capacity_status_change_decision(
+                    setting=self.setting,
+                    summary={"health_status": current},
+                    meta={"last_observed_status": previous},
+                )
+
+                self.assertTrue(decision["send"])
+                self.assertEqual(decision["reason"], "status_changed")
+                self.assertEqual(decision["previous_health_status"], previous)
+                self.assertEqual(decision["health_status"], current)
+
+    def test_pending_is_not_a_change_or_a_valid_previous_baseline(self) -> None:
+        current_pending = capacity_status_change_decision(
+            setting=self.setting,
+            summary={"health_status": "pending"},
+            meta={"last_observed_status": "healthy"},
+        )
+        previous_pending = capacity_status_change_decision(
+            setting=self.setting,
+            summary={"health_status": "abundant"},
+            meta={"last_observed_status": "pending"},
+        )
+
+        self.assertFalse(current_pending["send"])
+        self.assertEqual(current_pending["reason"], "waiting_data")
+        self.assertFalse(previous_pending["send"])
+        self.assertEqual(previous_pending["reason"], "baseline_created")
+
+
 class CapacityNotificationTextTests(unittest.TestCase):
     def test_sub_one_hour_alert_explains_exhausted_threshold_override(self) -> None:
         message = _capacity_notification_text(
@@ -255,6 +345,62 @@ class CapacityNotificationTextTests(unittest.TestCase):
         self.assertIn("恢复时间：2026-07-16 20:00", message)
 
 
+class CapacityStatusChangeHelperTests(unittest.IsolatedAsyncioTestCase):
+    async def test_active_feishu_channel_ids_exclude_other_or_disabled_channels(self) -> None:
+        documents = [
+            {"_id": "feishu-active", "status": "active", "channel_type": "feishu"},
+            {"_id": "feishu-disabled", "status": "disabled", "channel_type": "feishu"},
+            {"_id": "dingtalk-active", "status": "active", "channel_type": "dingtalk"},
+            {"_id": "telegram-active", "status": "active", "channel_type": "telegram"},
+        ]
+        observed: dict[str, object] = {}
+
+        def find(query, projection):
+            observed["query"] = query
+            observed["projection"] = projection
+            selected = [
+                item
+                for item in documents
+                if item["status"] == query["status"] and item["channel_type"] == query["channel_type"]
+            ]
+            return AsyncCursor(selected)
+
+        db = SimpleNamespace(notification_channels=SimpleNamespace(find=find))
+
+        channel_ids = await _active_feishu_channel_ids(db)
+
+        self.assertEqual(channel_ids, ["feishu-active"])
+        self.assertEqual(observed["query"], {"status": "active", "channel_type": "feishu"})
+        self.assertEqual(observed["projection"], {"_id": 1})
+
+    def test_status_change_text_contains_transition_and_operating_state(self) -> None:
+        message = _capacity_status_change_text(
+            site_id="api-5001",
+            group_id=3,
+            group_name="Plus 池",
+            previous_health_status="abundant",
+            changed_at=datetime(2026, 7, 28, 4, 30, tzinfo=UTC),
+            summary={
+                "health_status": "healthy",
+                "health_label": "健康",
+                "health_reason": "当前容量处于健康范围",
+                "pressure_stage_label": "稳定",
+                "actual_runway_hours": 4,
+                "dynamic_runway_hours": 6,
+                "concurrency_coverage": 3.2,
+            },
+        )
+
+        self.assertIn("站点：api-5001", message)
+        self.assertIn("分组：Plus 池（#3）", message)
+        self.assertIn("状态变化：充裕 -> 健康", message)
+        self.assertIn("压力阶段：稳定", message)
+        self.assertIn("实际 / 动态可用：4.0小时 / 6.0小时", message)
+        self.assertIn("并发覆盖：3.20x", message)
+        self.assertIn("判断原因：当前容量处于健康范围", message)
+        self.assertIn("变化时间：2026-07-28 12:30", message)
+
+
 class CapacityNotificationDeliveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.setting = {
@@ -314,6 +460,160 @@ class CapacityNotificationDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["sent"])
         self.assertEqual(result["notification_type"], "alert")
         self.assertEqual(sender.await_args.kwargs["event_type"], "sub2api.capacity.low")
+
+    async def test_status_change_without_threshold_delivery_targets_only_active_feishu(self) -> None:
+        meta_collection = SimpleNamespace(
+            find_one=AsyncMock(return_value={"active_alert": False, "last_observed_status": "abundant"}),
+            update_one=AsyncMock(),
+        )
+        channels = [
+            {"_id": "feishu-active", "status": "active", "channel_type": "feishu"},
+            {"_id": "telegram-active", "status": "active", "channel_type": "telegram"},
+        ]
+
+        def find_channels(query, _projection):
+            return AsyncCursor(
+                [
+                    item
+                    for item in channels
+                    if item["status"] == query["status"] and item["channel_type"] == query["channel_type"]
+                ]
+            )
+
+        db = SimpleNamespace(
+            sub2api_capacity_notification_meta=meta_collection,
+            notification_channels=SimpleNamespace(find=find_channels),
+        )
+        sender = AsyncMock(return_value={"event": {"id": "event-change", "status": "success"}, "success": 1})
+
+        with patch("app.modules.sub2api.capacity_notifications.send_notification_event", sender):
+            result = await _evaluate_group_capacity_notification(
+                db,
+                site_id="api-5001",
+                group_id=3,
+                group_name="Plus 池",
+                setting=self.setting,
+                summary={
+                    "health_status": "healthy",
+                    "health_label": "健康",
+                    "actual_runway_hours": 4,
+                    "dynamic_runway_hours": 6,
+                    "concurrency_coverage": 3.2,
+                },
+            )
+
+        self.assertTrue(result["sent"])
+        self.assertEqual(result["notification_type"], "status_change")
+        sender.assert_awaited_once()
+        send_kwargs = sender.await_args.kwargs
+        self.assertEqual(send_kwargs["event_type"], "sub2api.capacity.status_changed")
+        self.assertEqual(send_kwargs["channel_ids"], ["feishu-active"])
+        self.assertEqual(send_kwargs["payload"]["previous_health_status"], "abundant")
+        update = meta_collection.update_one.await_args.args[1]["$set"]
+        self.assertEqual(update["last_observed_status"], "healthy")
+        self.assertEqual(update["last_state_change_from"], "abundant")
+        self.assertEqual(update["last_state_change_to"], "healthy")
+        self.assertEqual(update["last_state_change_event_id"], "event-change")
+        self.assertEqual(update["last_state_change_delivery_status"], "success")
+        self.assertFalse(update["active_alert"])
+        self.assertNotIn("last_attempt_at", update)
+        self.assertNotIn("last_notification_type", update)
+
+    async def test_threshold_alert_reuses_event_for_status_change_audit(self) -> None:
+        meta_collection = SimpleNamespace(
+            find_one=AsyncMock(
+                return_value={
+                    "active_alert": True,
+                    "last_notified_status": "tight",
+                    "last_observed_status": "tight",
+                }
+            ),
+            update_one=AsyncMock(),
+        )
+        db = SimpleNamespace(sub2api_capacity_notification_meta=meta_collection)
+        sender = AsyncMock(return_value={"event": {"id": "event-low", "status": "success"}, "success": 1})
+
+        with patch("app.modules.sub2api.capacity_notifications.send_notification_event", sender):
+            result = await _evaluate_group_capacity_notification(
+                db,
+                site_id="api-5001",
+                group_id=3,
+                group_name="Plus 池",
+                setting=self.setting,
+                summary={"health_status": "danger", "health_label": "危险"},
+            )
+
+        self.assertTrue(result["sent"])
+        self.assertEqual(result["notification_type"], "alert")
+        sender.assert_awaited_once()
+        send_kwargs = sender.await_args.kwargs
+        self.assertEqual(send_kwargs["event_type"], "sub2api.capacity.low")
+        self.assertNotIn("channel_ids", send_kwargs)
+        self.assertEqual(send_kwargs["payload"]["previous_health_status"], "tight")
+        update = meta_collection.update_one.await_args.args[1]["$set"]
+        self.assertEqual(update["last_state_change_from"], "tight")
+        self.assertEqual(update["last_state_change_to"], "danger")
+        self.assertEqual(update["last_state_change_event_id"], "event-low")
+        self.assertEqual(update["last_state_change_delivery_status"], "success")
+
+    async def test_pending_does_not_overwrite_last_valid_observed_status(self) -> None:
+        meta_collection = SimpleNamespace(
+            find_one=AsyncMock(return_value={"active_alert": False, "last_observed_status": "healthy"}),
+            update_one=AsyncMock(),
+        )
+        db = SimpleNamespace(sub2api_capacity_notification_meta=meta_collection)
+
+        result = await _evaluate_group_capacity_notification(
+            db,
+            site_id="api-5001",
+            group_id=3,
+            group_name="Plus 池",
+            setting=self.setting,
+            summary={"health_status": "pending", "health_label": "等待数据"},
+        )
+
+        self.assertFalse(result["sent"])
+        update = meta_collection.update_one.await_args.args[1]["$set"]
+        self.assertNotIn("last_observed_status", update)
+        self.assertNotIn("last_observed_at", update)
+
+    async def test_skipped_status_change_advances_observation_without_touching_alert_cooldown(self) -> None:
+        meta_collection = SimpleNamespace(
+            find_one=AsyncMock(
+                return_value={
+                    "active_alert": False,
+                    "last_observed_status": "healthy",
+                    "last_attempt_at": datetime(2026, 7, 28, 1, 0, tzinfo=UTC),
+                    "last_notification_type": "recovery",
+                }
+            ),
+            update_one=AsyncMock(),
+        )
+        db = SimpleNamespace(
+            sub2api_capacity_notification_meta=meta_collection,
+            notification_channels=SimpleNamespace(find=lambda *_args: AsyncCursor([])),
+        )
+        sender = AsyncMock(return_value={"event": {"id": "event-skipped", "status": "skipped"}, "success": 0})
+
+        with patch("app.modules.sub2api.capacity_notifications.send_notification_event", sender):
+            result = await _evaluate_group_capacity_notification(
+                db,
+                site_id="api-5001",
+                group_id=3,
+                group_name="Plus 池",
+                setting=self.setting,
+                summary={"health_status": "abundant", "health_label": "充裕"},
+            )
+
+        self.assertFalse(result["sent"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["delivery_status"], "skipped")
+        self.assertEqual(sender.await_args.kwargs["channel_ids"], [])
+        update = meta_collection.update_one.await_args.args[1]["$set"]
+        self.assertEqual(update["last_observed_status"], "abundant")
+        self.assertEqual(update["last_state_change_delivery_status"], "skipped")
+        self.assertNotIn("last_attempt_at", update)
+        self.assertNotIn("last_notification_type", update)
 
 
 if __name__ == "__main__":

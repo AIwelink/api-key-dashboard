@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatHealthDuration, formatHealthProbability } from "./AccountPoolsPage";
+import { formatHealthDuration, formatHealthLifetimeRange } from "./AccountPoolsPage";
 import { safeHttpUrl } from "../utils/url";
 
 
@@ -13,13 +13,14 @@ describe("safeHttpUrl", () => {
 });
 
 describe("account health analysis formatting", () => {
-  it("distinguishes missing probabilities from a real zero", () => {
-    expect(formatHealthProbability(null)).toBe("-");
-    expect(formatHealthProbability(0)).toBe("0.0%");
-    expect(formatHealthProbability(0.125)).toBe("12.5%");
+  it("formats the lifetime distribution for operators", () => {
+    expect(formatHealthLifetimeRange(null, null, null)).toBe("-");
+    expect(formatHealthLifetimeRange(3_600, 7_200, 10_800)).toBe(
+      "最短 1小时 · 中位 2小时 · 最长 3小时",
+    );
   });
 
-  it("formats unavailable durations for operators", () => {
+  it("formats account lifetimes for operators", () => {
     expect(formatHealthDuration(null)).toBe("-");
     expect(formatHealthDuration(59)).toBe("59秒");
     expect(formatHealthDuration(90)).toBe("1分30秒");

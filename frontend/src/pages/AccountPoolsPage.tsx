@@ -83,16 +83,15 @@ type QuotaDetectionResponse = {
 
 type AccountHealthMetrics = {
   account_type: string;
-  observed_accounts: number;
-  unavailable_accounts: number;
-  unavailable_probability: number | null;
-  episode_count: number;
-  ongoing_unavailable_accounts: number;
-  average_unavailable_duration_seconds: number | null;
   average_five_hour_used_percent: number | null;
   average_seven_day_used_percent: number | null;
   average_five_hour_actual_cost_usd: number | null;
   average_seven_day_actual_cost_usd: number | null;
+  failed_accounts: number;
+  average_lifetime_seconds: number | null;
+  median_lifetime_seconds: number | null;
+  minimum_lifetime_seconds: number | null;
+  maximum_lifetime_seconds: number | null;
 };
 
 type AccountHealthPeriod = {
@@ -1647,14 +1646,14 @@ function AccountHealthAnalysisView({
       overall: false,
     })),
   ];
-  const hasData = Boolean(oneDay?.overall?.observed_accounts || sevenDays?.overall?.observed_accounts);
+  const hasData = Boolean(oneDay?.overall?.failed_accounts || sevenDays?.overall?.failed_accounts);
 
   return (
     <div className="account-health-analysis" aria-busy={loading}>
       <div className="account-health-header">
         <div>
-          <h4>全部账号分析</h4>
-          <p>认证失效、明确封禁与 502 合并统计；429、临时 403 和仅停止调度不计入。</p>
+          <h4>账号寿命分析</h4>
+          <p>统计账号从首次检测到首次认证失效或明确封禁的使用时长；502、429、临时 403 和仅停止调度不计入。</p>
         </div>
         <span className={value?.stale ? "is-stale" : ""}>
           {value?.computed_at
@@ -1668,25 +1667,25 @@ function AccountHealthAnalysisView({
         <div className="account-health-table">
           <div className="account-health-heading" aria-hidden="true">
             <span>账号类型</span>
-            <span>最近 1 天</span>
-            <span>最近 7 天</span>
+            <span>最近 1 天首次封禁</span>
+            <span>最近 7 天首次封禁</span>
           </div>
           {rows.map((row) => (
             <div className={`account-health-row${row.overall ? " is-overall" : ""}`} key={row.key}>
               <strong>{row.label}</strong>
-              <AccountHealthPeriodResult label="最近 1 天" value={row.oneDay} />
-              <AccountHealthPeriodResult label="最近 7 天" value={row.sevenDays} />
+              <AccountLifetimePeriodResult label="最近 1 天首次封禁" value={row.oneDay} />
+              <AccountLifetimePeriodResult label="最近 7 天首次封禁" value={row.sevenDays} />
             </div>
           ))}
         </div>
       ) : (
-        <div className="quota-detection-empty">暂无足够的账号变化记录</div>
+        <div className="quota-detection-empty">暂无首次封禁寿命样本</div>
       )}
     </div>
   );
 }
 
-function AccountHealthPeriodResult({
+function AccountLifetimePeriodResult({
   label,
   value,
 }: {
@@ -1696,30 +1695,37 @@ function AccountHealthPeriodResult({
   return (
     <div className="account-health-period">
       <span className="quota-window-mobile-label">{label}</span>
-      <div className="account-health-probability">
-        <strong>{formatHealthProbability(value?.unavailable_probability)}</strong>
-        <span>不可用概率</span>
+      <div className="account-health-lifetime">
+        <strong>{formatHealthDuration(value?.average_lifetime_seconds)}</strong>
+        <span>平均封禁前使用时长</span>
       </div>
+      <span>{value ? value.failed_accounts + " 个首次封禁样本" : "无封禁样本"}</span>
       <span>
-        {value ? `${value.unavailable_accounts} / ${value.observed_accounts} 个账号` : "无观察账号"}
-        {value?.episode_count ? ` · ${value.episode_count} 次区间` : ""}
+        {formatHealthLifetimeRange(
+          value?.minimum_lifetime_seconds,
+          value?.median_lifetime_seconds,
+          value?.maximum_lifetime_seconds,
+        )}
       </span>
       <span>
-        平均不可用 {formatHealthDuration(value?.average_unavailable_duration_seconds)}
-        {value?.ongoing_unavailable_accounts ? ` · 进行中 ${value.ongoing_unavailable_accounts}` : ""}
+        封禁时平均使用 5h {formatHealthUsage(value?.average_five_hour_used_percent)} · 7d{" "}
+        {formatHealthUsage(value?.average_seven_day_used_percent)}
       </span>
       <span>
-        平均使用 5h {formatHealthUsage(value?.average_five_hour_used_percent)} · 7d {formatHealthUsage(value?.average_seven_day_used_percent)}
-      </span>
-      <span>
-        平均实际成本 5h {formatQuotaUsd(value?.average_five_hour_actual_cost_usd)} · 7d {formatQuotaUsd(value?.average_seven_day_actual_cost_usd)}
+        封禁时平均实际成本 5h {formatQuotaUsd(value?.average_five_hour_actual_cost_usd)} · 7d{" "}
+        {formatQuotaUsd(value?.average_seven_day_actual_cost_usd)}
       </span>
     </div>
   );
 }
 
-export function formatHealthProbability(value: number | null | undefined) {
-  return typeof value === "number" && Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "-";
+export function formatHealthLifetimeRange(
+  minimum: number | null | undefined,
+  median: number | null | undefined,
+  maximum: number | null | undefined,
+) {
+  if (![minimum, median, maximum].some((value) => typeof value === "number" && Number.isFinite(value))) return "-";
+  return "最短 " + formatHealthDuration(minimum) + " · 中位 " + formatHealthDuration(median) + " · 最长 " + formatHealthDuration(maximum);
 }
 
 export function formatHealthDuration(value: number | null | undefined) {

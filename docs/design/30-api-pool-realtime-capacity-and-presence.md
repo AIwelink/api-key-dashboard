@@ -8,6 +8,7 @@
 
 - `backend/app/modules/sub2api/cache.py`：sub2api 缓存、分组容量汇总和账号列表。
 - `backend/app/modules/sub2api/capacity_risk.py`：分钟压力、可用时间、并发覆盖、补号判断。
+- `backend/app/modules/sub2api/capacity_notifications.py`：容量阈值告警、恢复通知和容量健康状态变化飞书通知。
 - `backend/app/modules/sub2api/tpm_sampler.py`：每分钟 TPM/RPM/当前并发采样。
 - `backend/app/modules/sub2api/capacity_sampler.py`：每 5 分钟保存分组容量摘要，供后续回测。
 - `backend/app/routers/sub2api_sites.py`：站点、分组和账号缓存接口。
@@ -185,6 +186,38 @@ dynamic_runway_hours < 1
 ```
 
 这条硬告警线优先于分组配置的 `capacity_notification_threshold`，即使阈值选择“仅耗尽”也不能屏蔽。通知总开关、冷却时间、危险状态重复提醒和恢复通知规则仍然有效。`realtime_risk_ready=false` 时不得根据残留 runway 字段报警。
+
+### 4.4 容量健康状态变化飞书通知
+
+状态变化通知受分组现有 `capacity_notification_enabled` 开关控制。有效状态只有：
+
+```text
+very_abundant, abundant, healthy, tight, danger, exhausted
+```
+
+`pending` 表示等待数据，不是有效状态，不得覆盖 `sub2api_capacity_notification_meta.last_observed_status`。首次观察到有效状态只建立基线，不发送专用状态变化消息；启用通知后，任意两个有效状态之间的变化都发送，包括改善和恶化。
+
+去重和路由规则：
+
+- 本轮状态变化如果同时触发原有 `sub2api.capacity.low` 或 `sub2api.capacity.recovered`，复用该事件，不再发送第二条消息。
+- 原状态机本轮不发送时，创建 `sub2api.capacity.status_changed`，只投递到所有 `status=active` 且 `channel_type=feishu` 的通知渠道。
+- 专用状态变化事件不写 `last_attempt_at`、`last_notification_type` 或 `last_notified_status`，因此不改变危险告警冷却和恢复状态机。
+- 没有飞书渠道、投递失败或投递跳过时，仍前移 `last_observed_status`，避免同一次变化每分钟重复发送。
+- 分组通知关闭时继续维护当前有效观察状态，但不发送；重新启用后不补发关闭期间的历史变化。
+
+专用事件 payload 至少包含：
+
+```text
+site_id
+group_id
+group_name
+previous_health_status
+health_status
+notification_type = status_change
+capacity_summary
+```
+
+当前状态对应严重度：`exhausted=critical`、`danger=danger`、`tight=warning`、`healthy=success`、`abundant/very_abundant=info`。
 
 ## 5. 并发覆盖：总覆盖与内部余量必须分开
 
@@ -365,9 +398,24 @@ sub2api_groups_cache
 sub2api_accounts_cache
 sub2api_tpm_samples
 sub2api_capacity_samples
+sub2api_capacity_notification_meta
 ```
 
 `sub2api_capacity_samples` 每 5 分钟按站点和分组保存一次 schema version 2 文档。`metrics` 会自动保留容量摘要中的标量字段，因此当前消耗速度的四个字段直接进入新样本；这是加法兼容变更，不提升 schema version，也不回填历史样本。
+
+`sub2api_capacity_notification_meta` 使用 `{site_id}:{group_id}` 作为文档 ID。状态变化审计字段为：
+
+```text
+last_observed_status
+last_observed_at
+last_state_change_at
+last_state_change_from
+last_state_change_to
+last_state_change_event_id
+last_state_change_delivery_status
+```
+
+状态变化审计字段与原有 `last_attempt_at`、`last_notified_status`、`active_alert` 分离。原告警或恢复事件复用时，`last_state_change_event_id` 指向被复用的事件。
 
 前台在线：
 
@@ -387,6 +435,7 @@ backend/tests/test_capacity_risk.py
 backend/tests/test_capacity_risk_integration.py
 backend/tests/test_capacity_sampler.py
 backend/tests/test_concurrency_capacity.py
+backend/tests/test_capacity_notifications.py
 backend/tests/test_frontend_presence.py
 backend/tests/test_sub2api_account_list.py
 frontend/src/utils/capacityScale.test.ts
@@ -419,3 +468,5 @@ npm.cmd run build
 8. presence leave 必须携带 `session_id`，不能关闭同一浏览器的其他标签页。
 9. `schedulable=false` 的账号不能进入美元容量或并发容量，即使账号仍带有 5h/7d 429 状态。
 10. 当前消耗速度在整点后前 5 分钟只使用紧邻上一小时，5 分钟后只使用当前小时，且始终保持站点/分组隔离。
+11. `pending` 不得覆盖容量状态基线；同一轮阈值告警或恢复已经发送时，不得再发送专用状态变化事件。
+12. 专用状态变化事件只能路由到启用的飞书渠道，且不得更新原告警冷却字段。

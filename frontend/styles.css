@@ -3723,20 +3723,20 @@ legend {
   min-width: 0;
 }
 
-.account-health-probability {
+.account-health-lifetime {
   grid-row: span 2;
   display: grid;
   align-content: start;
   gap: 1px;
 }
 
-.account-health-probability strong {
+.account-health-lifetime strong {
   color: var(--text);
   font-size: 20px;
   line-height: 1.1;
 }
 
-.account-health-probability span,
+.account-health-lifetime span,
 .account-health-period > span:not(.quota-window-mobile-label) {
   color: var(--muted);
   font-size: 11px;

@@ -33,6 +33,7 @@ HEALTH_LABELS = {
     "danger": "危险",
     "exhausted": "耗尽",
 }
+VALID_HEALTH_STATUSES = frozenset(HEALTH_LABELS) - {"pending"}
 TRIGGER_REASON_LABELS = {
     "threshold_crossed": "首次进入通知阈值",
     "realtime_runway_below_one_hour": "实时可用时间低于1小时",
@@ -48,6 +49,14 @@ REFILL_ACCOUNT_TYPE_LABELS = {
 }
 REFILL_REFERENCE_NOTE = "仅供参考，请结合实时供货和账号质量判断。"
 SHANGHAI_TZ = timezone(timedelta(hours=8))
+
+
+async def _active_feishu_channel_ids(db: AsyncIOMotorDatabase) -> list[str]:
+    cursor = db.notification_channels.find(
+        {"status": "active", "channel_type": "feishu"},
+        {"_id": 1},
+    ).sort("created_at", 1)
+    return [str(item["_id"]) async for item in cursor]
 
 
 async def evaluate_capacity_notifications(
@@ -110,15 +119,19 @@ async def _evaluate_group_capacity_notification(
     meta = await db.sub2api_capacity_notification_meta.find_one({"_id": meta_id}) or {}
     now = now_utc()
     decision = capacity_notification_decision(setting=setting, summary=summary, meta=meta, now=now)
+    status_change = capacity_status_change_decision(setting=setting, summary=summary, meta=meta)
+    health_status = decision["health_status"]
     base_updates = {
         "site_id": site_id,
         "group_id": group_id,
         "group_name": group_name,
-        "last_observed_status": decision["health_status"],
-        "last_observed_at": now,
         "updated_at": now,
     }
-    if not decision["send"]:
+    if health_status in VALID_HEALTH_STATUSES:
+        base_updates["last_observed_status"] = health_status
+        base_updates["last_observed_at"] = now
+
+    if not decision["send"] and not status_change["send"]:
         base_updates["active_alert"] = decision["keep_active_alert"]
         await db.sub2api_capacity_notification_meta.update_one(
             {"_id": meta_id},
@@ -127,40 +140,30 @@ async def _evaluate_group_capacity_notification(
         )
         return {"ok": True, "sent": False, "site_id": site_id, "group_id": group_id, "reason": decision["reason"]}
 
-    health_status = decision["health_status"]
     health_label = str(summary.get("health_label") or HEALTH_LABELS.get(health_status) or health_status)
-    threshold = decision["threshold"]
-    notification_type = str(decision.get("notification_type") or "alert")
-    is_recovery = notification_type == "recovery"
-    title = f"账号池容量{'恢复' if is_recovery else '预警'}：{group_name} {health_label}"
-    if is_recovery:
-        text = _capacity_recovery_text(
-            site_id=site_id,
-            group_id=group_id,
-            group_name=group_name,
-            recovered_at=now,
-            summary=summary,
-        )
-    else:
-        text = _capacity_notification_text(
-            site_id=site_id,
-            group_id=group_id,
-            group_name=group_name,
-            threshold=threshold,
-            summary=summary,
-            trigger_reason=decision["reason"],
-        )
-    delivery = await send_notification_event(
-        db,
-        event_type="sub2api.capacity.recovered" if is_recovery else "sub2api.capacity.low",
-        title=title,
-        text=text,
-        markdown_text=f"### {title}\n\n{text}",
-        severity="success" if is_recovery else _notification_severity(health_status),
-        source="sub2api_capacity",
-        resource_type="sub2api_group",
-        resource_id=f"{site_id}:{group_id}",
-        payload={
+    if decision["send"]:
+        threshold = decision["threshold"]
+        notification_type = str(decision.get("notification_type") or "alert")
+        is_recovery = notification_type == "recovery"
+        title = f"账号池容量{'恢复' if is_recovery else '预警'}：{group_name} {health_label}"
+        if is_recovery:
+            message_text = _capacity_recovery_text(
+                site_id=site_id,
+                group_id=group_id,
+                group_name=group_name,
+                recovered_at=now,
+                summary=summary,
+            )
+        else:
+            message_text = _capacity_notification_text(
+                site_id=site_id,
+                group_id=group_id,
+                group_name=group_name,
+                threshold=threshold,
+                summary=summary,
+                trigger_reason=decision["reason"],
+            )
+        payload = {
             "site_id": site_id,
             "group_id": group_id,
             "group_name": group_name,
@@ -169,33 +172,108 @@ async def _evaluate_group_capacity_notification(
             "notification_type": notification_type,
             "capacity_summary": summary,
             "trigger_reason": decision["reason"],
-        },
-        dedupe_key=f"sub2api.capacity.{'recovered' if is_recovery else 'low'}:{site_id}:{group_id}:{health_status}:{int(now.timestamp())}",
-    )
-    event = delivery.get("event") if isinstance(delivery.get("event"), dict) else {}
-    delivery_status = str(event.get("status") or "unknown")
-    base_updates.update(
-        {
-            "last_attempt_at": now,
-            "last_delivery_status": delivery_status,
-            "last_notification_event_id": event.get("id") or event.get("_id"),
-            "last_notification_type": notification_type,
-            "last_trigger_reason": decision["reason"],
-            "active_alert": not is_recovery,
         }
-    )
-    if is_recovery:
-        base_updates["last_recovered_at"] = now
-        base_updates["last_recovered_status"] = health_status
+        if status_change["send"]:
+            payload["previous_health_status"] = status_change["previous_health_status"]
+        delivery = await send_notification_event(
+            db,
+            event_type="sub2api.capacity.recovered" if is_recovery else "sub2api.capacity.low",
+            title=title,
+            text=message_text,
+            markdown_text=f"### {title}\n\n{message_text}",
+            severity="success" if is_recovery else _notification_severity(health_status),
+            source="sub2api_capacity",
+            resource_type="sub2api_group",
+            resource_id=f"{site_id}:{group_id}",
+            payload=payload,
+            dedupe_key=f"sub2api.capacity.{'recovered' if is_recovery else 'low'}:{site_id}:{group_id}:{health_status}:{int(now.timestamp())}",
+        )
+        event = delivery.get("event") if isinstance(delivery.get("event"), dict) else {}
+        delivery_status = str(event.get("status") or "unknown")
+        event_id = event.get("id") or event.get("_id")
+        base_updates.update(
+            {
+                "last_attempt_at": now,
+                "last_delivery_status": delivery_status,
+                "last_notification_event_id": event_id,
+                "last_notification_type": notification_type,
+                "last_trigger_reason": decision["reason"],
+                "active_alert": not is_recovery,
+            }
+        )
+        if is_recovery:
+            base_updates["last_recovered_at"] = now
+            base_updates["last_recovered_status"] = health_status
+        else:
+            base_updates["last_notified_status"] = health_status
+        if status_change["send"]:
+            base_updates.update(
+                {
+                    "last_state_change_at": now,
+                    "last_state_change_from": status_change["previous_health_status"],
+                    "last_state_change_to": health_status,
+                    "last_state_change_event_id": event_id,
+                    "last_state_change_delivery_status": delivery_status,
+                }
+            )
     else:
-        base_updates["last_notified_status"] = health_status
+        previous_health_status = str(status_change["previous_health_status"])
+        previous_label = HEALTH_LABELS.get(previous_health_status, previous_health_status)
+        title = f"账号池容量状态变化：{group_name} {previous_label} -> {health_label}"
+        message_text = _capacity_status_change_text(
+            site_id=site_id,
+            group_id=group_id,
+            group_name=group_name,
+            previous_health_status=previous_health_status,
+            changed_at=now,
+            summary=summary,
+        )
+        channel_ids = await _active_feishu_channel_ids(db)
+        delivery = await send_notification_event(
+            db,
+            event_type="sub2api.capacity.status_changed",
+            title=title,
+            text=message_text,
+            markdown_text=f"### {title}\n\n{message_text}",
+            severity=_status_change_severity(health_status),
+            source="sub2api_capacity",
+            resource_type="sub2api_group",
+            resource_id=f"{site_id}:{group_id}",
+            payload={
+                "site_id": site_id,
+                "group_id": group_id,
+                "group_name": group_name,
+                "previous_health_status": previous_health_status,
+                "health_status": health_status,
+                "notification_type": "status_change",
+                "capacity_summary": summary,
+            },
+            dedupe_key=f"sub2api.capacity.status_changed:{site_id}:{group_id}:{previous_health_status}:{health_status}:{int(now.timestamp())}",
+            channel_ids=channel_ids,
+        )
+        event = delivery.get("event") if isinstance(delivery.get("event"), dict) else {}
+        delivery_status = str(event.get("status") or "unknown")
+        event_id = event.get("id") or event.get("_id")
+        notification_type = "status_change"
+        base_updates.update(
+            {
+                "active_alert": decision["keep_active_alert"],
+                "last_state_change_at": now,
+                "last_state_change_from": previous_health_status,
+                "last_state_change_to": health_status,
+                "last_state_change_event_id": event_id,
+                "last_state_change_delivery_status": delivery_status,
+            }
+        )
+
     await db.sub2api_capacity_notification_meta.update_one(
         {"_id": meta_id},
         {"$set": base_updates, "$setOnInsert": {"created_at": now}},
         upsert=True,
     )
     return {
-        "ok": delivery_status in {"success", "partial"},
+        "ok": delivery_status in {"success", "partial"}
+        or (notification_type == "status_change" and delivery_status == "skipped"),
         "sent": int(delivery.get("success") or 0) > 0,
         "site_id": site_id,
         "group_id": group_id,
@@ -249,6 +327,31 @@ def capacity_notification_decision(
     if health_status == "tight":
         return _decision_result(False, True, "tight_repeat_suppressed", health_status, threshold, keep_active_alert=True)
     return _decision_result(True, True, "cooldown_elapsed", health_status, threshold, notification_type="alert", keep_active_alert=True)
+
+
+def capacity_status_change_decision(
+    *,
+    setting: dict[str, Any],
+    summary: dict[str, Any],
+    meta: dict[str, Any],
+) -> dict[str, Any]:
+    health_status = str(summary.get("health_status") or "pending")
+    previous_health_status = str(meta.get("last_observed_status") or "")
+    result = {
+        "send": False,
+        "reason": "unchanged",
+        "previous_health_status": previous_health_status or None,
+        "health_status": health_status,
+    }
+    if setting.get("capacity_notification_enabled") is not True:
+        return {**result, "reason": "disabled"}
+    if health_status not in VALID_HEALTH_STATUSES:
+        return {**result, "reason": "waiting_data"}
+    if previous_health_status not in VALID_HEALTH_STATUSES:
+        return {**result, "reason": "baseline_created"}
+    if previous_health_status == health_status:
+        return result
+    return {**result, "send": True, "reason": "status_changed"}
 
 
 def _realtime_runway_below_one_hour(summary: dict[str, Any]) -> bool:
@@ -338,6 +441,44 @@ def _capacity_recovery_text(
             f"恢复时间：{recovered_time}",
         ]
     )
+
+
+def _capacity_status_change_text(
+    *,
+    site_id: str,
+    group_id: int,
+    group_name: str,
+    previous_health_status: str,
+    changed_at: datetime,
+    summary: dict[str, Any],
+) -> str:
+    health_status = str(summary.get("health_status") or "pending")
+    previous_label = HEALTH_LABELS.get(previous_health_status, previous_health_status)
+    current_label = str(summary.get("health_label") or HEALTH_LABELS.get(health_status) or health_status)
+    changed_time = changed_at.astimezone(SHANGHAI_TZ).strftime("%Y-%m-%d %H:%M")
+    return "\n".join(
+        [
+            f"站点：{site_id}",
+            f"分组：{group_name}（#{group_id}）",
+            f"状态变化：{previous_label} -> {current_label}",
+            f"压力阶段：{summary.get('pressure_stage_label') or '-'}",
+            f"实际 / 动态可用：{_runway_hours(summary, 'actual_runway_hours', 'forecast_actual_runway_capped')} / {_runway_hours(summary, 'dynamic_runway_hours', 'forecast_dynamic_runway_capped')}",
+            f"并发覆盖：{_multiple(summary.get('concurrency_coverage'))}",
+            f"判断原因：{summary.get('health_reason') or '-'}",
+            f"变化时间：{changed_time}",
+        ]
+    )
+
+
+def _status_change_severity(health_status: str) -> str:
+    return {
+        "exhausted": "critical",
+        "danger": "danger",
+        "tight": "warning",
+        "healthy": "success",
+        "abundant": "info",
+        "very_abundant": "info",
+    }.get(health_status, "info")
 
 
 def _notification_severity(health_status: str) -> str:

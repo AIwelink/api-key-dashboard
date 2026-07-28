@@ -14,7 +14,7 @@ from app.utils import now_utc
 
 ANALYSIS_REFRESH_INTERVAL = timedelta(hours=1)
 ANALYSIS_CACHE_RETENTION = timedelta(days=2)
-ANALYSIS_SCHEMA_VERSION = 1
+ANALYSIS_SCHEMA_VERSION = 2
 ANALYSIS_WINDOWS = {
     "one_day": timedelta(days=1),
     "seven_days": timedelta(days=7),
@@ -52,6 +52,160 @@ def is_unavailable_state(status: Any, error_message: Any) -> bool:
         or _BAN_PATTERN.search(message)
         or _BAD_GATEWAY_PATTERN.search(message)
     )
+
+
+def is_terminal_failure_state(status: Any, error_message: Any) -> bool:
+    normalized_status = str(status or "").strip().lower()
+    message = str(error_message or "").strip()
+    if normalized_status in _UNAVAILABLE_STATUSES:
+        return True
+    return bool(_AUTH_FAILURE_PATTERN.search(message) or _BAN_PATTERN.search(message))
+
+
+def build_account_lifetime(
+    identity: dict[str, Any],
+    events: list[dict[str, Any]],
+    *,
+    end_at: datetime,
+) -> dict[str, Any]:
+    end_at = _as_utc(end_at)
+    first_seen_at = _datetime_or_none(identity.get("first_seen_at"))
+    if first_seen_at is None or first_seen_at > end_at:
+        return {
+            "first_seen_at": first_seen_at,
+            "failed_at": None,
+            "lifetime_seconds": None,
+        }
+
+    candidates: list[datetime] = []
+    persisted_first_401_at = _datetime_or_none(identity.get("first_401_at"))
+    if persisted_first_401_at is not None:
+        candidates.append(persisted_first_401_at)
+
+    for event in events:
+        detected_at = _datetime_or_none(event.get("detected_at") or event.get("occurred_at"))
+        if detected_at is None or detected_at > end_at:
+            continue
+        if event.get("event_type") == "401_detected" or is_terminal_failure_state(
+            event.get("current_status"),
+            event.get("current_error_message"),
+        ):
+            candidates.append(detected_at)
+
+    candidates = [candidate for candidate in candidates if first_seen_at <= candidate <= end_at]
+    if not candidates:
+        return {
+            "first_seen_at": first_seen_at,
+            "failed_at": None,
+            "lifetime_seconds": None,
+        }
+
+    failed_at = min(candidates)
+    return {
+        "first_seen_at": first_seen_at,
+        "failed_at": failed_at,
+        "lifetime_seconds": max(0.0, (failed_at - first_seen_at).total_seconds()),
+    }
+
+
+def summarize_lifetimes(
+    identities: list[dict[str, Any]],
+    events_by_identity: dict[str, list[dict[str, Any]]],
+    *,
+    start_at: datetime,
+    end_at: datetime,
+) -> dict[str, Any]:
+    start_at = _as_utc(start_at)
+    end_at = _as_utc(end_at)
+    overall = _new_lifetime_bucket("all")
+    by_type = {
+        account_type: _new_lifetime_bucket(account_type)
+        for account_type in (*KNOWN_ACCOUNT_TYPES, "unknown")
+    }
+
+    for identity in identities:
+        identity_id = str(identity.get("_id") or "")
+        lifetime = build_account_lifetime(
+            identity,
+            events_by_identity.get(identity_id, []),
+            end_at=end_at,
+        )
+        failed_at = lifetime["failed_at"]
+        if failed_at is None or failed_at < start_at:
+            continue
+        account_type = _analysis_account_type(identity)
+        bucket = by_type.setdefault(account_type, _new_lifetime_bucket(account_type))
+        _add_lifetime_sample(overall, identity, lifetime)
+        _add_lifetime_sample(bucket, identity, lifetime)
+
+    return {
+        "start_at": start_at,
+        "end_at": end_at,
+        "overall": _finalize_lifetime_bucket(overall),
+        "items": [
+            _finalize_lifetime_bucket(by_type[account_type])
+            for account_type in (*KNOWN_ACCOUNT_TYPES, "unknown")
+            if by_type[account_type]["lifetime_seconds"]
+        ],
+    }
+
+
+def _new_lifetime_bucket(account_type: str) -> dict[str, Any]:
+    return {
+        "account_type": account_type,
+        "lifetime_seconds": [],
+        "usage_values": {
+            "five_hour_used_percent": [],
+            "seven_day_used_percent": [],
+            "five_hour_actual_cost_usd": [],
+            "seven_day_actual_cost_usd": [],
+        },
+    }
+
+
+def _add_lifetime_sample(
+    bucket: dict[str, Any],
+    identity: dict[str, Any],
+    lifetime: dict[str, Any],
+) -> None:
+    bucket["lifetime_seconds"].append(float(lifetime["lifetime_seconds"]))
+    usage = identity.get("last_usage_snapshot")
+    usage = usage if isinstance(usage, dict) else {}
+    field_map = {
+        "five_hour_used_percent": "codex_5h_used_percent",
+        "seven_day_used_percent": "codex_7d_used_percent",
+        "five_hour_actual_cost_usd": "codex_5h_actual_cost",
+        "seven_day_actual_cost_usd": "codex_7d_actual_cost",
+    }
+    for output_field, source_field in field_map.items():
+        value = _finite_number(usage.get(source_field))
+        if value is not None:
+            bucket["usage_values"][output_field].append(value)
+
+
+def _finalize_lifetime_bucket(bucket: dict[str, Any]) -> dict[str, Any]:
+    lifetimes = sorted(bucket["lifetime_seconds"])
+    sample_count = len(lifetimes)
+    middle = sample_count // 2
+    if not lifetimes:
+        median_lifetime = None
+    elif sample_count % 2:
+        median_lifetime = lifetimes[middle]
+    else:
+        median_lifetime = (lifetimes[middle - 1] + lifetimes[middle]) / 2
+    result = {
+        "account_type": bucket["account_type"],
+        "failed_accounts": sample_count,
+        "average_lifetime_seconds": round(sum(lifetimes) / sample_count, 3) if sample_count else None,
+        "median_lifetime_seconds": round(median_lifetime, 3) if median_lifetime is not None else None,
+        "minimum_lifetime_seconds": round(lifetimes[0], 3) if lifetimes else None,
+        "maximum_lifetime_seconds": round(lifetimes[-1], 3) if lifetimes else None,
+    }
+    for field, values in bucket["usage_values"].items():
+        result[f"average_{field}"] = round(sum(values) / len(values), 4) if values else None
+        result[f"{field}_sample_count"] = len(values)
+    return result
+
 
 
 def build_account_period(
@@ -178,6 +332,8 @@ async def compute_account_health_analysis(
             "name": 1,
             "first_seen_at": 1,
             "last_seen_at": 1,
+            "first_401_at": 1,
+            "last_event_at": 1,
             "last_present_at": 1,
             "current_presence": 1,
             "current_status": 1,
@@ -215,7 +371,7 @@ async def compute_account_health_analysis(
         "site_id": site_id,
         "computed_at": computed_at,
         "periods": {
-            name: summarize_period(
+            name: summarize_lifetimes(
                 identities,
                 events_by_identity,
                 start_at=computed_at - duration,
@@ -257,7 +413,7 @@ async def get_account_health_analysis(
             )
             return _public_analysis(document, requested_at=requested_at, stale=False)
         except Exception:
-            if cached:
+            if cached and cached.get("schema_version") == ANALYSIS_SCHEMA_VERSION:
                 return _public_analysis(cached, requested_at=requested_at, stale=True)
             raise
 
@@ -367,7 +523,12 @@ def _empty_account_period(observed_from: datetime, observed_until: datetime) -> 
 
 def _is_fresh(document: dict[str, Any] | None, requested_at: datetime) -> bool:
     computed_at = _datetime_or_none((document or {}).get("computed_at"))
-    return bool(computed_at is not None and requested_at - computed_at < ANALYSIS_REFRESH_INTERVAL)
+    return bool(
+        document
+        and document.get("schema_version") == ANALYSIS_SCHEMA_VERSION
+        and computed_at is not None
+        and requested_at - computed_at < ANALYSIS_REFRESH_INTERVAL
+    )
 
 
 def _public_analysis(
