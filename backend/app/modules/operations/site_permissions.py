@@ -67,9 +67,11 @@ async def update_operations_site_permissions(
         for user_id in sorted(current_user_ids)
     ]
     if operations:
-        result = await db.users.bulk_write(operations, ordered=True)
-        if result.matched_count != len(operations):
-            raise OperationsSitePermissionsConflictError("One or more users no longer exist")
+        async with await db.client.start_session() as session:
+            async with session.start_transaction():
+                result = await db.users.bulk_write(operations, ordered=True, session=session)
+                if result.matched_count != len(operations):
+                    raise OperationsSitePermissionsConflictError("One or more users no longer exist")
 
     return await get_operations_site_permissions(db)
 

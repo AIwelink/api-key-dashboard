@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -34,24 +35,61 @@ class _UsersCollection:
     def __init__(self, documents: list[dict]) -> None:
         self.documents = documents
         self.find_calls: list[tuple[object, ...]] = []
+        self.matched_count: int | None = None
         self.bulk_write = AsyncMock(side_effect=self._bulk_write)
 
     def find(self, *args: object) -> _Cursor:
         self.find_calls.append(args)
         return _Cursor(self.documents)
 
-    async def _bulk_write(self, operations: list[object], *, ordered: bool) -> SimpleNamespace:
-        for operation in operations:
+    async def _bulk_write(self, operations: list[object], *, ordered: bool, session: object | None = None) -> SimpleNamespace:
+        matched_count = len(operations) if self.matched_count is None else self.matched_count
+        for operation in operations[:matched_count]:
             user_id = operation._filter["_id"]
             for document in self.documents:
                 if document["_id"] == user_id:
                     document["operations_site_ids"] = operation._doc["$set"]["operations_site_ids"]
                     break
-        return SimpleNamespace(matched_count=len(operations))
+        return SimpleNamespace(matched_count=matched_count)
+
+
+class _Transaction:
+    def __init__(self, users: _UsersCollection) -> None:
+        self.users = users
+        self.snapshot: list[dict] | None = None
+
+    async def __aenter__(self) -> "_Transaction":
+        self.snapshot = deepcopy(self.users.documents)
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
+        if exc_type is not None and self.snapshot is not None:
+            self.users.documents[:] = self.snapshot
+        return False
+
+
+class _Session:
+    def __init__(self, users: _UsersCollection) -> None:
+        self.users = users
+
+    async def __aenter__(self) -> "_Session":
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
+        return False
+
+    def start_transaction(self) -> _Transaction:
+        return _Transaction(self.users)
+
+
+class _Client:
+    def __init__(self, users: _UsersCollection) -> None:
+        self.start_session = AsyncMock(return_value=_Session(users))
 
 
 def fake_db(documents: list[dict]) -> SimpleNamespace:
-    return SimpleNamespace(users=_UsersCollection(documents))
+    users = _UsersCollection(documents)
+    return SimpleNamespace(users=users, client=_Client(users))
 
 
 class OperationsSitePermissionsTests(unittest.IsolatedAsyncioTestCase):
@@ -125,6 +163,26 @@ class OperationsSitePermissionsTests(unittest.IsolatedAsyncioTestCase):
 
         db.users.bulk_write.assert_not_awaited()
 
+    async def test_concurrent_user_deletion_rolls_back_all_permission_updates(self) -> None:
+        documents = [
+            {"_id": "first@example.com", "email": "first@example.com", "operations_site_ids": ["aiwelink"]},
+            {"_id": "second@example.com", "email": "second@example.com", "operations_site_ids": ["aigclink"]},
+        ]
+        db = fake_db(documents)
+        db.users.matched_count = 1
+        payload = OperationsSitePermissionsUpdate(
+            users=[
+                OperationsSitePermissionEntry(user_id="first@example.com", operations_site_ids=["aigclink"]),
+                OperationsSitePermissionEntry(user_id="second@example.com", operations_site_ids=["aiwelink"]),
+            ]
+        )
+
+        with self.assertRaises(site_permissions.OperationsSitePermissionsConflictError):
+            await site_permissions.update_operations_site_permissions(db, payload=payload)
+
+        self.assertEqual(documents[0]["operations_site_ids"], ["aiwelink"])
+        self.assertEqual(documents[1]["operations_site_ids"], ["aigclink"])
+
     async def test_successful_put_persists_canonical_mapping_and_writes_audit(self) -> None:
         documents = [
             {"_id": "first@example.com", "email": "first@example.com", "name": "First", "role": "owner", "status": "active"},
@@ -163,6 +221,21 @@ class OperationsSitePermissionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(audit_mock.await_args.kwargs["resource_id"], "operations_site_permissions")
         self.assertEqual(audit_mock.await_args.kwargs["before"], {"users": []})
         self.assertEqual(audit_mock.await_args.kwargs["after"], result)
+
+    async def test_settings_routes_reject_non_owner_admin(self) -> None:
+        db = SimpleNamespace(app_settings=SimpleNamespace(find_one=AsyncMock(return_value=None)))
+        routes = [
+            route
+            for route in settings_router.router.routes
+            if route.path == "/settings/operations-site-permissions"
+        ]
+
+        for route in routes:
+            with self.subTest(methods=route.methods):
+                dependency = route.dependant.dependencies[0].call
+                with self.assertRaises(HTTPException) as raised:
+                    await dependency(user={"_id": "operator@example.com", "role": "operator"}, db=db)
+                self.assertEqual(raised.exception.status_code, 403)
 
     async def test_auth_response_always_exposes_normalized_site_permissions(self) -> None:
         user = {
