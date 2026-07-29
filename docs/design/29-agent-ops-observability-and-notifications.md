@@ -328,6 +328,37 @@ UI 中“记录内容”的含义：
 15. 连续缺失达到阈值后标记 `current_presence=removed`，关闭当前 session。
 16. 更新 `remote_account_probe_runs` 和 `remote_account_probe_meta`。
 
+### 5.1 长期 7d 限流账号主动探测
+
+`long_7d_probe_scheduler_loop(db)` 是独立于轻量列表探测的低频任务。候选账号必须同时满足：
+
+- 远端 `schedulable=true`。
+- `codex_7d_used_percent >= 100`，判断不依赖 5h 窗口；没有有效 5h 窗口的账号仍可进入。
+- `codex_7d_reset_after_seconds > 86400`，缺少秒数时使用 `codex_7d_reset_at` 计算。
+- 同一 `site_id + remote_account_id` 的上次主动探测已超过 24 小时，或从未探测。
+
+任务每 5 分钟扫描一次到期候选，但 24 小时去重记录写入独立的 `long_7d_account_probes`，不会受 `sub2api_accounts_cache` 全量替换影响。所有站点、所有候选账号使用同一后台循环逐个 `await`，禁止 `gather` 或并发请求；单个账号失败只记录结果并继续下一个。
+
+远端请求契约：
+
+```http
+POST /api/v1/admin/accounts/{remote_account_id}/test
+```
+
+```json
+{"model_id":"gpt-5.5","prompt":"","mode":"default"}
+```
+
+模型读取 `sub2api_sites.long_7d_probe_model`，旧站点和空值默认 `gpt-5.5`，可在账号池站点配置中修改。探测结果保存状态、实际请求时间、模型、延迟、响应摘要和错误；成功后不额外调用 `recover-state`，远端账号状态由 Sub2API 测试接口及后续正常缓存刷新更新。
+
+测试失败时只对以下三种已确认账号错误自动调用 `POST /accounts/{id}/schedulable` 并提交 `{"schedulable":false}`：
+
+- HTTP 401 且包含 `token_invalidated` 或 `authentication token has been invalidated`。
+- HTTP 402 且包含 `deactivated_workspace`。
+- HTTP 403 且包含 `Personal access token owner is inactive` 或 `biscuit_baker_service_auth_credential_error_status`。
+
+不能按 HTTP 403 状态码整体禁用；其他 403 可能是模型权限或临时上游策略问题，只记录探测失败。远端禁用成功后立即把当前 Mongo 缓存的顶层和 `account.schedulable` 同步为 `false`；禁用失败单独记录 `disable_error`，不能伪装为已关闭。
+
 401 判断：
 
 - 错误信息包含 `401`

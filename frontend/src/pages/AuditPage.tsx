@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import { errorMessage, pretty } from "../utils/format";
 
 type Props = {
@@ -14,6 +15,8 @@ export function AuditPage({ token, showToast }: Props) {
     const data = await api<unknown>("/audit-logs", token);
     setOutput(data);
   };
+
+  usePageAutoRefresh(loadAudit);
 
   useEffect(() => {
     loadAudit().catch((error) => showToast(errorMessage(error), true));

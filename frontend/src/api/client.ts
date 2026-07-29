@@ -1,5 +1,5 @@
 export const API_BASE =
-  localStorage.getItem("apiBase") || import.meta.env.VITE_API_BASE_URL || "/api";
+  (typeof localStorage !== "undefined" ? localStorage.getItem("apiBase") : null) || import.meta.env.VITE_API_BASE_URL || "/api";
 
 function notifyAuthExpired() {
   window.dispatchEvent(new CustomEvent("auth-expired"));
@@ -7,7 +7,9 @@ function notifyAuthExpired() {
 
 function notifySub2apiCacheUpdated(path: string, options: RequestInit) {
   const method = (options.method || "GET").toUpperCase();
-  if (method !== "POST" || !/^\/sub2api-sites\/[^/]+\/refresh$/.test(path)) return;
+  const refreshedRemoteCache = method === "POST" && /^\/sub2api-sites\/[^/]+\/refresh$/.test(path);
+  const updatedCapacityLimits = method === "PATCH" && path.startsWith("/api-pools/capacity-limits");
+  if (!refreshedRemoteCache && !updatedCapacityLimits) return;
   const version = String(Date.now());
   localStorage.setItem("sub2apiCacheVersion", version);
   window.dispatchEvent(new CustomEvent("sub2api-cache-updated", { detail: { version } }));

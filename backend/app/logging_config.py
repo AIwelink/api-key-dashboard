@@ -44,7 +44,8 @@ class SuppressSuccessfulUsageHttpxFilter(logging.Filter):
         if record.name != "httpx":
             return True
         message = record.getMessage()
-        if "/usage" not in message:
+        quiet_paths = ("/usage", "/api/log/stat", "/dashboard/snapshot-v2")
+        if not any(path in message for path in quiet_paths):
             return True
         return not any(f" {code} " in message for code in ("200", "201", "202", "204", "301", "302", "304"))
 

@@ -84,3 +84,12 @@ npm.cmd --prefix frontend run build
 - 任意页面完成 sub2api 同步后，相关页面缓存会失效并重新读取统一 MongoDB 缓存。
 - 未命中缓存时显示加载态，不显示错误的 `0 个可用账号`。
 - 账号表和总体容量必须匹配同一个账号池查询 key。
+
+## 流量分析
+
+流量分析功能仅对 `owner/admin` 开放：
+
+- `/traffic-analysis-config`：配置 Growth PostgreSQL 数据库、测试连接、查看 Schema 状态，并在确认后显式初始化数据库。保存配置不会自动初始化或修改数据库结构。
+- `/traffic-analysis`：管理站点、渠道、活动和追踪链接。
+
+页面只展示后端返回的真实配置数据，不展示尚未采集的点击、注册或付费指标。

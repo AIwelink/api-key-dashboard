@@ -3,19 +3,20 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
 from app.schemas import ImportBatchCreate
-from app.security import require_roles
-from app.services.audit import write_audit_log
-from app.services.import_batches import create_import_batch
+from app.security import get_current_user
+from app.modules.system.permissions import require_view_permission
+from app.modules.system.audit import write_audit_log
+from app.modules.accounts.import_batches import create_import_batch
 from app.utils import object_id, serialize_doc
 
 
-router = APIRouter(prefix="/import-batches", tags=["import-batches"])
+router = APIRouter(prefix="/import-batches", tags=["import-batches"], dependencies=[Depends(require_view_permission("upload"))])
 
 
 @router.post("")
 async def post_import_batch(
     payload: ImportBatchCreate,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await create_import_batch(
@@ -46,7 +47,7 @@ async def post_import_batch(
 
 @router.get("")
 async def list_import_batches(
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     items = [serialize_doc(item) async for item in db.import_batches.find({}).sort("created_at", -1).limit(200)]
@@ -56,7 +57,7 @@ async def list_import_batches(
 @router.get("/{batch_id}")
 async def get_import_batch(
     batch_id: str,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     try:

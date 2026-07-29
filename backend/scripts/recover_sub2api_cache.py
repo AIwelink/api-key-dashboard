@@ -9,9 +9,9 @@ from typing import Any
 from pymongo import ReturnDocument
 
 from app.database import close_mongo_connection, connect_to_mongo, get_db
-from app.services.accounts import apply_metadata_to_account_json
-from app.services.pool_lifecycle import operation_actor_updates
-from app.services.sub2api_return import remote_usage_snapshot
+from app.modules.accounts.accounts import apply_metadata_to_account_json
+from app.modules.accounts.pool_lifecycle import operation_actor_updates
+from app.modules.sub2api.return_flow import remote_usage_snapshot
 from app.utils import credentials_email, now_utc, serialize_doc
 
 

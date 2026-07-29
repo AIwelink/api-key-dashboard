@@ -1,5 +1,7 @@
 # 账号池生命周期与后端逻辑设计
 
+> **文档状态：历史目标模型，已归档。** 本文保留早期生命周期、membership、计划和待办的完整推演，不代表当前页面、集合或自动补号行为。已落地的简化生命周期可参考 [19-account-pool-final-simple-design.md](./19-account-pool-final-simple-design.md)，当前 Agent/通知边界见 [29-agent-ops-observability-and-notifications.md](./29-agent-ops-observability-and-notifications.md)，当前容量与并发计算见 [30-api-pool-realtime-capacity-and-presence.md](./30-api-pool-realtime-capacity-and-presence.md)。旧的备用池容量、固定验证站点和固定模型不得直接用于新开发。
+
 本文档描述后续账号池后端逻辑的目标模型。它建立在现有 `accounts.account_json + metadata`、sub2api MongoDB 缓存和 API 账号池状态页面之上，用于继续设计总文件库、账号总库、验证、备用池、实际使用池、问题退回、容量计划、待办和 agent 预留字段。
 
 ## 背景目标
@@ -907,14 +909,14 @@ agent 后续可输出：
 
 agent 建议先写入结构化字段，不直接修改账号生命周期。
 
-## 当前假设
+## 设计时假设（已归档）
 
-- 当前验证站点是 `sub2api 5002`。
+- 验证站点在当时按单站点设计；当前必须从账号或池的 `site_id` 解析，不能固定站点。
 - 当前不引入 Redis。
 - 当前仍采用 MongoDB 明文存储。
 - 当前先生成整体待办，不分配具体处理人。
 - 新账号批次暂不抽样验证，抽样逻辑后续单独设计。
 - 老账号、已知错误账号、需要复查账号可以逐个验证。
-- 验证模型固定为 `gpt-5.4-mini`，测试消息为 `hi`。
+- 当时设想固定验证模型和测试消息；当前应由实际探测接口与站点配置决定。
 - 验证通过后远端验证账号需要清理，本地进入高优先级备用池。
 - agent 后续读取结构化字段和事件，不在第一版直接做最终决策。

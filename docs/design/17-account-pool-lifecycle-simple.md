@@ -1,5 +1,7 @@
 # 账号池生命周期简化版设计
 
+> **文档状态：历史方案。** 本文是生命周期简化过程中的中间稿，不再作为当前开发主线。字段和状态可参考 [19-account-pool-final-simple-design.md](./19-account-pool-final-simple-design.md)，容量、并发和补号逻辑以 [30-api-pool-realtime-capacity-and-presence.md](./30-api-pool-realtime-capacity-and-presence.md) 为准。
+
 本文档是 `16-account-pool-lifecycle-backend.md` 的最小可落地版本。复杂版保留作为远期参考；实际开发优先按本文档推进。
 
 简化原则：

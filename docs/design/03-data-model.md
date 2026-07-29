@@ -1,5 +1,7 @@
 # Data Model
 
+> **文档状态：基础模型。** 本文前半部分的 `account_json + metadata` 仍是当前核心结构；后续新增集合只记录主要字段，不保证覆盖全部运行时索引。sub2api 缓存、容量采样和前台在线集合以 [15-api-pool-status-cache.md](./15-api-pool-status-cache.md) 与 [30-api-pool-realtime-capacity-and-presence.md](./30-api-pool-realtime-capacity-and-presence.md) 为准。
+
 当前采用简化存储结构：MongoDB 中一个账号对应一个文档，一个账号保存一个 JSON，不再拆分独立密钥表，也不做加密字段表。
 
 ## Core Rule
@@ -240,22 +242,28 @@ MVP 阶段账号内容明文存储，但审计日志仍建议只记录字段变�
 
 ## sub2api_sites
 
-当前只有一个默认站点，配置来自 `.env`，后续多站点会迁移到数据库配置。
+sub2api 站点当前由数据库管理，支持多个站点。生产 URL、站点 ID 和密钥不是固定常量。
 
 ```js
 {
-  _id: "default",
-  id: "default",
-  name: "sub2api 5002",
+  _id: "<site_id>",
+  name,
   base_url,
-  status: "active" | "disabled",
-  token_configured,
-  source: "env",
+  site_type: "sub2api",
+  token,
+  status: "active" | "disabled" | "deleted",
   refresh_interval_minutes,
+  long_7d_probe_model: "gpt-5.5",
+  auto_remove_abnormal_accounts,
+  uptime_kuma_url,
+  uptime_kuma_api_key,
+  source: "database",
   created_at,
   updated_at
 }
 ```
+
+公开 API 会移除 `token` 和 `uptime_kuma_api_key`，改为返回 `token_configured` 与 `uptime_kuma_api_key_configured`。`newapi` 等客户站点保存在独立的 `client_sites` 集合，并通过 `/api/client-sites` 管理。
 
 ## sub2api_groups_cache
 
@@ -289,6 +297,36 @@ MVP 阶段账号内容明文存储，但审计日志仍建议只记录字段变�
 ```
 
 `account` 是 sub2api Admin API 返回的远程账号对象，只作为远程状态快照，不替代本地 `accounts.account_json`。
+
+## long_7d_account_probes
+
+保存长期 7d 限流账号主动测试的 24 小时去重和最近结果。该集合不能合并进 `sub2api_accounts_cache`，因为账号缓存刷新会全量替换快照。
+
+```js
+{
+  _id: "{site_id}:{remote_account_id}",
+  site_id,
+  remote_account_id,
+  status: "running" | "passed" | "failed",
+  last_attempt_at,
+  last_finished_at,
+  model,
+  error,
+  last_result: {
+    success,
+    model,
+    mode: "default",
+    latency_ms,
+    response_preview,
+    error,
+    disable_reason: "token_invalidated" | "deactivated_workspace" | "inactive_token_owner" | null,
+    schedulable_disabled,
+    disable_error
+  },
+  created_at,
+  updated_at
+}
+```
 
 ## sub2api_cache_meta
 

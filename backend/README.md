@@ -1,133 +1,164 @@
-# API Key Admin Backend
+# API Key Dashboard Backend
 
-Python/FastAPI 后端初版，实现当前设计里的简化存储模型：
+FastAPI + MongoDB 后端。业务代码按领域放在 `app/modules/*`，HTTP 接口放在 `app/routers/*`。
 
-```js
-{
-  account_json: {},
-  metadata: {}
-}
-```
+## 安装与启动
 
-`account_json` 原样保存 sub2api 账号 JSON，`metadata` 保存后台管理字段。
-
-## Setup
+后端读取项目根目录 `.env`：
 
 ```powershell
 cd backend
-python3 -m uv sync
-python3 -m uv run uvicorn app.main:app --reload
+python -m uv sync
+python -m uv run python -m app.run
 ```
 
-这里使用 `python3 -m uv`，避免 VS Code 终端没有刷新 PATH 时找不到 `uv.exe`。
+开发时也可以直接启动 uvicorn：
 
-后端读取项目根目录的 `.env`。如果还没有根目录 `.env`，可以从根目录 `.env.example` 复制一份再填写。当前项目不会自动覆盖已有 `.env`。
+```powershell
+python -m uv run uvicorn app.main:app --reload
+```
 
-本地服务端口写在根目录 `.env`：
+健康检查：
+
+```http
+GET /health
+```
+
+检查 MongoDB：
+
+```powershell
+python -m uv run python -m app.check_mongo
+```
+
+## 配置
+
+常用根目录环境变量：
 
 ```text
 BACKEND_HOST=127.0.0.1
 BACKEND_PORT=8000
 FRONTEND_ORIGIN=http://127.0.0.1:5173
-```
 
-推荐用项目启动入口，直接读取 `.env`：
-
-```powershell
-python3 -m uv run python3 -m app.run
-```
-
-也可以手动传给 uvicorn：
-
-```powershell
-python3 -m uv run uvicorn app.main:app --reload --host $env:BACKEND_HOST --port $env:BACKEND_PORT
-```
-
-需要本地或远程 MongoDB：
-
-```text
 MONGODB_URI=
 MONGODB_HOST=localhost
 MONGODB_PORT=27017
 MONGODB_USER=
 MONGODB_PASSWORD=
 MONGODB_DB=api_key_admin
-```
 
-如果你已经有完整连接串，可以只填 `MONGODB_URI`。如果没有，就分别填写 host、port、user、password 和 database name。
-
-检查 MongoDB 连接：
-
-```powershell
-python3 -m uv run python3 -m app.check_mongo
-```
-
-如果出现 `Authentication failed`，优先检查：
-
-- `MONGODB_USER` 是否是 MongoDB 用户名，不是系统登录名。
-- `MONGODB_PASSWORD` 是否正确，特殊字符建议改用 `MONGODB_URI` 并 URL encode。
-- 分开填写时，后端会使用 `MONGODB_DB` 作为认证数据库和业务数据库。
-- 如果使用完整 `MONGODB_URI`，它会优先于分开的 host/user/password 配置。
-
-系统不开放注册。首次启动时，如果 `users` 集合为空，会根据 `.env` 创建初始 Owner：
-
-```text
 INITIAL_OWNER_EMAIL=admin@example.com
 INITIAL_OWNER_PASSWORD=change-me
 ```
 
-sub2api 测试站点配置也放在根目录 `.env`：
+如果 `users` 为空且配置了初始 Owner，启动时会创建必须修改密码的 Owner。sub2api 和客户端站点后续通过管理页面写入 MongoDB；不要在代码或文档中固定生产 URL 和 API Key。
+
+## 代码结构
 
 ```text
-SUB2API_BASE_URL=http://216.167.70.204:5002
-SUB2API_TOKEN=<sub2api-admin-api-key>
+app/main.py              FastAPI 生命周期和 router 注册
+app/routers/             HTTP 接口
+app/modules/accounts/    本地账号、导入和生命周期
+app/modules/api_pools/   池配置、额度和状态偏好
+app/modules/sub2api/     远端客户端、缓存、容量、探测和操作
+app/modules/system/      Token、在线、审计、站点和启动迁移
+app/modules/notifications/ 通知通道
+app/modules/events/      事件记录
+app/modules/todo/        待办流程
+app/modules/agent/       Agent 运维能力
 ```
 
-后端调用 sub2api Admin API 时使用请求头 `x-api-key`。
+详细开发规则见 [开发与架构约定](../docs/design/14-development-guide.md)。
 
-## Main APIs
+## 主要 API 域
 
-- `POST /api/auth/login`
-- `GET /api/auth/me`
-- `GET /api/users`
-- `POST /api/users`
-- `GET /api/accounts`
-- `POST /api/accounts`
-- `PATCH /api/accounts/{id}`
-- `DELETE /api/accounts/{id}`
-- `POST /api/imports/preview`
-- `POST /api/imports/commit`
-- `GET /api/exports/sub2api`
-- `POST /api/sync/run`
-- `GET /api/sub2api-sites`
-- `PATCH /api/sub2api-sites/{site_id}`
-- `POST /api/sub2api-sites/{site_id}/test`
-- `POST /api/sub2api-sites/{site_id}/refresh`
-- `GET /api/sub2api-sites/{site_id}/groups`
-- `GET /api/sub2api-sites/{site_id}/groups/{group_id}/accounts`
-- `GET /api/audit-logs`
+```text
+/api/auth
+/api/users
+/api/accounts
+/api/imports
+/api/sub2api-sites
+/api/api-pools
+/api/client-sites
+/api/notification-channels
+/api/event-records
+/api/todo-items
+/api/presence
+/api/agent
+/api/audit-logs
+```
 
-## sub2api Cache
+具体 method 和 payload 以 router、Pydantic schema 和自动生成的 OpenAPI 为准。开发环境启动后可查看 `/docs`。
 
-API 账号池状态功能通过 MongoDB 缓存远程 sub2api 的 groups/accounts：
+## Growth PostgreSQL
+
+Growth PostgreSQL 的 DSN 在管理面板“客户站点 > 访问流量分析配置”中保存，只有 `owner/admin` 可以查看和操作。保存配置只会更新管理配置，不会自动修改 Growth 数据库。
+
+需要建库时，可以在页面中显式点击初始化，也可以在 `backend` 目录执行：
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.init_growth_database
+```
+
+初始化会创建 `growth.schema_migrations` 和 12 张业务表；迁移可幂等执行，重复初始化不会重复创建已存在的结构。
+
+Growth API 基础路径：
+
+```text
+/api/settings/growth-database
+/api/growth
+```
+
+## sub2api 缓存
+
+核心集合：
 
 ```text
 sub2api_sites
 sub2api_groups_cache
 sub2api_accounts_cache
+long_7d_account_probes
 sub2api_cache_meta
+sub2api_dashboard_trends
+sub2api_tpm_samples
+sub2api_capacity_samples
+sub2api_hourly_forecasts
+sub2api_forecast_evaluations
+sub2api_forecast_accuracy_summaries
 ```
 
 刷新语义：
 
-- `POST /api/sub2api-sites/{site_id}/refresh`：访问远程 sub2api，写入 MongoDB 缓存。
-- `GET /api/sub2api-sites/{site_id}/groups`：只读 MongoDB 缓存。
-- `GET /api/sub2api-sites/{site_id}/groups/{group_id}/accounts`：只读 MongoDB 缓存。
-- 后台 scheduler 默认每 5 分钟刷新一次，可通过 `refresh_interval_minutes` 调整。
-- 当前不使用 Redis；单实例内使用 3 秒刷新防抖锁。
+- `POST /api/sub2api-sites/{site_id}/refresh`：访问远端并更新 groups/accounts/usage 缓存。
+- groups/accounts GET：只读 MongoDB。
+- 新站点默认刷新间隔 30 分钟，可按站点修改。
+- scheduler 每 30 秒检查到期站点；同站点刷新使用 3 秒任务防抖。
+- 前端 60 秒静默刷新只读缓存，不触发远端同步。
 
-## Notes
+预测准确性结算：
 
-- 当前 MVP 明文保存账号 JSON。
-- `metadata` 是后台管理字段，不会进入 sub2api 导出。
-- `account_json.extra` 是 sub2api 原始字段，不要和 `metadata` 混用。
+- 后台每 10 分钟结算一次逐小时预测和 5 分钟 Nowcast 快照。
+- 目标自然小时结束 15 分钟后写入 `provisional`，结束 90 分钟后重新读取 PostgreSQL 并覆写为 `final`。
+- `sub2api_forecast_evaluations` 使用确定性 `_id`，重复执行不会产生重复样本；记录保留 180 天。
+- `sub2api_forecast_accuracy_summaries` 按站点和分组保存当前模型版本的 24h、7d、28d WAPE、Bias、P90 Coverage、Pinball Loss、MAE 和预测步长分段。
+- 状态页只把 `final` 样本计入准确性，预测缓存过期后评估记录仍可用于回测。
+
+参见 [API 账号池状态与缓存设计](../docs/design/15-api-pool-status-cache.md) 和 [实时容量契约](../docs/design/30-api-pool-realtime-capacity-and-presence.md)。
+
+## 测试
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+快速语法检查：
+
+```powershell
+python -m compileall app
+```
+
+## 安全约定
+
+- 账号凭证目前可能明文存储，异常、日志和审计必须脱敏。
+- `account_json` 是外部 JSON，`metadata` 是本地管理层；不要互相替代。
+- 账号身份匹配使用规范化邮箱或明确远端绑定，不使用展示名称。
+- API Key、Webhook 密钥、access token、refresh token 和邮箱授权 token 不得出现在接口列表响应、审计详情或测试快照中。

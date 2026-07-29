@@ -6,16 +6,75 @@ export type ViewName =
   | "available-pool"
   | "reserve-pool"
   | "api-pools"
+  | "plus-self-produced"
+  | "traffic-analysis"
+  | "operations-management"
   | "event-records"
   | "alert-center"
   | "pool-lifecycle"
+  | "client-sites"
+  | "traffic-analysis-config"
   | "agent-analysis"
+  | "agent-workbench"
+  | "system-management"
   | "api-tokens"
+  | "presence"
   | "users"
   | "logs";
 
-export type UserRole = "owner" | "admin" | "maintainer" | "viewer";
+export type UserRole = string;
 export type UserStatus = "active" | "disabled" | "pending_password_reset";
+
+export type RolePermissionEntry = {
+  label: string;
+  builtin: boolean;
+  allowed_views: ViewName[];
+  default_view: ViewName | null;
+};
+
+export type RolePermissionsSettings = {
+  available_views: ViewName[];
+  role_order: UserRole[];
+  roles: Record<UserRole, RolePermissionEntry>;
+  updated_at?: string;
+  updated_by?: string;
+};
+
+export type OperationsSiteId = "aiwelink" | "aigclink";
+
+export type OperationsSitePermissionSite = {
+  id: OperationsSiteId;
+  label: string;
+};
+
+export type OperationsSitePermissionUser = {
+  user_id: string;
+  email?: string | null;
+  name?: string | null;
+  role?: UserRole | null;
+  status?: UserStatus | null;
+  operations_site_ids: OperationsSiteId[];
+};
+
+export type OperationsSitePermissionsSettings = {
+  available_sites: OperationsSitePermissionSite[];
+  users: OperationsSitePermissionUser[];
+};
+
+export type UserRoleCatalogEntry = {
+  label: string;
+  builtin: boolean;
+};
+
+export type UserRoleCatalog = {
+  role_order: UserRole[];
+  roles: Record<UserRole, UserRoleCatalogEntry>;
+};
+
+export type UserPermissions = {
+  allowed_views: ViewName[];
+  default_view: ViewName | null;
+};
 
 export type User = {
   id?: string;
@@ -23,6 +82,8 @@ export type User = {
   name?: string;
   role: UserRole;
   status?: UserStatus;
+  permissions?: UserPermissions;
+  operations_site_ids?: OperationsSiteId[];
 };
 
 export type AccountDocument = {

@@ -3,8 +3,8 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
 from app.schemas import AccountCreate, AccountCredentialsRefresh, AccountUpdate, EnterReserveRequest, ManualTransferRequest, ProblemInfoCorrectedRequest, PushToSub2ApiRequest, ReservePinRequest, VerifyViaSub2ApiRequest
-from app.security import get_current_user, require_roles
-from app.services.accounts import (
+from app.modules.system.permissions import require_any_view_permission, require_view_permission
+from app.modules.accounts.accounts import (
     create_account,
     refresh_account_credentials_json,
     get_account_or_404,
@@ -13,12 +13,12 @@ from app.services.accounts import (
     soft_delete_account,
     update_account,
 )
-from app.services.audit import write_audit_log
-from app.services.json_parser import extract_account_objects
-from app.services.pool_lifecycle import enter_reserve, manual_transfer_account, set_reserve_pin
-from app.services.sub2api_binding import manually_unbind_sub2api_account
-from app.services.sub2api_push import push_account_to_sub2api
-from app.services.sub2api_verify import verify_account_via_sub2api_group
+from app.modules.system.audit import write_audit_log
+from app.modules.accounts.json_parser import extract_account_objects
+from app.modules.accounts.pool_lifecycle import enter_reserve, manual_transfer_account, set_reserve_pin
+from app.modules.sub2api.binding import manually_unbind_sub2api_account
+from app.modules.sub2api.push import push_account_to_sub2api
+from app.modules.sub2api.verify import verify_account_via_sub2api_group
 from app.utils import serialize_doc
 
 
@@ -43,7 +43,7 @@ async def get_accounts(
     sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
     skip: int = 0,
     limit: int = Query(default=50, le=500),
-    _: dict = Depends(get_current_user),
+    _: dict = Depends(require_any_view_permission("accounts", "todos", "available-pool", "reserve-pool")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_accounts(
@@ -70,7 +70,7 @@ async def get_accounts(
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def post_account(
     payload: AccountCreate,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("accounts")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     account_json_list = extract_account_objects(payload.account_json)
@@ -92,7 +92,7 @@ async def post_account(
 @router.get("/{account_id}")
 async def get_account(
     account_id: str,
-    _: dict = Depends(get_current_user),
+    _: dict = Depends(require_any_view_permission("accounts", "todos", "available-pool", "reserve-pool")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return serialize_doc(await get_account_or_404(db, account_id))
@@ -102,7 +102,7 @@ async def get_account(
 async def patch_account(
     account_id: str,
     payload: AccountUpdate,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_any_view_permission("accounts", "todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await update_account(
@@ -120,7 +120,7 @@ async def patch_account(
 async def post_refresh_credentials_json(
     account_id: str,
     payload: AccountCredentialsRefresh,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("accounts")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await refresh_account_credentials_json(
@@ -148,7 +148,7 @@ async def post_refresh_credentials_json(
 async def post_enter_reserve(
     account_id: str,
     payload: EnterReserveRequest,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("accounts")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await enter_reserve(
@@ -167,7 +167,7 @@ async def post_enter_reserve(
 async def post_manual_transfer(
     account_id: str,
     payload: ManualTransferRequest,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_any_view_permission("accounts", "available-pool", "reserve-pool")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await manual_transfer_account(
@@ -203,7 +203,7 @@ async def post_manual_transfer(
 async def post_resolve_problem_info_correction(
     account_id: str,
     payload: ProblemInfoCorrectedRequest,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await resolve_problem_account_after_info_correction(
@@ -227,7 +227,7 @@ async def post_resolve_problem_info_correction(
 async def post_reserve_pin(
     account_id: str,
     payload: ReservePinRequest,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_any_view_permission("available-pool", "reserve-pool")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await set_reserve_pin(db, account_id=account_id, pinned=payload.pinned, actor=actor)
@@ -246,7 +246,7 @@ async def post_reserve_pin(
 async def post_push_to_sub2api(
     account_id: str,
     payload: PushToSub2ApiRequest,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_any_view_permission("available-pool", "reserve-pool")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await push_account_to_sub2api(
@@ -286,7 +286,7 @@ async def post_push_to_sub2api(
 @router.post("/{account_id}/unbind-sub2api")
 async def post_unbind_sub2api(
     account_id: str,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_any_view_permission("available-pool", "reserve-pool")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await manually_unbind_sub2api_account(db, account_id=account_id, actor=actor)
@@ -305,7 +305,7 @@ async def post_unbind_sub2api(
 async def post_verify_via_sub2api(
     account_id: str,
     payload: VerifyViaSub2ApiRequest,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("accounts")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await verify_account_via_sub2api_group(
@@ -343,7 +343,7 @@ async def post_verify_via_sub2api(
 @router.delete("/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_account(
     account_id: str,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("accounts")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> None:
     await soft_delete_account(db, account_id=account_id, actor=actor)

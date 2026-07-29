@@ -1,9 +1,11 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../api/client";
-import type { User, UserRole, UserStatus } from "../types";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
+import type { User, UserRole, UserRoleCatalog, UserStatus } from "../types";
 import { errorMessage } from "../utils/format";
 
 type Props = {
+  canManageOwners: boolean;
   token: string;
   showToast: (message: string, isError?: boolean) => void;
 };
@@ -14,13 +16,6 @@ type UserForm = {
   status: UserStatus;
   password: string;
 };
-
-const ROLE_OPTIONS: Array<{ label: string; value: UserRole }> = [
-  { label: "owner", value: "owner" },
-  { label: "admin", value: "admin" },
-  { label: "maintainer", value: "maintainer" },
-  { label: "viewer", value: "viewer" },
-];
 
 const STATUS_OPTIONS: Array<{ label: string; value: UserStatus }> = [
   { label: "正常", value: "active" },
@@ -35,8 +30,9 @@ const emptyEditForm: UserForm = {
   password: "",
 };
 
-export function UsersPage({ token, showToast }: Props) {
+export function UsersPage({ canManageOwners, token, showToast }: Props) {
   const [users, setUsers] = useState<User[]>([]);
+  const [roleCatalog, setRoleCatalog] = useState<UserRoleCatalog | null>(null);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [editForm, setEditForm] = useState<UserForm>(emptyEditForm);
   const [busy, setBusy] = useState(false);
@@ -46,8 +42,19 @@ export function UsersPage({ token, showToast }: Props) {
     setUsers(data.items);
   };
 
+  const loadPageData = async () => {
+    const [usersData, settingsData] = await Promise.all([
+      api<{ items: User[] }>("/users", token),
+      api<UserRoleCatalog>("/settings/user-roles", token),
+    ]);
+    setUsers(usersData.items);
+    setRoleCatalog(settingsData);
+  };
+
+  usePageAutoRefresh(loadPageData, { paused: Boolean(editingUser || busy) });
+
   useEffect(() => {
-    loadUsers().catch((error) => showToast(errorMessage(error), true));
+    loadPageData().catch((error) => showToast(errorMessage(error), true));
   }, []);
 
   const submitCreate = async (event: FormEvent<HTMLFormElement>) => {
@@ -145,7 +152,7 @@ export function UsersPage({ token, showToast }: Props) {
           <h2>用户</h2>
           <p>系统不开放注册，用户由后台创建。</p>
         </div>
-        <button onClick={() => loadUsers().catch((error) => showToast(errorMessage(error), true))} type="button">
+        <button onClick={() => loadPageData().catch((error) => showToast(errorMessage(error), true))} type="button">
           刷新
         </button>
       </div>
@@ -161,10 +168,15 @@ export function UsersPage({ token, showToast }: Props) {
                     <span className={`status-pill ${statusTone(item.status)}`}>{statusLabel(item.status)}</span>
                   </div>
                   <div className="muted">{item.email}</div>
-                  <div className="muted">角色：{item.role}</div>
+                  <div className="muted">角色：{roleLabel(item.role, roleCatalog)}</div>
                 </div>
                 <div className="user-list-actions">
-                  <button className="ghost compact-button" disabled={busy} onClick={() => startEditing(item)} type="button">
+                  <button
+                    className="ghost compact-button"
+                    disabled={busy || !canEditUser(item, canManageOwners)}
+                    onClick={() => startEditing(item)}
+                    type="button"
+                  >
                     编辑
                   </button>
                 </div>
@@ -195,8 +207,12 @@ export function UsersPage({ token, showToast }: Props) {
               </label>
               <label>
                 角色
-                <select value={editForm.role} onChange={(event) => setEditField("role", event.target.value as UserRole)}>
-                  {roleOptionsFor(editingUser).map((option) => (
+                <select
+                  disabled={!roleCatalog}
+                  value={editForm.role}
+                  onChange={(event) => setEditField("role", event.target.value as UserRole)}
+                >
+                  {roleOptionsFor(roleCatalog, editingUser, canManageOwners).map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -235,8 +251,13 @@ export function UsersPage({ token, showToast }: Props) {
               </label>
               <label>
                 角色
-                <select name="role" defaultValue="maintainer">
-                  {ROLE_OPTIONS.filter((option) => option.value !== "owner").map((option) => (
+                <select
+                  defaultValue={defaultCreateRole(roleCatalog, canManageOwners)}
+                  disabled={!roleCatalog}
+                  key={roleCatalog?.role_order.join("|") || "loading"}
+                  name="role"
+                >
+                  {roleOptionsFromCatalog(roleCatalog, canManageOwners).map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -246,7 +267,7 @@ export function UsersPage({ token, showToast }: Props) {
               <label>
                 临时密码 <input name="password" minLength={8} placeholder="留空自动生成" />
               </label>
-              <button disabled={busy} type="submit">
+              <button disabled={busy || !roleCatalog} type="submit">
                 {busy ? "创建中..." : "创建用户"}
               </button>
             </form>
@@ -262,12 +283,34 @@ function userIdentity(user: User) {
 }
 
 function normalizeRole(value: string): UserRole {
-  if (value === "owner" || value === "admin" || value === "viewer" || value === "maintainer") return value;
-  return "maintainer";
+  return value || "maintainer";
 }
 
-function roleOptionsFor(user: User | null) {
-  return user?.role === "owner" ? ROLE_OPTIONS : ROLE_OPTIONS.filter((option) => option.value !== "owner");
+export function roleOptionsFromCatalog(catalog: UserRoleCatalog | null, includeOwner: boolean) {
+  if (!catalog) return [];
+  return catalog.role_order
+    .filter((role) => Boolean(catalog.roles[role]))
+    .filter((role) => includeOwner || role !== "owner")
+    .map((role) => ({ label: catalog.roles[role].label, value: role }));
+}
+
+function roleOptionsFor(catalog: UserRoleCatalog | null, user: User | null, canManageOwners: boolean) {
+  const options = roleOptionsFromCatalog(catalog, canManageOwners);
+  if (!user?.role || options.some((option) => option.value === user.role)) return options;
+  return [{ label: user.role, value: user.role }, ...options];
+}
+
+function defaultCreateRole(catalog: UserRoleCatalog | null, canManageOwners: boolean) {
+  const options = roleOptionsFromCatalog(catalog, canManageOwners);
+  return options.some((option) => option.value === "maintainer") ? "maintainer" : options[0]?.value || "";
+}
+
+function roleLabel(value: UserRole, catalog: UserRoleCatalog | null) {
+  return catalog?.roles[value]?.label || value;
+}
+
+export function canEditUser(user: Pick<User, "role">, canManageOwners: boolean) {
+  return user.role !== "owner" || canManageOwners;
 }
 
 function normalizeStatus(value: string | undefined): UserStatus {

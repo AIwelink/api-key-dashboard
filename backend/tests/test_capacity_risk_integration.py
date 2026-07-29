@@ -1,0 +1,441 @@
+from __future__ import annotations
+
+import unittest
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+from app.modules.api_pools.capacity_limits import normalize_capacity_limits
+from app.modules.sub2api import cache
+from app.modules.sub2api.hourly_forecast import ForecastPoint, ForecastResult
+
+
+NOW = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
+
+
+def remote_accounts(*, used_5h_percent: float) -> list[dict[str, object]]:
+    return [
+        {
+            "id": account_id,
+            "email": f"account-{account_id}@example.com",
+            "status": "active",
+            "schedulable": True,
+            "plan_type": "plus",
+            "concurrency": 10,
+            "current_concurrency": 0,
+            "codex_5h_used_percent": used_5h_percent,
+            "codex_5h_reset_after_seconds": 4 * 60 * 60,
+            "codex_5h_window_minutes": 300,
+            "codex_7d_used_percent": 0,
+            "codex_7d_reset_after_seconds": 7 * 24 * 60 * 60,
+            "codex_7d_window_minutes": 10_080,
+        }
+        for account_id in range(1, 5)
+    ]
+
+
+def minute_samples() -> list[dict[str, object]]:
+    return [
+        {
+            "sampled_at": NOW - timedelta(minutes=19 - index),
+            "tpm": 1000,
+            "rpm": 60,
+            "average_duration_ms": 1000,
+            "current_concurrency": 1,
+        }
+        for index in range(20)
+    ]
+
+
+def cost_summary(*, historical_peak: float = 0.0) -> dict[str, object]:
+    return {
+        "five_hour_peak_cost": historical_peak,
+        "recent_day_five_hour_peak_cost": historical_peak,
+        "seven_day_24h_peak_cost": historical_peak,
+        "recent_5h_cost": historical_peak,
+        "recent_24h_cost": historical_peak,
+        "seven_day_cost": historical_peak,
+        "recent_6h_cost_per_token": 1 / 60_000,
+        "current_consumption_rate": {
+            "usd_per_hour": 640.0,
+            "source": "current_hour_prorated",
+            "elapsed_minutes": 30.0,
+            "hour": "2026-07-16T12:00:00+00:00",
+        },
+        "burst_1h": {
+            "observed_cost": 0.0,
+            "elapsed_minutes": 60,
+            "projection_multiplier": 1.0,
+            "cost": 0.0,
+            "five_hour_estimated_cost": 0.0,
+            "source": "test",
+            "window_count": 0,
+            "trend": "steady",
+            "trend_label": "平稳",
+            "trend_strength": "weak",
+            "trend_strength_label": "弱",
+            "trend_change_percent": 0.0,
+            "previous_cost": 0.0,
+            "trend_recent_avg_cost": 0.0,
+            "trend_baseline_avg_cost": 0.0,
+            "trend_recent_hours": 0,
+            "trend_baseline_hours": 0,
+        },
+    }
+
+
+class CurrentConsumptionRateTests(unittest.TestCase):
+    @staticmethod
+    def hourly_row(bucket_at: datetime, account_cost: object) -> dict[str, object]:
+        return {"bucket_at": bucket_at, "account_cost": account_cost}
+
+    def test_first_five_minutes_use_exact_previous_natural_hour(self) -> None:
+        previous_hour = datetime(2026, 7, 16, 11, 0, tzinfo=UTC)
+        hourly = [self.hourly_row(previous_hour, 42.5)]
+
+        for minute in (0, 4):
+            with self.subTest(minute=minute):
+                result = cache._current_consumption_rate(
+                    hourly,
+                    now=datetime(2026, 7, 16, 12, minute, tzinfo=UTC),
+                )
+
+                self.assertEqual(result["usd_per_hour"], 42.5)
+                self.assertEqual(result["source"], "previous_full_hour")
+                self.assertEqual(result["elapsed_minutes"], float(minute))
+                self.assertEqual(result["hour"], "2026-07-16T11:00:00+00:00")
+
+    def test_minute_five_and_later_prorate_current_hour(self) -> None:
+        current_hour = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
+
+        for minute, account_cost, expected_rate in ((5, 10, 120), (30, 25, 50), (59, 59, 60)):
+            with self.subTest(minute=minute):
+                result = cache._current_consumption_rate(
+                    [self.hourly_row(current_hour, account_cost)],
+                    now=datetime(2026, 7, 16, 12, minute, tzinfo=UTC),
+                )
+
+                self.assertAlmostEqual(result["usd_per_hour"], expected_rate)
+                self.assertEqual(result["source"], "current_hour_prorated")
+                self.assertEqual(result["elapsed_minutes"], float(minute))
+                self.assertEqual(result["hour"], "2026-07-16T12:00:00+00:00")
+
+    def test_missing_previous_hour_does_not_use_older_hour(self) -> None:
+        result = cache._current_consumption_rate(
+            [self.hourly_row(datetime(2026, 7, 16, 10, 0, tzinfo=UTC), 99)],
+            now=datetime(2026, 7, 16, 12, 4, tzinfo=UTC),
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "usd_per_hour": None,
+                "source": "unavailable",
+                "elapsed_minutes": 4.0,
+                "hour": None,
+            },
+        )
+
+    def test_missing_current_hour_after_guard_does_not_fall_back(self) -> None:
+        result = cache._current_consumption_rate(
+            [self.hourly_row(datetime(2026, 7, 16, 11, 0, tzinfo=UTC), 99)],
+            now=datetime(2026, 7, 16, 12, 5, tzinfo=UTC),
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "usd_per_hour": None,
+                "source": "unavailable",
+                "elapsed_minutes": 5.0,
+                "hour": None,
+            },
+        )
+
+    def test_previous_hour_matching_handles_shanghai_month_rollover(self) -> None:
+        result = cache._current_consumption_rate(
+            [self.hourly_row(datetime(2026, 7, 31, 15, 0, tzinfo=UTC), 80)],
+            now=datetime(2026, 7, 31, 16, 2, tzinfo=UTC),
+        )
+
+        self.assertEqual(result["usd_per_hour"], 80)
+        self.assertEqual(result["source"], "previous_full_hour")
+        self.assertEqual(result["hour"], "2026-07-31T15:00:00+00:00")
+
+    def test_invalid_or_negative_selected_cost_is_unavailable(self) -> None:
+        current_hour = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
+
+        for account_cost in (-1, "invalid"):
+            with self.subTest(account_cost=account_cost):
+                result = cache._current_consumption_rate(
+                    [self.hourly_row(current_hour, account_cost)],
+                    now=datetime(2026, 7, 16, 12, 30, tzinfo=UTC),
+                )
+
+                self.assertEqual(result["source"], "unavailable")
+                self.assertIsNone(result["usd_per_hour"])
+                self.assertIsNone(result["hour"])
+
+
+class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_group_capacity_summary_uses_cached_hourly_forecast(self) -> None:
+        limits = normalize_capacity_limits({"plus": {"five_hour_usd": 2, "seven_day_usd": 10}})
+        forecast = ForecastResult(
+            model="robust_seasonal_analog",
+            version="1",
+            as_of=NOW,
+            readiness="provisional",
+            history_hours=21 * 24,
+            completeness_ratio=1.0,
+            points=tuple(
+                ForecastPoint(index + 1, NOW + timedelta(hours=index), 0.5, 2.0, 14, "analog")
+                for index in range(25)
+            ),
+        )
+
+        with (
+            patch.object(cache, "now_utc", return_value=NOW),
+            patch.object(cache, "get_capacity_account_limits", AsyncMock(return_value={"limits": limits})),
+            patch.object(cache, "_dashboard_cost_summary", AsyncMock(return_value=cost_summary())),
+            patch.object(cache, "_load_group_tpm_samples", AsyncMock(return_value=minute_samples())),
+            patch.object(cache, "_load_group_hourly_demand_forecast", AsyncMock(return_value=forecast)),
+            patch.object(
+                cache,
+                "get_forecast_accuracy_summary",
+                AsyncMock(return_value={"status": "ready", "windows": {"24h": {"hourly_sample_count": 12}}}),
+            ),
+        ):
+            summary = await cache._capacity_summary_for_accounts(
+                object(),
+                "api-5001",
+                remote_accounts(used_5h_percent=0),
+                group_id=3,
+            )
+
+        self.assertEqual(summary["runway_source"], "realtime_pressure+hourly_forecast_p50")
+        self.assertEqual(summary["capacity_model"], "single_pool_hourly_forecast")
+        self.assertEqual(summary["forecast_model"], "robust_seasonal_analog")
+        self.assertEqual(summary["forecast_status"], "active")
+        self.assertEqual(summary["forecast_accuracy"]["windows"]["24h"]["hourly_sample_count"], 12)
+        self.assertEqual(summary["current_consumption_rate_usd_per_hour"], 640.0)
+        self.assertEqual(summary["current_consumption_rate_source"], "current_hour_prorated")
+        self.assertEqual(summary["current_consumption_rate_elapsed_minutes"], 30.0)
+        self.assertEqual(summary["current_consumption_rate_hour"], "2026-07-16T12:00:00+00:00")
+
+    async def test_recent_derived_capacity_summary_avoids_requerying_postgres(self) -> None:
+        cached_summary = {
+            "account_type": "plus",
+            "calculated_at": NOW - timedelta(seconds=30),
+            "dynamic_runway_hours": 4.5,
+        }
+        groups = SimpleNamespace(
+            find_one=AsyncMock(return_value={"capacity_summary": cached_summary}),
+            update_one=AsyncMock(),
+        )
+        accounts = SimpleNamespace(find=lambda *_args, **_kwargs: self.fail("account cache should not be read"))
+        db = SimpleNamespace(sub2api_groups_cache=groups, sub2api_accounts_cache=accounts)
+
+        with patch.object(cache, "now_utc", return_value=NOW):
+            result = await cache._get_or_update_group_capacity_summary(db, "api-5001", 3)
+
+        self.assertEqual(result["dynamic_runway_hours"], 4.5)
+        groups.update_one.assert_not_awaited()
+
+    async def test_dashboard_cost_summary_excludes_stale_rows_from_recent_windows(self) -> None:
+        db = object()
+        fetch_group = AsyncMock(
+            return_value={
+                "trend": [
+                    {
+                        "date": "2026-07-14 20:00",
+                        "cost": 100,
+                        "actual_cost": 100,
+                        "total_tokens": 1_000,
+                    }
+                ]
+            }
+        )
+
+        with (
+            patch.object(cache, "now_utc", return_value=NOW),
+            patch.object(cache, "get_site", AsyncMock(return_value={"sql_dsn": "host=db user=u password=p dbname=d"})),
+            patch.object(cache, "fetch_postgres_group_dashboard_snapshot", fetch_group),
+        ):
+            summary = await cache._dashboard_cost_summary(db, "api-5001", group_id=3)
+
+        self.assertEqual(summary["recent_5h_cost"], 0)
+        self.assertEqual(summary["recent_24h_cost"], 0)
+        self.assertEqual(summary["recent_6h_cost"], 0)
+        self.assertEqual(summary["recent_6h_tokens"], 0)
+        self.assertIsNone(summary["recent_6h_cost_per_token"])
+        self.assertEqual(summary["burst_1h"]["window_count"], 0)
+        fetch_group.assert_awaited_once()
+
+    async def test_dashboard_cost_summary_uses_account_cost_for_capacity_velocity(self) -> None:
+        fetch_group = AsyncMock(
+            return_value={
+                "trend": [
+                    {
+                        "date": "2026-07-16 20:00",
+                        "cost": 100,
+                        "actual_cost": 50,
+                        "account_cost": 200,
+                        "requests": 100,
+                        "total_tokens": 1_000,
+                    }
+                ]
+            }
+        )
+
+        with (
+            patch.object(cache, "now_utc", return_value=NOW + timedelta(minutes=30)),
+            patch.object(cache, "get_site", AsyncMock(return_value={"sql_dsn": "host=db user=u password=p dbname=d"})),
+            patch.object(cache, "fetch_postgres_group_dashboard_snapshot", fetch_group),
+        ):
+            summary = await cache._dashboard_cost_summary(object(), "api-5001", group_id=3)
+
+        self.assertEqual(summary["recent_6h_cost_per_token"], 0.2)
+        self.assertEqual(summary["recent_6h_cost_per_request"], 2.0)
+        self.assertEqual(summary["burst_1h"]["current_hour_observed_cost"], 200)
+        self.assertEqual(
+            summary["current_consumption_rate"],
+            {
+                "usd_per_hour": 400.0,
+                "source": "current_hour_prorated",
+                "elapsed_minutes": 30.0,
+                "hour": "2026-07-16T12:00:00+00:00",
+            },
+        )
+
+
+    async def test_group_sample_loader_includes_concurrency_and_direct_cost(self) -> None:
+        class Cursor:
+            def __init__(self) -> None:
+                self.items = [
+                    {
+                        "sampled_at": NOW,
+                        "tpm": 1000,
+                        "current_concurrency": 7,
+                        "account_cost_per_minute": 2.5,
+                    }
+                ]
+
+            def sort(self, *_args):
+                return self
+
+            def limit(self, *_args):
+                return self
+
+            def __aiter__(self):
+                return self._iterate()
+
+            async def _iterate(self):
+                for item in self.items:
+                    yield item
+
+        collection = SimpleNamespace(find=lambda query, projection: (setattr(collection, "query", query), setattr(collection, "projection", projection), Cursor())[-1])
+        class ForbiddenClientMetrics:
+            def __getattr__(self, name):
+                raise AssertionError(f"client metrics must not be read for pool capacity: {name}")
+
+        db = SimpleNamespace(
+            sub2api_tpm_samples=collection,
+            client_minute_metrics=ForbiddenClientMetrics(),
+        )
+
+        with patch.object(cache, "now_utc", return_value=NOW):
+            result = await cache._load_group_tpm_samples(db, site_id="api-5001", group_id=3)
+
+        self.assertEqual(result[0]["current_concurrency"], 7)
+        self.assertEqual(collection.query["site_id"], "api-5001")
+        self.assertEqual(collection.query["group_id"], 3)
+        self.assertEqual(collection.query["schema_version"], 2)
+        self.assertEqual(collection.projection["current_concurrency"], 1)
+        self.assertEqual(collection.projection["total_account_cost"], 1)
+        self.assertEqual(collection.projection["account_cost_delta"], 1)
+        self.assertEqual(collection.projection["account_cost_per_minute"], 1)
+        self.assertEqual(collection.projection["account_cost_per_hour"], 1)
+
+    async def test_reserve_pool_is_not_queried_or_included(self) -> None:
+        limits = normalize_capacity_limits({"plus": {"five_hour_usd": 2, "seven_day_usd": 10}})
+        reserve = AsyncMock()
+
+        with (
+            patch.object(cache, "now_utc", return_value=NOW),
+            patch.object(cache, "get_capacity_account_limits", AsyncMock(return_value={"limits": limits})),
+            patch.object(cache, "_dashboard_cost_summary", AsyncMock(return_value=cost_summary())),
+            patch.object(cache, "_load_group_tpm_samples", AsyncMock(return_value=minute_samples())),
+            patch.object(cache, "_reserve_capacity_by_account_type", reserve),
+        ):
+            summary = await cache._capacity_summary_for_accounts(
+                object(),
+                "api-5001",
+                remote_accounts(used_5h_percent=75),
+                group_id=3,
+            )
+
+        reserve.assert_not_awaited()
+        self.assertEqual(summary["reserve_available_accounts"], 0)
+        self.assertEqual(summary["reserve_five_hour_capacity_usd"], 0)
+        self.assertEqual(summary["health_status"], "tight")
+        self.assertTrue(summary["replenishment_required"])
+        self.assertEqual(summary["recommended_refill_accounts"], 1)
+        self.assertEqual(list(summary["recommended_refill_options"]), ["plus", "k12"])
+        self.assertEqual(summary["recommended_refill_options"]["plus"]["recommended_refill_accounts"], 1)
+        self.assertEqual(summary["recommended_refill_options"]["k12"]["recommended_refill_accounts"], 1)
+        self.assertFalse(summary["auto_refill_required"])
+        self.assertEqual(summary["traffic_site_id"], "api-5001")
+        self.assertEqual(summary["traffic_group_id"], 3)
+
+    async def test_missing_concurrency_history_stays_pending_instead_of_using_historical_danger(self) -> None:
+        limits = normalize_capacity_limits({"plus": {"five_hour_usd": 2, "seven_day_usd": 10}})
+        incomplete_samples = minute_samples()
+        for sample in incomplete_samples:
+            sample.pop("current_concurrency")
+        incomplete_samples[-1]["current_concurrency"] = 1
+
+        with (
+            patch.object(cache, "now_utc", return_value=NOW),
+            patch.object(cache, "get_capacity_account_limits", AsyncMock(return_value={"limits": limits})),
+            patch.object(cache, "_dashboard_cost_summary", AsyncMock(return_value=cost_summary(historical_peak=100))),
+            patch.object(cache, "_load_group_tpm_samples", AsyncMock(return_value=incomplete_samples)),
+        ):
+            summary = await cache._capacity_summary_for_accounts(
+                object(),
+                "api-5001",
+                remote_accounts(used_5h_percent=0),
+                group_id=3,
+            )
+
+        self.assertFalse(summary["realtime_risk_ready"])
+        self.assertEqual(summary["health_status"], "pending")
+        self.assertEqual(summary["health_label"], "等待数据")
+        self.assertEqual(summary["pressure_stage"], "waiting_data")
+        self.assertFalse(summary["replenishment_required"])
+        self.assertEqual(summary["recommended_refill_accounts"], 0)
+
+    async def test_realtime_risk_replaces_historical_day_scale_status(self) -> None:
+        limits = normalize_capacity_limits({"plus": {"five_hour_usd": 2, "seven_day_usd": 10}})
+
+        with (
+            patch.object(cache, "now_utc", return_value=NOW),
+            patch.object(cache, "get_capacity_account_limits", AsyncMock(return_value={"limits": limits})),
+            patch.object(cache, "_dashboard_cost_summary", AsyncMock(return_value=cost_summary(historical_peak=100))),
+            patch.object(cache, "_load_group_tpm_samples", AsyncMock(return_value=minute_samples())),
+        ):
+            summary = await cache._capacity_summary_for_accounts(
+                object(),
+                "api-5001",
+                remote_accounts(used_5h_percent=0),
+                group_id=3,
+            )
+
+        self.assertTrue(summary["realtime_risk_ready"])
+        self.assertEqual(summary["health_status"], "abundant")
+        self.assertEqual(summary["pressure_stage"], "stable")
+        self.assertEqual(summary["dynamic_runway_hours"], 8.0)
+        self.assertFalse(summary["replenishment_required"])
+
+
+if __name__ == "__main__":
+    unittest.main()

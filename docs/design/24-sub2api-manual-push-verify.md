@@ -1,5 +1,7 @@
 # sub2api 手动推送与账号可用性测试设计
 
+> **文档状态：已落地流程的早期设计。** 幂等、锁、快照和回写原则仍有参考价值；具体目录、接口和推送后行为以当前 `backend/app/modules/sub2api/*`、router 和测试为准。远端匹配只能使用明确绑定或 `credentials.email`，不能按 `name` 猜测。
+
 本文设计下一阶段的最小闭环：从本地账号库选择一个账号，手动推送到 sub2api 指定分组，然后测试该账号是否可用，最后把远端结果和测试结果写回 MongoDB。
 
 当前目标不是自动补位，而是先做一个安全、可观察、可回滚的手动流程。
@@ -294,17 +296,16 @@ library -> active
 5. 目标 sub2api group 存在于缓存。
 6. 账号没有未释放的 `push_lock`。
 7. 如果已有 `metadata.sub2api_account_id`，先检查远端状态。
-8. 如果缓存中同 email / name / `chatgpt_account_id` 已在目标 group，优先绑定已有远端账号，而不是重复创建。
+8. 如果缓存中同一规范化 `credentials.email` 已在目标 group，优先绑定已有远端账号，而不是重复创建。
 
 ## 幂等与重复处理
 
-重复判断顺序：
+重复判断只允许：
 
-1. `metadata.sub2api_account_id`
-2. `account_json.credentials.chatgpt_account_id`
-3. `metadata.email` / `account_json.credentials.email` / `account_json.extra.email`
-4. `account_json.name`
-5. `metadata.sha256`
+1. 同一站点下已保存的 `metadata.sub2api_account_id`。
+2. 规范化后的 `account_json.credentials.email`。
+
+`name`、`chatgpt_account_id`、`account_json.extra.email` 和上传批次摘要都不能作为自动绑定依据。缺少 `credentials.email` 且没有明确远端绑定时，转人工处理。
 
 处理规则：
 
@@ -390,7 +391,7 @@ metadata.analysis.remote_uncertain = true
 metadata.sub2api_last_error = "remote state uncertain"
 ```
 
-然后刷新缓存，尝试按 email/name/chatgpt_account_id 查找远端账号。
+然后刷新缓存，尝试按明确远端绑定或规范化后的 `credentials.email` 查找远端账号。
 
 ## 可用性测试设计
 
@@ -569,7 +570,7 @@ POST /api/accounts/{account_id}/refresh-sub2api-binding
 用途：
 
 - 推送结果不确定时刷新缓存。
-- 从缓存中按 email/name/chatgpt_account_id 查找远端账号。
+- 从缓存中按明确绑定或规范化后的 `credentials.email` 查找远端账号。
 - 找到后补写 `sub2api_account_id` 和 group。
 
 第一版可以先只做 `push-to-sub2api`，后两个作为后续补充。
@@ -579,7 +580,7 @@ POST /api/accounts/{account_id}/refresh-sub2api-binding
 建议新增：
 
 ```text
-backend/app/services/sub2api_push.py
+backend/app/modules/sub2api/push.py
 ```
 
 职责：
@@ -595,7 +596,7 @@ backend/app/services/sub2api_push.py
 建议扩展：
 
 ```text
-backend/app/services/sub2api.py
+backend/app/modules/sub2api/client.py
 ```
 
 新增方法：
@@ -608,7 +609,7 @@ get_account(account_id)
 建议新增：
 
 ```text
-backend/app/services/sub2api_verify.py
+backend/app/modules/sub2api/verify.py
 ```
 
 职责：

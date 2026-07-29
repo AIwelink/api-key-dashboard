@@ -3,105 +3,44 @@ import logoUrl from "../AIwelink_logo_bule_A.png";
 import { AccountPoolsPage } from "./pages/AccountPoolsPage";
 import { AccountsPage } from "./pages/AccountsPage";
 import { AgentAnalysisPage } from "./pages/AgentAnalysisPage";
+import { AgentWorkbenchPage } from "./pages/AgentWorkbenchPage";
 import { AlertCenterPage } from "./pages/AlertCenterPage";
 import { ApiPoolStatusPage } from "./pages/ApiPoolStatusPage";
 import { ApiTokensPage } from "./pages/ApiTokensPage";
 import { AuditPage } from "./pages/AuditPage";
+import { ClientSitesPage } from "./pages/ClientSitesPage";
 import { EventRecordsPage } from "./pages/EventRecordsPage";
-import { IntroPage } from "./pages/IntroPage";
 import { AvailablePoolPage, ReservePoolPage } from "./pages/ManualPoolPage";
 import { PushErrorTodoPage, TodoPage } from "./pages/TodoPage";
 import { LoginPage } from "./pages/LoginPage";
+import { OperationsManagementPage } from "./pages/OperationsManagementPage";
+import { PresencePage } from "./pages/PresencePage";
+import { PlusSelfProducedPage } from "./pages/PlusSelfProducedPage";
+import { TrafficAnalysisPage } from "./pages/TrafficAnalysisPage";
+import { TrafficAnalysisConfigPage } from "./pages/TrafficAnalysisConfigPage";
 import { UploadPage } from "./pages/UploadPage";
 import { UsersPage } from "./pages/UsersPage";
+import { useForegroundPresence } from "./hooks/useForegroundPresence";
+import {
+  canAccessView,
+  defaultViewForPermissions,
+  getVisibleNavigationGroups,
+  navigationGroupClass,
+  navShortLabels,
+  viewFromPath,
+  viewPaths,
+} from "./navigation";
+import { api } from "./api/client";
 import type { User, ViewName } from "./types";
+import { errorMessage } from "./utils/format";
 
 type ToastState = {
   message: string;
   isError: boolean;
 } | null;
 
-const navItems: Array<[ViewName, string]> = [
-  ["upload", "上传账号"],
-  ["todos", "代办与错误账号处理"],
-];
-
-const accountNavItems: Array<[ViewName, string]> = [
-  ["push-error-todos", "疑问账号分配面板"],
-  ["accounts", "账号列表"],
-];
-
-const poolNavItems: Array<[ViewName, string]> = [
-  ["available-pool", "可用池"],
-  ["reserve-pool", "使用备选池"],
-  ["api-pools", "API 账号池状态"],
-  ["event-records", "事件记录"],
-  ["alert-center", "异常告警"],
-  ["pool-lifecycle", "账号池管理"],
-];
-
-const adminNavItems: Array<[ViewName, string]> = [
-  ["agent-analysis", "Agent分析"],
-  ["api-tokens", "系统管理"],
-  ["users", "用户管理"],
-  ["logs", "日志"],
-];
-
-const navShortLabels: Record<ViewName, string> = {
-  upload: "传",
-  todos: "办",
-  "push-error-todos": "疑",
-  accounts: "账",
-  "available-pool": "可",
-  "reserve-pool": "备",
-  "api-pools": "池",
-  "event-records": "事",
-  "alert-center": "警",
-  "pool-lifecycle": "逻",
-  "agent-analysis": "析",
-  "api-tokens": "管",
-  users: "用",
-  logs: "志",
-};
-
-const viewPaths: Record<ViewName, string> = {
-  upload: "/upload-accounts",
-  todos: "/todo-and-error-accounts",
-  "push-error-todos": "/question-account-assignment",
-  accounts: "/accounts",
-  "available-pool": "/available-pool",
-  "reserve-pool": "/reserve-pool",
-  "api-pools": "/api-pool-status",
-  "event-records": "/event-records",
-  "alert-center": "/alert-center",
-  "pool-lifecycle": "/pool-lifecycle",
-  "agent-analysis": "/agent-analysis",
-  "api-tokens": "/system-management",
-  users: "/users",
-  logs: "/logs",
-};
-
-const pathAliases: Record<string, ViewName> = {
-  "/upload": "upload",
-  "/todos": "todos",
-  "/push-error-todos": "push-error-todos",
-  "/api-pools": "api-pools",
-  "/api-tokens": "api-tokens",
-};
-
 function isMobileMenuLayout() {
   return window.matchMedia("(max-width: 720px), (max-width: 900px) and (orientation: portrait), (max-aspect-ratio: 3 / 4)").matches;
-}
-
-function defaultViewForLayout(): ViewName {
-  return isMobileMenuLayout() ? "api-pools" : "upload";
-}
-
-function viewFromPath(pathname: string): ViewName {
-  const normalized = pathname.replace(/\/+$/, "") || "/";
-  if (normalized === "/") return defaultViewForLayout();
-  const matched = Object.entries(viewPaths).find(([, path]) => path === normalized);
-  return matched ? (matched[0] as ViewName) : pathAliases[normalized] || defaultViewForLayout();
 }
 
 function App() {
@@ -113,6 +52,7 @@ function App() {
   const [view, setView] = useState<ViewName>(() => viewFromPath(window.location.pathname));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "true");
   const [toast, setToast] = useState<ToastState>(null);
+  useForegroundPresence(token, view);
 
   const showToast = (message: string, isError = false) => {
     setToast({ message, isError });
@@ -145,6 +85,8 @@ function App() {
       return next;
     });
   };
+  const permissions = user?.permissions;
+  const canRenderCurrentView = Boolean(token && permissions && canAccessView(permissions, view));
 
   useEffect(() => {
     const handlePopState = () => {
@@ -155,10 +97,33 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (token && permissions && !canAccessView(permissions, view)) {
+      navigateToView(defaultViewForPermissions(permissions));
+    }
+  }, [token, permissions, view]);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    api<User>("/auth/me", token)
+      .then((nextUser) => {
+        if (cancelled) return;
+        setUser(nextUser);
+        localStorage.setItem("user", JSON.stringify(nextUser));
+      })
+      .catch((error) => {
+        if (!cancelled) showToast(errorMessage(error), true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  useEffect(() => {
     const handleAuthExpired = () => {
       setToken("");
       setUser(null);
-      navigateToView("upload");
+      navigateToView("api-pools");
       localStorage.removeItem("token");
       localStorage.removeItem("user");
       showToast("登录过期", true);
@@ -175,7 +140,7 @@ function App() {
           <img className="brand-logo" src={logoUrl} alt="AIwelink" />
           <div className="brand-copy">
             <h1>AIwelink</h1>
-            <p>sub2api 账号管理</p>
+            <p>API 客户端管理</p>
           </div>
         </div>
         <button className="sidebar-toggle" onClick={toggleSidebar} title={sidebarCollapsed ? "展开菜单" : "收起菜单"} type="button">
@@ -183,8 +148,8 @@ function App() {
         </button>
 
         <nav className="nav">
-          {[navItems, accountNavItems, poolNavItems, adminNavItems].map((group, index) => (
-            <div className="nav-group" key={index}>
+          {getVisibleNavigationGroups(permissions).map((group, index) => (
+            <div className={navigationGroupClass(group)} key={index}>
               {group.map(([key, label]) => (
                 <button
                   className={`nav-item ${view === key ? "active" : ""}`}
@@ -221,12 +186,12 @@ function App() {
               setUser(nextUser);
               localStorage.setItem("token", nextToken);
               localStorage.setItem("user", JSON.stringify(nextUser));
-              if (window.location.pathname === "/") navigateToView(defaultViewForLayout());
+              if (window.location.pathname === "/") navigateToView(defaultViewForPermissions(nextUser.permissions));
               showToast("登录成功");
             }}
             showToast={showToast}
           />
-        ) : (
+        ) : canRenderCurrentView ? (
           <>
             {view === "upload" && <UploadPage token={token} showToast={showToast} />}
             {view === "todos" && <TodoPage token={token} showToast={showToast} />}
@@ -235,15 +200,42 @@ function App() {
             {view === "available-pool" && <AvailablePoolPage token={token} showToast={showToast} />}
             {view === "reserve-pool" && <ReservePoolPage token={token} showToast={showToast} />}
             {view === "api-pools" && <ApiPoolStatusPage token={token} showToast={showToast} />}
+            {view === "plus-self-produced" && <PlusSelfProducedPage token={token} showToast={showToast} />}
+            {view === "traffic-analysis" && <TrafficAnalysisPage token={token} showToast={showToast} />}
+            {view === "operations-management" && (
+              <OperationsManagementPage
+                key={(user?.operations_site_ids || []).join("|")}
+                token={token}
+                role={user?.role || "viewer"}
+                allowedSiteIds={user?.operations_site_ids || []}
+                showToast={showToast}
+              />
+            )}
             {view === "event-records" && <EventRecordsPage token={token} showToast={showToast} />}
             {view === "alert-center" && <AlertCenterPage token={token} showToast={showToast} />}
             {view === "pool-lifecycle" && <AccountPoolsPage token={token} showToast={showToast} />}
+            {view === "client-sites" && <ClientSitesPage token={token} showToast={showToast} />}
+            {view === "traffic-analysis-config" && <TrafficAnalysisConfigPage token={token} showToast={showToast} />}
             {view === "agent-analysis" && <AgentAnalysisPage token={token} showToast={showToast} />}
-            {view === "api-tokens" && <ApiTokensPage token={token} showToast={showToast} />}
-            {view === "users" && <UsersPage token={token} showToast={showToast} />}
+            {view === "agent-workbench" && <AgentWorkbenchPage token={token} showToast={showToast} />}
+            {view === "system-management" && (
+              <ApiTokensPage
+                canManageApiTokens={canAccessView(permissions, "api-tokens")}
+                token={token}
+                showToast={showToast}
+              />
+            )}
+            {view === "presence" && <PresencePage token={token} showToast={showToast} />}
+            {view === "users" && (
+              <UsersPage
+                canManageOwners={user?.role === "owner"}
+                token={token}
+                showToast={showToast}
+              />
+            )}
             {view === "logs" && <AuditPage token={token} showToast={showToast} />}
           </>
-        )}
+        ) : null}
         {toast && <div className={`toast ${toast.isError ? "danger" : ""}`}>{toast.message}</div>}
       </main>
     </div>

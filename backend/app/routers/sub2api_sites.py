@@ -15,15 +15,16 @@ from pymongo import ReturnDocument
 
 from app.database import db_dependency
 from app.schemas import Sub2ApiAccountTestRequest, Sub2ApiManualDeleteRequest, Sub2ApiOAuthApplyRequest, Sub2ApiOAuthExchangeRequest, Sub2ApiRecentMailRequest, Sub2ApiResurrectionFailRequest
-from app.security import require_roles
-from app.services.audit import write_audit_log
-from app.services.account_records import write_account_operation
-from app.services.pool_lifecycle import actor_name, operation_actor_updates, pool_reference_unsets, write_pool_action
-from app.services.sub2api import Sub2ApiClient
-from app.services.sub2api_cache import (
+from app.modules.system.permissions import require_any_view_permission, require_view_permission
+from app.modules.system.audit import write_audit_log
+from app.modules.accounts.records import write_account_operation
+from app.modules.accounts.pool_lifecycle import actor_name, operation_actor_updates, pool_reference_unsets, write_pool_action
+from app.modules.sub2api.client import Sub2ApiClient
+from app.modules.sub2api.cache import (
     create_site_config,
     delete_site_config,
     get_site,
+    is_sub2api_site,
     list_cached_group_accounts,
     list_cached_groups,
     list_sites as list_cached_sites,
@@ -31,9 +32,10 @@ from app.services.sub2api_cache import (
     update_site_config,
     upsert_cached_account_snapshot,
 )
-from app.services.sub2api_dashboard import get_stored_dashboard_snapshots, refresh_dashboard_snapshots
-from app.services.sub2api_return import manual_delete_sub2api_account, remote_cumulative_usage_snapshot, remote_usage_snapshot
-from app.services.sub2api_verify import test_remote_sub2api_account
+from app.modules.sub2api.dashboard import get_stored_dashboard_snapshots, refresh_dashboard_snapshots
+from app.modules.sub2api.return_flow import manual_delete_sub2api_account, remote_cumulative_usage_snapshot, remote_usage_snapshot
+from app.modules.sub2api.site_database import run_sub2api_site_database_test
+from app.modules.sub2api.verify import test_remote_sub2api_account
 from app.utils import credentials_email, now_utc, serialize_doc
 
 
@@ -259,24 +261,33 @@ async def _client_for_site(db: AsyncIOMotorDatabase, site_id: str) -> Sub2ApiCli
     site = await get_site(db, site_id, include_token=True)
     if not site:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
+    if not is_sub2api_site(site):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="site is not a sub2api client")
     return Sub2ApiClient(base_url=site.get("base_url"), token=site.get("token"))
 
 
 @router.get("")
 async def list_sites(
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    site_type: str | None = Query(default=None),
+    _: dict = Depends(require_any_view_permission("api-pools", "pool-lifecycle", "todos", "available-pool", "reserve-pool", "event-records")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
-    return await list_cached_sites(db)
+    try:
+        return await list_cached_sites(db, site_type=site_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_site(
     payload: dict[str, Any],
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("pool-lifecycle")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
-    created = await create_site_config(db, payload)
+    try:
+        created = await create_site_config(db, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if not created:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="site id and base_url are required")
     await write_audit_log(
@@ -294,10 +305,13 @@ async def create_site(
 async def update_site(
     site_id: str,
     payload: dict[str, Any],
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("pool-lifecycle")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
-    updated = await update_site_config(db, site_id, payload)
+    try:
+        updated = await update_site_config(db, site_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
     await write_audit_log(
@@ -308,7 +322,7 @@ async def update_site(
         resource_id=site_id,
         after={key: value for key, value in updated.items() if key != "token"},
     )
-    if payload.get("auto_remove_abnormal_accounts") is True:
+    if payload.get("auto_remove_abnormal_accounts") is True and is_sub2api_site(updated):
         try:
             updated["auto_remove_refresh"] = await request_debounced_refresh(db, site_id)
         except Exception as exc:  # noqa: BLE001 - keep the saved switch visible, but report the scan failure.
@@ -323,7 +337,7 @@ async def update_site(
 @router.delete("/{site_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_site(
     site_id: str,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("pool-lifecycle")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> None:
     if not await delete_site_config(db, site_id):
@@ -340,30 +354,57 @@ async def delete_site(
 @router.post("/{site_id}/test")
 async def test_site(
     site_id: str,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_view_permission("api-pools")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await (await _client_for_site(db, site_id)).test_connection()
 
 
+@router.post("/{site_id}/database/test")
+async def test_site_database(
+    site_id: str,
+    actor: dict = Depends(require_view_permission("pool-lifecycle")),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    try:
+        result = await run_sub2api_site_database_test(db, site_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="sub2api.site.database_test",
+        resource_type="sub2api_site",
+        resource_id=site_id,
+        after=result,
+    )
+    return result
+
+
 @router.post("/{site_id}/refresh")
 async def refresh_site(
     site_id: str,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_any_view_permission("api-pools", "pool-lifecycle")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
-    if not await get_site(db, site_id):
+    site = await get_site(db, site_id)
+    if not site:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
+    if not is_sub2api_site(site):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="site is not a sub2api client")
     return await request_debounced_refresh(db, site_id)
 
 
 @router.post("/{site_id}/dashboard/refresh")
 async def refresh_site_dashboard(
     site_id: str,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_view_permission("api-pools")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
-    if not await get_site(db, site_id):
+    site = await get_site(db, site_id, include_token=True)
+    if not site:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sub2api site not found")
     client = await _client_for_site(db, site_id)
     group_ids = [
@@ -371,13 +412,20 @@ async def refresh_site_dashboard(
         async for doc in db.sub2api_groups_cache.find({"site_id": site_id}, {"group_id": 1})
         if isinstance(doc.get("group_id"), int)
     ]
-    return await refresh_dashboard_snapshots(db, site_id=site_id, client=client, force=True, group_ids=group_ids)
+    return await refresh_dashboard_snapshots(
+        db,
+        site_id=site_id,
+        client=client,
+        force=True,
+        group_ids=group_ids,
+        sql_dsn=str(site.get("sql_dsn") or "") or None,
+    )
 
 
 @router.get("/{site_id}/dashboard")
 async def get_site_dashboard(
     site_id: str,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_view_permission("api-pools")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     if not await get_site(db, site_id):
@@ -388,7 +436,7 @@ async def get_site_dashboard(
 @router.get("/{site_id}/groups")
 async def list_site_groups(
     site_id: str,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_any_view_permission("api-pools", "todos", "available-pool", "reserve-pool", "event-records")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=500),
@@ -404,7 +452,7 @@ async def list_site_groups(
 async def list_site_group_accounts(
     site_id: str,
     group_id: int,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_any_view_permission("api-pools", "todos", "available-pool", "reserve-pool")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
     status_filter: str | None = Query(default=None, alias="status"),
     page: int = Query(default=1, ge=1),
@@ -420,7 +468,7 @@ async def post_manual_delete_remote_account(
     site_id: str,
     account_id: int,
     payload: Sub2ApiManualDeleteRequest,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("api-pools")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await manual_delete_sub2api_account(
@@ -451,7 +499,7 @@ async def post_manual_delete_remote_account(
 @router.post("/{site_id}/openai/generate-auth-url")
 async def post_generate_openai_auth_url(
     site_id: str,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_view_permission("todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     client = await _client_for_site(db, site_id)
@@ -462,7 +510,7 @@ async def post_generate_openai_auth_url(
 @router.post("/mail/recent")
 async def post_recent_mail(
     payload: Sub2ApiRecentMailRequest,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_view_permission("todos")),
 ) -> dict:
     parsed = _parse_outlook_session(payload.email_session)
     if not parsed:
@@ -491,7 +539,7 @@ async def post_recent_mail(
 async def post_exchange_openai_code(
     site_id: str,
     payload: Sub2ApiOAuthExchangeRequest,
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_view_permission("todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     code = payload.code
@@ -516,7 +564,7 @@ async def post_apply_oauth_credentials(
     site_id: str,
     account_id: int,
     payload: Sub2ApiOAuthApplyRequest,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     client = await _client_for_site(db, site_id)
@@ -587,7 +635,7 @@ async def post_resurrection_fail(
     site_id: str,
     account_id: int,
     payload: Sub2ApiResurrectionFailRequest,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     if not payload.reason.strip():
@@ -769,7 +817,7 @@ async def post_test_remote_account(
     site_id: str,
     account_id: int,
     payload: Sub2ApiAccountTestRequest,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("api-pools")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await test_remote_sub2api_account(

@@ -3,10 +3,9 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
 from app.schemas import FreeToPlusCompleteRequest, FreeToPlusFailRequest, PushErrorDecisionRequest, PushErrorTestRequest
-from app.security import get_current_user
-from app.security import require_roles
-from app.services.audit import write_audit_log
-from app.services.todo_free_to_plus import (
+from app.modules.system.permissions import require_view_permission
+from app.modules.system.audit import write_audit_log
+from app.modules.todo.free_to_plus import (
     complete_free_to_plus,
     fail_free_to_plus,
     list_free_to_plus_accounts,
@@ -14,7 +13,7 @@ from app.services.todo_free_to_plus import (
     return_completed_free_to_plus,
     start_free_to_plus,
 )
-from app.services.todo_push_errors import (
+from app.modules.todo.push_errors import (
     decide_push_error_account,
     list_push_error_accounts,
     release_push_error_task,
@@ -30,7 +29,7 @@ router = APIRouter(prefix="/todo-items", tags=["todo-items"])
 @router.get("")
 async def list_todo_items(
     status_filter: str | None = Query(default=None, alias="status"),
-    _: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    _: dict = Depends(require_view_permission("todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     query = {}
@@ -46,7 +45,7 @@ async def get_free_to_plus_accounts(
     q: str | None = None,
     skip: int = 0,
     limit: int = Query(default=50, le=500),
-    _: dict = Depends(get_current_user),
+    _: dict = Depends(require_view_permission("todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_free_to_plus_accounts(db, status_filter=status_filter, q=q, skip=skip, limit=limit)
@@ -55,7 +54,7 @@ async def get_free_to_plus_accounts(
 @router.post("/free-to-plus/accounts/{account_id}/start")
 async def post_start_free_to_plus(
     account_id: str,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await start_free_to_plus(db, account_id=account_id, actor=actor)
@@ -66,7 +65,7 @@ async def post_start_free_to_plus(
 @router.post("/free-to-plus/accounts/{account_id}/release")
 async def post_release_free_to_plus(
     account_id: str,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await release_free_to_plus(db, account_id=account_id, actor=actor)
@@ -77,7 +76,7 @@ async def post_release_free_to_plus(
 @router.post("/free-to-plus/accounts/{account_id}/return-processing")
 async def post_return_completed_free_to_plus(
     account_id: str,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await return_completed_free_to_plus(db, account_id=account_id, actor=actor)
@@ -89,7 +88,7 @@ async def post_return_completed_free_to_plus(
 async def post_complete_free_to_plus(
     account_id: str,
     payload: FreeToPlusCompleteRequest,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await complete_free_to_plus(db, account_id=account_id, payment_type=payload.payment_type, note=payload.note, actor=actor)
@@ -108,7 +107,7 @@ async def post_complete_free_to_plus(
 async def post_fail_free_to_plus(
     account_id: str,
     payload: FreeToPlusFailRequest,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await fail_free_to_plus(db, account_id=account_id, error=payload.error, note=payload.note, actor=actor)
@@ -130,7 +129,7 @@ async def get_push_error_accounts(
     q: str | None = None,
     skip: int = 0,
     limit: int = Query(default=50, le=500),
-    _: dict = Depends(get_current_user),
+    _: dict = Depends(require_view_permission("push-error-todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_push_error_accounts(
@@ -146,7 +145,7 @@ async def get_push_error_accounts(
 @router.post("/push-errors/accounts/{account_id}/start")
 async def post_start_push_error_task(
     account_id: str,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("push-error-todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await start_push_error_task(db, account_id=account_id, actor=actor)
@@ -157,7 +156,7 @@ async def post_start_push_error_task(
 @router.post("/push-errors/accounts/{account_id}/release")
 async def post_release_push_error_task(
     account_id: str,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("push-error-todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await release_push_error_task(db, account_id=account_id, actor=actor)
@@ -169,7 +168,7 @@ async def post_release_push_error_task(
 async def post_test_push_error_account(
     account_id: str,
     payload: PushErrorTestRequest,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("push-error-todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     result = await test_push_error_account(
@@ -194,7 +193,7 @@ async def post_test_push_error_account(
 async def post_decide_push_error_account(
     account_id: str,
     payload: PushErrorDecisionRequest,
-    actor: dict = Depends(require_roles("owner", "admin", "maintainer")),
+    actor: dict = Depends(require_view_permission("push-error-todos")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     updated = await decide_push_error_account(

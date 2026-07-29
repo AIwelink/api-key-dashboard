@@ -1,5 +1,7 @@
 # 账号池简化版逻辑分析报告
 
+> **文档状态：历史分析。** 本文保留状态并发、幂等和远端一致性的风险推演；其中备用池容量、自动补位和旧统计口径不代表当前实现。现行缓存与容量边界见 [15-api-pool-status-cache.md](./15-api-pool-status-cache.md) 和 [30-api-pool-realtime-capacity-and-presence.md](./30-api-pool-realtime-capacity-and-presence.md)。
+
 本文档用于审查 `17-account-pool-lifecycle-simple.md` 的最小实现逻辑。目标不是重新复杂化，而是通过具体例子找出可能的逻辑错误、边界风险和需要补充的最小约束。
 
 结论：

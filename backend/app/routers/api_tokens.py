@@ -2,10 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import db_dependency
+from app.modules.system.permissions import require_view_permission
 from app.schemas import ApiTokenCreate
-from app.security import require_roles
-from app.services.api_tokens import create_api_token, list_api_tokens, revoke_api_token
-from app.services.audit import write_audit_log
+from app.modules.system.api_tokens import create_api_token, list_api_tokens, revoke_api_token
+from app.modules.system.audit import write_audit_log
 
 
 router = APIRouter(prefix="/api-tokens", tags=["api-tokens"])
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api-tokens", tags=["api-tokens"])
 
 @router.get("")
 async def get_api_tokens(
-    _: dict = Depends(require_roles("owner", "admin")),
+    _: dict = Depends(require_view_permission("api-tokens")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     return await list_api_tokens(db)
@@ -22,7 +22,7 @@ async def get_api_tokens(
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def post_api_token(
     payload: ApiTokenCreate,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("api-tokens")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     created = await create_api_token(db, payload=payload, actor=actor)
@@ -40,7 +40,7 @@ async def post_api_token(
 @router.post("/{token_id}/revoke")
 async def post_revoke_api_token(
     token_id: str,
-    actor: dict = Depends(require_roles("owner", "admin")),
+    actor: dict = Depends(require_view_permission("api-tokens")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, bool]:
     revoked = await revoke_api_token(db, token_id=token_id, actor=actor)

@@ -1,5 +1,7 @@
 # 初版上线部署汇总
 
+> **文档状态：`0.2.0` 初版部署记录。** 命令、环境变量和服务配置可能已演进；当前部署前先核对根目录 `README.md`、`backend/README.md`、[14-development-guide.md](./14-development-guide.md) 和 [../server-update-command.md](../server-update-command.md)。
+
 Git repository:
 
 - SSH: `git@github.com:AIwelink/api-key-dashboard.git`
