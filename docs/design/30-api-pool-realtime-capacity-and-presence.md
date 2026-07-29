@@ -96,6 +96,8 @@ created_at DESC, sub2api_account_id DESC
 
 动态可用只计入短期恢复：5h 额度恢复等待时间不超过 `1h`，7d 额度恢复等待时间不超过 `1d`。恰好位于边界时仍计入，超过边界后只保留当前实际可用额度，不再提前计算未来恢复额度。
 
+当前分组账号接口每次请求都会基于最新 `sub2api_accounts_cache` 重新计算 `capacity_summary`，不再复用额外的 60 秒容量摘要读取缓存。计算结果仍写入 `sub2api_groups_cache.capacity_summary` 作为最新派生快照；原始账号和分组缓存继续保留。
+
 ## 3. 实时数据就绪条件
 
 `calculate_capacity_risk()` 只有同时满足以下条件才设置 `ready=true`：

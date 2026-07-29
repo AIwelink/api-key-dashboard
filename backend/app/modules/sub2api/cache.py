@@ -112,7 +112,6 @@ HTTP_RUNTIME_ACCOUNT_FIELDS = (
     "window_cost_sticky_reserve",
 )
 HTTP_RUNTIME_CACHE_MAX_AGE_SECONDS = 3 * 60
-CAPACITY_SUMMARY_READ_CACHE_SECONDS = 60
 
 _refresh_tasks: dict[str, asyncio.Task] = {}
 _refresh_tasks_lock = asyncio.Lock()
@@ -1008,17 +1007,6 @@ def _apply_account_usage_snapshot(account: dict[str, Any], usage: dict[str, Any]
 
 
 async def _get_or_update_group_capacity_summary(db: AsyncIOMotorDatabase, site_id: str, group_id: int) -> dict[str, Any]:
-    group_doc = await db.sub2api_groups_cache.find_one(
-        {"site_id": site_id, "group_id": group_id},
-        {"capacity_summary": 1, "capacity_calculated_at": 1},
-    )
-    cached_summary = group_doc.get("capacity_summary") if isinstance(group_doc, dict) else None
-    if isinstance(cached_summary, dict):
-        calculated_at = _parse_datetime(
-            group_doc.get("capacity_calculated_at") or cached_summary.get("calculated_at")
-        )
-        if calculated_at is not None and (now_utc() - calculated_at).total_seconds() <= CAPACITY_SUMMARY_READ_CACHE_SECONDS:
-            return serialize_doc(cached_summary)
     cursor = db.sub2api_accounts_cache.find({"site_id": site_id, "group_ids": group_id})
     accounts: list[dict[str, Any]] = []
     account_ops: list[UpdateOne] = []
