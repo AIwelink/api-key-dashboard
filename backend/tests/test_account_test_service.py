@@ -47,7 +47,7 @@ class AccountTestServiceTests(unittest.IsolatedAsyncioTestCase):
             test_account=AsyncMock(
                 return_value={
                     "success": True,
-                    "model": "gpt-5.4",
+                    "model": "gpt-5.5",
                     "latency_ms": 123,
                     "response_preview": "refresh_token=preview-secret",
                     "credentials": {"access_token": "secret"},
@@ -73,7 +73,7 @@ class AccountTestServiceTests(unittest.IsolatedAsyncioTestCase):
 
         client.test_account.assert_awaited_once_with(
             4072,
-            model_id="gpt-5.4",
+            model_id="gpt-5.5",
             prompt="",
             mode="default",
         )
@@ -88,6 +88,71 @@ class AccountTestServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("preview-secret", repr(stored["event"]))
         self.assertNotIn("admin-secret", repr(stored["event"]))
         self.assertEqual(stored["state"]["last_event_id"], stored["event"]["_id"])
+
+    async def test_snapshot_403_success_records_recovery_context_and_rapid_interval(
+        self,
+    ) -> None:
+        db = _db()
+        client = SimpleNamespace(
+            test_account=AsyncMock(
+                return_value={"success": True, "model": "gpt-5.5"}
+            )
+        )
+        dispatcher = AsyncMock()
+        fetched_at = NOW - timedelta(seconds=20)
+
+        result = await execute_account_test(
+            db,
+            site={"_id": "US06-5001"},
+            account={
+                "sub2api_account_id": 4072,
+                "fetched_at": fetched_at,
+                "account": {"error_message": "API returned 403"},
+            },
+            client=client,
+            dispatcher=dispatcher,
+            now=NOW,
+        )
+
+        self.assertEqual(result["next_test_at"], NOW + timedelta(minutes=3))
+        self.assertTrue(result["recovery"]["required"])
+        self.assertTrue(result["recovery"]["snapshot_http_403"])
+        self.assertEqual(result["recovery"]["snapshot_fetched_at"], fetched_at)
+        self.assertEqual(
+            result["dispatch"]["scheduling"]["recover_state_status"],
+            "pending",
+        )
+        state = db.sub2api_account_test_states.update_one.await_args.args[1]["$set"]
+        self.assertTrue(state["last_snapshot_http_403"])
+        self.assertEqual(state["interval_mode"], "rapid_403")
+
+    async def test_model_403_uses_rapid_interval_without_starting_recovery(
+        self,
+    ) -> None:
+        db = _db()
+        result = await execute_account_test(
+            db,
+            site={"_id": "US06-5001"},
+            account={"sub2api_account_id": 4072},
+            client=SimpleNamespace(
+                test_account=AsyncMock(
+                    return_value={
+                        "success": False,
+                        "error": "API returned 403",
+                    }
+                )
+            ),
+            dispatcher=AsyncMock(),
+            now=NOW,
+        )
+
+        self.assertEqual(result["http_status"], 403)
+        self.assertEqual(result["next_test_at"], NOW + timedelta(minutes=3))
+        self.assertFalse(result["recovery"]["required"])
+        self.assertEqual(
+            result["dispatch"]["scheduling"]["recover_state_status"],
+            "not_required",
+        )
 
     async def test_admin_key_failure_does_not_create_account_event(self) -> None:
         db = _db()

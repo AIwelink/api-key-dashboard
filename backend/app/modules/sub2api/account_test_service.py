@@ -9,15 +9,19 @@ from uuid import uuid4
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.modules.sub2api.account_test_outcomes import classify_test_result
+from app.modules.sub2api.account_test_outcomes import (
+    classify_test_result,
+    snapshot_has_http_status,
+)
 from app.modules.sub2api.client import InvalidAdminApiKeyError
 from app.utils import now_utc
 
 
 logger = logging.getLogger("app.sub2api_account_test")
 
-TEST_MODEL = "gpt-5.4"
+TEST_MODEL = "gpt-5.5"
 TEST_INTERVAL = timedelta(hours=24)
+RAPID_403_TEST_INTERVAL = timedelta(minutes=3)
 EVENT_RETENTION = timedelta(days=90)
 MAX_ERROR_LENGTH = 2_000
 MAX_RESPONSE_PREVIEW_LENGTH = 500
@@ -51,7 +55,7 @@ async def execute_account_test(
     except InvalidAdminApiKeyError:
         raise
     except Exception as exc:  # noqa: BLE001 - account failures must become durable results.
-        transport_error = _sanitize_text(
+        transport_error = sanitize_account_test_text(
             str(getattr(exc, "detail", None) or exc),
             MAX_ERROR_LENGTH,
         )
@@ -140,10 +144,17 @@ def _event_document(
     outcome: str,
     tested_at: datetime,
 ) -> dict[str, Any]:
-    error = _sanitize_text(
+    error = sanitize_account_test_text(
         str(verification.get("error") or "").strip(),
         MAX_ERROR_LENGTH,
     ) or None
+    http_status = _http_status(error)
+    snapshot_http_403 = snapshot_has_http_status(account, 403)
+    rapid_http_403 = snapshot_http_403 or http_status == 403
+    recovery_required = snapshot_http_403 and outcome == "passed"
+    next_test_at = tested_at + (
+        RAPID_403_TEST_INTERVAL if rapid_http_403 else TEST_INTERVAL
+    )
     return {
         "_id": uuid4().hex,
         "state_id": f"{site_id}:{remote_account_id}",
@@ -154,18 +165,34 @@ def _event_document(
         "mode": "default",
         "outcome": outcome,
         "success": verification.get("success") is True,
-        "http_status": _http_status(error),
+        "http_status": http_status,
         "error_code": _error_code(error),
         "error": error,
-        "response_preview": _sanitize_text(
+        "response_preview": sanitize_account_test_text(
             str(verification.get("response_preview") or ""),
             MAX_RESPONSE_PREVIEW_LENGTH,
         ),
         "latency_ms": _number(verification.get("latency_ms")),
         "tested_at": tested_at,
-        "next_test_at": tested_at + TEST_INTERVAL,
+        "next_test_at": next_test_at,
+        "recovery": {
+            "required": recovery_required,
+            "snapshot_http_403": snapshot_http_403,
+            "snapshot_fetched_at": _optional_datetime(account.get("fetched_at")),
+        },
         "dispatch": {
-            "scheduling": {"status": "pending", "attempts": 0},
+            "scheduling": {
+                "status": "pending",
+                "attempts": 0,
+                "recover_state_status": (
+                    "pending" if recovery_required else "not_required"
+                ),
+                "recover_state_attempts": 0,
+                "enable_schedulable_status": (
+                    "pending" if recovery_required else "not_required"
+                ),
+                "enable_schedulable_attempts": 0,
+            },
             "plan_correction": {"status": "pending", "attempts": 0},
         },
         "expires_at": tested_at + EVENT_RETENTION,
@@ -174,6 +201,9 @@ def _event_document(
 
 def _latest_state(event: dict[str, Any]) -> dict[str, Any]:
     tested_at = _as_utc(event["tested_at"])
+    recovery = event.get("recovery") if isinstance(event.get("recovery"), dict) else {}
+    next_test_at = event.get("next_test_at") or tested_at + TEST_INTERVAL
+    rapid_http_403 = next_test_at - tested_at == RAPID_403_TEST_INTERVAL
     return {
         "site_id": event["site_id"],
         "remote_account_id": event["remote_account_id"],
@@ -184,8 +214,12 @@ def _latest_state(event: dict[str, Any]) -> dict[str, Any]:
         "last_error": event.get("error"),
         "last_response_preview": event.get("response_preview") or "",
         "last_latency_ms": event.get("latency_ms"),
+        "last_http_status": event.get("http_status"),
+        "last_snapshot_http_403": recovery.get("snapshot_http_403") is True,
+        "last_snapshot_fetched_at": recovery.get("snapshot_fetched_at"),
         "last_tested_at": tested_at,
-        "next_test_at": event.get("next_test_at") or tested_at + TEST_INTERVAL,
+        "next_test_at": next_test_at,
+        "interval_mode": "rapid_403" if rapid_http_403 else "normal",
         "model": event.get("model") or TEST_MODEL,
         "updated_at": tested_at,
     }
@@ -243,7 +277,7 @@ def _bounded(value: str, length: int) -> str:
     return value[:length]
 
 
-def _sanitize_text(value: str, length: int) -> str:
+def sanitize_account_test_text(value: str, length: int) -> str:
     text = str(value or "")
     text = re.sub(
         r"(?i)([\"'](?:access_token|refresh_token|id_token|(?:x[-_])?api[-_]?key|authorization)[\"']\s*:\s*[\"'])([^\"']*)([\"'])",

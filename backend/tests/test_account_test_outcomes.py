@@ -1,10 +1,26 @@
 import unittest
 
 
-from app.modules.sub2api.account_test_outcomes import classify_test_result, disable_reason
+from app.modules.sub2api.account_test_outcomes import (
+    classify_test_result,
+    disable_reason,
+    has_http_status,
+    snapshot_has_http_status,
+)
 
 
 class AccountTestOutcomeTests(unittest.TestCase):
+    def test_http_status_detection_is_exact_and_reads_cached_snapshot(self) -> None:
+        self.assertTrue(has_http_status("API returned 403: forbidden", 403))
+        self.assertTrue(snapshot_has_http_status({"status": "403"}, 403))
+        self.assertTrue(
+            snapshot_has_http_status(
+                {"account": {"error_message": "API returned 403"}},
+                403,
+            )
+        )
+        self.assertFalse(has_http_status("wait 4030 milliseconds", 403))
+
     def test_classifies_supported_account_results(self) -> None:
         self.assertEqual(classify_test_result({"success": True}), "passed")
         self.assertEqual(classify_test_result({"error": "API returned 429"}), "rate_limited")
