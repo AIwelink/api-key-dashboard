@@ -95,6 +95,8 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
         used: float | None = 20,
         sampled_at: datetime | None = None,
         reset_at: datetime | None = None,
+        status: str = "active",
+        error_message: str | None = None,
     ) -> dict[str, object]:
         usage: dict[str, object] = {}
         if used is not None:
@@ -111,6 +113,8 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
             "priority": priority,
             "concurrency": concurrency,
             "group_ids": [3],
+            "status": status,
+            "error_message": error_message,
             "usage_snapshot": usage,
         }
 
@@ -341,6 +345,210 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
         self.assertEqual(decision["strategy"], "quota_recovery")
         self.assertEqual(decision["target"], {"priority": 991, "concurrency": 30})
         self.assertEqual(decision["seven_day_reset_at"], new_reset.isoformat())
+
+    def test_extreme_429_starts_pending_delay_without_runtime_change(self) -> None:
+        reset_at = self.now + timedelta(days=3)
+        decision = self.evaluate(
+            self.account(
+                "plus",
+                priority=10,
+                concurrency=100,
+                used=95,
+                reset_at=reset_at,
+                error_message="API returned 429: rate limited",
+            ),
+            state={"mode": "extreme", "seven_day_reset_at": reset_at.isoformat()},
+        )
+
+        self.assertEqual(decision["status"], "unchanged")
+        self.assertEqual(decision["mode"], "rate_limit_pending")
+        self.assertEqual(decision["rate_limit_detected_at"], self.now.isoformat())
+        self.assertEqual(decision["target"], {"priority": 10, "concurrency": 100})
+
+    def test_pending_429_uses_first_detection_time(self) -> None:
+        detected_at = self.now - timedelta(minutes=10)
+        decision = self.evaluate(
+            self.account(
+                "plus",
+                priority=10,
+                concurrency=100,
+                used=95,
+                error_message="429",
+            ),
+            state={
+                "mode": "rate_limit_pending",
+                "rate_limit_detected_at": detected_at.isoformat(),
+            },
+        )
+
+        self.assertEqual(decision["rate_limit_detected_at"], detected_at.isoformat())
+
+    def test_pending_waits_until_exact_thirty_minute_boundary(self) -> None:
+        cases = (
+            (timedelta(minutes=29, seconds=59), "rate_limit_pending"),
+            (timedelta(minutes=30), "rate_limited_cooldown"),
+        )
+        for elapsed, expected_mode in cases:
+            with self.subTest(elapsed=elapsed):
+                decision = self.evaluate(
+                    self.account("plus", priority=10, concurrency=100, used=95),
+                    state={
+                        "mode": "rate_limit_pending",
+                        "rate_limit_detected_at": (self.now - elapsed).isoformat(),
+                    },
+                )
+                self.assertEqual(decision["mode"], expected_mode)
+                expected_target = (
+                    {"priority": 10, "concurrency": 100}
+                    if expected_mode == "rate_limit_pending"
+                    else {"priority": 191, "concurrency": 30}
+                )
+                self.assertEqual(decision["target"], expected_target)
+
+    def test_cooldown_blocks_extreme_until_quota_recovers(self) -> None:
+        decision = self.evaluate(
+            self.account("plus", priority=191, concurrency=30, used=95),
+            state={
+                "mode": "rate_limited_cooldown",
+                "rate_limit_detected_at": self.now.isoformat(),
+            },
+        )
+
+        self.assertEqual(decision["mode"], "rate_limited_cooldown")
+        self.assertEqual(decision["target"], {"priority": 191, "concurrency": 30})
+
+    def test_cooldown_releases_below_recovery_threshold(self) -> None:
+        decision = self.evaluate(
+            self.account("plus", priority=191, concurrency=30, used=79.9),
+            state={
+                "mode": "rate_limited_cooldown",
+                "rate_limit_detected_at": self.now.isoformat(),
+            },
+        )
+
+        self.assertEqual(decision["mode"], "normal")
+        self.assertIsNone(decision["rate_limit_detected_at"])
+
+    def test_pending_reset_recovers_before_delay_elapses(self) -> None:
+        old_reset = self.now + timedelta(hours=1)
+        new_reset = self.now + timedelta(days=7)
+        decision = self.evaluate(
+            self.account(
+                "plus",
+                priority=10,
+                concurrency=100,
+                used=10,
+                reset_at=new_reset,
+            ),
+            state={
+                "mode": "rate_limit_pending",
+                "rate_limit_detected_at": (
+                    self.now - timedelta(minutes=5)
+                ).isoformat(),
+                "seven_day_reset_at": old_reset.isoformat(),
+            },
+        )
+
+        self.assertEqual(decision["mode"], "normal")
+        self.assertEqual(decision["reason"], "seven_day_window_reset")
+
+    def test_cooldown_reset_releases_to_normal(self) -> None:
+        old_reset = self.now + timedelta(hours=1)
+        new_reset = self.now + timedelta(days=7)
+        decision = self.evaluate(
+            self.account(
+                "plus",
+                priority=191,
+                concurrency=30,
+                used=95,
+                reset_at=new_reset,
+            ),
+            state={
+                "mode": "rate_limited_cooldown",
+                "rate_limit_detected_at": self.now.isoformat(),
+                "seven_day_reset_at": old_reset.isoformat(),
+            },
+        )
+
+        self.assertEqual(decision["mode"], "normal")
+        self.assertEqual(decision["reason"], "seven_day_window_reset")
+
+    def test_stale_quota_holds_cooldown_at_normal_values(self) -> None:
+        decision = self.evaluate(
+            self.account(
+                "plus",
+                priority=191,
+                concurrency=30,
+                used=95,
+                sampled_at=self.now - timedelta(minutes=6),
+            ),
+            state={
+                "mode": "rate_limited_cooldown",
+                "rate_limit_detected_at": self.now.isoformat(),
+            },
+        )
+
+        self.assertEqual(decision["mode"], "rate_limited_cooldown")
+        self.assertEqual(decision["target"], {"priority": 191, "concurrency": 30})
+
+    def test_missing_quota_holds_cooldown_at_normal_values(self) -> None:
+        decision = self.evaluate(
+            self.account(
+                "plus",
+                priority=191,
+                concurrency=30,
+                used=None,
+            ),
+            state={
+                "mode": "rate_limited_cooldown",
+                "rate_limit_detected_at": self.now.isoformat(),
+            },
+        )
+
+        self.assertEqual(decision["mode"], "rate_limited_cooldown")
+        self.assertEqual(decision["target"], {"priority": 191, "concurrency": 30})
+
+    def test_rate_limited_status_starts_pending(self) -> None:
+        decision = self.evaluate(
+            self.account(
+                "plus",
+                priority=10,
+                concurrency=100,
+                used=95,
+                status="rate_limited",
+            ),
+            state={"mode": "extreme"},
+        )
+
+        self.assertEqual(decision["mode"], "rate_limit_pending")
+
+    def test_normal_account_ignores_429_recovery_signal(self) -> None:
+        decision = self.evaluate(
+            self.account(
+                "plus",
+                priority=250,
+                used=20,
+                error_message="API returned 429",
+            ),
+            state={"mode": "normal"},
+        )
+
+        self.assertEqual(decision["mode"], "normal")
+        self.assertNotEqual(decision["strategy"], "rate_limit_recovery")
+
+    def test_4290_does_not_start_rate_limit_pending(self) -> None:
+        decision = self.evaluate(
+            self.account(
+                "plus",
+                priority=10,
+                concurrency=100,
+                used=95,
+                error_message="wait 4290 milliseconds",
+            ),
+            state={"mode": "extreme"},
+        )
+
+        self.assertEqual(decision["mode"], "extreme")
 
     def test_missing_quota_cannot_trigger_extreme(self) -> None:
         decision = self.evaluate(

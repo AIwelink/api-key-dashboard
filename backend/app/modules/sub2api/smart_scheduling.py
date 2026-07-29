@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -7,6 +8,10 @@ from typing import Any
 
 SUPPORTED_TYPES = ("pro", "plus", "k12", "team")
 MAX_QUOTA_SOURCE_AGE = timedelta(minutes=5)
+RATE_LIMIT_RECOVERY_DELAY = timedelta(minutes=30)
+
+_HTTP_429_PATTERN = re.compile(r"(?<!\d)429(?!\d)")
+_RATE_LIMITED_STATUSES = {"429", "rate_limited", "rate-limited", "rate limited"}
 
 DEFAULT_SMART_SCHEDULING_RULES: dict[str, Any] = {
     "account_types": {
@@ -133,11 +138,15 @@ def evaluate_account(
     normalized_rules = normalize_smart_scheduling_rules(rules)
     state = state if isinstance(state, dict) else {}
     account_type = adapted_scheduling_type(account.get("account_type") or account.get("plan_type"))
+    rate_limit_detected_at = _parse_datetime(state.get("rate_limit_detected_at"))
     base = {
         "adapted_type": account_type,
         "seven_day_used_percent": None,
         "seven_day_reset_at": None,
         "quota_fresh": False,
+        "rate_limit_detected_at": (
+            rate_limit_detected_at.isoformat() if rate_limit_detected_at else None
+        ),
     }
     if not type_priority_enabled and not quota_acceleration_enabled:
         return base | _result("skipped", reason="strategies_disabled")
@@ -153,20 +162,25 @@ def evaluate_account(
             "quota_fresh": quota["fresh"],
         }
     )
-    state_is_extreme = state.get("mode") == "extreme"
+    state_mode = str(state.get("mode") or "")
+    managed_modes = {"extreme", "rate_limit_pending", "rate_limited_cooldown"}
 
-    if state_is_extreme and not quota_acceleration_enabled:
+    if state_mode in managed_modes and not quota_acceleration_enabled:
         return base | _result("held", reason="quota_strategy_disabled_extreme_held")
 
-    if state_is_extreme:
-        if quota["reason"] != "quota_ready":
-            suffix = "stale" if quota["reason"] == "quota_stale" else "missing"
-            return base | _result("held", reason=f"quota_{suffix}_extreme_held")
+    if state_mode in managed_modes:
         previous_reset = _datetime_identity(state.get("seven_day_reset_at"))
-        reset_changed = bool(previous_reset and previous_reset != quota["reset_at"])
-        recovered = float(quota["percent"]) < float(rule["recovery_percent"])
+        reset_changed = bool(
+            quota["reason"] == "quota_ready"
+            and previous_reset
+            and previous_reset != quota["reset_at"]
+        )
+        recovered = bool(
+            quota["reason"] == "quota_ready"
+            and float(quota["percent"]) < float(rule["recovery_percent"])
+        )
         if reset_changed or recovered:
-            return base | _target_result(
+            return (base | {"rate_limit_detected_at": None}) | _target_result(
                 account,
                 priority=int(rule["automatic_priority"]),
                 concurrency=int(rule["normal_concurrency"]),
@@ -174,6 +188,48 @@ def evaluate_account(
                 mode="normal",
                 reason="seven_day_window_reset" if reset_changed else "quota_recovered",
             )
+        if state_mode == "rate_limited_cooldown":
+            return base | _target_result(
+                account,
+                priority=int(rule["automatic_priority"]),
+                concurrency=int(rule["normal_concurrency"]),
+                strategy="rate_limit_recovery",
+                mode="rate_limited_cooldown",
+                reason="rate_limit_cooldown_held",
+            )
+        if state_mode == "rate_limit_pending":
+            detected_at = rate_limit_detected_at or now.astimezone(UTC)
+            base["rate_limit_detected_at"] = detected_at.isoformat()
+            if now.astimezone(UTC) - detected_at >= RATE_LIMIT_RECOVERY_DELAY:
+                return base | _target_result(
+                    account,
+                    priority=int(rule["automatic_priority"]),
+                    concurrency=int(rule["normal_concurrency"]),
+                    strategy="rate_limit_recovery",
+                    mode="rate_limited_cooldown",
+                    reason="rate_limit_delay_elapsed",
+                )
+            return base | _target_result(
+                account,
+                priority=int(normalized_rules["extreme"]["priority"]),
+                concurrency=int(rule["extreme_concurrency"]),
+                strategy="rate_limit_recovery",
+                mode="rate_limit_pending",
+                reason="rate_limit_delay_pending",
+            )
+        if _account_is_rate_limited(account):
+            base["rate_limit_detected_at"] = now.astimezone(UTC).isoformat()
+            return base | _target_result(
+                account,
+                priority=int(normalized_rules["extreme"]["priority"]),
+                concurrency=int(rule["extreme_concurrency"]),
+                strategy="rate_limit_recovery",
+                mode="rate_limit_pending",
+                reason="rate_limit_delay_started",
+            )
+        if quota["reason"] != "quota_ready":
+            suffix = "stale" if quota["reason"] == "quota_stale" else "missing"
+            return base | _result("held", reason=f"quota_{suffix}_extreme_held")
         return base | _target_result(
             account,
             priority=int(normalized_rules["extreme"]["priority"]),
@@ -223,6 +279,13 @@ def evaluate_account(
     if quota["reason"] != "quota_ready":
         return base | _result("skipped", reason="quota_missing")
     return base | _result("skipped", reason="quota_below_threshold")
+
+
+def _account_is_rate_limited(account: dict[str, Any]) -> bool:
+    status = str(account.get("status") or "").strip().lower()
+    if status in _RATE_LIMITED_STATUSES:
+        return True
+    return bool(_HTTP_429_PATTERN.search(str(account.get("error_message") or "")))
 
 
 def _result(
