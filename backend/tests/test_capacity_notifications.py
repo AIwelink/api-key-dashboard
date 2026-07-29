@@ -335,11 +335,19 @@ class CapacityNotificationTextTests(unittest.TestCase):
                 "dynamic_runway_hours": 3.5,
                 "concurrency_coverage": 1.3,
                 "available_accounts": 14,
+                "five_hour_actual_remaining_usd": 88,
+                "dynamic_five_hour_remaining_estimated_usd": 132,
+                "dynamic_five_hour_capacity_usd": 220,
+                "seven_day_actual_remaining_usd": 440,
+                "seven_day_remaining_estimated_usd": 660,
+                "seven_day_capacity_usd": 900,
             },
         )
 
         self.assertIn("恢复状态：健康", message)
         self.assertIn("实际 / 动态可用：1.5小时 / 3.5小时", message)
+        self.assertIn("5h 可用：实际 $88.00 / 动态 $132.00 / 容量 $220.00", message)
+        self.assertIn("7d 可用：实际 $440.00 / 动态 $660.00 / 容量 $900.00", message)
         self.assertIn("并发覆盖：1.30x", message)
         self.assertIn("可用账号：14 个", message)
         self.assertIn("恢复时间：2026-07-16 20:00", message)
@@ -388,6 +396,12 @@ class CapacityStatusChangeHelperTests(unittest.IsolatedAsyncioTestCase):
                 "actual_runway_hours": 4,
                 "dynamic_runway_hours": 6,
                 "concurrency_coverage": 3.2,
+                "five_hour_actual_remaining_usd": 80,
+                "dynamic_five_hour_remaining_estimated_usd": 160,
+                "dynamic_five_hour_capacity_usd": 220,
+                "seven_day_actual_remaining_usd": 500,
+                "seven_day_remaining_estimated_usd": 700,
+                "seven_day_capacity_usd": 900,
             },
         )
 
@@ -396,6 +410,8 @@ class CapacityStatusChangeHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("状态变化：充裕 -> 健康", message)
         self.assertIn("压力阶段：稳定", message)
         self.assertIn("实际 / 动态可用：4.0小时 / 6.0小时", message)
+        self.assertIn("5h 可用：实际 $80.00 / 动态 $160.00 / 容量 $220.00", message)
+        self.assertIn("7d 可用：实际 $500.00 / 动态 $700.00 / 容量 $900.00", message)
         self.assertIn("并发覆盖：3.20x", message)
         self.assertIn("判断原因：当前容量处于健康范围", message)
         self.assertIn("变化时间：2026-07-28 12:30", message)

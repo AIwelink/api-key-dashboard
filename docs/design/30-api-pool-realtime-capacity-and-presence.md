@@ -207,6 +207,8 @@ very_abundant, abundant, healthy, tight, danger, exhausted
 - 没有飞书渠道、投递失败或投递跳过时，仍前移 `last_observed_status`，避免同一次变化每分钟重复发送。
 - 分组通知关闭时继续维护当前有效观察状态，但不发送；重新启用后不补发关闭期间的历史变化。
 
+`sub2api.capacity.low`、`sub2api.capacity.recovered` 和 `sub2api.capacity.status_changed` 三类容量消息都必须显示 5h/7d 的实际可用、动态可用和总容量。额度统一读取 `capacity_summary`，不得由各消息模板分别计算。
+
 专用事件 payload 至少包含：
 
 ```text
