@@ -134,6 +134,7 @@ class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
     async def test_scheduler_waits_15_minutes_between_cycles(self) -> None:
         from app.modules.operations.sync import operations_sync_loop
 
+        schema_initializer = AsyncMock(return_value={"initialized": True})
         cycle = AsyncMock(return_value=[])
         delays = []
 
@@ -142,9 +143,76 @@ class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             raise asyncio.CancelledError
 
         with self.assertRaises(asyncio.CancelledError):
-            await operations_sync_loop(object(), cycle_func=cycle, sleep_func=stop_after_delay)
+            await operations_sync_loop(
+                object(),
+                cycle_func=cycle,
+                sleep_func=stop_after_delay,
+                schema_initializer=schema_initializer,
+            )
 
+        schema_initializer.assert_awaited_once()
         cycle.assert_awaited_once()
+        self.assertEqual(delays, [900])
+
+    async def test_scheduler_initializes_growth_schema_before_first_sync(self) -> None:
+        from app.modules.operations.sync import operations_sync_loop
+
+        calls = []
+
+        async def initialize(db, *, actor):
+            calls.append(("initialize", actor["_id"]))
+            return {
+                "initialized": True,
+                "current_version": "0003_operations_internal_email",
+                "applied_versions": ["0003_operations_internal_email"],
+            }
+
+        async def cycle(db):
+            calls.append(("sync", None))
+            return []
+
+        async def stop_after_delay(seconds):
+            raise asyncio.CancelledError
+
+        with self.assertRaises(asyncio.CancelledError):
+            await operations_sync_loop(
+                object(),
+                cycle_func=cycle,
+                sleep_func=stop_after_delay,
+                schema_initializer=initialize,
+            )
+
+        self.assertEqual(
+            calls,
+            [
+                ("initialize", "system:operations-sync"),
+                ("sync", None),
+            ],
+        )
+
+    async def test_scheduler_retries_schema_initialization_before_sync(self) -> None:
+        from app.modules.operations.sync import operations_sync_loop
+
+        schema_initializer = AsyncMock(side_effect=RuntimeError("migration failed"))
+        cycle = AsyncMock(return_value=[])
+        delays = []
+
+        async def stop_after_delay(seconds):
+            delays.append(seconds)
+            raise asyncio.CancelledError
+
+        with patch("app.modules.operations.sync.logger.exception") as logged:
+            with self.assertRaises(asyncio.CancelledError):
+                await operations_sync_loop(
+                    object(),
+                    cycle_func=cycle,
+                    sleep_func=stop_after_delay,
+                    schema_initializer=schema_initializer,
+                )
+
+        schema_initializer.assert_awaited_once()
+        cycle.assert_not_awaited()
+        logged.assert_called_once()
         self.assertEqual(delays, [900])
 
     async def test_aggregation_runs_only_after_all_fact_upserts_succeed(self) -> None:

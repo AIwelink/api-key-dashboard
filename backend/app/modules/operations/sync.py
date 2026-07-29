@@ -23,6 +23,7 @@ from app.modules.operations.cache import operations_response_cache
 from app.modules.operations.domain import convert_balance_to_cny
 from app.modules.growth.database import growth_connection
 from app.modules.system.client_sites import get_client_site, list_client_sites
+from app.modules.system.growth_database_settings import initialize_growth_database
 from app.modules.system.sql_dsn import parse_sql_dsn, redact_sql_error
 
 
@@ -31,6 +32,10 @@ OPERATIONS_RECONCILIATION_WINDOW = timedelta(hours=48)
 OPERATIONS_INITIAL_SYNC_WINDOW = timedelta(days=30)
 SOURCE_DATABASE_TIMEOUT_SECONDS = 30
 NEWAPI_DEFAULT_QUOTA_PER_UNIT = Decimal("500000")
+OPERATIONS_SYNC_ACTOR = {
+    "_id": "system:operations-sync",
+    "name": "Operations sync",
+}
 logger = logging.getLogger("app.operations.sync")
 
 _refresh_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
@@ -228,7 +233,31 @@ async def operations_sync_loop(
     *,
     cycle_func: Callable[..., Awaitable[list[dict[str, Any]]]] = run_operations_sync_cycle,
     sleep_func: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    schema_initializer: Callable[..., Awaitable[dict[str, Any]]] = initialize_growth_database,
 ) -> None:
+    schema_ready = False
+    while not schema_ready:
+        try:
+            schema_result = await schema_initializer(mongo_db, actor=OPERATIONS_SYNC_ACTOR)
+            schema_ready = bool(schema_result.get("initialized"))
+            if schema_ready:
+                logger.info(
+                    "operations_growth_schema_ready current_version=%s applied_versions=%s",
+                    schema_result.get("current_version"),
+                    schema_result.get("applied_versions") or [],
+                )
+            else:
+                logger.error(
+                    "operations_growth_schema_not_ready current_version=%s pending_versions=%s",
+                    schema_result.get("current_version"),
+                    schema_result.get("pending_versions") or [],
+                )
+        except Exception:  # noqa: BLE001 - keep retrying until the shared schema is ready.
+            logger.exception("operations_growth_schema_initialization_failed")
+
+        if not schema_ready:
+            await sleep_func(OPERATIONS_SYNC_INTERVAL_SECONDS)
+
     while True:
         await cycle_func(mongo_db)
         await sleep_func(OPERATIONS_SYNC_INTERVAL_SECONDS)
