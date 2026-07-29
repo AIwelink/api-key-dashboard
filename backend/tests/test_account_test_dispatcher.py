@@ -154,7 +154,12 @@ class SchedulingHandlerTests(unittest.IsolatedAsyncioTestCase):
             set_account_schedulable=AsyncMock(),
         )
 
-        with self.assertRaises(RuntimeError):
+        with (
+            patch(
+                "app.modules.sub2api.account_test_dispatcher.logger.warning"
+            ) as warning,
+            self.assertRaises(RuntimeError),
+        ):
             await handle_scheduling(
                 db,
                 _event("passed", recovery_required=True),
@@ -174,8 +179,10 @@ class SchedulingHandlerTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertNotIn("recover-secret", repr(phase_updates))
+        warning.assert_called_once()
+        self.assertNotIn("recover-secret", repr(warning.call_args))
 
-    async def test_recover_cache_failure_keeps_phase_replayable(self) -> None:
+    async def test_recover_cache_failure_does_not_repeat_remote_recovery(self) -> None:
         db = _db({"schedulable": False})
         db.sub2api_accounts_cache.update_one.side_effect = RuntimeError(
             "access_token=cache-secret"
@@ -201,12 +208,72 @@ class SchedulingHandlerTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertTrue(
             any(
+                update.get("dispatch.scheduling.recover_state_status") == "completed"
+                for update in phase_updates
+            )
+        )
+        self.assertFalse(
+            any(
                 update.get("dispatch.scheduling.recover_state_status") == "failed"
                 for update in phase_updates
             )
         )
         self.assertNotIn("cache-secret", repr(phase_updates))
         client.set_account_schedulable.assert_not_awaited()
+
+        db.sub2api_accounts_cache.update_one.side_effect = None
+        replay_client = SimpleNamespace(
+            recover_account_state=AsyncMock(),
+            set_account_schedulable=AsyncMock(return_value={"schedulable": True}),
+        )
+        await handle_scheduling(
+            db,
+            _event(
+                "passed",
+                recovery_required=True,
+                recover_state_status="completed",
+            ),
+            client=replay_client,
+        )
+        replay_client.recover_account_state.assert_not_awaited()
+        replay_client.set_account_schedulable.assert_awaited_once_with(4072, True)
+
+    async def test_enable_failure_preserves_completed_recovery_phase(self) -> None:
+        db = _db({"schedulable": False})
+        client = SimpleNamespace(
+            recover_account_state=AsyncMock(
+                return_value={"status": "active", "schedulable": False}
+            ),
+            set_account_schedulable=AsyncMock(
+                side_effect=RuntimeError("access_token=enable-secret")
+            ),
+        )
+
+        with self.assertRaises(RuntimeError):
+            await handle_scheduling(
+                db,
+                _event("passed", recovery_required=True),
+                client=client,
+            )
+
+        phase_updates = [
+            call.args[1]["$set"]
+            for call in db.sub2api_account_test_events.update_one.await_args_list
+            if "$set" in call.args[1]
+        ]
+        self.assertTrue(
+            any(
+                update.get("dispatch.scheduling.recover_state_status") == "completed"
+                for update in phase_updates
+            )
+        )
+        self.assertTrue(
+            any(
+                update.get("dispatch.scheduling.enable_schedulable_status") == "failed"
+                for update in phase_updates
+            )
+        )
+        self.assertNotIn("enable-secret", repr(phase_updates))
 
     async def test_replay_skips_completed_recover_phase(self) -> None:
         db = _db({"schedulable": False})
@@ -232,6 +299,7 @@ class SchedulingHandlerTests(unittest.IsolatedAsyncioTestCase):
         db = _db({"schedulable": False})
         db.sub2api_account_test_states.find_one.side_effect = [
             {"last_event_id": "event-1"},
+            {"last_event_id": "event-1"},
             {"last_event_id": "newer-event"},
         ]
         client = SimpleNamespace(
@@ -248,9 +316,54 @@ class SchedulingHandlerTests(unittest.IsolatedAsyncioTestCase):
         client.recover_account_state.assert_awaited_once_with(4072)
         client.set_account_schedulable.assert_not_awaited()
 
+    async def test_newer_event_after_phase_start_prevents_remote_recovery(self) -> None:
+        db = _db({"schedulable": False})
+        db.sub2api_account_test_states.find_one.side_effect = [
+            {"last_event_id": "event-1"},
+            {"last_event_id": "newer-event"},
+        ]
+        client = SimpleNamespace(
+            recover_account_state=AsyncMock(),
+            set_account_schedulable=AsyncMock(),
+        )
+
+        await handle_scheduling(
+            db,
+            _event("passed", recovery_required=True),
+            client=client,
+        )
+
+        client.recover_account_state.assert_not_awaited()
+        client.set_account_schedulable.assert_not_awaited()
+
+    async def test_newer_event_after_enable_phase_start_prevents_remote_enable(self) -> None:
+        db = _db({"schedulable": False})
+        db.sub2api_account_test_states.find_one.side_effect = [
+            {"last_event_id": "event-1"},
+            {"last_event_id": "event-1"},
+            {"last_event_id": "event-1"},
+            {"last_event_id": "newer-event"},
+        ]
+        client = SimpleNamespace(
+            recover_account_state=AsyncMock(
+                return_value={"status": "active", "schedulable": False}
+            ),
+            set_account_schedulable=AsyncMock(),
+        )
+
+        await handle_scheduling(
+            db,
+            _event("passed", recovery_required=True),
+            client=client,
+        )
+
+        client.recover_account_state.assert_awaited_once_with(4072)
+        client.set_account_schedulable.assert_not_awaited()
+
     async def test_recover_response_is_cached_before_stale_return(self) -> None:
         db = _db({"schedulable": False})
         db.sub2api_account_test_states.find_one.side_effect = [
+            {"last_event_id": "event-1"},
             {"last_event_id": "event-1"},
             {"last_event_id": "newer-event"},
         ]

@@ -323,23 +323,26 @@ async def _recover_403_account(
 
     if scheduling.get("recover_state_status") != "completed":
         await _start_recovery_phase(db, event, "recover_state")
+        if not await _event_is_latest(db, event):
+            return
         try:
             response = await client.recover_account_state(event["remote_account_id"])
-            recovery_cache_updates = _cache_updates_from_response(response)
-            if recovery_cache_updates:
-                await db.sub2api_accounts_cache.update_one(
-                    {
-                        "site_id": event["site_id"],
-                        "sub2api_account_id": event["remote_account_id"],
-                    },
-                    {"$set": recovery_cache_updates},
-                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             await _fail_recovery_phase(db, event, "recover_state", exc)
             raise
         await _complete_recovery_phase(db, event, "recover_state")
+
+        recovery_cache_updates = _cache_updates_from_response(response)
+        if recovery_cache_updates:
+            await db.sub2api_accounts_cache.update_one(
+                {
+                    "site_id": event["site_id"],
+                    "sub2api_account_id": event["remote_account_id"],
+                },
+                {"$set": recovery_cache_updates},
+            )
         cache_updates.update(recovery_cache_updates)
         response_schedulable = _response_schedulable(response)
         if response_schedulable is not None:
@@ -350,6 +353,8 @@ async def _recover_403_account(
 
     if scheduling.get("enable_schedulable_status") != "completed":
         await _start_recovery_phase(db, event, "enable_schedulable")
+        if not await _event_is_latest(db, event):
+            return
         try:
             response = None
             if effective_schedulable is not True:
@@ -463,6 +468,13 @@ async def _fail_recovery_phase(
                 "dispatch.scheduling.updated_at": failed_at,
             }
         },
+    )
+    logger.warning(
+        "sub2api_account_recovery_phase_failed site_id=%s account_id=%s phase=%s error_type=%s",
+        event.get("site_id"),
+        event.get("remote_account_id"),
+        phase,
+        error.__class__.__name__,
     )
 
 
