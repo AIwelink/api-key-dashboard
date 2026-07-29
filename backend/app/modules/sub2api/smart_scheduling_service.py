@@ -583,6 +583,7 @@ async def _states_for_accounts(
             "remote_account_id": 1,
             "mode": 1,
             "seven_day_reset_at": 1,
+            "rate_limit_detected_at": 1,
         },
     )
     async for document in cursor:
@@ -611,6 +612,7 @@ async def _persist_scheduler_state(
         "last_target": decision.get("target"),
         "seven_day_used_percent": decision.get("seven_day_used_percent"),
         "seven_day_reset_at": decision.get("seven_day_reset_at"),
+        "rate_limit_detected_at": decision.get("rate_limit_detected_at"),
         "last_probe_run_id": probe_run_id,
         "last_run_id": run_id,
         "last_evaluated_at": evaluated_at,

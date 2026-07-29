@@ -707,8 +707,141 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
                 "remote_account_id": 1,
                 "mode": 1,
                 "seven_day_reset_at": 1,
+                "rate_limit_detected_at": 1,
             },
         )
+
+    async def test_first_extreme_429_persists_pending_without_remote_update(self) -> None:
+        account = self.account(7, priority=10, concurrency=100, used=95)
+        account["error_message"] = "API returned 429"
+        db = self.db(states=[{"remote_account_id": 7, "mode": "extreme"}])
+        client = SimpleNamespace(
+            get_account=AsyncMock(),
+            bulk_update_accounts_runtime=AsyncMock(),
+        )
+
+        result = await run_smart_scheduling(
+            db,
+            site=self.site(),
+            accounts=[account],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": True,
+                }
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=client,
+            now=self.now,
+        )
+
+        client.get_account.assert_not_awaited()
+        client.bulk_update_accounts_runtime.assert_not_awaited()
+        self.assertEqual(result["unchanged"], 1)
+        state = (
+            db.sub2api_smart_scheduling_states.update_one.await_args.args[1]["$set"]
+        )
+        self.assertEqual(state["mode"], "rate_limit_pending")
+        self.assertEqual(state["rate_limit_detected_at"], self.now.isoformat())
+
+    async def test_elapsed_429_delay_bulk_restores_normal_values(self) -> None:
+        detected_at = self.now - timedelta(minutes=31)
+        db = self.db(
+            states=[
+                {
+                    "remote_account_id": 7,
+                    "mode": "rate_limit_pending",
+                    "rate_limit_detected_at": detected_at,
+                }
+            ]
+        )
+        client = SimpleNamespace(
+            get_account=AsyncMock(
+                return_value={
+                    "id": 7,
+                    "priority": 10,
+                    "concurrency": 100,
+                    "group_ids": [3],
+                }
+            ),
+            bulk_update_accounts_runtime=AsyncMock(
+                return_value={"success_ids": [7], "failed_ids": []}
+            ),
+        )
+
+        result = await run_smart_scheduling(
+            db,
+            site=self.site(),
+            accounts=[self.account(7, priority=10, concurrency=100, used=95)],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": True,
+                }
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=client,
+            now=self.now,
+        )
+
+        client.bulk_update_accounts_runtime.assert_awaited_once_with(
+            [7],
+            {"priority": 191, "concurrency": 30, "group_ids": [3]},
+        )
+        self.assertEqual(result["changed"], 1)
+        state = (
+            db.sub2api_smart_scheduling_states.update_one.await_args.args[1]["$set"]
+        )
+        self.assertEqual(state["mode"], "rate_limited_cooldown")
+        self.assertEqual(
+            state["rate_limit_detected_at"], detected_at.isoformat()
+        )
+
+    async def test_failed_delayed_recovery_does_not_advance_cooldown_state(self) -> None:
+        detected_at = self.now - timedelta(minutes=31)
+        db = self.db(
+            states=[
+                {
+                    "remote_account_id": 7,
+                    "mode": "rate_limit_pending",
+                    "rate_limit_detected_at": detected_at,
+                }
+            ]
+        )
+        client = SimpleNamespace(
+            get_account=AsyncMock(
+                return_value={
+                    "id": 7,
+                    "priority": 10,
+                    "concurrency": 100,
+                    "group_ids": [3],
+                }
+            ),
+            bulk_update_accounts_runtime=AsyncMock(
+                return_value={"success_ids": [], "failed_ids": [7]}
+            ),
+        )
+
+        result = await run_smart_scheduling(
+            db,
+            site=self.site(),
+            accounts=[self.account(7, priority=10, concurrency=100, used=95)],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": True,
+                }
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=client,
+            now=self.now,
+        )
+
+        self.assertEqual(result["failed"], 1)
+        db.sub2api_smart_scheduling_states.update_one.assert_not_awaited()
 
     async def test_successful_extreme_update_persists_scheduler_state(self) -> None:
         db = self.db()
