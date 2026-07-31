@@ -49,6 +49,34 @@ class RolePermissionSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("presence", result["roles"]["admin"]["allowed_views"])
         self.assertNotIn("users", result["roles"]["maintainer"]["allowed_views"])
         self.assertNotIn("users", result["roles"]["viewer"]["allowed_views"])
+        self.assertIn("auto-replenishment", result["roles"]["owner"]["allowed_views"])
+        self.assertIn("auto-replenishment", result["roles"]["admin"]["allowed_views"])
+        self.assertIn("auto-replenishment", result["roles"]["maintainer"]["allowed_views"])
+        self.assertIn("auto-replenishment", result["roles"]["viewer"]["allowed_views"])
+        self.assertNotIn("auto-replenishment", result["roles"]["operator"]["allowed_views"])
+
+    async def test_existing_pool_management_permission_inherits_auto_replenishment(self) -> None:
+        db, _ = fake_db(
+            {
+                "_id": "role_permissions",
+                "roles": {
+                    "support": {
+                        "label": "Support",
+                        "builtin": False,
+                        "allowed_views": ["pool-lifecycle"],
+                        "default_view": "pool-lifecycle",
+                    }
+                },
+                "role_order": [*permissions.ROLE_ORDER, "support"],
+            }
+        )
+
+        result = await permissions.get_role_permissions_settings(db)
+
+        self.assertEqual(
+            result["roles"]["support"]["allowed_views"],
+            ["pool-lifecycle", "auto-replenishment"],
+        )
 
     async def test_user_role_catalog_excludes_permissions_and_deleting_roles(self) -> None:
         db, _, _ = fake_permissions_db(

@@ -8,6 +8,7 @@ import { AlertCenterPage } from "./pages/AlertCenterPage";
 import { ApiPoolStatusPage } from "./pages/ApiPoolStatusPage";
 import { ApiTokensPage } from "./pages/ApiTokensPage";
 import { AuditPage } from "./pages/AuditPage";
+import { AutoReplenishmentPage } from "./pages/AutoReplenishmentPage";
 import { ClientSitesPage } from "./pages/ClientSitesPage";
 import { EventRecordsPage } from "./pages/EventRecordsPage";
 import { AvailablePoolPage, ReservePoolPage } from "./pages/ManualPoolPage";
@@ -214,6 +215,7 @@ function App() {
             {view === "event-records" && <EventRecordsPage token={token} showToast={showToast} />}
             {view === "alert-center" && <AlertCenterPage token={token} showToast={showToast} />}
             {view === "pool-lifecycle" && <AccountPoolsPage token={token} showToast={showToast} />}
+            {view === "auto-replenishment" && <AutoReplenishmentPage token={token} showToast={showToast} />}
             {view === "client-sites" && <ClientSitesPage token={token} showToast={showToast} />}
             {view === "traffic-analysis-config" && <TrafficAnalysisConfigPage token={token} showToast={showToast} />}
             {view === "agent-analysis" && <AgentAnalysisPage token={token} showToast={showToast} />}

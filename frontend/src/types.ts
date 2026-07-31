@@ -12,6 +12,7 @@ export type ViewName =
   | "event-records"
   | "alert-center"
   | "pool-lifecycle"
+  | "auto-replenishment"
   | "client-sites"
   | "traffic-analysis-config"
   | "agent-analysis"
