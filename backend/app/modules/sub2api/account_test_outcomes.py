@@ -24,11 +24,11 @@ def classify_test_result(
     error = str(verification.get("error") or "").strip().lower()
     if MODEL_NOT_SUPPORTED_TEXT in error:
         return "model_not_supported"
-    if _has_http_status(error, 401):
+    if has_http_status(error, 401):
         return "unauthorized"
-    if _has_http_status(error, 402):
+    if has_http_status(error, 402):
         return "payment_required"
-    if _has_http_status(error, 403):
+    if has_http_status(error, 403):
         if (
             "personal access token owner is inactive" in error
             or "biscuit_baker_service_auth_credential_error_status" in error
@@ -37,7 +37,7 @@ def classify_test_result(
         return "forbidden_other"
     if verification.get("success") is True:
         return "passed"
-    if _has_http_status(error, 429):
+    if has_http_status(error, 429):
         return "rate_limited"
     return "failed"
 
@@ -46,8 +46,23 @@ def disable_reason(outcome: str) -> str | None:
     return CONFIRMED_DISABLE_REASONS.get(outcome)
 
 
-def _has_http_status(text: str, status_code: int) -> bool:
+def has_http_status(value: Any, status_code: int) -> bool:
+    text = str(value or "").strip().lower()
+    if text == str(status_code):
+        return True
     return re.search(
         rf"\b(?:returned|status|http(?:/\d(?:\.\d)?)?)[^0-9]{{0,12}}{status_code}\b",
         text,
     ) is not None
+
+
+def snapshot_has_http_status(
+    account: dict[str, Any],
+    status_code: int,
+) -> bool:
+    nested = account.get("account") if isinstance(account.get("account"), dict) else {}
+    return any(
+        has_http_status(source.get(field), status_code)
+        for source in (account, nested)
+        for field in ("status", "error_message")
+    )

@@ -22,6 +22,7 @@ ViewName = Literal[
     "event-records",
     "alert-center",
     "pool-lifecycle",
+    "auto-replenishment",
     "client-sites",
     "traffic-analysis-config",
     "agent-analysis",
@@ -32,6 +33,14 @@ ViewName = Literal[
     "users",
     "logs",
 ]
+
+
+class AutoReplenishmentSettingsUpdate(BaseModel):
+    username: str
+    password: str | None = None
+    enabled: bool = False
+    minimum_account_count: int = Field(default=2, ge=1, le=10_000)
+    minimum_runway_minutes: int = Field(default=5, ge=1, le=1_440)
 
 
 class LoginRequest(BaseModel):

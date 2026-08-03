@@ -13,6 +13,18 @@ from app.modules.sub2api.hourly_forecast import ForecastPoint, ForecastResult
 NOW = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
 
 
+class AsyncCursor:
+    def __init__(self, items: list[dict[str, object]]) -> None:
+        self.items = items
+
+    def __aiter__(self):
+        return self._iterate()
+
+    async def _iterate(self):
+        for item in self.items:
+            yield item
+
+
 def remote_accounts(*, used_5h_percent: float) -> list[dict[str, object]]:
     return [
         {
@@ -222,7 +234,7 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["current_consumption_rate_elapsed_minutes"], 30.0)
         self.assertEqual(summary["current_consumption_rate_hour"], "2026-07-16T12:00:00+00:00")
 
-    async def test_recent_derived_capacity_summary_avoids_requerying_postgres(self) -> None:
+    async def test_group_capacity_summary_recalculates_on_each_read(self) -> None:
         cached_summary = {
             "account_type": "plus",
             "calculated_at": NOW - timedelta(seconds=30),
@@ -232,14 +244,24 @@ class SinglePoolCapacityIntegrationTests(unittest.IsolatedAsyncioTestCase):
             find_one=AsyncMock(return_value={"capacity_summary": cached_summary}),
             update_one=AsyncMock(),
         )
-        accounts = SimpleNamespace(find=lambda *_args, **_kwargs: self.fail("account cache should not be read"))
+        accounts = SimpleNamespace(find=lambda *_args, **_kwargs: AsyncCursor([]))
         db = SimpleNamespace(sub2api_groups_cache=groups, sub2api_accounts_cache=accounts)
+        calculated_summary = {
+            "account_type": "plus",
+            "calculated_at": NOW,
+            "dynamic_runway_hours": 2.5,
+        }
+        calculate = AsyncMock(return_value=calculated_summary)
 
-        with patch.object(cache, "now_utc", return_value=NOW):
+        with (
+            patch.object(cache, "now_utc", return_value=NOW),
+            patch.object(cache, "_capacity_summary_for_accounts", calculate),
+        ):
             result = await cache._get_or_update_group_capacity_summary(db, "api-5001", 3)
 
-        self.assertEqual(result["dynamic_runway_hours"], 4.5)
-        groups.update_one.assert_not_awaited()
+        self.assertEqual(result["dynamic_runway_hours"], 2.5)
+        calculate.assert_awaited_once_with(db, "api-5001", [], group_id=3)
+        groups.update_one.assert_awaited_once()
 
     async def test_dashboard_cost_summary_excludes_stale_rows_from_recent_windows(self) -> None:
         db = object()

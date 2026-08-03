@@ -11,7 +11,9 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from app.modules.sub2api.account_test_dispatcher import replay_pending_dispatches
+from app.modules.sub2api.account_test_outcomes import snapshot_has_http_status
 from app.modules.sub2api.account_test_service import (
+    RAPID_403_TEST_INTERVAL,
     execute_account_test,
     repair_latest_states_from_events,
 )
@@ -60,10 +62,48 @@ def select_due_account(
         state_id = f"{site_id}:{remote_account_id}"
         state = states.get(state_id)
         next_test_at = _optional_datetime((state or {}).get("next_test_at"))
-        if state is None or next_test_at is None:
-            priority = (0, datetime.min.replace(tzinfo=UTC), site_id, str(remote_account_id))
+        last_tested_at = _optional_datetime((state or {}).get("last_tested_at"))
+        snapshot_fetched_at = _optional_datetime(account.get("fetched_at"))
+        recovery_completed_at = _optional_datetime(
+            (state or {}).get("recovery_completed_at")
+        )
+        snapshot_http_403 = snapshot_has_http_status(account, 403)
+        stale_snapshot_403 = bool(
+            snapshot_http_403
+            and recovery_completed_at is not None
+            and snapshot_fetched_at is not None
+            and snapshot_fetched_at <= recovery_completed_at
+        )
+        current_snapshot_403 = snapshot_http_403 and not stale_snapshot_403
+        latest_model_403 = (state or {}).get("last_http_status") == 403
+        rapid_http_403 = current_snapshot_403 or latest_model_403
+
+        if rapid_http_403:
+            snapshot_newly_403 = bool(
+                current_snapshot_403
+                and (state or {}).get("last_snapshot_http_403") is not True
+            )
+            if state is None or next_test_at is None or snapshot_newly_403:
+                effective_due_at = datetime.min.replace(tzinfo=UTC)
+            elif last_tested_at is not None:
+                effective_due_at = min(
+                    next_test_at,
+                    last_tested_at + RAPID_403_TEST_INTERVAL,
+                )
+            else:
+                effective_due_at = next_test_at
+            if effective_due_at > now:
+                continue
+            priority = (0, effective_due_at, site_id, str(remote_account_id))
+        elif state is None or next_test_at is None:
+            priority = (
+                1,
+                datetime.min.replace(tzinfo=UTC),
+                site_id,
+                str(remote_account_id),
+            )
         elif next_test_at <= now:
-            priority = (1, next_test_at, site_id, str(remote_account_id))
+            priority = (2, next_test_at, site_id, str(remote_account_id))
         else:
             continue
         candidates.append((priority, {"site": site, "account": account}, state))
@@ -96,7 +136,12 @@ async def load_due_account(
             {
                 "site_id": 1,
                 "sub2api_account_id": 1,
+                "status": 1,
                 "schedulable": 1,
+                "error_message": 1,
+                "fetched_at": 1,
+                "account.status": 1,
+                "account.error_message": 1,
                 "account.schedulable": 1,
                 "credentials.email": 1,
                 "account.credentials.email": 1,

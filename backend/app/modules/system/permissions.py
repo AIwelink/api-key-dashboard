@@ -39,6 +39,7 @@ AVAILABLE_VIEWS: tuple[ViewName, ...] = (
     "event-records",
     "alert-center",
     "pool-lifecycle",
+    "auto-replenishment",
     "client-sites",
     "traffic-analysis-config",
     "agent-analysis",
@@ -409,6 +410,8 @@ def _normalize_entry(role: str, value: dict[str, Any], *, fallback: dict[str, An
         allowed_views = _dedupe_valid_views(raw_allowed)
     else:
         allowed_views = _dedupe_valid_views(fallback.get("allowed_views", []))
+    if "pool-lifecycle" in allowed_views and "auto-replenishment" not in allowed_views:
+        allowed_views.append("auto-replenishment")
     if role == "owner":
         allowed_views = [view for view in AVAILABLE_VIEWS if view in set(allowed_views) | OWNER_REQUIRED_VIEWS]
     else:

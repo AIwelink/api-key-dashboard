@@ -22,6 +22,7 @@ const poolOperationsNavItems: Array<[ViewName, string]> = [
   ["event-records", "事件记录"],
   ["alert-center", "异常告警"],
   ["pool-lifecycle", "账号池管理"],
+  ["auto-replenishment", "自动补号"],
   ["client-sites", "客户站点"],
   ["traffic-analysis-config", "访问流量分析配置"],
 ];
@@ -76,6 +77,7 @@ export const navShortLabels: Record<ViewName, string> = {
   "event-records": "事",
   "alert-center": "警",
   "pool-lifecycle": "站",
+  "auto-replenishment": "补",
   "client-sites": "客",
   "traffic-analysis-config": "配",
   "agent-analysis": "析",
@@ -101,6 +103,7 @@ export const viewPaths: Record<ViewName, string> = {
   "event-records": "/event-records",
   "alert-center": "/alert-center",
   "pool-lifecycle": "/account-pool-management",
+  "auto-replenishment": "/auto-replenishment",
   "client-sites": "/client-sites",
   "traffic-analysis-config": "/traffic-analysis-config",
   "agent-analysis": "/agent-analysis",

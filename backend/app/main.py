@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import PROJECT_ROOT, get_settings
 from app.database import close_mongo_connection, connect_to_mongo, get_db
 from app.logging_config import RequestLoggingMiddleware, cleanup_old_logs, log_cleanup_loop, setup_logging
-from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, client_metrics, client_sites, event_records, growth, import_batches, imports, notifications, operations, plus_self_produced, presence, settings, sub2api_sites, sync, todo_items, users
+from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, auto_replenishment, client_metrics, client_sites, event_records, growth, import_batches, imports, notifications, operations, plus_self_produced, presence, settings, sub2api_sites, sync, todo_items, users
 from app.modules.client_metrics.sampler import client_metric_sampler_loop
 from app.modules.operations.sync import operations_sync_loop
 from app.modules.system.bootstrap import ensure_bootstrap_data, ensure_indexes
@@ -102,6 +102,7 @@ app.include_router(imports.router, prefix="/api")
 app.include_router(api_pools.router, prefix="/api")
 app.include_router(plus_self_produced.router, prefix="/api")
 app.include_router(api_tokens.router, prefix="/api")
+app.include_router(auto_replenishment.router, prefix="/api")
 app.include_router(client_sites.router, prefix="/api")
 app.include_router(client_metrics.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")

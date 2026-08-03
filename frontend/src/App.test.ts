@@ -31,6 +31,7 @@ describe("app navigation", () => {
     "event-records",
     "alert-center",
     "pool-lifecycle",
+    "auto-replenishment",
     "client-sites",
     "traffic-analysis-config",
     "agent-analysis",
@@ -57,7 +58,7 @@ describe("app navigation", () => {
     expect(groups.map((group) => group.map(([key]) => key))).toEqual([
       ["api-pools", "plus-self-produced"],
       ["traffic-analysis", "operations-management"],
-      ["event-records", "alert-center", "pool-lifecycle", "client-sites", "traffic-analysis-config"],
+      ["event-records", "alert-center", "pool-lifecycle", "auto-replenishment", "client-sites", "traffic-analysis-config"],
       ["agent-analysis", "agent-workbench", "system-management", "presence", "users", "logs"],
     ]);
     expect(visibleKeys).toContain("presence");
@@ -72,7 +73,7 @@ describe("app navigation", () => {
     expect(groups.map((group) => group.map(([key]) => key))).toEqual([
       ["api-pools", "plus-self-produced"],
       ["traffic-analysis", "operations-management"],
-      ["event-records", "alert-center", "pool-lifecycle", "client-sites", "traffic-analysis-config"],
+      ["event-records", "alert-center", "pool-lifecycle", "auto-replenishment", "client-sites", "traffic-analysis-config"],
       ["agent-analysis", "agent-workbench", "system-management", "users", "logs"],
     ]);
     expect(visibleKeys).not.toContain("presence");
@@ -136,6 +137,7 @@ describe("app navigation", () => {
     expect(viewFromPath("/traffic-analysis-config")).toBe("traffic-analysis-config");
     expect(viewFromPath("/operations-management")).toBe("operations-management");
     expect(viewFromPath("/plus-self-produced")).toBe("plus-self-produced");
+    expect(viewFromPath("/auto-replenishment")).toBe("auto-replenishment");
     expect(viewFromPath("/")).toBe("api-pools");
     expect(viewFromPath("/unknown-page")).toBe("api-pools");
   });
