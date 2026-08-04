@@ -162,6 +162,22 @@ const siteOptions: Array<{ value: OperationsSiteId; label: string }> = [
   { value: "aigclink", label: "AIGCLink" },
 ];
 
+const operationsSitePriority: Record<string, number> = {
+  aiwelink: 0,
+  aigclink: 1,
+};
+
+export function orderOperationsSites<T extends { value: string }>(sites: T[]) {
+  return [...sites].sort((left, right) => (
+    (operationsSitePriority[left.value] ?? Number.MAX_SAFE_INTEGER)
+    - (operationsSitePriority[right.value] ?? Number.MAX_SAFE_INTEGER)
+  ));
+}
+
+export function preferredOperationsSiteId<T extends { value: string }>(sites: T[]) {
+  return sites.find((site) => site.value === "aiwelink")?.value || sites[0]?.value || "";
+}
+
 const purposeLabels: Record<Purpose, string> = {
   sale: "销售",
   promotion: "推广",
@@ -325,8 +341,8 @@ export function recognitionStatusLabel(status: InternalUser["recognition_status"
 function SiteSelect({ value, onChange, sites, includeAll = true }: { value: string; onChange: (value: string) => void; sites: Array<{ value: OperationsSiteId; label: string }>; includeAll?: boolean }) {
   return (
     <select value={value} onChange={(event) => onChange(event.target.value)}>
-      {includeAll && <option value="">全部站点</option>}
       {sites.map((site) => <option value={site.value} key={site.value}>{site.label}</option>)}
+      {includeAll && <option value="">全部站点</option>}
     </select>
   );
 }
@@ -365,15 +381,17 @@ export function OperationsManagementPage(
 ) {
   const allowedSiteKey = allowedSiteIds.join("|");
   const allowedSites = useMemo(
-    () => siteOptions.filter((site) => allowedSiteIds.includes(site.value)),
+    () => orderOperationsSites(siteOptions.filter((site) => allowedSiteIds.includes(site.value))),
     [allowedSiteKey],
   );
-  const firstAllowedSiteId = allowedSites[0]?.value || "";
-  const defaultSiteFilter = allowedSites.length === 1 ? firstAllowedSiteId : "";
+  const firstAllowedSiteId = preferredOperationsSiteId(allowedSites);
+  const defaultSiteFilter = firstAllowedSiteId;
   const hasSiteAccess = allowedSites.length > 0;
   const showAllSites = allowedSites.length > 1;
   const allowedSiteSet = new Set(allowedSites.map((site) => site.value));
-  const normalizeSiteFilter = (siteId: string) => allowedSiteSet.has(siteId as OperationsSiteId) ? siteId : defaultSiteFilter;
+  const normalizeSiteFilter = (siteId: string) => !siteId
+    ? ""
+    : allowedSiteSet.has(siteId as OperationsSiteId) ? siteId : defaultSiteFilter;
   const [tab, setTab] = useState<OperationsTab>(initialTab);
   const [query, setQuery] = useState<OperationsQueryState>({ siteId: defaultSiteFilter, segment: "all", range: "7d" });
   const [overview, setOverview] = useState<OverviewResponse | null>(null);

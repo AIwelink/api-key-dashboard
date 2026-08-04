@@ -9,7 +9,9 @@ import {
   canManageOperations,
   conversionRateEffectiveHint,
   emptyRedemptionForm,
+  orderOperationsSites,
   paymentRate,
+  preferredOperationsSiteId,
   recognitionStatusLabel,
   refreshFailureMessage,
 } from "./OperationsManagementPage";
@@ -24,6 +26,32 @@ const props = {
 };
 
 describe("operations management workspace", () => {
+  it("prioritizes AIWeLink and falls back to the first authorized site", () => {
+    const sites = [
+      { value: "aigclink" as OperationsSiteId, label: "AIGCLink" },
+      { value: "aiwelink" as OperationsSiteId, label: "AIWeLink" },
+    ];
+
+    expect(orderOperationsSites(sites).map((site) => site.value)).toEqual(["aiwelink", "aigclink"]);
+    expect(preferredOperationsSiteId(sites)).toBe("aiwelink");
+    expect(preferredOperationsSiteId([sites[0]])).toBe("aigclink");
+    expect(preferredOperationsSiteId([])).toBe("");
+  });
+
+  it("defaults multi-site selectors to AIWeLink while keeping all-sites explicit", () => {
+    const html = renderToStaticMarkup(<OperationsManagementPage {...props} />);
+    const firstSiteSelect = html.match(/<label><span>站点<\/span><select[^>]*>[\s\S]*?<\/select><\/label>/)?.[0] || "";
+
+    expect(firstSiteSelect).toContain('value="aiwelink" selected=""');
+    expect(firstSiteSelect.indexOf(">AIWeLink<")).toBeLessThan(firstSiteSelect.indexOf(">全部站点<"));
+
+    const aigclinkOnly = renderToStaticMarkup(
+      <OperationsManagementPage {...props} allowedSiteIds={["aigclink"]} />,
+    );
+    expect(aigclinkOnly).not.toContain("AIWeLink");
+    expect(aigclinkOnly).toContain('value="aigclink" selected=""');
+  });
+
   it("builds the default cached analytics query", () => {
     expect(buildOperationsQuery({ siteId: "", segment: "all", range: "7d" })).toBe(
       "?segment=all&range=7d",
