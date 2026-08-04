@@ -283,6 +283,74 @@ class Sub2ApiDashboardPostgresRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parameters["group_ids"], [3, 5, 7])
         engine.dispose.assert_awaited_once()
 
+    async def test_group_minute_usage_aggregates_all_groups_with_left_closed_right_open_bounds(self) -> None:
+        bucket = datetime(2026, 8, 4, 1, 4, tzinfo=UTC)
+        connection = FakeConnection(
+            [
+                {
+                    "group_id": 3,
+                    "bucket_at": bucket,
+                    "total_requests": 4,
+                    "total_tokens": 100,
+                    "input_tokens": 40,
+                    "output_tokens": 30,
+                    "cache_creation_tokens": 10,
+                    "cache_read_tokens": 20,
+                    "account_cost": Decimal("2.50"),
+                    "source_updated_at": datetime(2026, 8, 4, 1, 4, 55, tzinfo=UTC),
+                }
+            ]
+        )
+        engine = FakeEngine(connection)
+
+        result = await dashboard_postgres_repository.fetch_group_minute_usage(
+            "host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable",
+            group_ids=[5, 3, 3],
+            start_at=datetime(2026, 8, 4, 1, 0, tzinfo=UTC),
+            end_at=datetime(2026, 8, 4, 1, 20, tzinfo=UTC),
+            engine_factory=lambda *_args, **_kwargs: engine,
+        )
+
+        self.assertEqual(result[(3, bucket)]["total_tokens"], 100)
+        self.assertEqual(result[(3, bucket)]["total_requests"], 4)
+        self.assertEqual(result[(3, bucket)]["account_cost"], 2.5)
+        self.assertNotIn((5, bucket), result)
+        sql, parameters = connection.executed[0]
+        self.assertIn("date_trunc('minute'", sql)
+        self.assertIn("group_id = ANY", sql)
+        self.assertIn("created_at >= :start_at", sql)
+        self.assertIn("created_at < :end_at", sql)
+        self.assertEqual(parameters["group_ids"], [3, 5])
+        self.assertEqual(parameters["start_at"], datetime(2026, 8, 4, 1, 0, tzinfo=UTC))
+        self.assertEqual(parameters["end_at"], datetime(2026, 8, 4, 1, 20, tzinfo=UTC))
+        engine.dispose.assert_awaited_once()
+
+    async def test_group_minute_usage_skips_empty_group_ids_and_invalid_ranges(self) -> None:
+        engine_factory = MagicMock()
+        dsn = "host=postgres.internal user=reader password=secret dbname=sub2api sslmode=disable"
+
+        self.assertEqual(
+            await dashboard_postgres_repository.fetch_group_minute_usage(
+                dsn,
+                group_ids=[],
+                start_at=datetime(2026, 8, 4, 1, 0, tzinfo=UTC),
+                end_at=datetime(2026, 8, 4, 1, 20, tzinfo=UTC),
+                engine_factory=engine_factory,
+            ),
+            {},
+        )
+        self.assertEqual(
+            await dashboard_postgres_repository.fetch_group_minute_usage(
+                dsn,
+                group_ids=[3],
+                start_at=datetime(2026, 8, 4, 1, 20, tzinfo=UTC),
+                end_at=datetime(2026, 8, 4, 1, 20, tzinfo=UTC),
+                engine_factory=engine_factory,
+            ),
+            {},
+        )
+        engine_factory.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

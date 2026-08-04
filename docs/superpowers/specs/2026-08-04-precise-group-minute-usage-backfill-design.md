@@ -116,6 +116,7 @@ site_id
 group_id
 bucket_at
 sampled_at
+recorded_at
 stats_updated_at
 tpm
 calculated_tpm
@@ -136,7 +137,7 @@ elapsed_seconds: 60
 expires_at
 ```
 
-`tpm` 与 `minute_tokens` 相同，`rpm` 与 `minute_requests` 相同。保留 `calculated_tpm`、`calculated_rpm` 和 `account_cost_per_minute`，让现有容量分析消费者无需改变字段接口。样本保留期继续使用 60 天。
+`sampled_at` 与 `bucket_at` 都表示实际用量所属的自然分钟，供现有容量分析按时间排序和截取窗口；`recorded_at` 表示本次聚合或回补的执行时间。`tpm` 与 `minute_tokens` 相同，`rpm` 与 `minute_requests` 相同。保留 `calculated_tpm`、`calculated_rpm` 和 `account_cost_per_minute`，让现有容量分析消费者无需改变字段接口。样本保留期继续使用 60 天，`expires_at` 从 `recorded_at` 起算。
 
 写入使用按 `_id` 的幂等 upsert。同一分钟重新聚合时覆盖用量字段，因此延迟日志会被后续校准纳入。
 
