@@ -441,6 +441,133 @@ class OperationsServiceCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/api/operations/classification-tasks/{classification_task_id}", paths)
 
 
+class OperationsInternalUserServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_recognized_internal_user_rebuilds_historical_aggregates_under_site_lock(self) -> None:
+        from app.modules.operations import service
+        from app.modules.operations.schemas import InternalUserCreate
+
+        calls = []
+
+        async def acquire_lock(connection, *, site_id):
+            calls.append(("lock", site_id))
+
+        async def create_user(connection, payload, *, actor_id):
+            calls.append(("create", payload.site_id))
+            return {
+                "site_id": payload.site_id,
+                "external_user_id": "49",
+                "recognition_status": "recognized",
+            }
+
+        async def rebuild(connection, *, site_id, start_at, end_at):
+            calls.append(("rebuild", site_id, start_at, end_at))
+
+        before = datetime.now(UTC)
+        with (
+            patch.object(service, "growth_connection", lambda db, write=True: _async_context(object())),
+            patch.object(service.repository, "acquire_operations_sync_lock", acquire_lock),
+            patch.object(service.repository, "create_internal_user", create_user),
+            patch.object(service.repository, "replace_affected_aggregates", rebuild),
+        ):
+            result = await service.create_internal_user_config(
+                object(),
+                InternalUserCreate(site_id="aiwelink", email="staff@example.com"),
+                actor_id="owner",
+            )
+        after = datetime.now(UTC)
+
+        self.assertEqual(result["recognition_status"], "recognized")
+        self.assertEqual(calls[:2], [("lock", "aiwelink"), ("create", "aiwelink")])
+        self.assertEqual(
+            calls[2][:3],
+            ("rebuild", "aiwelink", service.HISTORICAL_CONVERSION_RATE_START),
+        )
+        self.assertGreaterEqual(calls[2][3], before)
+        self.assertLessEqual(calls[2][3], after)
+
+    async def test_pending_internal_user_does_not_rebuild_historical_aggregates(self) -> None:
+        from app.modules.operations import service
+        from app.modules.operations.schemas import InternalUserCreate
+
+        acquire_lock = AsyncMock()
+        rebuild = AsyncMock()
+        with (
+            patch.object(service, "growth_connection", lambda db, write=True: _async_context(object())),
+            patch.object(service.repository, "acquire_operations_sync_lock", acquire_lock),
+            patch.object(
+                service.repository,
+                "create_internal_user",
+                AsyncMock(
+                    return_value={
+                        "site_id": "aiwelink",
+                        "external_user_id": None,
+                        "recognition_status": "pending",
+                    }
+                ),
+            ),
+            patch.object(service.repository, "replace_affected_aggregates", rebuild),
+        ):
+            result = await service.create_internal_user_config(
+                object(),
+                InternalUserCreate(site_id="aiwelink", email="unknown@example.com"),
+                actor_id="owner",
+            )
+
+        self.assertEqual(result["recognition_status"], "pending")
+        acquire_lock.assert_awaited_once()
+        rebuild.assert_not_awaited()
+
+    async def test_internal_user_update_rebuilds_site_even_when_identity_becomes_pending(self) -> None:
+        from app.modules.operations import service
+        from app.modules.operations.schemas import InternalUserUpdate
+
+        internal_user_id = uuid4()
+        calls = []
+
+        async def acquire_lock(connection, *, site_id):
+            calls.append(("lock", site_id))
+
+        async def update_user(connection, selected_id, payload, *, actor_id):
+            calls.append(("update", str(selected_id)))
+            return {
+                "site_id": "aiwelink",
+                "external_user_id": None,
+                "recognition_status": "pending",
+            }
+
+        async def rebuild(connection, *, site_id, start_at, end_at):
+            calls.append(("rebuild", site_id, start_at))
+
+        with (
+            patch.object(service, "growth_connection", lambda db, write=True: _async_context(object())),
+            patch.object(
+                service.repository,
+                "get_internal_user_site_id",
+                AsyncMock(return_value="aiwelink"),
+            ),
+            patch.object(service.repository, "acquire_operations_sync_lock", acquire_lock),
+            patch.object(service.repository, "update_internal_user", update_user),
+            patch.object(service.repository, "replace_affected_aggregates", rebuild),
+        ):
+            result = await service.update_internal_user_config(
+                object(),
+                internal_user_id,
+                InternalUserUpdate(email="unknown@example.com"),
+                actor_id="owner",
+                allowed_site_ids=("aiwelink",),
+            )
+
+        self.assertEqual(result["recognition_status"], "pending")
+        self.assertEqual(
+            calls,
+            [
+                ("lock", "aiwelink"),
+                ("update", str(internal_user_id)),
+                ("rebuild", "aiwelink", service.HISTORICAL_CONVERSION_RATE_START),
+            ],
+        )
+
+
 class OperationsConversionRateServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_first_implicit_rate_covers_all_historical_data(self) -> None:
         from app.modules.operations import service

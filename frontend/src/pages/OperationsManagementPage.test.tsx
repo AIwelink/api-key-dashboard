@@ -113,6 +113,8 @@ describe("operations management workspace", () => {
     expect(html).toContain('class="operations-query-bar"');
     expect(html).toContain("最近 7 天");
     expect(html).toContain("全部用户");
+    expect(html).toContain('<option value="ordinary" selected="">普通用户</option>');
+    expect(html).toContain('<option value="all">全部用户</option>');
     expect(html).toContain('class="operations-freshness-banner');
     expect(html).toContain('class="operations-metric-grid"');
     expect(html).toContain('class="operations-overview-table-stack"');

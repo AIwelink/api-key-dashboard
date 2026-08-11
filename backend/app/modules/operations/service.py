@@ -250,7 +250,15 @@ async def create_internal_user_config(
     actor_id: str,
 ) -> dict[str, Any]:
     async with growth_connection(mongo_db, write=True) as connection:
+        await repository.acquire_operations_sync_lock(connection, site_id=payload.site_id)
         result = await repository.create_internal_user(connection, payload, actor_id=actor_id)
+        if result.get("recognition_status") == "recognized":
+            await repository.replace_affected_aggregates(
+                connection,
+                site_id=payload.site_id,
+                start_at=HISTORICAL_CONVERSION_RATE_START,
+                end_at=datetime.now(UTC),
+            )
     operations_response_cache.invalidate(site_id=payload.site_id)
     return result
 
@@ -269,13 +277,20 @@ async def update_internal_user_config(
             raise repository.OperationsNotFoundError("internal user not found")
         if site_id not in allowed_site_ids:
             raise OperationsSiteAccessDenied("Operations site access denied")
+        await repository.acquire_operations_sync_lock(connection, site_id=site_id)
         result = await repository.update_internal_user(
             connection,
             internal_user_id,
             payload,
             actor_id=actor_id,
         )
-    operations_response_cache.invalidate(site_id=result.get("site_id"))
+        await repository.replace_affected_aggregates(
+            connection,
+            site_id=site_id,
+            start_at=HISTORICAL_CONVERSION_RATE_START,
+            end_at=datetime.now(UTC),
+        )
+    operations_response_cache.invalidate(site_id=site_id)
     return result
 
 

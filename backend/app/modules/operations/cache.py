@@ -8,6 +8,14 @@ from dataclasses import dataclass
 from typing import Any
 
 
+def _cache_key_contains(value: object, target: str) -> bool:
+    if value == target:
+        return True
+    if isinstance(value, (tuple, list, set, frozenset)):
+        return any(_cache_key_contains(item, target) for item in value)
+    return False
+
+
 @dataclass(frozen=True)
 class _CacheEntry:
     value: Any
@@ -80,7 +88,7 @@ class OperationsResponseCache:
             self._entries.clear()
             return
         for key in tuple(self._entries):
-            if site_id in key:
+            if _cache_key_contains(key, site_id):
                 self._entries.pop(key, None)
 
 

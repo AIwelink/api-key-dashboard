@@ -12,6 +12,8 @@ type UserSegment = "all" | "ordinary" | "internal";
 type Purpose = "sale" | "promotion" | "internal" | "compensation" | "other";
 type Toast = (message: string, isError?: boolean) => void;
 
+export const DEFAULT_OPERATIONS_SEGMENT: UserSegment = "ordinary";
+
 type OperationsManagementProps = {
   token: string;
   role: string;
@@ -393,7 +395,7 @@ export function OperationsManagementPage(
     ? ""
     : allowedSiteSet.has(siteId as OperationsSiteId) ? siteId : defaultSiteFilter;
   const [tab, setTab] = useState<OperationsTab>(initialTab);
-  const [query, setQuery] = useState<OperationsQueryState>({ siteId: defaultSiteFilter, segment: "all", range: "7d" });
+  const [query, setQuery] = useState<OperationsQueryState>({ siteId: defaultSiteFilter, segment: DEFAULT_OPERATIONS_SEGMENT, range: "7d" });
   const [overview, setOverview] = useState<OverviewResponse | null>(null);
   const [trends, setTrends] = useState<TrendItem[]>([]);
   const [syncStatuses, setSyncStatuses] = useState<SyncStatus[]>([]);
@@ -435,7 +437,7 @@ export function OperationsManagementPage(
   );
 
   useEffect(() => {
-    setQuery({ siteId: defaultSiteFilter, segment: "all", range: "7d" });
+    setQuery({ siteId: defaultSiteFilter, segment: DEFAULT_OPERATIONS_SEGMENT, range: "7d" });
     setInternalSite(defaultSiteFilter);
     setCreditSite(defaultSiteFilter);
     setClassificationSite(defaultSiteFilter);

@@ -574,6 +574,33 @@ class OperationsCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(second, third)
         self.assertEqual(calls, 2)
 
+    async def test_cache_invalidates_nested_site_scope(self) -> None:
+        from app.modules.operations.cache import OperationsResponseCache
+
+        calls = {"allowed": 0, "other": 0}
+
+        async def load_allowed():
+            calls["allowed"] += 1
+            return {"value": calls["allowed"]}
+
+        async def load_other():
+            calls["other"] += 1
+            return {"value": calls["other"]}
+
+        cache = OperationsResponseCache(ttl_seconds=60, max_entries=4)
+        allowed_key = ("overview", ("aiwelink", "aigclink"), "ordinary")
+        other_key = ("overview", ("other",), "ordinary")
+
+        first_allowed = await cache.get_or_load(allowed_key, load_allowed)
+        first_other = await cache.get_or_load(other_key, load_other)
+        cache.invalidate(site_id="aiwelink")
+        second_allowed = await cache.get_or_load(allowed_key, load_allowed)
+        second_other = await cache.get_or_load(other_key, load_other)
+
+        self.assertNotEqual(first_allowed, second_allowed)
+        self.assertEqual(first_other, second_other)
+        self.assertEqual(calls, {"allowed": 2, "other": 1})
+
     async def test_cache_coalesces_concurrent_loads_and_bounds_entries(self) -> None:
         from app.modules.operations.cache import OperationsResponseCache
 
