@@ -294,6 +294,30 @@ async def update_internal_user_config(
     return result
 
 
+async def delete_internal_user_config(
+    mongo_db: Any,
+    internal_user_id: UUID,
+    *,
+    allowed_site_ids: tuple[str, ...],
+) -> dict[str, Any]:
+    async with growth_connection(mongo_db, write=True) as connection:
+        site_id = await repository.get_internal_user_site_id(connection, internal_user_id)
+        if site_id is None:
+            raise repository.OperationsNotFoundError("internal user not found")
+        if site_id not in allowed_site_ids:
+            raise OperationsSiteAccessDenied("Operations site access denied")
+        await repository.acquire_operations_sync_lock(connection, site_id=site_id)
+        result = await repository.delete_internal_user(connection, internal_user_id)
+        await repository.replace_affected_aggregates(
+            connection,
+            site_id=site_id,
+            start_at=HISTORICAL_CONVERSION_RATE_START,
+            end_at=datetime.now(UTC),
+        )
+    operations_response_cache.invalidate(site_id=site_id)
+    return result
+
+
 async def list_conversion_rate_configs(
     mongo_db: Any,
     *,

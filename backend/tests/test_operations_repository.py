@@ -48,6 +48,8 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("existing.external_user_id = snapshot.external_user_id", statement)
         self.assertIn("BOOL_AND(email_matches.available)", statement)
         self.assertIn("growth.ops_user_snapshots", statement)
+        self.assertIn("inserted.active_from <= NOW()", statement)
+        self.assertIn("inserted.active_until > NOW()", statement)
         self.assertEqual(parameters["site_id"], "aigclink")
         self.assertEqual(parameters["email"], "staff@example.com")
         self.assertNotIn("aigclink'", statement)
@@ -77,6 +79,32 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(row["external_user_id"])
         self.assertEqual(row["recognition_status"], "pending")
+
+    async def test_delete_internal_user_clears_snapshot_before_removing_configuration(self) -> None:
+        from app.modules.operations.repository import delete_internal_user
+
+        internal_user_id = uuid4()
+        connection = _FakeConnection(
+            [
+                {
+                    "internal_user_id": internal_user_id,
+                    "site_id": "aiwelink",
+                    "email": "staff@example.com",
+                    "external_user_id": "49",
+                }
+            ]
+        )
+
+        row = await delete_internal_user(connection, internal_user_id)
+
+        statement, parameters = connection.calls[0]
+        self.assertIn("UPDATE growth.ops_user_snapshots", statement)
+        self.assertIn("SET is_internal = FALSE", statement)
+        self.assertIn("internal_user_id = NULL", statement)
+        self.assertIn("DELETE FROM growth.internal_users", statement)
+        self.assertIn("RETURNING target.*", statement)
+        self.assertEqual(parameters["internal_user_id"], internal_user_id)
+        self.assertEqual(row["site_id"], "aiwelink")
 
     async def test_internal_user_search_includes_email_and_recognition_status(self) -> None:
         from app.modules.operations.repository import list_internal_users
@@ -127,6 +155,37 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("BOOL_AND(email_matches.available)", statement)
         self.assertEqual(parameters["email"], "new@example.com")
         self.assertEqual(row["recognition_status"], "pending")
+
+    async def test_updating_internal_user_window_reclassifies_snapshot(self) -> None:
+        from app.modules.operations.repository import update_internal_user
+        from app.modules.operations.schemas import InternalUserUpdate
+
+        internal_user_id = uuid4()
+        connection = _FakeConnection(
+            [
+                {
+                    "internal_user_id": internal_user_id,
+                    "site_id": "aiwelink",
+                    "email": "staff@example.com",
+                    "external_user_id": "49",
+                    "active_until": NOW,
+                    "recognition_status": "recognized",
+                }
+            ]
+        )
+
+        await update_internal_user(
+            connection,
+            internal_user_id,
+            InternalUserUpdate(active_until=NOW),
+            actor_id="owner",
+        )
+
+        statement, _ = connection.calls[0]
+        self.assertIn("UPDATE growth.ops_user_snapshots", statement)
+        self.assertIn("updated.active_from <= NOW()", statement)
+        self.assertIn("updated.active_until > NOW()", statement)
+        self.assertIn("SET is_internal =", statement)
 
     async def test_create_conversion_rate_closes_current_window_before_insert(self) -> None:
         from app.modules.operations.repository import create_conversion_rate

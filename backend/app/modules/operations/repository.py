@@ -143,6 +143,8 @@ async def create_internal_user(
                     synced_at = NOW()
                 FROM inserted
                 WHERE inserted.external_user_id IS NOT NULL
+                  AND inserted.active_from <= NOW()
+                  AND (inserted.active_until IS NULL OR inserted.active_until > NOW())
                   AND snapshot.site_id = inserted.site_id
                   AND snapshot.external_user_id = inserted.external_user_id
             )
@@ -258,6 +260,8 @@ async def update_internal_user(
                         synced_at = NOW()
                     FROM recognized
                     WHERE recognized.external_user_id IS NOT NULL
+                      AND recognized.active_from <= NOW()
+                      AND (recognized.active_until IS NULL OR recognized.active_until > NOW())
                       AND snapshot.site_id = recognized.site_id
                       AND snapshot.external_user_id = recognized.external_user_id
                 )
@@ -286,6 +290,25 @@ async def update_internal_user(
                     SET {assignments}, updated_by = :actor_id, updated_at = NOW()
                     WHERE internal_user_id = :internal_user_id
                     RETURNING *
+                ), reclassified AS (
+                    UPDATE growth.ops_user_snapshots AS snapshot
+                    SET is_internal = (
+                            updated.external_user_id IS NOT NULL
+                            AND updated.active_from <= NOW()
+                            AND (updated.active_until IS NULL OR updated.active_until > NOW())
+                        ),
+                        internal_user_id = CASE
+                            WHEN updated.external_user_id IS NOT NULL
+                             AND updated.active_from <= NOW()
+                             AND (updated.active_until IS NULL OR updated.active_until > NOW())
+                            THEN updated.internal_user_id
+                            ELSE NULL
+                        END,
+                        synced_at = NOW()
+                    FROM updated
+                    WHERE updated.external_user_id IS NOT NULL
+                      AND snapshot.site_id = updated.site_id
+                      AND snapshot.external_user_id = updated.external_user_id
                 )
                 SELECT updated.*,
                        CASE
@@ -297,6 +320,52 @@ async def update_internal_user(
             ),
             {"internal_user_id": internal_user_id, "actor_id": actor_id, **updates},
         )
+    row = _one(result)
+    if row is None:
+        raise OperationsNotFoundError("internal user not found")
+    return row
+
+
+async def delete_internal_user(
+    connection: Any,
+    internal_user_id: UUID,
+) -> dict[str, Any]:
+    result = await connection.execute(
+        text(
+            """
+            WITH target AS (
+                SELECT *
+                FROM growth.internal_users
+                WHERE internal_user_id = :internal_user_id
+                FOR UPDATE
+            ), cleared AS (
+                UPDATE growth.ops_user_snapshots AS snapshot
+                SET is_internal = FALSE,
+                    internal_user_id = NULL,
+                    synced_at = NOW()
+                FROM target
+                WHERE snapshot.internal_user_id = target.internal_user_id
+                RETURNING snapshot.external_user_id
+            ), deletion_gate AS (
+                SELECT target.*
+                FROM target
+                WHERE (SELECT COUNT(*) FROM cleared) >= 0
+            ), deleted AS (
+                DELETE FROM growth.internal_users AS internal_user
+                USING deletion_gate AS target
+                WHERE internal_user.internal_user_id = target.internal_user_id
+                RETURNING target.*
+            )
+            SELECT deleted.*,
+                   CASE
+                       WHEN deleted.external_user_id IS NULL THEN 'pending'
+                       ELSE 'recognized'
+                   END AS recognition_status
+            FROM deleted
+            """
+        ),
+        {"internal_user_id": internal_user_id},
+    )
     row = _one(result)
     if row is None:
         raise OperationsNotFoundError("internal user not found")

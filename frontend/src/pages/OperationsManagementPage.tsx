@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { GrowthCreateModal } from "../components/GrowthCreateModal";
 import type { OperationsSiteId } from "../types";
 import { errorMessage } from "../utils/format";
@@ -307,6 +308,40 @@ function siteLabel(siteId: string) {
   return siteOptions.find((site) => site.value === siteId)?.label || siteId;
 }
 
+export function internalUserDeleteDetails(item: InternalUser): Array<[string, string]> {
+  return [
+    ["站点", siteLabel(item.site_id)],
+    ["邮箱", item.email || "-"],
+    ["业务用户 ID", item.external_user_id || "-"],
+  ];
+}
+
+export function InternalUserActionButtons({
+  item,
+  onDelete,
+  onEdit,
+}: {
+  item: InternalUser;
+  onDelete: (item: InternalUser) => void;
+  onEdit: (item: InternalUser) => void;
+}) {
+  return (
+    <div className="operations-row-actions">
+      <button className="ghost operations-row-button" type="button" onClick={() => onEdit(item)}>
+        编辑
+      </button>
+      <button
+        aria-label={`删除内部人员 ${item.email || item.external_user_id || item.internal_user_id}`}
+        className="ghost operations-row-button danger-button"
+        type="button"
+        onClick={() => onDelete(item)}
+      >
+        删除
+      </button>
+    </div>
+  );
+}
+
 export function refreshFailureMessage(items: RefreshResultItem[]) {
   return items
     .filter((item) => item.status === "failed")
@@ -411,6 +446,7 @@ export function OperationsManagementPage(
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [modal, setModal] = useState<ModalState>(null);
+  const [internalDeleteTarget, setInternalDeleteTarget] = useState<InternalUser | null>(null);
   const [saving, setSaving] = useState(false);
   const [internalForm, setInternalForm] = useState<InternalUserForm>(() => ({ ...emptyInternalUserForm, site_id: firstAllowedSiteId }));
   const [redemptionForm, setRedemptionForm] = useState<RedemptionForm>(() => ({ ...emptyRedemptionForm, site_id: firstAllowedSiteId }));
@@ -451,6 +487,7 @@ export function OperationsManagementPage(
     setClassificationTasks([]);
     setLoadError("");
     setModal(null);
+    setInternalDeleteTarget(null);
     setInternalForm({ ...emptyInternalUserForm, site_id: firstAllowedSiteId });
     setRedemptionForm({ ...emptyRedemptionForm, site_id: firstAllowedSiteId });
     setAdjustmentForm({ ...emptyAdjustmentForm, site_id: firstAllowedSiteId });
@@ -604,6 +641,21 @@ export function OperationsManagementPage(
       showToast(errorMessage(error), true);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function deleteInternalUser() {
+    const target = internalDeleteTarget;
+    if (!canWrite || !target || !allowedSiteSet.has(target.site_id as OperationsSiteId)) return;
+    try {
+      await api(`/operations/internal-users/${target.internal_user_id}`, token, {
+        method: "DELETE",
+      });
+      setInternalDeleteTarget(null);
+      showToast("内部人员配置已删除，历史运营数据已重新计算");
+      await loadInternalUsers(true);
+    } catch (error) {
+      showToast(errorMessage(error), true);
     }
   }
 
@@ -794,7 +846,7 @@ export function OperationsManagementPage(
           </div>
           <section className="operations-data-section">
             <div className="operations-section-head"><div><h3>内部人员名单</h3><span>内部人员消耗单独统计，不计入普通用户收入</span></div>{canWrite && <button type="button" onClick={() => openInternal()}>添加内部人员</button>}</div>
-            <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>邮箱</th><th>识别状态</th><th>业务用户 ID</th><th>识别时间</th><th>标记原因</th><th>生效时间</th><th>失效时间</th>{canWrite && <th>操作</th>}</tr></thead><tbody>{visibleInternalUsers.length ? visibleInternalUsers.map((item) => <tr key={item.internal_user_id}><td>{siteLabel(item.site_id)}</td><td><strong>{item.email}</strong></td><td><span className={`operations-status-tag ${item.recognition_status}`}>{recognitionStatusLabel(item.recognition_status)}</span></td><td>{item.external_user_id || "-"}</td><td>{formatDateTime(item.recognized_at)}</td><td>{item.reason || "-"}</td><td>{formatDateTime(item.active_from)}</td><td>{formatDateTime(item.active_until)}</td>{canWrite && <td><button className="ghost operations-row-button" type="button" onClick={() => openInternal(item)}>编辑</button></td>}</tr>) : <EmptyRow columns={canWrite ? 9 : 8} text={loading ? "正在加载..." : "暂无内部人员配置"} />}</tbody></table></div>
+            <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>邮箱</th><th>识别状态</th><th>业务用户 ID</th><th>识别时间</th><th>标记原因</th><th>生效时间</th><th>失效时间</th>{canWrite && <th>操作</th>}</tr></thead><tbody>{visibleInternalUsers.length ? visibleInternalUsers.map((item) => <tr key={item.internal_user_id}><td>{siteLabel(item.site_id)}</td><td><strong>{item.email}</strong></td><td><span className={`operations-status-tag ${item.recognition_status}`}>{recognitionStatusLabel(item.recognition_status)}</span></td><td>{item.external_user_id || "-"}</td><td>{formatDateTime(item.recognized_at)}</td><td>{item.reason || "-"}</td><td>{formatDateTime(item.active_from)}</td><td>{formatDateTime(item.active_until)}</td>{canWrite && <td><InternalUserActionButtons item={item} onEdit={openInternal} onDelete={setInternalDeleteTarget} /></td>}</tr>) : <EmptyRow columns={canWrite ? 9 : 8} text={loading ? "正在加载..." : "暂无内部人员配置"} />}</tbody></table></div>
           </section>
         </div>
       )}
@@ -835,6 +887,17 @@ export function OperationsManagementPage(
       {modal?.kind === "rate" && <GrowthCreateModal title="新增换算比例" submitLabel="确认生效" saving={saving} submitDisabled={!conversionForm.site_id || Number(conversionForm.balance_units_per_cny) <= 0} onClose={() => setModal(null)} onSubmit={saveRate}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect sites={allowedSites} includeAll={false} value={conversionForm.site_id} onChange={(site_id) => setConversionForm({ ...conversionForm, site_id, balance_units_per_cny: site_id === "aigclink" ? "1" : "10" })} /></label><label><span className="field-label"><strong>每 1 CNY 对应余额</strong></span><input type="number" min="0" step="any" value={conversionForm.balance_units_per_cny} onChange={(event) => setConversionForm({ ...conversionForm, balance_units_per_cny: event.target.value })} /></label><label><span className="field-label"><strong>生效时间</strong><span>（可选）</span></span><input type="datetime-local" value={conversionForm.effective_from} onChange={(event) => setConversionForm({ ...conversionForm, effective_from: event.target.value })} /><span className="growth-field-message is-muted">{conversionRateEffectiveHint}</span></label><label className="span-2"><span className="field-label"><strong>备注</strong><span>（可选）</span></span><textarea value={conversionForm.note} onChange={(event) => setConversionForm({ ...conversionForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
 
       {modal?.kind === "classification" && <GrowthCreateModal title="补录额度用途" submitLabel={classificationForm.status === "ignored" ? "确认忽略" : "完成分类"} saving={saving} submitDisabled={classificationForm.status === "resolved" && classificationForm.purpose === "sale" && Number(classificationForm.cash_amount_cny) <= 0} onClose={() => setModal(null)} onSubmit={saveClassification}><div className="operations-classification-context"><div><span>站点</span><strong>{siteLabel(modal.item.site_id)}</strong></div><div><span>业务用户 ID</span><strong>{modal.item.external_user_id}</strong></div><div><span>来源类型</span><strong>{modal.item.source_type}</strong></div><div><span>额度</span><strong>{formatNumber(modal.item.balance_units, 10)}</strong></div></div><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>处理方式</strong></span><select value={classificationForm.status} onChange={(event) => setClassificationForm({ ...classificationForm, status: event.target.value as "resolved" | "ignored" })}><option value="resolved">完成分类</option><option value="ignored">忽略记录</option></select></label>{classificationForm.status === "resolved" && <PurposeFields purpose={classificationForm.purpose} cash={classificationForm.cash_amount_cny} onPurpose={(purpose) => setClassificationForm({ ...classificationForm, purpose, cash_amount_cny: purpose === "sale" ? classificationForm.cash_amount_cny : "0" })} onCash={(cash_amount_cny) => setClassificationForm({ ...classificationForm, cash_amount_cny })} />}<label className="span-2"><span className="field-label"><strong>补录说明</strong><span>（可选）</span></span><textarea value={classificationForm.note} onChange={(event) => setClassificationForm({ ...classificationForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
+
+      <ConfirmDialog
+        confirmText="删除内部人员"
+        details={internalDeleteTarget ? internalUserDeleteDetails(internalDeleteTarget) : []}
+        message="删除将撤销该账号的内部身份，并重新计算全部历史运营数据。该操作仅用于纠正误添加。"
+        onCancel={() => setInternalDeleteTarget(null)}
+        onConfirm={deleteInternalUser}
+        open={Boolean(internalDeleteTarget)}
+        title="确认删除内部人员"
+        tone="danger"
+      />
     </section>
   );
 }

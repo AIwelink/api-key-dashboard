@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   OperationsManagementPage,
+  InternalUserActionButtons,
   averageConsumption,
   buildOperationsQuery,
   buildRedemptionPayload,
@@ -11,6 +12,7 @@ import {
   emptyRedemptionForm,
   orderOperationsSites,
   paymentRate,
+  internalUserDeleteDetails,
   preferredOperationsSiteId,
   recognitionStatusLabel,
   refreshFailureMessage,
@@ -154,6 +156,29 @@ describe("operations management workspace", () => {
     expect(html).toContain("生效时间");
     expect(recognitionStatusLabel("recognized")).toBe("识别成功");
     expect(recognitionStatusLabel("pending")).toBe("待识别");
+  });
+
+  it("renders edit and delete actions for writable internal users", () => {
+    const item = {
+      internal_user_id: "internal-1",
+      site_id: "aiwelink",
+      email: "staff@example.com",
+      external_user_id: "49",
+      recognition_status: "recognized" as const,
+      active_from: "2026-08-10T08:00:00Z",
+    };
+    const html = renderToStaticMarkup(
+      <InternalUserActionButtons item={item} onDelete={() => undefined} onEdit={() => undefined} />,
+    );
+
+    expect(html).toContain("编辑");
+    expect(html).toContain("删除");
+    expect(html).toContain("删除内部人员 staff@example.com");
+    expect(internalUserDeleteDetails(item)).toEqual([
+      ["站点", "AIWeLink"],
+      ["邮箱", "staff@example.com"],
+      ["业务用户 ID", "49"],
+    ]);
   });
 
   it("renders credit actions and conversion rates for admin", () => {
