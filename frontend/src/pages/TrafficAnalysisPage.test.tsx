@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   TrafficAnalysisPage,
   TrafficAnalysisWorkspace,
+  apiTrackingUrl,
   buildCampaignUpdatePayload,
   buildChannelUpdatePayload,
   buildTrackingLinkUpdatePayload,
@@ -277,6 +278,9 @@ describe("traffic analysis configuration workspace", () => {
   it("renders real promotion-link configuration without fake analytics", () => {
     const html = renderWorkspace("links");
 
+    expect(apiTrackingUrl("7km4q2xd")).toBe("https://api.aiwelink.cc/r/7km4q2xd");
+    expect(html).toContain("复制主页链接");
+    expect(html).toContain("复制 API 链接");
     expect(html).toContain('aria-label="推广链接查询"');
     expect(html).toContain("流量概览");
     expect(html).toContain("推广链接");
