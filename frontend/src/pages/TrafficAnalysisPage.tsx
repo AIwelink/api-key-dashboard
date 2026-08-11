@@ -13,6 +13,11 @@ type Props = {
 
 export type GrowthStatus = "active" | "disabled" | "paused" | "draft" | "archived";
 export type TrafficAnalysisTab = "overview" | "links" | "channels" | "campaigns" | "sites";
+export const API_TRACKING_ORIGIN = "https://api.aiwelink.cc";
+
+export function apiTrackingUrl(code: string) {
+  return `${API_TRACKING_ORIGIN}/r/${encodeURIComponent(code)}`;
+}
 
 export function shouldNotifyTrafficConfigurationError(activeTab: TrafficAnalysisTab) {
   return activeTab !== "overview";
@@ -906,10 +911,10 @@ export function TrafficAnalysisPage({ token, showToast }: Props) {
     );
   };
 
-  const copyLink = async (url: string) => {
+  const copyLink = async (url: string, successMessage = "推广链接已复制") => {
     try {
       await navigator.clipboard.writeText(url);
-      showToast("推广链接已复制");
+      showToast(successMessage);
     } catch {
       showToast("复制失败，请手动复制", true);
     }
@@ -1002,7 +1007,7 @@ type WorkspaceProps = {
   onToggleLink: (link: GrowthTrackingLink) => void;
   onSelectSite: (siteId: string) => void;
   onSelectLinkSite: (siteId: string) => void;
-  onCopyLink: (url: string) => void;
+  onCopyLink: (url: string, successMessage?: string) => void;
   onRetry?: () => void;
   onOpenLinkEdit: (link: GrowthTrackingLink) => void;
   onOpenChannelEdit: (channel: GrowthChannel) => void;
@@ -1195,12 +1200,17 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
                 <article className="growth-link-row" key={link.tracking_link_id}>
                   <div className="growth-link-main">
                     <div><strong>{link.source_name}</strong><span className={`status-pill ${link.status}`}>{trackingStatusLabel(link.status)}</span></div>
-                    <a href={link.public_url} target="_blank" rel="noreferrer">{link.public_url}</a>
+                    <div className="growth-link-copy-block">
+                      <a href={link.public_url} target="_blank" rel="noreferrer">{link.public_url}</a>
+                      <div className="growth-link-copy-actions">
+                        <button className="ghost compact-button" type="button" onClick={() => onCopyLink(link.public_url, "主页推广链接已复制")}>复制主页链接</button>
+                        <button className="ghost compact-button" type="button" onClick={() => onCopyLink(apiTrackingUrl(link.code), "API 推广链接已复制")}>复制 API 链接</button>
+                      </div>
+                    </div>
                     <span>{link.channel_name || "未命名渠道"} · {link.campaign_name || "未命名活动"} · {sourceTypeLabels[link.source_type]}</span>
                   </div>
                   <div className="growth-row-actions">
                     <button aria-label={`编辑推广链接 ${link.source_name}`} className="ghost compact-button" disabled={saving} type="button" onClick={() => onOpenLinkEdit(link)}>编辑</button>
-                    <button className="ghost" type="button" onClick={() => onCopyLink(link.public_url)}>复制</button>
                     <button className="ghost" type="button" disabled={saving || link.status === "archived"} onClick={() => onToggleLink(link)}>{link.status === "archived" ? "已归档" : link.status === "active" ? "停用" : "启用"}</button>
                   </div>
                 </article>
