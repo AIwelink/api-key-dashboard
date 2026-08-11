@@ -492,6 +492,27 @@
   font-size: 12px;
 }
 
+.growth-link-copy-block {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+.growth-link-copy-actions {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.growth-link-copy-actions button {
+  min-height: 26px;
+  padding: 3px 7px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .growth-link-main > span {
   color: var(--muted);
   font-size: 11px;
