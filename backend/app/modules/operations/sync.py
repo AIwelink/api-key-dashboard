@@ -30,6 +30,8 @@ from app.modules.system.sql_dsn import parse_sql_dsn, redact_sql_error
 OPERATIONS_SYNC_INTERVAL_SECONDS = 900
 OPERATIONS_RECONCILIATION_WINDOW = timedelta(hours=48)
 OPERATIONS_INITIAL_SYNC_WINDOW = timedelta(days=30)
+OPERATIONS_AGGREGATE_VERSION = 2
+OPERATIONS_AGGREGATE_HISTORY_START = datetime(1970, 1, 1, tzinfo=UTC)
 SOURCE_DATABASE_TIMEOUT_SECONDS = 30
 NEWAPI_DEFAULT_QUOTA_PER_UNIT = Decimal("500000")
 OPERATIONS_SYNC_ACTOR = {
@@ -120,6 +122,7 @@ async def sync_adapter_records(
     growth_connection: Any,
     since: datetime,
     now: datetime,
+    aggregate_start: datetime | None = None,
 ) -> dict[str, int]:
     await repository.acquire_operations_sync_lock(
         growth_connection,
@@ -127,15 +130,41 @@ async def sync_adapter_records(
     )
     users = await adapter.read_users(connection=source_connection, since=since)
     usage = await adapter.read_usage(connection=source_connection, since=since)
-    credits = await adapter.read_credit_events(connection=source_connection, since=since)
+    credit_since = min(
+        value for value in (since, aggregate_start) if value is not None
+    )
+    credits = await adapter.read_credit_events(connection=source_connection, since=credit_since)
     rates = await repository.list_conversion_rates(
         growth_connection,
         allowed_site_ids=(adapter.site_id,),
     )
     converted_usage = apply_usage_conversion_rates(usage, rates)
+    selected_aggregate_start = min(
+        [
+            since,
+            *(value for value in (aggregate_start,) if value is not None),
+            *(fact.occurred_at for fact in converted_usage),
+            *(fact.occurred_at for fact in credits),
+        ]
+    )
 
-    user_count = await repository.upsert_user_snapshots(growth_connection, users)
+    reclassified_internal_user_count = await repository.reconcile_internal_user_snapshots(
+        growth_connection,
+        site_id=adapter.site_id,
+    )
+    user_count, recognized_internal_user_count = await repository.upsert_user_snapshots(
+        growth_connection,
+        users,
+    )
+    if recognized_internal_user_count > 0 or reclassified_internal_user_count > 0:
+        selected_aggregate_start = OPERATIONS_AGGREGATE_HISTORY_START
     usage_count = await repository.upsert_usage_facts(growth_connection, converted_usage)
+    if aggregate_start is not None:
+        await repository.delete_source_credit_events(
+            growth_connection,
+            site_id=adapter.site_id,
+            source_types=("payment", "refund"),
+        )
     credit_count = await repository.upsert_credit_events(growth_connection, credits)
     task_count = await repository.create_pending_classification_tasks(
         growth_connection,
@@ -144,10 +173,9 @@ async def sync_adapter_records(
     await repository.replace_affected_aggregates(
         growth_connection,
         site_id=adapter.site_id,
-        start_at=since,
+        start_at=selected_aggregate_start,
         end_at=now,
     )
-    operations_response_cache.invalidate(site_id=adapter.site_id)
     return {
         "users": user_count,
         "usage": usage_count,
@@ -297,6 +325,15 @@ async def sync_site_operations(
             last_success_at=_datetime(cursor.get("last_success_at")),
             initial_sync_from=_datetime(site.get("initial_sync_from")),
         )
+        cursor_value = cursor.get("cursor_value")
+        aggregate_version = (
+            cursor_value.get("aggregate_version") if isinstance(cursor_value, dict) else None
+        )
+        aggregate_start = (
+            None
+            if aggregate_version == OPERATIONS_AGGREGATE_VERSION
+            else OPERATIONS_AGGREGATE_HISTORY_START
+        )
         started = await run_starter(
             connection,
             site_id=site_id,
@@ -315,7 +352,9 @@ async def sync_site_operations(
                     growth_connection=connection,
                     since=since,
                     now=current_time,
+                    aggregate_start=aggregate_start,
                 )
+            operations_response_cache.invalidate(site_id=site_id)
     except Exception as exc:
         database_type = "mysql" if client_type == "newapi" else "postgresql"
         error_message = redact_sql_error(
@@ -333,6 +372,7 @@ async def sync_site_operations(
                 finished_at=datetime.now(UTC) if now is None else current_time,
                 rows_scanned=0,
                 rows_upserted=0,
+                aggregate_version=OPERATIONS_AGGREGATE_VERSION,
                 error_code=exc.__class__.__name__,
                 error_message=error_message,
             )
@@ -349,6 +389,7 @@ async def sync_site_operations(
             finished_at=finished_at,
             rows_scanned=counts.get("rows_scanned", 0),
             rows_upserted=counts.get("rows_upserted", 0),
+            aggregate_version=OPERATIONS_AGGREGATE_VERSION,
         )
     return {
         "site_id": site_id,

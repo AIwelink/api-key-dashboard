@@ -528,9 +528,9 @@ async def create_balance_adjustment_request(
     return _one(result) or {}
 
 
-async def upsert_user_snapshots(connection: Any, records: list[Any]) -> int:
+async def upsert_user_snapshots(connection: Any, records: list[Any]) -> tuple[int, int]:
     if not records:
-        return 0
+        return 0, 0
     parameters = [_record_dict(record) for record in records]
     await connection.execute(
         text(
@@ -569,7 +569,7 @@ async def upsert_user_snapshots(connection: Any, records: list[Any]) -> int:
         ),
         parameters,
     )
-    await connection.execute(
+    recognition_result = await connection.execute(
         text(
             """
             WITH matches AS (
@@ -610,18 +610,60 @@ async def upsert_user_snapshots(connection: Any, records: list[Any]) -> int:
                 RETURNING configured.internal_user_id,
                           configured.site_id,
                           configured.external_user_id
+            ), attached AS (
+                UPDATE growth.ops_user_snapshots AS snapshot
+                SET is_internal = TRUE,
+                    internal_user_id = recognized.internal_user_id,
+                    synced_at = NOW()
+                FROM recognized
+                WHERE snapshot.site_id = recognized.site_id
+                  AND snapshot.external_user_id = recognized.external_user_id
+                RETURNING snapshot.external_user_id
             )
-            UPDATE growth.ops_user_snapshots AS snapshot
-            SET is_internal = TRUE,
-                internal_user_id = recognized.internal_user_id,
-                synced_at = NOW()
-            FROM recognized
-            WHERE snapshot.site_id = recognized.site_id
-              AND snapshot.external_user_id = recognized.external_user_id
+            SELECT COUNT(*) FROM attached
             """
         )
     )
-    return len(parameters)
+    recognized_count = int(recognition_result.scalar_one_or_none() or 0)
+    return len(parameters), recognized_count
+
+
+async def reconcile_internal_user_snapshots(connection: Any, *, site_id: str) -> int:
+    result = await connection.execute(
+        text(
+            """
+            WITH desired AS (
+                SELECT snapshot.site_id,
+                       snapshot.external_user_id,
+                       configured.internal_user_id
+                FROM growth.ops_user_snapshots AS snapshot
+                LEFT JOIN growth.internal_users AS configured
+                  ON configured.site_id = snapshot.site_id
+                 AND configured.external_user_id = snapshot.external_user_id
+                 AND configured.active_from <= NOW()
+                 AND (configured.active_until IS NULL OR configured.active_until > NOW())
+                WHERE snapshot.site_id = :site_id
+            ), reclassified AS (
+                UPDATE growth.ops_user_snapshots AS snapshot
+                SET is_internal = desired.internal_user_id IS NOT NULL,
+                    internal_user_id = desired.internal_user_id,
+                    synced_at = NOW()
+                FROM desired
+                WHERE snapshot.site_id = desired.site_id
+                  AND snapshot.external_user_id = desired.external_user_id
+                  AND (
+                      snapshot.is_internal IS DISTINCT FROM
+                          (desired.internal_user_id IS NOT NULL)
+                      OR snapshot.internal_user_id IS DISTINCT FROM desired.internal_user_id
+                  )
+                RETURNING snapshot.external_user_id
+            )
+            SELECT COUNT(*) FROM reclassified
+            """
+        ),
+        {"site_id": site_id},
+    )
+    return int(result.scalar_one_or_none() or 0)
 
 
 async def upsert_usage_facts(connection: Any, records: list[Any]) -> int:
@@ -674,7 +716,7 @@ async def upsert_credit_events(connection: Any, records: list[Any]) -> int:
     await connection.execute(
         text(
             """
-            INSERT INTO growth.credit_events (
+            INSERT INTO growth.credit_events AS existing (
                 credit_event_id, site_id, external_user_id, source_type, source_record_id,
                 direction, purpose, classification_status, balance_units, cash_amount_cny,
                 conversion_rate_id, occurred_at, source_updated_at, source_metadata,
@@ -688,10 +730,25 @@ async def upsert_credit_events(connection: Any, records: list[Any]) -> int:
             ON CONFLICT (site_id, source_type, source_record_id) DO UPDATE SET
                 external_user_id = EXCLUDED.external_user_id,
                 direction = EXCLUDED.direction,
-                purpose = EXCLUDED.purpose,
-                classification_status = EXCLUDED.classification_status,
+                purpose = CASE
+                    WHEN existing.classification_status = 'classified'
+                     AND EXCLUDED.classification_status = 'pending'
+                    THEN existing.purpose
+                    ELSE EXCLUDED.purpose
+                END,
+                classification_status = CASE
+                    WHEN existing.classification_status = 'classified'
+                     AND EXCLUDED.classification_status = 'pending'
+                    THEN existing.classification_status
+                    ELSE EXCLUDED.classification_status
+                END,
                 balance_units = EXCLUDED.balance_units,
-                cash_amount_cny = EXCLUDED.cash_amount_cny,
+                cash_amount_cny = CASE
+                    WHEN existing.classification_status = 'classified'
+                     AND EXCLUDED.classification_status = 'pending'
+                    THEN existing.cash_amount_cny
+                    ELSE EXCLUDED.cash_amount_cny
+                END,
                 conversion_rate_id = EXCLUDED.conversion_rate_id,
                 occurred_at = EXCLUDED.occurred_at,
                 source_updated_at = EXCLUDED.source_updated_at,
@@ -703,6 +760,26 @@ async def upsert_credit_events(connection: Any, records: list[Any]) -> int:
         parameters,
     )
     return len(parameters)
+
+
+async def delete_source_credit_events(
+    connection: Any,
+    *,
+    site_id: str,
+    source_types: tuple[str, ...],
+) -> None:
+    if not source_types:
+        return
+    await connection.execute(
+        text(
+            """
+            DELETE FROM growth.credit_events
+            WHERE site_id = :site_id
+              AND source_type = ANY(CAST(:source_types AS TEXT[]))
+            """
+        ),
+        {"site_id": site_id, "source_types": source_types},
+    )
 
 
 async def create_pending_classification_tasks(connection: Any, *, site_id: str) -> int:
@@ -1154,7 +1231,7 @@ async def get_operations_sync_cursor(
     result = await connection.execute(
         text(
             """
-            SELECT watermark_at, last_success_at, last_run_id, updated_at
+            SELECT cursor_value, watermark_at, last_success_at, last_run_id, updated_at
             FROM growth.sync_cursors
             WHERE site_id = :site_id AND stream_name = 'operations'
             ORDER BY updated_at DESC
@@ -1209,6 +1286,7 @@ async def finish_operations_sync_run(
     finished_at: datetime,
     rows_scanned: int,
     rows_upserted: int,
+    aggregate_version: int,
     rows_rejected: int = 0,
     error_code: str = "",
     error_message: str = "",
@@ -1232,11 +1310,14 @@ async def finish_operations_sync_run(
                     site_id, adapter_name, stream_name, cursor_value,
                     watermark_at, last_success_at, last_run_id, updated_at
                 )
-                SELECT :site_id, :adapter_name, 'operations', '{}'::JSONB,
+                SELECT :site_id, :adapter_name, 'operations',
+                       jsonb_build_object('aggregate_version', :aggregate_version),
                        :finished_at, :finished_at, :run_id, NOW()
                 FROM finished
                 WHERE finished.status = 'succeeded'
                 ON CONFLICT (site_id, adapter_name, stream_name) DO UPDATE SET
+                    cursor_value = COALESCE(growth.sync_cursors.cursor_value, '{}'::JSONB)
+                        || EXCLUDED.cursor_value,
                     watermark_at = EXCLUDED.watermark_at,
                     last_success_at = EXCLUDED.last_success_at,
                     last_run_id = EXCLUDED.last_run_id,
@@ -1253,6 +1334,7 @@ async def finish_operations_sync_run(
             "finished_at": finished_at,
             "rows_scanned": rows_scanned,
             "rows_upserted": rows_upserted,
+            "aggregate_version": aggregate_version,
             "rows_rejected": rows_rejected,
             "error_code": error_code,
             "error_message": error_message[:500],

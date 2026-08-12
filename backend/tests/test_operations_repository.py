@@ -318,11 +318,61 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("ON CONFLICT (site_id, source_type, source_record_id)", statement)
             self.assertEqual(parameters[0]["source_record_id"], parameters[0]["source_record_id"])
 
+    async def test_delete_source_credit_events_is_scoped_to_site_and_types(self) -> None:
+        from app.modules.operations import repository
+
+        self.assertTrue(hasattr(repository, "delete_source_credit_events"))
+        connection = _FakeConnection([None])
+
+        await repository.delete_source_credit_events(
+            connection,
+            site_id="aiwelink",
+            source_types=("payment", "refund"),
+        )
+
+        statement, parameters = connection.calls[0]
+        self.assertIn("DELETE FROM growth.credit_events", statement)
+        self.assertIn("site_id = :site_id", statement)
+        self.assertIn("source_type = ANY", statement)
+        self.assertEqual(parameters["site_id"], "aiwelink")
+        self.assertEqual(parameters["source_types"], ("payment", "refund"))
+
+    async def test_pending_source_upsert_preserves_manual_credit_classification(self) -> None:
+        from app.modules.operations.repository import upsert_credit_events
+
+        connection = _FakeConnection([None])
+        await upsert_credit_events(
+            connection,
+            [
+                {
+                    "site_id": "aiwelink",
+                    "external_user_id": "42",
+                    "source_type": "redemption",
+                    "source_record_id": "redeem-1",
+                    "direction": "credit",
+                    "purpose": None,
+                    "classification_status": "pending",
+                    "balance_units": Decimal("100"),
+                    "cash_amount_cny": Decimal("0"),
+                    "conversion_rate_id": None,
+                    "occurred_at": NOW,
+                    "source_updated_at": NOW,
+                    "source_metadata": {},
+                }
+            ],
+        )
+
+        statement, _ = connection.calls[0]
+        self.assertIn("existing.classification_status = 'classified'", statement)
+        self.assertIn("EXCLUDED.classification_status = 'pending'", statement)
+        self.assertIn("THEN existing.purpose", statement)
+        self.assertIn("THEN existing.cash_amount_cny", statement)
+
     async def test_user_snapshot_upsert_recognizes_pending_email_configuration(self) -> None:
         from app.modules.operations.repository import upsert_user_snapshots
 
-        connection = _FakeConnection([None, None])
-        await upsert_user_snapshots(
+        connection = _FakeConnection([None, 1])
+        result = await upsert_user_snapshots(
             connection,
             [
                 {
@@ -354,6 +404,29 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("existing.external_user_id = snapshot.external_user_id", recognition_statement)
         self.assertIn("BOOL_AND(matches.available)", recognition_statement)
         self.assertIn("UPDATE growth.ops_user_snapshots", recognition_statement)
+        self.assertIn("RETURNING snapshot.external_user_id", recognition_statement)
+        self.assertIn("SELECT COUNT(*) FROM attached", recognition_statement)
+        self.assertEqual(result, (1, 1))
+
+    async def test_reconcile_internal_user_snapshots_updates_only_changed_windows(self) -> None:
+        from app.modules.operations import repository
+
+        self.assertTrue(hasattr(repository, "reconcile_internal_user_snapshots"))
+        connection = _FakeConnection([2])
+
+        result = await repository.reconcile_internal_user_snapshots(
+            connection,
+            site_id="aiwelink",
+        )
+
+        statement, parameters = connection.calls[0]
+        self.assertIn("LEFT JOIN growth.internal_users", statement)
+        self.assertIn("configured.active_from <= NOW()", statement)
+        self.assertIn("configured.active_until > NOW()", statement)
+        self.assertIn("snapshot.is_internal IS DISTINCT FROM", statement)
+        self.assertIn("snapshot.internal_user_id IS DISTINCT FROM", statement)
+        self.assertEqual(parameters, {"site_id": "aiwelink"})
+        self.assertEqual(result, 2)
 
     async def test_resolve_classification_updates_task_and_credit_event_together(self) -> None:
         from app.modules.operations.repository import resolve_classification_task
@@ -557,7 +630,7 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         run_id = uuid4()
         connection = _FakeConnection(
             [
-                {"last_success_at": NOW},
+                {"last_success_at": NOW, "cursor_value": {"aggregate_version": 1}},
                 {"run_id": run_id, "status": "running"},
                 {"run_id": run_id, "status": "succeeded"},
             ]
@@ -581,6 +654,7 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
             finished_at=NOW,
             rows_scanned=10,
             rows_upserted=9,
+            aggregate_version=1,
         )
 
         self.assertEqual(cursor["last_success_at"], NOW.isoformat())
@@ -589,6 +663,10 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         sql = "\n".join(statement for statement, _ in connection.calls)
         self.assertIn("stream_name = 'operations'", sql)
         self.assertIn("growth.sync_cursors", sql)
+        self.assertIn("cursor_value", connection.calls[0][0])
+        self.assertIn("cursor_value = COALESCE", connection.calls[2][0])
+        self.assertIn("|| EXCLUDED.cursor_value", connection.calls[2][0])
+        self.assertEqual(connection.calls[2][1].get("aggregate_version"), 1)
 
     async def test_sync_status_keeps_last_success_when_latest_run_failed(self) -> None:
         from app.modules.operations.repository import get_sync_status
@@ -659,6 +737,41 @@ class OperationsCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(first_allowed, second_allowed)
         self.assertEqual(first_other, second_other)
         self.assertEqual(calls, {"allowed": 2, "other": 1})
+
+    async def test_cache_invalidation_detaches_matching_inflight_load(self) -> None:
+        from app.modules.operations.cache import OperationsResponseCache
+
+        old_started = asyncio.Event()
+        release_old = asyncio.Event()
+        fresh_calls = 0
+
+        async def load_old():
+            old_started.set()
+            await release_old.wait()
+            return "old"
+
+        async def load_fresh():
+            nonlocal fresh_calls
+            fresh_calls += 1
+            return "fresh"
+
+        cache = OperationsResponseCache(ttl_seconds=60, max_entries=4)
+        key = ("trends", ("aiwelink",), "ordinary")
+        old_task = asyncio.create_task(cache.get_or_load(key, load_old))
+        await old_started.wait()
+
+        cache.invalidate(site_id="aiwelink")
+        fresh_task = asyncio.create_task(cache.get_or_load(key, load_fresh))
+        await asyncio.sleep(0)
+        release_old.set()
+
+        old_value, fresh_value = await asyncio.gather(old_task, fresh_task)
+        cached_value = await cache.get_or_load(key, load_fresh)
+
+        self.assertEqual(old_value, "old")
+        self.assertEqual(fresh_value, "fresh")
+        self.assertEqual(cached_value, "fresh")
+        self.assertEqual(fresh_calls, 1)
 
     async def test_cache_coalesces_concurrent_loads_and_bounds_entries(self) -> None:
         from app.modules.operations.cache import OperationsResponseCache

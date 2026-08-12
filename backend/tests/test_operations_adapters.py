@@ -97,7 +97,7 @@ class Sub2ApiOperationsAdapterReadTests(unittest.IsolatedAsyncioTestCase):
             [
                 [{"id": "u1", "email": "u@example.com", "username": "u", "status": "active", "balance": 1, "created_at": NOW, "updated_at": NOW}],
                 [{"id": 1, "user_id": "u1", "actual_cost": 1, "created_at": NOW}],
-                [{"id": "p1", "user_id": "u1", "amount": 10, "pay_amount": 1, "paid_at": NOW, "updated_at": NOW, "refund_amount": 0, "refund_at": None}],
+                [{"id": "p1", "user_id": "u1", "amount": 10, "pay_amount": 1, "status": "COMPLETED", "paid_at": NOW, "completed_at": NOW, "updated_at": NOW, "refund_amount": 0, "refund_at": None}],
                 [{"id": "r1", "used_by": "u1", "value": 10, "type": "balance", "used_at": NOW, "notes": ""}],
             ]
         )
@@ -111,6 +111,8 @@ class Sub2ApiOperationsAdapterReadTests(unittest.IsolatedAsyncioTestCase):
         sql = "\n".join(statement for statement, _ in connection.calls).lower()
         self.assertNotIn("password_hash", sql)
         self.assertNotIn("totp_secret", sql)
+        self.assertIn("status = 'completed'", sql)
+        self.assertIn("completed_at is not null", sql)
         for _, parameters in connection.calls[1:]:
             self.assertEqual(parameters["since_at"], NOW)
 

@@ -13,6 +13,11 @@ NOW = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
 
 
 class OperationsSyncRuleTests(unittest.TestCase):
+    def test_payment_status_repair_uses_aggregate_version_two(self) -> None:
+        from app.modules.operations.sync import OPERATIONS_AGGREGATE_VERSION
+
+        self.assertEqual(OPERATIONS_AGGREGATE_VERSION, 2)
+
     def test_first_sync_reads_30_days_when_no_cursor_or_override_exists(self) -> None:
         from app.modules.operations.sync import reconciliation_start
 
@@ -227,7 +232,12 @@ class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(sync.repository, "acquire_operations_sync_lock", AsyncMock()),
             patch.object(sync.repository, "list_conversion_rates", AsyncMock(return_value=[])),
-            patch.object(sync.repository, "upsert_user_snapshots", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "upsert_user_snapshots", AsyncMock(return_value=(0, 0))),
+            patch.object(
+                sync.repository,
+                "reconcile_internal_user_snapshots",
+                AsyncMock(return_value=0),
+            ),
             patch.object(
                 sync.repository,
                 "upsert_usage_facts",
@@ -247,6 +257,236 @@ class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
 
         aggregate.assert_not_awaited()
 
+    async def test_late_credit_event_expands_aggregate_rebuild_to_event_time(self) -> None:
+        from app.modules.operations import sync
+        from app.modules.operations.adapters.base import CreditEventInput
+
+        since = NOW - timedelta(hours=48)
+        late_event_at = NOW - timedelta(days=5)
+        adapter = AsyncMock()
+        adapter.site_id = "aiwelink"
+        adapter.read_users.return_value = []
+        adapter.read_usage.return_value = []
+        adapter.read_credit_events.return_value = [
+            CreditEventInput(
+                site_id="aiwelink",
+                external_user_id="42",
+                source_type="payment",
+                source_record_id="order-42",
+                direction="credit",
+                purpose="sale",
+                classification_status="classified",
+                balance_units=Decimal("100"),
+                cash_amount_cny=Decimal("10"),
+                occurred_at=late_event_at,
+                source_updated_at=NOW,
+            )
+        ]
+        aggregate = AsyncMock()
+        growth_connection = object()
+
+        with (
+            patch.object(sync.repository, "acquire_operations_sync_lock", AsyncMock()),
+            patch.object(sync.repository, "list_conversion_rates", AsyncMock(return_value=[])),
+            patch.object(sync.repository, "upsert_user_snapshots", AsyncMock(return_value=(0, 0))),
+            patch.object(
+                sync.repository,
+                "reconcile_internal_user_snapshots",
+                AsyncMock(return_value=0),
+            ),
+            patch.object(sync.repository, "upsert_usage_facts", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "upsert_credit_events", AsyncMock(return_value=1)),
+            patch.object(sync.repository, "create_pending_classification_tasks", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "replace_affected_aggregates", aggregate),
+        ):
+            await sync.sync_adapter_records(
+                adapter=adapter,
+                source_connection=object(),
+                growth_connection=growth_connection,
+                since=since,
+                now=NOW,
+            )
+
+        aggregate.assert_awaited_once_with(
+            growth_connection,
+            site_id="aiwelink",
+            start_at=late_event_at,
+            end_at=NOW,
+        )
+
+    async def test_legacy_aggregate_backfill_replaces_payment_source_facts(self) -> None:
+        from app.modules.operations import sync
+
+        adapter = AsyncMock()
+        adapter.site_id = "aiwelink"
+        adapter.read_users.return_value = []
+        adapter.read_usage.return_value = []
+        adapter.read_credit_events.return_value = []
+        growth_connection = object()
+        deleted = AsyncMock()
+
+        with (
+            patch.object(sync.repository, "acquire_operations_sync_lock", AsyncMock()),
+            patch.object(sync.repository, "list_conversion_rates", AsyncMock(return_value=[])),
+            patch.object(sync.repository, "upsert_user_snapshots", AsyncMock(return_value=(0, 0))),
+            patch.object(
+                sync.repository,
+                "reconcile_internal_user_snapshots",
+                AsyncMock(return_value=0),
+            ),
+            patch.object(
+                sync.repository,
+                "delete_source_credit_events",
+                deleted,
+                create=True,
+            ),
+            patch.object(sync.repository, "upsert_usage_facts", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "upsert_credit_events", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "create_pending_classification_tasks", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "replace_affected_aggregates", AsyncMock()),
+        ):
+            await sync.sync_adapter_records(
+                adapter=adapter,
+                source_connection=object(),
+                growth_connection=growth_connection,
+                since=NOW - timedelta(hours=48),
+                now=NOW,
+                aggregate_start=sync.OPERATIONS_AGGREGATE_HISTORY_START,
+            )
+
+        self.assertEqual(
+            adapter.read_credit_events.await_args.kwargs["since"],
+            sync.OPERATIONS_AGGREGATE_HISTORY_START,
+        )
+        deleted.assert_awaited_once_with(
+            growth_connection,
+            site_id="aiwelink",
+            source_types=("payment", "refund"),
+        )
+
+    async def test_new_internal_user_recognition_rebuilds_complete_history(self) -> None:
+        from app.modules.operations import sync
+
+        since = NOW - timedelta(hours=48)
+        adapter = AsyncMock()
+        adapter.site_id = "aiwelink"
+        adapter.read_users.return_value = [object()]
+        adapter.read_usage.return_value = []
+        adapter.read_credit_events.return_value = []
+        aggregate = AsyncMock()
+        growth_connection = object()
+
+        with (
+            patch.object(sync.repository, "acquire_operations_sync_lock", AsyncMock()),
+            patch.object(sync.repository, "list_conversion_rates", AsyncMock(return_value=[])),
+            patch.object(sync.repository, "upsert_user_snapshots", AsyncMock(return_value=(1, 1))),
+            patch.object(
+                sync.repository,
+                "reconcile_internal_user_snapshots",
+                AsyncMock(return_value=0),
+            ),
+            patch.object(sync.repository, "upsert_usage_facts", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "upsert_credit_events", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "create_pending_classification_tasks", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "replace_affected_aggregates", aggregate),
+        ):
+            result = await sync.sync_adapter_records(
+                adapter=adapter,
+                source_connection=object(),
+                growth_connection=growth_connection,
+                since=since,
+                now=NOW,
+            )
+
+        aggregate.assert_awaited_once_with(
+            growth_connection,
+            site_id="aiwelink",
+            start_at=sync.OPERATIONS_AGGREGATE_HISTORY_START,
+            end_at=NOW,
+        )
+        self.assertEqual(result["users"], 1)
+
+    async def test_internal_user_window_transition_rebuilds_complete_history(self) -> None:
+        from app.modules.operations import sync
+
+        since = NOW - timedelta(hours=48)
+        adapter = AsyncMock()
+        adapter.site_id = "aiwelink"
+        adapter.read_users.return_value = []
+        adapter.read_usage.return_value = []
+        adapter.read_credit_events.return_value = []
+        aggregate = AsyncMock()
+        growth_connection = object()
+
+        with (
+            patch.object(sync.repository, "acquire_operations_sync_lock", AsyncMock()),
+            patch.object(sync.repository, "list_conversion_rates", AsyncMock(return_value=[])),
+            patch.object(sync.repository, "upsert_user_snapshots", AsyncMock(return_value=(0, 0))),
+            patch.object(
+                sync.repository,
+                "reconcile_internal_user_snapshots",
+                AsyncMock(return_value=1),
+                create=True,
+            ) as reconcile,
+            patch.object(sync.repository, "upsert_usage_facts", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "upsert_credit_events", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "create_pending_classification_tasks", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "replace_affected_aggregates", aggregate),
+        ):
+            await sync.sync_adapter_records(
+                adapter=adapter,
+                source_connection=object(),
+                growth_connection=growth_connection,
+                since=since,
+                now=NOW,
+            )
+
+        reconcile.assert_awaited_once_with(growth_connection, site_id="aiwelink")
+        aggregate.assert_awaited_once_with(
+            growth_connection,
+            site_id="aiwelink",
+            start_at=sync.OPERATIONS_AGGREGATE_HISTORY_START,
+            end_at=NOW,
+        )
+
+    async def test_internal_user_windows_are_reconciled_before_user_upsert(self) -> None:
+        from app.modules.operations import sync
+
+        calls = []
+        adapter = AsyncMock()
+        adapter.site_id = "aiwelink"
+        adapter.read_users.return_value = []
+        adapter.read_usage.return_value = []
+        adapter.read_credit_events.return_value = []
+
+        async def reconcile(connection, *, site_id):
+            calls.append("reconcile")
+            return 0
+
+        async def upsert(connection, records):
+            calls.append("upsert")
+            return 0, 0
+
+        with (
+            patch.object(sync.repository, "acquire_operations_sync_lock", AsyncMock()),
+            patch.object(sync.repository, "list_conversion_rates", AsyncMock(return_value=[])),
+            patch.object(sync.repository, "upsert_user_snapshots", upsert),
+            patch.object(sync.repository, "reconcile_internal_user_snapshots", reconcile),
+            patch.object(sync.repository, "upsert_usage_facts", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "upsert_credit_events", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "create_pending_classification_tasks", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "replace_affected_aggregates", AsyncMock()),
+        ):
+            await sync.sync_adapter_records(
+                adapter=adapter,
+                source_connection=object(),
+                growth_connection=object(),
+                since=NOW - timedelta(hours=48),
+                now=NOW,
+            )
+
+        self.assertEqual(calls, ["reconcile", "upsert"])
+
     async def test_adapter_sync_acquires_site_lock_before_source_reads(self) -> None:
         from app.modules.operations import sync
 
@@ -263,7 +503,12 @@ class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(sync.repository, "acquire_operations_sync_lock", lock),
             patch.object(sync.repository, "list_conversion_rates", AsyncMock(return_value=[])),
-            patch.object(sync.repository, "upsert_user_snapshots", AsyncMock(return_value=0)),
+            patch.object(sync.repository, "upsert_user_snapshots", AsyncMock(return_value=(0, 0))),
+            patch.object(
+                sync.repository,
+                "reconcile_internal_user_snapshots",
+                AsyncMock(return_value=0),
+            ),
             patch.object(sync.repository, "upsert_usage_facts", AsyncMock(return_value=0)),
             patch.object(sync.repository, "upsert_credit_events", AsyncMock(return_value=0)),
             patch.object(sync.repository, "create_pending_classification_tasks", AsyncMock(return_value=0)),
@@ -313,7 +558,12 @@ class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
                 growth_connections.pop(0)
             ),
             records_sync=records_sync,
-            cursor_loader=AsyncMock(return_value={"last_success_at": last_success.isoformat()}),
+            cursor_loader=AsyncMock(
+                return_value={
+                    "last_success_at": last_success.isoformat(),
+                    "cursor_value": {"aggregate_version": 2},
+                }
+            ),
             run_starter=AsyncMock(return_value={"run_id": str(run_id)}),
             run_finisher=run_finisher,
         )
@@ -323,9 +573,106 @@ class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             records_sync.await_args.kwargs["since"],
             last_success - timedelta(hours=48),
         )
+        self.assertIn("aggregate_start", records_sync.await_args.kwargs)
+        self.assertIsNone(records_sync.await_args.kwargs["aggregate_start"])
         self.assertEqual(records_sync.await_args.kwargs["source_connection"], source)
         self.assertEqual(run_finisher.await_args.kwargs["status"], "succeeded")
+        self.assertEqual(run_finisher.await_args.kwargs.get("aggregate_version"), 2)
         self.assertEqual(result["run_id"], str(run_id))
+
+    async def test_site_sync_invalidates_cache_after_fact_transaction_commits(self) -> None:
+        from app.modules.operations import sync
+
+        events = []
+        context_count = 0
+        run_id = uuid4()
+
+        @asynccontextmanager
+        async def growth_context():
+            nonlocal context_count
+            context_count += 1
+            label = f"growth-{context_count}"
+            events.append(f"{label}:enter")
+            try:
+                yield object()
+            finally:
+                events.append(f"{label}:exit")
+
+        async def records_sync(**kwargs):
+            events.append("records")
+            return {"users": 0, "usage": 0, "credits": 0, "classification_tasks": 0}
+
+        with patch.object(
+            sync.operations_response_cache,
+            "invalidate",
+            side_effect=lambda **kwargs: events.append("invalidate"),
+        ) as invalidate:
+            await sync.sync_site_operations(
+                object(),
+                site_id="aiwelink",
+                trigger_type="schedule",
+                now=NOW,
+                site_loader=AsyncMock(
+                    return_value={
+                        "id": "aiwelink",
+                        "client_type": "sub2api",
+                        "sql_dsn": "postgresql://reader:secret@db/sub2api",
+                    }
+                ),
+                adapter_factory=AsyncMock(return_value=AsyncMock(site_id="aiwelink")),
+                source_connection_factory=lambda site: _async_context(object()),
+                growth_connection_factory=lambda db, write=True: growth_context(),
+                records_sync=records_sync,
+                cursor_loader=AsyncMock(
+                    return_value={"cursor_value": {"aggregate_version": 2}}
+                ),
+                run_starter=AsyncMock(return_value={"run_id": str(run_id)}),
+                run_finisher=AsyncMock(return_value={"run_id": str(run_id)}),
+            )
+
+        invalidate.assert_called_once_with(site_id="aiwelink")
+        self.assertLess(events.index("growth-2:exit"), events.index("invalidate"))
+
+    async def test_site_sync_backfills_all_growth_facts_for_legacy_aggregate_cursor(self) -> None:
+        from app.modules.operations import sync
+
+        run_id = uuid4()
+        records_sync = AsyncMock(
+            return_value={"users": 0, "usage": 0, "credits": 0, "classification_tasks": 0}
+        )
+        run_finisher = AsyncMock(return_value={"run_id": str(run_id)})
+
+        await sync.sync_site_operations(
+            object(),
+            site_id="aiwelink",
+            trigger_type="schedule",
+            now=NOW,
+            site_loader=AsyncMock(
+                return_value={
+                    "id": "aiwelink",
+                    "client_type": "sub2api",
+                    "sql_dsn": "postgresql://reader:secret@db/sub2api",
+                }
+            ),
+            adapter_factory=AsyncMock(return_value=AsyncMock(site_id="aiwelink")),
+            source_connection_factory=lambda site: _async_context(object()),
+            growth_connection_factory=lambda db, write=True: _async_context(object()),
+            records_sync=records_sync,
+            cursor_loader=AsyncMock(
+                return_value={
+                    "last_success_at": (NOW - timedelta(minutes=15)).isoformat(),
+                    "cursor_value": {},
+                }
+            ),
+            run_starter=AsyncMock(return_value={"run_id": str(run_id)}),
+            run_finisher=run_finisher,
+        )
+
+        self.assertEqual(
+            records_sync.await_args.kwargs.get("aggregate_start"),
+            datetime(1970, 1, 1, tzinfo=UTC),
+        )
+        self.assertEqual(run_finisher.await_args.kwargs.get("aggregate_version"), 2)
 
     async def test_site_sync_records_failure_after_fact_transaction_rolls_back(self) -> None:
         from app.modules.operations import sync

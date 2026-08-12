@@ -86,10 +86,14 @@ class OperationsResponseCache:
     def invalidate(self, *, site_id: str | None = None) -> None:
         if site_id is None:
             self._entries.clear()
+            self._inflight.clear()
             return
         for key in tuple(self._entries):
             if _cache_key_contains(key, site_id):
                 self._entries.pop(key, None)
+        for key in tuple(self._inflight):
+            if _cache_key_contains(key, site_id):
+                self._inflight.pop(key, None)
 
 
 operations_response_cache = OperationsResponseCache()

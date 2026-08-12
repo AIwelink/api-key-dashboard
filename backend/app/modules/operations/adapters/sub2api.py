@@ -31,11 +31,17 @@ ORDER BY created_at, id
 """
 
 PAYMENT_ORDERS_QUERY = """
-SELECT id, user_id, amount, pay_amount, paid_at, completed_at, updated_at,
+SELECT id, user_id, amount, pay_amount, status, paid_at, completed_at, updated_at,
        refund_amount, refund_at, order_type
 FROM payment_orders
-WHERE paid_at IS NOT NULL
-  AND (updated_at >= :since_at OR paid_at >= :since_at OR refund_at >= :since_at)
+WHERE status = 'COMPLETED'
+  AND completed_at IS NOT NULL
+  AND (
+      updated_at >= :since_at
+      OR paid_at >= :since_at
+      OR completed_at >= :since_at
+      OR refund_at >= :since_at
+  )
 ORDER BY updated_at, id
 """
 
