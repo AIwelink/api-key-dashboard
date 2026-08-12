@@ -125,3 +125,37 @@ gh pr create --draft --fill --head $(git branch --show-current)
 ```
 
 The PR body must state that the same tracking code now has separate homepage/API copy actions, no backend schema changed, and include the test/build commands.
+### Follow-up Task: Render both tracking URLs as separate rows
+
+**Files:**
+- Modify: `frontend/src/pages/TrafficAnalysisPage.test.tsx`
+- Modify: `frontend/src/pages/TrafficAnalysisPage.tsx`
+- Modify: `frontend/styles.css`
+
+- [ ] **Step 1: Add a failing assertion for the API URL anchor.**
+
+Extend the existing promotion-link rendering test to assert that the API URL is present as its own link and appears after the homepage URL:
+
+```tsx
+const homepageUrl = "https://aiwelink.cc/r/7km4q2xd";
+const apiUrl = "https://api.aiwelink.cc/r/7km4q2xd";
+expect(html).toContain(`href="${homepageUrl}"`);
+expect(html).toContain(`href="${apiUrl}"`);
+expect(html.indexOf(homepageUrl)).toBeLessThan(html.indexOf(apiUrl));
+```
+
+- [ ] **Step 2: Run the focused test and confirm it fails because the API anchor is missing.**
+
+Run `npm test -- --run src/pages/TrafficAnalysisPage.test.tsx` from `frontend`. The failure must identify the missing API URL anchor.
+
+- [ ] **Step 3: Render the two URLs in separate rows with matching copy controls.**
+
+Use `apiTrackingUrl(link.code)` for the API row. Keep both anchors clickable and keep each copy button directly beside its matching anchor.
+
+- [ ] **Step 4: Style the URL rows for desktop and narrow screens.**
+
+Use a vertical grid for the URL rows and allow each row to wrap its button below the URL only when the viewport is too narrow. Do not move edit or enable/disable actions into this grid.
+
+- [ ] **Step 5: Run focused tests, the complete frontend suite, and the production build.**
+
+Expected: the focused test, all Vitest tests, and `npm run build` exit successfully.

@@ -287,7 +287,11 @@ describe("traffic analysis configuration workspace", () => {
     expect(html).toContain("渠道管理");
     expect(html).toContain("活动管理");
     expect(html).toContain("站点接入");
-    expect(html).toContain("https://aiwelink.cc/r/7km4q2xd");
+    const homepageUrl = "https://aiwelink.cc/r/7km4q2xd";
+    const apiUrl = "https://api.aiwelink.cc/r/7km4q2xd";
+    expect(html).toContain(`href="${homepageUrl}"`);
+    expect(html).toContain(`href="${apiUrl}"`);
+    expect(html.indexOf(homepageUrl)).toBeLessThan(html.indexOf(apiUrl));
     expect(html).toContain("Claude API 入门第 3 篇");
     expect(html).not.toContain("点击人数");
     expect(html).not.toContain("注册率");
