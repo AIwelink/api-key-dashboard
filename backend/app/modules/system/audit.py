@@ -1,8 +1,19 @@
+from decimal import Decimal
 from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.utils import now_utc
+
+
+def _bson_safe_audit_value(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _bson_safe_audit_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_bson_safe_audit_value(item) for item in value]
+    return value
 
 
 async def write_audit_log(
@@ -23,8 +34,8 @@ async def write_audit_log(
             "action": action,
             "resource_type": resource_type,
             "resource_id": resource_id,
-            "before": before,
-            "after": after,
+            "before": _bson_safe_audit_value(before),
+            "after": _bson_safe_audit_value(after),
             "created_at": now_utc(),
         }
     )
