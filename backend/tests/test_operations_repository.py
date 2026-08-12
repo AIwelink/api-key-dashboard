@@ -13,6 +13,32 @@ NOW = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
 
 
 class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_redemption_batch_attributions_returns_safe_join_fields(self) -> None:
+        from app.modules.operations.repository import list_redemption_batch_attributions
+
+        connection = _FakeConnection(
+            [
+                {
+                    "redemption_batch_id": uuid4(),
+                    "site_id": "aiwelink",
+                    "source_batch_id": "101,102",
+                    "code_masks": ["rede...lpha", "rede...beta"],
+                    "requested_by": "owner-1",
+                    "created_at": NOW,
+                }
+            ]
+        )
+
+        rows = await list_redemption_batch_attributions(connection, site_id="aiwelink")
+
+        self.assertEqual(rows[0]["source_batch_id"], "101,102")
+        statement, parameters = connection.calls[0]
+        self.assertIn("growth.redemption_batches", statement)
+        self.assertIn("command_status = 'succeeded'", statement)
+        self.assertIn("ORDER BY created_at DESC", statement)
+        self.assertNotIn("code_hashes", statement)
+        self.assertEqual(parameters, {"site_id": "aiwelink"})
+
     async def test_create_internal_user_recognizes_unique_snapshot_email(self) -> None:
         from app.modules.operations.repository import create_internal_user
         from app.modules.operations.schemas import InternalUserCreate
@@ -456,6 +482,24 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("UPDATE growth.credit_events", statement)
         self.assertEqual(parameters["actor_id"], "owner")
 
+    async def test_classification_tasks_sort_by_business_occurrence_time(self) -> None:
+        from app.modules.operations.repository import list_classification_tasks
+
+        connection = _FakeConnection([None])
+
+        await list_classification_tasks(
+            connection,
+            allowed_site_ids=("aiwelink",),
+        )
+
+        statement, _ = connection.calls[0]
+        normalized_statement = " ".join(statement.split())
+        self.assertIn(
+            "ORDER BY event.occurred_at DESC, task.created_at DESC, "
+            "task.classification_task_id DESC",
+            normalized_statement,
+        )
+
     async def test_summary_query_uses_bound_filters(self) -> None:
         from app.modules.operations.repository import get_operations_summary
 
@@ -619,6 +663,67 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("growth.balance_adjustment_requests", connection.calls[1][0])
         self.assertEqual(connection.calls[0][1]["purpose"], "internal")
         self.assertEqual(connection.calls[1][1]["external_user_id"], "42")
+
+    async def test_redemption_batch_lifecycle_reads_and_completes_without_plaintext(self) -> None:
+        from app.modules.operations.repository import (
+            complete_redemption_batch,
+            get_redemption_batch_by_idempotency,
+        )
+
+        batch_id = uuid4()
+        connection = _FakeConnection(
+            [
+                {"redemption_batch_id": batch_id, "command_status": "pending"},
+                {
+                    "redemption_batch_id": batch_id,
+                    "command_status": "succeeded",
+                    "code_masks": ["rede...lpha"],
+                },
+            ]
+        )
+
+        existing = await get_redemption_batch_by_idempotency(
+            connection,
+            site_id="aiwelink",
+            idempotency_key="batch-1",
+        )
+        completed = await complete_redemption_batch(
+            connection,
+            redemption_batch_id=batch_id,
+            source_batch_id="101",
+            code_hashes=["digest"],
+            code_masks=["rede...lpha"],
+        )
+
+        self.assertEqual(existing["command_status"], "pending")
+        self.assertEqual(completed["command_status"], "succeeded")
+        self.assertIn("site_id = :site_id", connection.calls[0][0])
+        self.assertIn("idempotency_key = :idempotency_key", connection.calls[0][0])
+        self.assertIn("command_status = 'succeeded'", connection.calls[1][0])
+        self.assertEqual(connection.calls[1][1]["code_hashes"], '["digest"]')
+        self.assertEqual(connection.calls[1][1]["code_masks"], '["rede...lpha"]')
+        self.assertNotIn("redeem-alpha", str(connection.calls))
+
+    async def test_failed_redemption_batch_records_error_without_plaintext(self) -> None:
+        from app.modules.operations.repository import fail_redemption_batch
+
+        batch_id = uuid4()
+        connection = _FakeConnection(
+            [{"redemption_batch_id": batch_id, "command_status": "failed"}]
+        )
+
+        failed = await fail_redemption_batch(
+            connection,
+            redemption_batch_id=batch_id,
+            error_code="HTTPException",
+            error_message="upstream unavailable",
+        )
+
+        self.assertEqual(failed["command_status"], "failed")
+        statement, parameters = connection.calls[0]
+        self.assertIn("command_status = 'failed'", statement)
+        self.assertEqual(parameters["error_code"], "HTTPException")
+        self.assertEqual(parameters["error_message"], "upstream unavailable")
 
     async def test_operations_sync_run_lifecycle_uses_operations_stream(self) -> None:
         from app.modules.operations.repository import (

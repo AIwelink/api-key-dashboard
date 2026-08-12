@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   OperationsManagementPage,
   InternalUserActionButtons,
+  RedemptionResultPanel,
   averageConsumption,
   buildOperationsQuery,
   buildRedemptionPayload,
@@ -12,6 +13,9 @@ import {
   emptyRedemptionForm,
   orderOperationsSites,
   paymentRate,
+  shouldApplyRedemptionReveal,
+  supportsSafeRedemptionDeletion,
+  shouldApplyRedemptionResponse,
   internalUserDeleteDetails,
   preferredOperationsSiteId,
   recognitionStatusLabel,
@@ -28,6 +32,23 @@ const props = {
 };
 
 describe("operations management workspace", () => {
+  it("renders generated redemption codes as a one-time result", () => {
+    const html = renderToStaticMarkup(
+      <RedemptionResultPanel
+        codes={["redeem-alpha", "redeem-beta"]}
+        onClose={() => undefined}
+        onCopy={() => undefined}
+        onDownload={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("兑换码已生成");
+    expect(html).toContain("redeem-alpha");
+    expect(html).toContain("redeem-beta");
+    expect(html).toContain("复制全部");
+    expect(html).toContain("下载兑换码");
+  });
+
   it("prioritizes AIWeLink and falls back to the first authorized site", () => {
     const sites = [
       { value: "aigclink" as OperationsSiteId, label: "AIGCLink" },
@@ -88,6 +109,24 @@ describe("operations management workspace", () => {
       note: "团队额度",
       idempotency_key: "batch-1",
     });
+  });
+
+  it("rejects stale or cross-site redemption responses", () => {
+    expect(shouldApplyRedemptionResponse(2, 2, "aigclink", "aigclink")).toBe(true);
+    expect(shouldApplyRedemptionResponse(1, 2, "aiwelink", "aigclink")).toBe(false);
+    expect(shouldApplyRedemptionResponse(2, 2, "aiwelink", "aigclink")).toBe(false);
+  });
+
+  it("does not reopen plaintext after site, tab, permission, or request changes", () => {
+    expect(shouldApplyRedemptionReveal(2, 2, "aiwelink", "aiwelink", "credits", true)).toBe(true);
+    expect(shouldApplyRedemptionReveal(1, 2, "aiwelink", "aiwelink", "credits", true)).toBe(false);
+    expect(shouldApplyRedemptionReveal(2, 2, "aiwelink", "aigclink", "credits", true)).toBe(false);
+    expect(shouldApplyRedemptionReveal(2, 2, "aiwelink", "aiwelink", "overview", true)).toBe(false);
+    expect(shouldApplyRedemptionReveal(2, 2, "aiwelink", "aiwelink", "credits", false)).toBe(false);
+  });
+
+  it("keeps unsafe hard-delete controls disabled", () => {
+    expect(supportsSafeRedemptionDeletion).toBe(false);
   });
 
   it("surfaces failed source refreshes with the affected site", () => {
@@ -189,8 +228,15 @@ describe("operations management workspace", () => {
     expect(html).toContain("生成兑换码");
     expect(html).toContain("调整余额");
     expect(html).toContain("新增换算比例");
+    expect(html).toContain("兑换码列表");
+    expect(html).toContain("兑换码状态");
+    expect(html).toContain("创建来源");
+    expect(html).toContain("兑换码或使用账号");
+    expect(html).not.toContain("选择当前页未使用兑换码");
+    expect(html).not.toContain("批量删除");
     expect(html).toContain("余额换算比例");
     expect(html).toContain("每 1 CNY 对应余额");
+    expect(html.indexOf("兑换码列表")).toBeLessThan(html.indexOf("余额换算比例"));
   });
 
   it("keeps operator credit and internal-user tabs read-only", () => {

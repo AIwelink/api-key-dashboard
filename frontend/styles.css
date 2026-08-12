@@ -493,20 +493,26 @@
 }
 
 .growth-link-copy-block {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.growth-link-copy-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   flex-wrap: wrap;
   gap: 6px 8px;
   min-width: 0;
 }
 
-.growth-link-copy-actions {
-  display: grid;
-  flex: 0 0 auto;
-  gap: 4px;
+.growth-link-copy-row a {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
-.growth-link-copy-actions button {
+.growth-link-copy-row button {
+  flex: 0 0 auto;
   min-height: 26px;
   padding: 3px 7px;
   font-size: 11px;
@@ -514,6 +520,11 @@
 }
 
 .growth-link-main > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.growth-link-created-at {
   color: var(--muted);
   font-size: 11px;
 }

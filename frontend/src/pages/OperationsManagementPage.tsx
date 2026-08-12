@@ -1,10 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { GrowthCreateModal } from "../components/GrowthCreateModal";
 import type { OperationsSiteId } from "../types";
 import { errorMessage } from "../utils/format";
+import {
+  RedemptionCodeTable,
+  type RedemptionCodeListResponse,
+  type RedemptionCodeRow,
+} from "./operations/RedemptionCodeTable";
 import "./OperationsManagementPage.css";
 
 type OperationsTab = "overview" | "internal-users" | "credits" | "classification";
@@ -111,6 +116,30 @@ type RefreshResultItem = {
 };
 
 export const conversionRateEffectiveHint = "首次配置留空将覆盖全部历史数据；以后调整留空将从当前时间生效。";
+export const supportsSafeRedemptionDeletion = false;
+
+export function shouldApplyRedemptionResponse(
+  requestId: number,
+  latestRequestId: number,
+  requestSiteId: string,
+  currentSiteId: string,
+) {
+  return requestId === latestRequestId && requestSiteId === currentSiteId;
+}
+
+export function shouldApplyRedemptionReveal(
+  requestId: number,
+  latestRequestId: number,
+  requestSiteId: string,
+  currentSiteId: string,
+  currentTab: OperationsTab,
+  canWrite: boolean,
+) {
+  return requestId === latestRequestId
+    && requestSiteId === currentSiteId
+    && currentTab === "credits"
+    && canWrite;
+}
 
 export type RedemptionForm = {
   site_id: string;
@@ -159,6 +188,46 @@ type ModalState =
   | { kind: "rate" }
   | { kind: "classification"; item: ClassificationTask }
   | null;
+
+type RedemptionResultPanelProps = {
+  codes: string[];
+  onClose: () => void;
+  onCopy: () => void;
+  onDownload: () => void;
+};
+
+type RevealedRedemptionCode = {
+  code_id: number;
+  code: string;
+  code_mask: string;
+  fetched_at: string;
+};
+
+export function RedemptionResultPanel({
+  codes,
+  onClose,
+  onCopy,
+  onDownload,
+}: RedemptionResultPanelProps) {
+  return (
+    <div className="operations-redemption-result" role="dialog" aria-modal="true" aria-labelledby="operations-redemption-result-title">
+      <div className="operations-redemption-result-header">
+        <div>
+          <span className="operations-eyebrow">一次性展示</span>
+          <h3 id="operations-redemption-result-title">兑换码已生成</h3>
+        </div>
+        <button className="ghost icon-button" type="button" aria-label="关闭兑换码结果" onClick={onClose}>×</button>
+      </div>
+      <p className="operations-redemption-result-note">兑换码只在本次响应中显示，Growth 数据库不会保存明文。请立即复制或下载。</p>
+      <textarea className="operations-redemption-result-codes" readOnly value={codes.join("\n")} aria-label="生成的兑换码" />
+      <div className="operations-redemption-result-actions">
+        <button type="button" onClick={onCopy}>复制全部</button>
+        <button className="ghost" type="button" onClick={onDownload}>下载兑换码</button>
+        <button className="ghost" type="button" onClick={onClose}>完成</button>
+      </div>
+    </div>
+  );
+}
 
 const siteOptions: Array<{ value: OperationsSiteId; label: string }> = [
   { value: "aiwelink", label: "AIWeLink" },
@@ -437,6 +506,19 @@ export function OperationsManagementPage(
   const [internalUsers, setInternalUsers] = useState<InternalUser[]>([]);
   const [rates, setRates] = useState<ConversionRate[]>([]);
   const [classificationTasks, setClassificationTasks] = useState<ClassificationTask[]>([]);
+  const [redemptionList, setRedemptionList] = useState<RedemptionCodeListResponse>({ items: [], total: 0, page: 1, page_size: 20, pages: 1, truncated: false });
+  const [redemptionStatus, setRedemptionStatus] = useState("");
+  const [redemptionOrigin, setRedemptionOrigin] = useState("");
+  const [redemptionSearchDraft, setRedemptionSearchDraft] = useState("");
+  const [redemptionSearch, setRedemptionSearch] = useState("");
+  const [redemptionPage, setRedemptionPage] = useState(1);
+  const [revealedRedemption, setRevealedRedemption] = useState<RevealedRedemptionCode | null>(null);
+  const [redemptionLoading, setRedemptionLoading] = useState(false);
+  const redemptionRequestId = useRef(0);
+  const redemptionRevealRequestId = useRef(0);
+  const redemptionSiteId = useRef(defaultSiteFilter);
+  const operationsTab = useRef<OperationsTab>(initialTab);
+  const redemptionCanWrite = useRef(false);
   const [internalSearch, setInternalSearch] = useState("");
   const [internalSite, setInternalSite] = useState(defaultSiteFilter);
   const [creditSite, setCreditSite] = useState(defaultSiteFilter);
@@ -448,6 +530,7 @@ export function OperationsManagementPage(
   const [modal, setModal] = useState<ModalState>(null);
   const [internalDeleteTarget, setInternalDeleteTarget] = useState<InternalUser | null>(null);
   const [saving, setSaving] = useState(false);
+  const [redemptionCodes, setRedemptionCodes] = useState<string[] | null>(null);
   const [internalForm, setInternalForm] = useState<InternalUserForm>(() => ({ ...emptyInternalUserForm, site_id: firstAllowedSiteId }));
   const [redemptionForm, setRedemptionForm] = useState<RedemptionForm>(() => ({ ...emptyRedemptionForm, site_id: firstAllowedSiteId }));
   const [adjustmentForm, setAdjustmentForm] = useState<AdjustmentForm>(() => ({ ...emptyAdjustmentForm, site_id: firstAllowedSiteId }));
@@ -458,6 +541,8 @@ export function OperationsManagementPage(
   }));
   const [classificationForm, setClassificationForm] = useState(emptyClassificationForm);
   const canWrite = canManageOperations(role);
+  operationsTab.current = tab;
+  redemptionCanWrite.current = canWrite;
 
   const queryIsValid = query.range !== "custom" || Boolean(query.startAt && query.endAt && new Date(query.startAt) < new Date(query.endAt));
   const effectiveQuery = useMemo(
@@ -466,6 +551,7 @@ export function OperationsManagementPage(
   );
   const effectiveInternalSite = normalizeSiteFilter(internalSite);
   const effectiveCreditSite = normalizeSiteFilter(creditSite);
+  redemptionSiteId.current = effectiveCreditSite;
   const effectiveClassificationSite = normalizeSiteFilter(classificationSite);
   const operationsQuery = useMemo(
     () => queryIsValid ? buildOperationsQuery(effectiveQuery) : "",
@@ -485,8 +571,16 @@ export function OperationsManagementPage(
     setInternalUsers([]);
     setRates([]);
     setClassificationTasks([]);
+    setRedemptionList({ items: [], total: 0, page: 1, page_size: 20, pages: 1, truncated: false });
+    setRedemptionStatus("");
+    setRedemptionOrigin("");
+    setRedemptionSearchDraft("");
+    setRedemptionSearch("");
+    setRedemptionPage(1);
+    setRevealedRedemption(null);
     setLoadError("");
     setModal(null);
+    setRedemptionCodes(null);
     setInternalDeleteTarget(null);
     setInternalForm({ ...emptyInternalUserForm, site_id: firstAllowedSiteId });
     setRedemptionForm({ ...emptyRedemptionForm, site_id: firstAllowedSiteId });
@@ -556,6 +650,46 @@ export function OperationsManagementPage(
     }
   }
 
+  async function loadRedemptionCodes(background = false) {
+    if (!hasSiteAccess || !effectiveCreditSite) return;
+    const requestSiteId = effectiveCreditSite;
+    const requestId = ++redemptionRequestId.current;
+    if (!background) setRedemptionLoading(true);
+    const request: Record<string, string | number> = {
+      site_id: effectiveCreditSite,
+      page: redemptionPage,
+      page_size: 20,
+    };
+    if (redemptionStatus) request.status = redemptionStatus;
+    if (redemptionOrigin) request.origin = redemptionOrigin;
+    if (redemptionSearch) request.search = redemptionSearch;
+    try {
+      const data = await api<RedemptionCodeListResponse>("/operations/redemption-codes/query", token, {
+        method: "POST",
+        body: JSON.stringify(request),
+      });
+      if (!shouldApplyRedemptionResponse(
+        requestId,
+        redemptionRequestId.current,
+        requestSiteId,
+        redemptionSiteId.current,
+      )) return;
+      setRedemptionList(data);
+    } catch (error) {
+      if (!shouldApplyRedemptionResponse(
+        requestId,
+        redemptionRequestId.current,
+        requestSiteId,
+        redemptionSiteId.current,
+      )) return;
+      const message = errorMessage(error);
+      setLoadError(message);
+      if (background) showToast(message, true);
+    } finally {
+      if (!background && requestId === redemptionRequestId.current) setRedemptionLoading(false);
+    }
+  }
+
   async function loadClassification(background = false) {
     if (!hasSiteAccess) return;
     if (!background) setLoading(true);
@@ -578,9 +712,18 @@ export function OperationsManagementPage(
     if (!hasSiteAccess) return;
     if (tab === "overview") void loadOverview();
     if (tab === "internal-users") void loadInternalUsers();
-    if (tab === "credits") void loadRates();
+    if (tab === "credits") {
+      void loadRates();
+      void loadRedemptionCodes();
+    }
     if (tab === "classification") void loadClassification();
-  }, [tab, operationsQuery, effectiveInternalSite, effectiveCreditSite, effectiveClassificationSite, classificationStatus, token, hasSiteAccess]);
+  }, [tab, operationsQuery, effectiveInternalSite, effectiveCreditSite, effectiveClassificationSite, classificationStatus, redemptionStatus, redemptionOrigin, redemptionSearch, redemptionPage, token, hasSiteAccess]);
+
+  useEffect(() => {
+    if (tab === "credits") return;
+    redemptionRevealRequestId.current += 1;
+    setRevealedRedemption(null);
+  }, [tab]);
 
   async function refreshSources() {
     if (!hasSiteAccess) return;
@@ -663,14 +806,60 @@ export function OperationsManagementPage(
     if (!canWrite || !allowedSiteSet.has(redemptionForm.site_id as OperationsSiteId)) return;
     setSaving(true);
     try {
-      await api("/operations/redemption-batches", token, { method: "POST", body: JSON.stringify(buildRedemptionPayload(redemptionForm, idempotencyKey("redemption"))) });
+      const result = await api<{ codes?: string[] }>("/operations/redemption-batches", token, { method: "POST", body: JSON.stringify(buildRedemptionPayload(redemptionForm, idempotencyKey("redemption"))) });
       setModal(null);
-      showToast("兑换码批次已生成");
+      if (result.codes?.length) {
+        setRedemptionCodes(result.codes);
+        await loadRedemptionCodes(true);
+      } else {
+        showToast("该幂等批次已处理，明文兑换码不会再次显示", true);
+      }
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
       setSaving(false);
     }
+  }
+
+  async function revealRedemptionCode(row: RedemptionCodeRow) {
+    if (!canWrite || !allowedSiteSet.has(row.site_id as OperationsSiteId)) return;
+    const requestId = ++redemptionRevealRequestId.current;
+    const requestSiteId = row.site_id;
+    try {
+      const result = await api<RevealedRedemptionCode>(
+        `/operations/redemption-codes/${encodeURIComponent(row.site_id)}/${row.id}/reveal`,
+        token,
+      );
+      if (!shouldApplyRedemptionReveal(
+        requestId,
+        redemptionRevealRequestId.current,
+        requestSiteId,
+        redemptionSiteId.current,
+        operationsTab.current,
+        redemptionCanWrite.current,
+      )) return;
+      setRevealedRedemption(result);
+    } catch (error) {
+      if (requestId !== redemptionRevealRequestId.current) return;
+      showToast(errorMessage(error), true);
+    }
+  }
+
+  function copyRedemptionCodes() {
+    if (!redemptionCodes?.length) return;
+    void navigator.clipboard?.writeText(redemptionCodes.join("\n"));
+    showToast("兑换码已复制");
+  }
+
+  function downloadRedemptionCodes() {
+    if (!redemptionCodes?.length) return;
+    const blob = new Blob([`${redemptionCodes.join("\n")}\n`], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `redemption-codes-${new Date().toISOString().slice(0, 10)}.txt`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
 
   async function saveAdjustment() {
@@ -854,9 +1043,18 @@ export function OperationsManagementPage(
       {tab === "credits" && (
         <div className="operations-tab-content">
           <div className="operations-query-bar operations-list-query">
-            <label><span>站点</span><SiteSelect sites={allowedSites} includeAll={showAllSites} value={effectiveCreditSite} onChange={setCreditSite} /></label>
-            {canWrite && <div className="operations-command-group"><button type="button" onClick={() => { setRedemptionForm({ ...emptyRedemptionForm, site_id: firstAllowedSiteId }); setModal({ kind: "redemption" }); }}>生成兑换码</button><button className="ghost" type="button" onClick={() => { setAdjustmentForm({ ...emptyAdjustmentForm, site_id: firstAllowedSiteId }); setModal({ kind: "adjustment" }); }}>调整余额</button><button className="ghost" type="button" onClick={() => { setConversionForm({ ...emptyConversionForm, site_id: firstAllowedSiteId, balance_units_per_cny: firstAllowedSiteId === "aigclink" ? "1" : "10" }); setModal({ kind: "rate" }); }}>新增换算比例</button></div>}
+            <label><span>站点</span><SiteSelect sites={allowedSites} includeAll={false} value={effectiveCreditSite} onChange={(value) => { setCreditSite(value); setRedemptionPage(1); setRevealedRedemption(null); }} /></label>
+            <label><span>兑换码状态</span><select value={redemptionStatus} onChange={(event) => { setRedemptionStatus(event.target.value); setRedemptionPage(1); }}><option value="">全部状态</option><option value="unused">未使用</option><option value="used">已使用</option><option value="expired">已过期</option><option value="disabled">已禁用</option></select></label>
+            <label><span>创建来源</span><select value={redemptionOrigin} onChange={(event) => { setRedemptionOrigin(event.target.value); setRedemptionPage(1); }}><option value="">全部来源</option><option value="management_panel">管理面板创建</option><option value="api_site">API站点创建</option></select></label>
+            <label className="operations-search-field"><span>兑换码或使用账号</span><input value={redemptionSearchDraft} onChange={(event) => setRedemptionSearchDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { setRedemptionSearch(redemptionSearchDraft.trim()); setRedemptionPage(1); } }} placeholder="掩码、兑换码或账号" /></label>
+            <button className="ghost" type="button" onClick={() => { setRedemptionSearch(redemptionSearchDraft.trim()); setRedemptionPage(1); }} disabled={redemptionLoading}>查询</button>
+            {canWrite && <div className="operations-command-group"><button type="button" onClick={() => { setRedemptionForm({ ...emptyRedemptionForm, site_id: effectiveCreditSite }); setModal({ kind: "redemption" }); }}>生成兑换码</button><button className="ghost" type="button" onClick={() => { setAdjustmentForm({ ...emptyAdjustmentForm, site_id: effectiveCreditSite }); setModal({ kind: "adjustment" }); }}>调整余额</button><button className="ghost" type="button" onClick={() => { setConversionForm({ ...emptyConversionForm, site_id: effectiveCreditSite, balance_units_per_cny: effectiveCreditSite === "aigclink" ? "1" : "10" }); setModal({ kind: "rate" }); }}>新增换算比例</button></div>}
           </div>
+          <section className="operations-data-section">
+            <div className="operations-section-head"><div><h3>兑换码列表</h3><span>当前账号创建的兑换码优先，其余按创建时间从新到旧排列</span></div></div>
+            {redemptionList.truncated && <div className="operations-readonly-note">API 站点兑换码超过 10000 条，当前查询仅展示最新数据。请增加状态或关键词筛选。</div>}
+            <RedemptionCodeTable canDelete={supportsSafeRedemptionDeletion} canWrite={canWrite} loading={redemptionLoading} onDelete={() => undefined} onPageChange={setRedemptionPage} onReveal={revealRedemptionCode} onSelectionChange={() => undefined} page={redemptionList.page || redemptionPage} pages={redemptionList.pages || 1} rows={redemptionList.items} selectedIds={new Set()} total={redemptionList.total} />
+          </section>
           <section className="operations-data-section">
             <div className="operations-section-head"><div><h3>余额换算比例</h3><span>用于把不同系统的余额统一换算为 CNY 口径，按生效时间保留历史版本</span></div><span>{visibleRates.length} 条记录</span></div>
             <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>每 1 CNY 对应余额</th><th>生效时间</th><th>失效时间</th><th>备注</th></tr></thead><tbody>{visibleRates.length ? visibleRates.map((item) => <tr key={item.conversion_rate_id}><td>{siteLabel(item.site_id)}</td><td><strong>{formatNumber(item.balance_units_per_cny, 10)}</strong></td><td>{formatDateTime(item.effective_from)}</td><td>{formatDateTime(item.effective_until)}</td><td>{item.note || "-"}</td></tr>) : <EmptyRow columns={5} text={loading ? "正在加载..." : "暂无换算比例"} />}</tbody></table></div>
@@ -881,6 +1079,10 @@ export function OperationsManagementPage(
       {modal?.kind === "internal" && <GrowthCreateModal title={modal.item ? "编辑内部人员" : "添加内部人员"} submitLabel={modal.item ? "保存修改" : "确认添加"} saving={saving} submitDisabled={!internalForm.site_id || !internalForm.email.trim()} onClose={() => setModal(null)} onSubmit={saveInternal}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect sites={allowedSites} includeAll={false} value={internalForm.site_id} onChange={(site_id) => setInternalForm({ ...internalForm, site_id })} /></label><label><span className="field-label"><strong>邮箱</strong></span><input type="email" autoComplete="off" value={internalForm.email} onChange={(event) => setInternalForm({ ...internalForm, email: event.target.value })} required /></label><label className="span-2"><span className="field-label"><strong>标记原因</strong><span>（可选）</span></span><input value={internalForm.reason} onChange={(event) => setInternalForm({ ...internalForm, reason: event.target.value })} /></label><label><span className="field-label"><strong>生效时间</strong></span><input type="datetime-local" value={internalForm.active_from} onChange={(event) => setInternalForm({ ...internalForm, active_from: event.target.value })} /></label><label><span className="field-label"><strong>失效时间</strong><span>（可选）</span></span><input type="datetime-local" value={internalForm.active_until} onChange={(event) => setInternalForm({ ...internalForm, active_until: event.target.value })} /></label></div></GrowthCreateModal>}
 
       {modal?.kind === "redemption" && <GrowthCreateModal title="生成兑换码" submitLabel="生成兑换码" saving={saving} submitDisabled={!redemptionForm.site_id || Number(redemptionForm.code_count) <= 0 || Number(redemptionForm.balance_units_per_code) <= 0 || (redemptionForm.purpose === "sale" && Number(redemptionForm.cash_amount_cny) <= 0)} onClose={() => setModal(null)} onSubmit={saveRedemption}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect sites={allowedSites} includeAll={false} value={redemptionForm.site_id} onChange={(site_id) => setRedemptionForm({ ...redemptionForm, site_id })} /></label><PurposeFields purpose={redemptionForm.purpose} cash={redemptionForm.cash_amount_cny} onPurpose={(purpose) => setRedemptionForm({ ...redemptionForm, purpose, cash_amount_cny: purpose === "sale" ? redemptionForm.cash_amount_cny : "0" })} onCash={(cash_amount_cny) => setRedemptionForm({ ...redemptionForm, cash_amount_cny })} /><label><span className="field-label"><strong>兑换码数量</strong></span><input type="number" min="1" max="10000" value={redemptionForm.code_count} onChange={(event) => setRedemptionForm({ ...redemptionForm, code_count: event.target.value })} /></label><label><span className="field-label"><strong>每个兑换码额度</strong></span><input type="number" min="0" step="any" value={redemptionForm.balance_units_per_code} onChange={(event) => setRedemptionForm({ ...redemptionForm, balance_units_per_code: event.target.value })} /></label><label className="span-2"><span className="field-label"><strong>备注</strong><span>（可选）</span></span><textarea value={redemptionForm.note} onChange={(event) => setRedemptionForm({ ...redemptionForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
+
+      {redemptionCodes && <div className="operations-redemption-result-backdrop"><RedemptionResultPanel codes={redemptionCodes} onClose={() => setRedemptionCodes(null)} onCopy={copyRedemptionCodes} onDownload={downloadRedemptionCodes} /></div>}
+
+      {revealedRedemption && <div className="operations-redemption-result-backdrop"><div className="operations-redemption-result" role="dialog" aria-modal="true" aria-labelledby="operations-reveal-title"><div className="operations-redemption-result-header"><div><span className="operations-eyebrow">临时查看</span><h3 id="operations-reveal-title">兑换码明文</h3></div><button className="ghost icon-button" type="button" aria-label="关闭兑换码明文" onClick={() => setRevealedRedemption(null)}>×</button></div><p className="operations-redemption-result-note">关闭后将立即清除本次明文，不会保存到管理面板数据库。</p><input aria-label="兑换码明文" className="operations-revealed-code" readOnly value={revealedRedemption.code} /><div className="operations-redemption-result-actions"><button type="button" onClick={() => { void navigator.clipboard?.writeText(revealedRedemption.code); showToast("兑换码已复制"); }}>复制</button><button className="ghost" type="button" onClick={() => setRevealedRedemption(null)}>关闭</button></div></div></div>}
 
       {modal?.kind === "adjustment" && <GrowthCreateModal title="调整余额" submitLabel="提交调整" saving={saving} submitDisabled={!adjustmentForm.site_id || !adjustmentForm.external_user_id.trim() || Number(adjustmentForm.balance_units) === 0 || (adjustmentForm.purpose === "sale" && Number(adjustmentForm.cash_amount_cny) <= 0)} onClose={() => setModal(null)} onSubmit={saveAdjustment}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect sites={allowedSites} includeAll={false} value={adjustmentForm.site_id} onChange={(site_id) => setAdjustmentForm({ ...adjustmentForm, site_id })} /></label><label><span className="field-label"><strong>业务用户 ID</strong></span><input value={adjustmentForm.external_user_id} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, external_user_id: event.target.value })} /></label><PurposeFields purpose={adjustmentForm.purpose} cash={adjustmentForm.cash_amount_cny} onPurpose={(purpose) => setAdjustmentForm({ ...adjustmentForm, purpose, cash_amount_cny: purpose === "sale" ? adjustmentForm.cash_amount_cny : "0" })} onCash={(cash_amount_cny) => setAdjustmentForm({ ...adjustmentForm, cash_amount_cny })} /><label><span className="field-label"><strong>调整额度</strong></span><input type="number" step="any" value={adjustmentForm.balance_units} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, balance_units: event.target.value })} /><span className="growth-field-message is-muted">增加填正数，扣减填负数</span></label><label className="span-2"><span className="field-label"><strong>备注</strong><span>（可选）</span></span><textarea value={adjustmentForm.note} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
 

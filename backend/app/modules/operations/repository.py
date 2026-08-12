@@ -496,6 +496,116 @@ async def create_redemption_batch_request(
     return _one(result) or {}
 
 
+async def list_redemption_batch_attributions(
+    connection: Any,
+    *,
+    site_id: str,
+) -> list[dict[str, Any]]:
+    result = await connection.execute(
+        text(
+            """
+            SELECT redemption_batch_id,
+                   site_id,
+                   source_batch_id,
+                   code_masks,
+                   requested_by,
+                   created_at
+            FROM growth.redemption_batches
+            WHERE site_id = :site_id
+              AND command_status = 'succeeded'
+              AND source_batch_id IS NOT NULL
+              AND source_batch_id <> ''
+            ORDER BY created_at DESC, redemption_batch_id DESC
+            """
+        ),
+        {"site_id": site_id},
+    )
+    return _all(result)
+
+
+async def get_redemption_batch_by_idempotency(
+    connection: Any,
+    *,
+    site_id: str,
+    idempotency_key: str,
+) -> dict[str, Any] | None:
+    result = await connection.execute(
+        text(
+            """
+            SELECT *
+            FROM growth.redemption_batches
+            WHERE site_id = :site_id
+              AND idempotency_key = :idempotency_key
+            LIMIT 1
+            """
+        ),
+        {"site_id": site_id, "idempotency_key": idempotency_key},
+    )
+    return _one(result)
+
+
+async def complete_redemption_batch(
+    connection: Any,
+    *,
+    redemption_batch_id: UUID,
+    source_batch_id: str,
+    code_hashes: list[str],
+    code_masks: list[str],
+) -> dict[str, Any]:
+    result = await connection.execute(
+        text(
+            """
+            UPDATE growth.redemption_batches
+            SET command_status = 'succeeded',
+                source_batch_id = :source_batch_id,
+                code_hashes = CAST(:code_hashes AS JSONB),
+                code_masks = CAST(:code_masks AS JSONB),
+                completed_at = NOW(),
+                error_code = '',
+                error_message = ''
+            WHERE redemption_batch_id = :redemption_batch_id
+            RETURNING *
+            """
+        ),
+        {
+            "redemption_batch_id": redemption_batch_id,
+            "source_batch_id": source_batch_id,
+            "code_hashes": json.dumps(code_hashes),
+            "code_masks": json.dumps(code_masks),
+        },
+    )
+    return _one(result) or {}
+
+
+async def fail_redemption_batch(
+    connection: Any,
+    *,
+    redemption_batch_id: UUID,
+    error_code: str,
+    error_message: str,
+) -> dict[str, Any]:
+    result = await connection.execute(
+        text(
+            """
+            UPDATE growth.redemption_batches
+            SET command_status = 'failed',
+                completed_at = NOW(),
+                error_code = :error_code,
+                error_message = :error_message
+            WHERE redemption_batch_id = :redemption_batch_id
+              AND command_status <> 'succeeded'
+            RETURNING *
+            """
+        ),
+        {
+            "redemption_batch_id": redemption_batch_id,
+            "error_code": error_code[:120],
+            "error_message": error_message[:500],
+        },
+    )
+    return _one(result) or {}
+
+
 async def create_balance_adjustment_request(
     connection: Any,
     payload: BalanceAdjustmentCreate,
@@ -824,7 +934,9 @@ async def list_classification_tasks(
              AND snapshot.external_user_id = event.external_user_id
             WHERE task.site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
               AND task.status = :status
-            ORDER BY task.created_at DESC
+            ORDER BY event.occurred_at DESC,
+                     task.created_at DESC,
+                     task.classification_task_id DESC
             """
         ),
         {"allowed_site_ids": allowed_site_ids, "status": status},
