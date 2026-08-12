@@ -482,6 +482,24 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("UPDATE growth.credit_events", statement)
         self.assertEqual(parameters["actor_id"], "owner")
 
+    async def test_classification_tasks_sort_by_business_occurrence_time(self) -> None:
+        from app.modules.operations.repository import list_classification_tasks
+
+        connection = _FakeConnection([None])
+
+        await list_classification_tasks(
+            connection,
+            allowed_site_ids=("aiwelink",),
+        )
+
+        statement, _ = connection.calls[0]
+        normalized_statement = " ".join(statement.split())
+        self.assertIn(
+            "ORDER BY event.occurred_at DESC, task.created_at DESC, "
+            "task.classification_task_id DESC",
+            normalized_statement,
+        )
+
     async def test_summary_query_uses_bound_filters(self) -> None:
         from app.modules.operations.repository import get_operations_summary
 

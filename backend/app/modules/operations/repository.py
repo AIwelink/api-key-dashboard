@@ -934,7 +934,9 @@ async def list_classification_tasks(
              AND snapshot.external_user_id = event.external_user_id
             WHERE task.site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
               AND task.status = :status
-            ORDER BY task.created_at DESC
+            ORDER BY event.occurred_at DESC,
+                     task.created_at DESC,
+                     task.classification_task_id DESC
             """
         ),
         {"allowed_site_ids": allowed_site_ids, "status": status},
