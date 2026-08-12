@@ -991,7 +991,17 @@ async def get_operations_summary(
                        COALESCE(SUM(usage.successful_call_count), 0) AS successful_call_count,
                        COALESCE(SUM(usage.consumed_balance_units), 0) AS consumed_balance_units,
                        COALESCE(SUM(usage.cost_cny), 0) AS cost_cny,
-                       COALESCE(SUM(usage.cost_cny) FILTER (
+                       COUNT(DISTINCT usage.external_user_id) FILTER (
+                           WHERE usage.site_id = 'aigclink'
+                             AND NOT snapshot.is_internal
+                             AND usage.billed_amount_cny > 0
+                       ) AS aigclink_payer_count,
+                       COUNT(*) FILTER (
+                           WHERE usage.site_id = 'aigclink'
+                             AND NOT snapshot.is_internal
+                             AND usage.billed_amount_cny > 0
+                       ) AS aigclink_sale_event_count,
+                       COALESCE(SUM(usage.billed_amount_cny) FILTER (
                            WHERE usage.site_id = 'aigclink'
                              AND NOT snapshot.is_internal
                        ), 0) AS aigclink_income_cny
@@ -1002,11 +1012,17 @@ async def get_operations_summary(
                 WHERE usage.occurred_at >= :start_at AND usage.occurred_at < :end_at
             ), credit_metrics AS (
                 SELECT COUNT(DISTINCT event.external_user_id) FILTER (
-                           WHERE event.direction = 'credit' AND event.purpose = 'sale'
-                       ) AS payer_count,
+                           WHERE event.site_id <> 'aigclink'
+                             AND event.direction = 'credit'
+                             AND event.purpose = 'sale'
+                             AND event.cash_amount_cny > 0
+                       ) AS aiwelink_payer_count,
                        COUNT(*) FILTER (
-                           WHERE event.direction = 'credit' AND event.purpose = 'sale'
-                       ) AS sale_event_count,
+                           WHERE event.site_id <> 'aigclink'
+                             AND event.direction = 'credit'
+                             AND event.purpose = 'sale'
+                             AND event.cash_amount_cny > 0
+                       ) AS aiwelink_sale_event_count,
                        COALESCE(SUM(event.cash_amount_cny) FILTER (
                            WHERE event.direction = 'credit'
                              AND event.purpose = 'sale'
@@ -1027,8 +1043,10 @@ async def get_operations_summary(
                    usage_metrics.successful_call_count,
                    usage_metrics.consumed_balance_units,
                    usage_metrics.cost_cny,
-                   credit_metrics.payer_count,
-                   credit_metrics.sale_event_count,
+                   usage_metrics.aigclink_payer_count
+                       + credit_metrics.aiwelink_payer_count AS payer_count,
+                   usage_metrics.aigclink_sale_event_count
+                       + credit_metrics.aiwelink_sale_event_count AS sale_event_count,
                    usage_metrics.aigclink_income_cny
                        + credit_metrics.aiwelink_income_cny AS gross_income_cny,
                    credit_metrics.refund_cny,
@@ -1081,7 +1099,17 @@ async def get_operations_site_breakdown(
                        COALESCE(SUM(usage.successful_call_count), 0) AS successful_call_count,
                        COALESCE(SUM(usage.consumed_balance_units), 0) AS consumed_balance_units,
                        COALESCE(SUM(usage.cost_cny), 0) AS cost_cny,
-                       COALESCE(SUM(usage.cost_cny) FILTER (
+                       COUNT(DISTINCT usage.external_user_id) FILTER (
+                           WHERE usage.site_id = 'aigclink'
+                             AND NOT snapshot.is_internal
+                             AND usage.billed_amount_cny > 0
+                       ) AS aigclink_payer_count,
+                       COUNT(*) FILTER (
+                           WHERE usage.site_id = 'aigclink'
+                             AND NOT snapshot.is_internal
+                             AND usage.billed_amount_cny > 0
+                       ) AS aigclink_sale_event_count,
+                       COALESCE(SUM(usage.billed_amount_cny) FILTER (
                            WHERE usage.site_id = 'aigclink'
                              AND NOT snapshot.is_internal
                        ), 0) AS aigclink_income_cny
@@ -1095,11 +1123,17 @@ async def get_operations_site_breakdown(
             ), credit_metrics AS (
                 SELECT event.site_id,
                        COUNT(DISTINCT event.external_user_id) FILTER (
-                           WHERE event.direction = 'credit' AND event.purpose = 'sale'
-                       ) AS payer_count,
+                           WHERE event.site_id <> 'aigclink'
+                             AND event.direction = 'credit'
+                             AND event.purpose = 'sale'
+                             AND event.cash_amount_cny > 0
+                       ) AS aiwelink_payer_count,
                        COUNT(*) FILTER (
-                           WHERE event.direction = 'credit' AND event.purpose = 'sale'
-                       ) AS sale_event_count,
+                           WHERE event.site_id <> 'aigclink'
+                             AND event.direction = 'credit'
+                             AND event.purpose = 'sale'
+                             AND event.cash_amount_cny > 0
+                       ) AS aiwelink_sale_event_count,
                        COALESCE(SUM(event.cash_amount_cny) FILTER (
                            WHERE event.direction = 'credit'
                              AND event.purpose = 'sale'
@@ -1123,8 +1157,10 @@ async def get_operations_site_breakdown(
                    COALESCE(usage.successful_call_count, 0) AS successful_call_count,
                    COALESCE(usage.consumed_balance_units, 0) AS consumed_balance_units,
                    COALESCE(usage.cost_cny, 0) AS cost_cny,
-                   COALESCE(credit.payer_count, 0) AS payer_count,
-                   COALESCE(credit.sale_event_count, 0) AS sale_event_count,
+                   COALESCE(usage.aigclink_payer_count, 0)
+                       + COALESCE(credit.aiwelink_payer_count, 0) AS payer_count,
+                   COALESCE(usage.aigclink_sale_event_count, 0)
+                       + COALESCE(credit.aiwelink_sale_event_count, 0) AS sale_event_count,
                    COALESCE(usage.aigclink_income_cny, 0)
                        + COALESCE(credit.aiwelink_income_cny, 0) AS gross_income_cny,
                    COALESCE(credit.refund_cny, 0) AS refund_cny,
@@ -1159,17 +1195,6 @@ async def get_operations_trends(
     hourly = end_at - start_at <= timedelta(hours=48)
     table_name = "ops_hourly_stats" if hourly else "ops_daily_stats"
     bucket_name = "bucket_start" if hourly else "bucket_date"
-    timezone_join = "AND ordinary.timezone = stats.timezone" if not hourly else ""
-    income_expression = """
-        COALESCE(
-            CASE
-                WHEN stats.site_id = 'aigclink' AND stats.user_segment = 'internal' THEN 0
-                WHEN stats.site_id = 'aigclink' THEN ordinary.cost_cny
-                ELSE stats.gross_income_cny
-            END,
-            0
-        )
-    """.strip()
     result = await connection.execute(
         text(
             f"""
@@ -1177,16 +1202,11 @@ async def get_operations_trends(
                    stats.registered_user_count, stats.active_user_count,
                    stats.successful_call_count, stats.consumed_balance_units,
                    stats.cost_cny, stats.payer_count, stats.sale_event_count,
-                   {income_expression} AS gross_income_cny,
+                   stats.gross_income_cny,
                    stats.refund_cny,
-                   {income_expression} - stats.refund_cny AS net_income_cny,
+                   stats.gross_income_cny - stats.refund_cny AS net_income_cny,
                    stats.computed_at
             FROM growth.{table_name} AS stats
-            LEFT JOIN growth.{table_name} AS ordinary
-              ON ordinary.site_id = stats.site_id
-             AND ordinary.{bucket_name} = stats.{bucket_name}
-             AND ordinary.user_segment = 'ordinary'
-             {timezone_join}
             WHERE stats.site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
               AND stats.user_segment = :segment
               AND stats.{bucket_name} >= :start_at
@@ -1486,10 +1506,17 @@ async def _replace_aggregate_table(
                 UNION ALL
                 SELECT usage.site_id, usage.external_user_id, usage.occurred_at,
                        snapshot.is_internal, 0, usage.successful_call_count,
-                       usage.consumed_balance_units, usage.cost_cny, 0,
+                       usage.consumed_balance_units, usage.cost_cny,
+                       CASE
+                           WHEN usage.site_id = 'aigclink'
+                            AND NOT snapshot.is_internal
+                            AND usage.billed_amount_cny > 0
+                           THEN 1
+                           ELSE 0
+                       END,
                        CASE
                            WHEN usage.site_id = 'aigclink' AND NOT snapshot.is_internal
-                           THEN usage.cost_cny
+                           THEN usage.billed_amount_cny
                            ELSE 0
                        END,
                        0
@@ -1503,7 +1530,14 @@ async def _replace_aggregate_table(
                 UNION ALL
                 SELECT event.site_id, event.external_user_id, event.occurred_at,
                        snapshot.is_internal, 0, 0, 0, 0,
-                       CASE WHEN event.direction = 'credit' AND event.purpose = 'sale' THEN 1 ELSE 0 END,
+                       CASE
+                           WHEN event.site_id <> 'aigclink'
+                            AND event.direction = 'credit'
+                            AND event.purpose = 'sale'
+                            AND event.cash_amount_cny > 0
+                           THEN 1
+                           ELSE 0
+                       END,
                        CASE
                            WHEN event.site_id <> 'aigclink'
                             AND event.direction = 'credit'

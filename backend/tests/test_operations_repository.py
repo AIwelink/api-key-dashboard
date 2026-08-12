@@ -514,7 +514,7 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parameters["allowed_site_ids"], ("aiwelink",))
         self.assertEqual(parameters["segment"], "ordinary")
 
-    async def test_summary_uses_usage_revenue_only_for_ordinary_aigclink_users(self) -> None:
+    async def test_summary_uses_source_priced_revenue_and_billed_aigclink_customers(self) -> None:
         from app.modules.operations.repository import get_operations_summary
 
         connection = _FakeConnection([{"gross_income_cny": Decimal("12") }])
@@ -530,10 +530,12 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         statement, _ = connection.calls[0]
         self.assertIn("usage.site_id = 'aigclink'", statement)
         self.assertIn("NOT snapshot.is_internal", statement)
-        self.assertIn("SUM(usage.cost_cny)", statement)
+        self.assertIn("SUM(usage.billed_amount_cny)", statement)
+        self.assertIn("usage.billed_amount_cny > 0", statement)
+        self.assertIn("aigclink_payer_count", statement)
         self.assertIn("event.site_id <> 'aigclink'", statement)
 
-    async def test_trends_derive_historical_aigclink_revenue_from_ordinary_cost(self) -> None:
+    async def test_trends_use_v3_aggregate_income_without_cost_reinterpretation(self) -> None:
         from app.modules.operations.repository import get_operations_trends
 
         connection = _FakeConnection([None])
@@ -548,10 +550,8 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
         statement, _ = connection.calls[0]
         self.assertIn("FROM growth.ops_hourly_stats AS stats", statement)
-        self.assertIn("LEFT JOIN growth.ops_hourly_stats AS ordinary", statement)
-        self.assertIn("stats.site_id = 'aigclink'", statement)
-        self.assertIn("stats.user_segment = 'internal'", statement)
-        self.assertIn("THEN ordinary.cost_cny", statement)
+        self.assertIn("stats.gross_income_cny", statement)
+        self.assertNotIn("ordinary.cost_cny", statement)
 
     async def test_site_breakdown_groups_current_metrics_by_authorized_site(self) -> None:
         from app.modules.operations.repository import get_operations_site_breakdown
@@ -579,7 +579,27 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("GROUP BY usage.site_id", statement)
         self.assertIn("event.site_id <> 'aigclink'", statement)
         self.assertIn("NOT snapshot.is_internal", statement)
+        self.assertIn("SUM(usage.billed_amount_cny)", statement)
+        self.assertIn("usage.billed_amount_cny > 0", statement)
         self.assertEqual(parameters["allowed_site_ids"], ("aigclink",))
+
+    async def test_aggregate_income_uses_billed_usage_only_for_ordinary_aigclink_users(self) -> None:
+        from app.modules.operations import repository
+
+        connection = _FakeConnection([None, None, None, None])
+
+        await repository.replace_affected_aggregates(
+            connection,
+            site_id="aigclink",
+            start_at=NOW,
+            end_at=NOW,
+        )
+
+        statements = "\n".join(statement for statement, _ in connection.calls)
+        self.assertIn("usage.billed_amount_cny", statements)
+        self.assertIn("usage.billed_amount_cny > 0", statements)
+        self.assertIn("NOT snapshot.is_internal", statements)
+        self.assertIn("event.site_id <> 'aigclink'", statements)
 
     async def test_all_user_facing_reads_require_bound_site_collections(self) -> None:
         from app.modules.operations import repository
