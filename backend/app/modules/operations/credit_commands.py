@@ -46,6 +46,23 @@ class Sub2ApiCreditCommandAdapter:
             ),
         }
 
+    async def list_redemption_codes(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        status_filter: str | None,
+        search: str | None,
+    ) -> dict[str, Any]:
+        return await self.client.list_redemption_codes(
+            page=page,
+            page_size=page_size,
+            status_filter=status_filter,
+            search=search,
+        )
+
+    async def get_redemption_code(self, *, code_id: int) -> dict[str, Any]:
+        return await self.client.get_redemption_code(code_id)
 
 def create_credit_command_adapter(site: dict[str, Any]):
     client_type = str(site.get("client_type") or "").strip().lower()

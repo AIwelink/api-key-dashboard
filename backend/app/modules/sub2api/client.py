@@ -147,7 +147,11 @@ class Sub2ApiClient:
         if response.status_code >= 400:
             message = payload.get("message") if isinstance(payload, dict) else None
             raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
+                status_code=(
+                    status.HTTP_404_NOT_FOUND
+                    if response.status_code == status.HTTP_404_NOT_FOUND
+                    else status.HTTP_502_BAD_GATEWAY
+                ),
                 detail=message or f"sub2api {method} {target_url} failed with status {response.status_code}",
             )
         return payload if isinstance(payload, dict) else {"data": payload}
@@ -211,6 +215,70 @@ class Sub2ApiClient:
             plaintext_codes.add(code)
             normalized.append(item | {"code": code})
         return normalized
+
+    async def list_redemption_codes(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        status_filter: str | None = None,
+        search: str | None = None,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> dict[str, Any]:
+        if page < 1:
+            raise ValueError("Sub2API redemption page must be positive")
+        if not 1 <= page_size <= 1000:
+            raise ValueError("Sub2API redemption page size must be between 1 and 1000")
+        params: dict[str, Any] = {
+            "page": page,
+            "page_size": page_size,
+        }
+        if status_filter:
+            params["status"] = status_filter
+        if search:
+            params["search"] = search
+        params["sort_by"] = "created_at"
+        params["sort_order"] = "desc"
+        if http_client is None:
+            response = await self.request_admin("GET", "/redeem-codes", params=params)
+        else:
+            response = await self._request_admin_with_client(
+                http_client,
+                "GET",
+                "/redeem-codes",
+                params=params,
+            )
+        data = response.get("data", response)
+        if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Sub2API returned an invalid redemption code list",
+            )
+        return data
+
+    async def get_redemption_code(
+        self,
+        code_id: int,
+        *,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> dict[str, Any]:
+        if code_id <= 0:
+            raise ValueError("Sub2API redemption code ID must be positive")
+        if http_client is None:
+            response = await self.request_admin("GET", f"/redeem-codes/{code_id}")
+        else:
+            response = await self._request_admin_with_client(
+                http_client,
+                "GET",
+                f"/redeem-codes/{code_id}",
+            )
+        data = response.get("data", response)
+        if not isinstance(data, dict) or int(data.get("id") or 0) != code_id:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Sub2API returned an invalid redemption code record",
+            )
+        return data
 
     async def create_account(self, payload: dict[str, Any]) -> dict[str, Any]:
         response = await self.request_admin("POST", "/accounts", json=payload)

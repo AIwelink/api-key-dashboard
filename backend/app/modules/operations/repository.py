@@ -496,6 +496,33 @@ async def create_redemption_batch_request(
     return _one(result) or {}
 
 
+async def list_redemption_batch_attributions(
+    connection: Any,
+    *,
+    site_id: str,
+) -> list[dict[str, Any]]:
+    result = await connection.execute(
+        text(
+            """
+            SELECT redemption_batch_id,
+                   site_id,
+                   source_batch_id,
+                   code_masks,
+                   requested_by,
+                   created_at
+            FROM growth.redemption_batches
+            WHERE site_id = :site_id
+              AND command_status = 'succeeded'
+              AND source_batch_id IS NOT NULL
+              AND source_batch_id <> ''
+            ORDER BY created_at DESC, redemption_batch_id DESC
+            """
+        ),
+        {"site_id": site_id},
+    )
+    return _all(result)
+
+
 async def get_redemption_batch_by_idempotency(
     connection: Any,
     *,

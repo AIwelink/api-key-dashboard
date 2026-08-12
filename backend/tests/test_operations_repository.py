@@ -13,6 +13,32 @@ NOW = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
 
 
 class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_redemption_batch_attributions_returns_safe_join_fields(self) -> None:
+        from app.modules.operations.repository import list_redemption_batch_attributions
+
+        connection = _FakeConnection(
+            [
+                {
+                    "redemption_batch_id": uuid4(),
+                    "site_id": "aiwelink",
+                    "source_batch_id": "101,102",
+                    "code_masks": ["rede...lpha", "rede...beta"],
+                    "requested_by": "owner-1",
+                    "created_at": NOW,
+                }
+            ]
+        )
+
+        rows = await list_redemption_batch_attributions(connection, site_id="aiwelink")
+
+        self.assertEqual(rows[0]["source_batch_id"], "101,102")
+        statement, parameters = connection.calls[0]
+        self.assertIn("growth.redemption_batches", statement)
+        self.assertIn("command_status = 'succeeded'", statement)
+        self.assertIn("ORDER BY created_at DESC", statement)
+        self.assertNotIn("code_hashes", statement)
+        self.assertEqual(parameters, {"site_id": "aiwelink"})
+
     async def test_create_internal_user_recognizes_unique_snapshot_email(self) -> None:
         from app.modules.operations.repository import create_internal_user
         from app.modules.operations.schemas import InternalUserCreate

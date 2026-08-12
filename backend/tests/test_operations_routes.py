@@ -10,13 +10,129 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from bson import BSON
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 
 NOW = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
 
 
 class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_operator_can_list_masked_redemption_codes(self) -> None:
+        from app.routers import operations
+        from app.modules.operations.schemas import RedemptionCodeListQuery
+
+        listed = {"items": [{"id": 101, "code_mask": "rede...cret"}], "total": 1}
+        with patch.object(
+            operations.service,
+            "list_redemption_codes",
+            AsyncMock(return_value=listed),
+            create=True,
+        ) as read:
+            result = await operations.get_redemption_codes(
+                query=RedemptionCodeListQuery(site_id="aiwelink"),
+                actor={"_id": "operator-1", "role": "operator", "operations_site_ids": ["aiwelink"]},
+                db=object(),
+            )
+
+        self.assertEqual(result, listed)
+        self.assertEqual(read.await_args.kwargs["actor_id"], "operator-1")
+
+    async def test_operator_cannot_reveal_or_delete_redemption_codes(self) -> None:
+        from app.routers import operations
+        from app.modules.operations.schemas import RedemptionCodeBatchDelete
+
+        actor = {"_id": "operator-1", "role": "operator", "operations_site_ids": ["aiwelink"]}
+        with self.assertRaises(HTTPException) as reveal_error:
+            await operations.get_redemption_code_reveal(
+                site_id="aiwelink",
+                code_id=101,
+                response=Response(),
+                actor=actor,
+                db=object(),
+            )
+        with self.assertRaises(HTTPException) as delete_error:
+            await operations.delete_redemption_code_route(
+                site_id="aiwelink",
+                code_id=101,
+                actor=actor,
+                db=object(),
+            )
+        with self.assertRaises(HTTPException) as batch_error:
+            await operations.post_redemption_code_batch_delete(
+                payload=RedemptionCodeBatchDelete(site_id="aiwelink", code_ids=[101]),
+                actor=actor,
+                db=object(),
+            )
+
+        self.assertEqual(reveal_error.exception.status_code, 403)
+        self.assertEqual(delete_error.exception.status_code, 403)
+        self.assertEqual(batch_error.exception.status_code, 403)
+
+    async def test_admin_reveal_is_no_store_and_audit_excludes_plaintext(self) -> None:
+        from app.routers import operations
+
+        response = Response()
+        revealed = {
+            "code_id": 101,
+            "code": "redeem-secret",
+            "code_mask": "rede...cret",
+            "fetched_at": NOW.isoformat(),
+        }
+        with (
+            patch.object(
+                operations.service,
+                "reveal_redemption_code",
+                AsyncMock(return_value=revealed),
+                create=True,
+            ),
+            patch.object(operations, "write_audit_log", AsyncMock()) as audit,
+        ):
+            result = await operations.get_redemption_code_reveal(
+                site_id="aiwelink",
+                code_id=101,
+                response=response,
+                actor={"_id": "admin-1", "role": "admin", "operations_site_ids": ["aiwelink"]},
+                db=object(),
+            )
+
+        self.assertEqual(result["code"], "redeem-secret")
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(audit.await_args.kwargs["after"]["code_mask"], "rede...cret")
+        self.assertNotIn("code", audit.await_args.kwargs["after"])
+        self.assertNotIn("redeem-secret", str(audit.await_args.kwargs))
+
+    async def test_admin_delete_and_batch_delete_are_unavailable_without_mutation_or_audit(self) -> None:
+        from app.routers import operations
+        from app.modules.operations.schemas import RedemptionCodeBatchDelete
+
+        actor = {"_id": "admin-1", "role": "admin", "operations_site_ids": ["aiwelink"]}
+        with (
+            patch.object(operations.service, "delete_redemption_code", AsyncMock()) as delete_one,
+            patch.object(operations.service, "batch_delete_redemption_codes", AsyncMock()) as delete_many,
+            patch.object(operations, "write_audit_log", AsyncMock()) as audit,
+        ):
+            with self.assertRaises(HTTPException) as single_error:
+                await operations.delete_redemption_code_route(
+                    site_id="aiwelink",
+                    code_id=101,
+                    actor=actor,
+                    db=object(),
+                )
+            with self.assertRaises(HTTPException) as batch_error:
+                await operations.post_redemption_code_batch_delete(
+                    payload=RedemptionCodeBatchDelete(site_id="aiwelink", code_ids=[102, 103]),
+                    actor=actor,
+                    db=object(),
+                )
+
+        self.assertEqual(single_error.exception.status_code, 409)
+        self.assertEqual(single_error.exception.detail["code"], "capability_unavailable")
+        self.assertEqual(batch_error.exception.status_code, 409)
+        self.assertEqual(batch_error.exception.detail["code"], "capability_unavailable")
+        delete_one.assert_not_awaited()
+        delete_many.assert_not_awaited()
+        audit.assert_not_awaited()
+
     async def test_operator_can_read_summary(self) -> None:
         from app.routers import operations
 
@@ -623,6 +739,18 @@ class OperationsServiceCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/api/operations/summary", paths)
         self.assertIn("/api/operations/internal-users", paths)
         self.assertIn("/api/operations/classification-tasks/{classification_task_id}", paths)
+
+    def test_redemption_code_search_uses_a_body_based_route(self) -> None:
+        from app.main import app
+
+        matching_routes = [
+            route
+            for route in app.routes
+            if route.path == "/api/operations/redemption-codes/query"
+        ]
+
+        self.assertEqual(len(matching_routes), 1)
+        self.assertEqual(matching_routes[0].methods, {"POST"})
 
 
 class OperationsInternalUserServiceTests(unittest.IsolatedAsyncioTestCase):
