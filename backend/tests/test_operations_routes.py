@@ -33,6 +33,45 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["summary"]["registered_user_count"], 1)
         self.assertEqual(read.await_args.kwargs["allowed_site_ids"], ("aiwelink",))
 
+    async def test_operator_can_read_lifecycle_with_authorized_site_scope(self) -> None:
+        from app.routers import operations
+
+        query = operations.OperationsQuery(site_id="aiwelink", range="30d")
+        lifecycle = {
+            "summary": {"churned_user_count": 2},
+            "retention": [],
+            "site_breakdown": [],
+            "model_breakdown": [],
+            "customer_breakdown": [],
+        }
+        with patch.object(
+            operations.service,
+            "get_operations_lifecycle_data",
+            AsyncMock(return_value=lifecycle),
+            create=True,
+        ) as read:
+            result = await operations.get_operations_lifecycle(
+                query=query,
+                actor={"_id": "operator-1", "role": "operator", "operations_site_ids": ["aiwelink"]},
+                db=object(),
+            )
+
+        self.assertEqual(result["summary"]["churned_user_count"], 2)
+        self.assertEqual(read.await_args.kwargs["allowed_site_ids"], ("aiwelink",))
+        self.assertEqual(read.await_args.args[1].range.value, "30d")
+
+    async def test_lifecycle_rejects_an_unauthorized_site(self) -> None:
+        from app.routers import operations
+
+        with self.assertRaises(HTTPException) as raised:
+            await operations.get_operations_lifecycle(
+                query=operations.OperationsQuery(site_id="aigclink"),
+                actor={"_id": "operator-1", "role": "operator", "operations_site_ids": ["aiwelink"]},
+                db=object(),
+            )
+
+        self.assertEqual(raised.exception.status_code, 403)
+
     async def test_missing_site_permissions_deny_operations_reads(self) -> None:
         from app.routers import operations
 
@@ -485,6 +524,45 @@ class OperationsServiceCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary.await_count, 4)
         self.assertEqual(breakdown.await_count, 2)
 
+    async def test_lifecycle_cache_isolated_by_site_segment_and_window(self) -> None:
+        from app.modules.operations import service
+        from app.modules.operations.schemas import OperationsQuery
+
+        summary = AsyncMock(return_value=[{"scope": "all", "site_id": None}])
+        retention = AsyncMock(return_value=[])
+        models = AsyncMock(return_value=[])
+        customers = AsyncMock(return_value=[])
+        query = OperationsQuery(
+            range="custom",
+            start_at="2026-07-01T00:00:00Z",
+            end_at="2026-07-08T00:00:00Z",
+            segment="ordinary",
+        )
+        with (
+            patch.object(service, "growth_connection", lambda db: _async_context(object())),
+            patch.object(service.repository, "get_operations_lifecycle_summary", summary, create=True),
+            patch.object(service.repository, "get_operations_retention", retention, create=True),
+            patch.object(service.repository, "get_operations_model_breakdown", models, create=True),
+            patch.object(service.repository, "get_operations_customer_breakdown", customers, create=True),
+        ):
+            first = await service.get_operations_lifecycle_data(
+                object(), query, allowed_site_ids=("aiwelink",)
+            )
+            second = await service.get_operations_lifecycle_data(
+                object(), query, allowed_site_ids=("aiwelink",)
+            )
+            await service.get_operations_lifecycle_data(
+                object(), query, allowed_site_ids=("aigclink",)
+            )
+
+        self.assertEqual(first, second)
+        self.assertEqual(summary.await_count, 2)
+        self.assertEqual(retention.await_count, 2)
+        self.assertEqual(first["summary"]["scope"], "all")
+        self.assertEqual(first["site_breakdown"], [])
+        self.assertIn("window", first)
+        self.assertIn("generated_at", first)
+
     async def test_summary_does_not_run_concurrent_queries_on_one_connection(self) -> None:
         from app.modules.operations import service
         from app.modules.operations.schemas import OperationsQuery
@@ -526,6 +604,7 @@ class OperationsServiceCacheTests(unittest.IsolatedAsyncioTestCase):
         paths = {route.path for route in app.routes}
 
         self.assertIn("/api/operations/summary", paths)
+        self.assertIn("/api/operations/lifecycle", paths)
         self.assertIn("/api/operations/internal-users", paths)
         self.assertIn("/api/operations/classification-tasks/{classification_task_id}", paths)
 
