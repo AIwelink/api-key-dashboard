@@ -5,9 +5,11 @@ import unittest
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+from bson import BSON
 from fastapi import HTTPException
 
 
@@ -388,6 +390,50 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class OperationsCreditBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_redemption_batch_audit_accepts_postgres_decimal_values(self) -> None:
+        from app.routers import operations
+        from app.modules.operations.schemas import RedemptionBatchCreate
+
+        created = {
+            "redemption_batch_id": str(uuid4()),
+            "site_id": "aiwelink",
+            "balance_units_per_code": Decimal("100"),
+            "cash_amount_cny": Decimal("0"),
+            "command_status": "succeeded",
+            "codes": ["redeem-alpha"],
+            "codes_available": True,
+        }
+
+        async def bson_insert(document):
+            BSON.encode(document)
+            return SimpleNamespace(inserted_id="audit-1")
+
+        db = SimpleNamespace(
+            audit_logs=SimpleNamespace(insert_one=AsyncMock(side_effect=bson_insert))
+        )
+        with patch.object(
+            operations.service,
+            "create_redemption_batch",
+            AsyncMock(return_value=created),
+        ):
+            result = await operations.post_redemption_batch(
+                payload=RedemptionBatchCreate(
+                    site_id="aiwelink",
+                    purpose="internal",
+                    code_count=1,
+                    balance_units_per_code=Decimal("100"),
+                    idempotency_key="batch-decimal",
+                ),
+                actor={"_id": "owner-1", "role": "owner", "operations_site_ids": ["aiwelink"]},
+                db=db,
+            )
+
+        self.assertEqual(result["codes"], ["redeem-alpha"])
+        audited = db.audit_logs.insert_one.await_args.args[0]["after"]
+        self.assertEqual(audited["balance_units_per_code"], "100")
+        self.assertEqual(audited["cash_amount_cny"], "0")
+        self.assertNotIn("codes", audited)
+
     async def test_redemption_batch_audit_excludes_plaintext_codes(self) -> None:
         from app.routers import operations
         from app.modules.operations.schemas import RedemptionBatchCreate
