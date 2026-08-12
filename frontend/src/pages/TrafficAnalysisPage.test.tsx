@@ -299,6 +299,8 @@ describe("traffic analysis configuration workspace", () => {
     const channelsHtml = renderWorkspace("channels");
     const campaignsHtml = renderWorkspace("campaigns");
 
+    expect(linksHtml.indexOf(">活动管理<")).toBeLessThan(linksHtml.indexOf(">渠道管理<"));
+
     expect(overviewHtml).toContain('aria-label="流量概览查询"');
     expect(overviewHtml).toContain("正在加载流量概览");
     expect(overviewHtml).not.toContain("新建推广链接");

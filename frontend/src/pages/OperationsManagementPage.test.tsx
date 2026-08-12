@@ -3,13 +3,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   OperationsManagementPage,
+  InternalUserActionButtons,
   averageConsumption,
   buildOperationsQuery,
   buildRedemptionPayload,
   canManageOperations,
   conversionRateEffectiveHint,
   emptyRedemptionForm,
+  orderOperationsSites,
   paymentRate,
+  internalUserDeleteDetails,
+  preferredOperationsSiteId,
   recognitionStatusLabel,
   refreshFailureMessage,
 } from "./OperationsManagementPage";
@@ -24,6 +28,32 @@ const props = {
 };
 
 describe("operations management workspace", () => {
+  it("prioritizes AIWeLink and falls back to the first authorized site", () => {
+    const sites = [
+      { value: "aigclink" as OperationsSiteId, label: "AIGCLink" },
+      { value: "aiwelink" as OperationsSiteId, label: "AIWeLink" },
+    ];
+
+    expect(orderOperationsSites(sites).map((site) => site.value)).toEqual(["aiwelink", "aigclink"]);
+    expect(preferredOperationsSiteId(sites)).toBe("aiwelink");
+    expect(preferredOperationsSiteId([sites[0]])).toBe("aigclink");
+    expect(preferredOperationsSiteId([])).toBe("");
+  });
+
+  it("defaults multi-site selectors to AIWeLink while keeping all-sites explicit", () => {
+    const html = renderToStaticMarkup(<OperationsManagementPage {...props} />);
+    const firstSiteSelect = html.match(/<label><span>站点<\/span><select[^>]*>[\s\S]*?<\/select><\/label>/)?.[0] || "";
+
+    expect(firstSiteSelect).toContain('value="aiwelink" selected=""');
+    expect(firstSiteSelect.indexOf(">AIWeLink<")).toBeLessThan(firstSiteSelect.indexOf(">全部站点<"));
+
+    const aigclinkOnly = renderToStaticMarkup(
+      <OperationsManagementPage {...props} allowedSiteIds={["aigclink"]} />,
+    );
+    expect(aigclinkOnly).not.toContain("AIWeLink");
+    expect(aigclinkOnly).toContain('value="aigclink" selected=""');
+  });
+
   it("builds the default cached analytics query", () => {
     expect(buildOperationsQuery({ siteId: "", segment: "all", range: "7d" })).toBe(
       "?segment=all&range=7d",
@@ -85,6 +115,8 @@ describe("operations management workspace", () => {
     expect(html).toContain('class="operations-query-bar"');
     expect(html).toContain("最近 7 天");
     expect(html).toContain("全部用户");
+    expect(html).toContain('<option value="ordinary" selected="">普通用户</option>');
+    expect(html).toContain('<option value="all">全部用户</option>');
     expect(html).toContain('class="operations-freshness-banner');
     expect(html).toContain('class="operations-metric-grid"');
     expect(html).toContain('class="operations-overview-table-stack"');
@@ -124,6 +156,29 @@ describe("operations management workspace", () => {
     expect(html).toContain("生效时间");
     expect(recognitionStatusLabel("recognized")).toBe("识别成功");
     expect(recognitionStatusLabel("pending")).toBe("待识别");
+  });
+
+  it("renders edit and delete actions for writable internal users", () => {
+    const item = {
+      internal_user_id: "internal-1",
+      site_id: "aiwelink",
+      email: "staff@example.com",
+      external_user_id: "49",
+      recognition_status: "recognized" as const,
+      active_from: "2026-08-10T08:00:00Z",
+    };
+    const html = renderToStaticMarkup(
+      <InternalUserActionButtons item={item} onDelete={() => undefined} onEdit={() => undefined} />,
+    );
+
+    expect(html).toContain("编辑");
+    expect(html).toContain("删除");
+    expect(html).toContain("删除内部人员 staff@example.com");
+    expect(internalUserDeleteDetails(item)).toEqual([
+      ["站点", "AIWeLink"],
+      ["邮箱", "staff@example.com"],
+      ["业务用户 ID", "49"],
+    ]);
   });
 
   it("renders credit actions and conversion rates for admin", () => {

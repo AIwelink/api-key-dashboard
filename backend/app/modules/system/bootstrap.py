@@ -13,6 +13,7 @@ async def ensure_tpm_indexes(db: AsyncIOMotorDatabase) -> None:
     )
     await db.sub2api_tpm_samples.create_index("expires_at", expireAfterSeconds=0)
     await db.sub2api_tpm_samples.create_index([("site_id", 1), ("group_id", 1), ("sampled_at", -1)])
+    await db.sub2api_tpm_backfill_state.create_index("updated_at")
 
 
 async def ensure_client_metric_indexes(db: AsyncIOMotorDatabase) -> None:

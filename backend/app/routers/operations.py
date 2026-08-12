@@ -269,6 +269,34 @@ async def patch_internal_user(
     return result
 
 
+@router.delete("/internal-users/{internal_user_id}")
+async def delete_internal_user(
+    internal_user_id: UUID,
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    _require_operations_writer(actor)
+    allowed_site_ids = _resolve_operations_site_ids(actor)
+    try:
+        result = await service.delete_internal_user_config(
+            db,
+            internal_user_id,
+            allowed_site_ids=allowed_site_ids,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="operations.internal_user.delete",
+        resource_type="operations_internal_user",
+        resource_id=str(internal_user_id),
+        before=result,
+        after={"deleted": True, "site_id": result.get("site_id")},
+    )
+    return result
+
+
 @router.get("/conversion-rates")
 async def get_conversion_rates(
     site_id: str | None = Query(default=None),

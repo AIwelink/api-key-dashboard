@@ -123,6 +123,18 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(raised.exception.status_code, 403)
 
+    async def test_operator_cannot_delete_internal_user(self) -> None:
+        from app.routers import operations
+
+        with self.assertRaises(HTTPException) as raised:
+            await operations.delete_internal_user(
+                internal_user_id=uuid4(),
+                actor={"_id": "operator-1", "role": "operator", "operations_site_ids": ["aiwelink"]},
+                db=object(),
+            )
+
+        self.assertEqual(raised.exception.status_code, 403)
+
     async def test_admin_internal_user_write_is_audited(self) -> None:
         from app.routers import operations
         from app.modules.operations.schemas import InternalUserCreate
@@ -153,6 +165,35 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["email"], "staff@example.com")
         self.assertEqual(result["recognition_status"], "recognized")
         self.assertEqual(audit.await_args.kwargs["action"], "operations.internal_user.create")
+
+    async def test_admin_internal_user_delete_is_audited(self) -> None:
+        from app.routers import operations
+
+        internal_user_id = uuid4()
+        deleted = {
+            "internal_user_id": str(internal_user_id),
+            "site_id": "aiwelink",
+            "email": "staff@example.com",
+            "external_user_id": "49",
+        }
+        with (
+            patch.object(
+                operations.service,
+                "delete_internal_user_config",
+                AsyncMock(return_value=deleted),
+                create=True,
+            ),
+            patch.object(operations, "write_audit_log", AsyncMock()) as audit,
+        ):
+            result = await operations.delete_internal_user(
+                internal_user_id=internal_user_id,
+                actor={"_id": "admin-1", "role": "admin", "operations_site_ids": ["aiwelink"]},
+                db=object(),
+            )
+
+        self.assertEqual(result, deleted)
+        self.assertEqual(audit.await_args.kwargs["action"], "operations.internal_user.delete")
+        self.assertEqual(audit.await_args.kwargs["before"], deleted)
 
     async def test_admin_cannot_write_an_unauthorized_site(self) -> None:
         from app.routers import operations
@@ -193,6 +234,30 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(raised.exception.status_code, 404)
 
+    async def test_missing_internal_user_uuid_delete_returns_not_found(self) -> None:
+        from app.routers import operations
+
+        with (
+            patch.object(
+                operations.service,
+                "growth_connection",
+                lambda db, write=True: _async_context(object()),
+            ),
+            patch.object(
+                operations.service.repository,
+                "get_internal_user_site_id",
+                AsyncMock(return_value=None),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await operations.delete_internal_user(
+                    internal_user_id=uuid4(),
+                    actor={"_id": "admin-1", "role": "admin", "operations_site_ids": ["aiwelink"]},
+                    db=object(),
+                )
+
+        self.assertEqual(raised.exception.status_code, 404)
+
     async def test_internal_user_at_unauthorized_site_returns_forbidden(self) -> None:
         from app.routers import operations
         from app.modules.operations.schemas import InternalUserUpdate
@@ -213,6 +278,30 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
                 await operations.patch_internal_user(
                     internal_user_id=uuid4(),
                     payload=InternalUserUpdate(reason="updated"),
+                    actor={"_id": "admin-1", "role": "admin", "operations_site_ids": ["aiwelink"]},
+                    db=object(),
+                )
+
+        self.assertEqual(raised.exception.status_code, 403)
+
+    async def test_internal_user_delete_at_unauthorized_site_returns_forbidden(self) -> None:
+        from app.routers import operations
+
+        with (
+            patch.object(
+                operations.service,
+                "growth_connection",
+                lambda db, write=True: _async_context(object()),
+            ),
+            patch.object(
+                operations.service.repository,
+                "get_internal_user_site_id",
+                AsyncMock(return_value="aigclink"),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await operations.delete_internal_user(
+                    internal_user_id=uuid4(),
                     actor={"_id": "admin-1", "role": "admin", "operations_site_ids": ["aiwelink"]},
                     db=object(),
                 )
@@ -439,6 +528,182 @@ class OperationsServiceCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/api/operations/summary", paths)
         self.assertIn("/api/operations/internal-users", paths)
         self.assertIn("/api/operations/classification-tasks/{classification_task_id}", paths)
+
+
+class OperationsInternalUserServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_recognized_internal_user_rebuilds_historical_aggregates_under_site_lock(self) -> None:
+        from app.modules.operations import service
+        from app.modules.operations.schemas import InternalUserCreate
+
+        calls = []
+
+        async def acquire_lock(connection, *, site_id):
+            calls.append(("lock", site_id))
+
+        async def create_user(connection, payload, *, actor_id):
+            calls.append(("create", payload.site_id))
+            return {
+                "site_id": payload.site_id,
+                "external_user_id": "49",
+                "recognition_status": "recognized",
+            }
+
+        async def rebuild(connection, *, site_id, start_at, end_at):
+            calls.append(("rebuild", site_id, start_at, end_at))
+
+        before = datetime.now(UTC)
+        with (
+            patch.object(service, "growth_connection", lambda db, write=True: _async_context(object())),
+            patch.object(service.repository, "acquire_operations_sync_lock", acquire_lock),
+            patch.object(service.repository, "create_internal_user", create_user),
+            patch.object(service.repository, "replace_affected_aggregates", rebuild),
+        ):
+            result = await service.create_internal_user_config(
+                object(),
+                InternalUserCreate(site_id="aiwelink", email="staff@example.com"),
+                actor_id="owner",
+            )
+        after = datetime.now(UTC)
+
+        self.assertEqual(result["recognition_status"], "recognized")
+        self.assertEqual(calls[:2], [("lock", "aiwelink"), ("create", "aiwelink")])
+        self.assertEqual(
+            calls[2][:3],
+            ("rebuild", "aiwelink", service.HISTORICAL_CONVERSION_RATE_START),
+        )
+        self.assertGreaterEqual(calls[2][3], before)
+        self.assertLessEqual(calls[2][3], after)
+
+    async def test_pending_internal_user_does_not_rebuild_historical_aggregates(self) -> None:
+        from app.modules.operations import service
+        from app.modules.operations.schemas import InternalUserCreate
+
+        acquire_lock = AsyncMock()
+        rebuild = AsyncMock()
+        with (
+            patch.object(service, "growth_connection", lambda db, write=True: _async_context(object())),
+            patch.object(service.repository, "acquire_operations_sync_lock", acquire_lock),
+            patch.object(
+                service.repository,
+                "create_internal_user",
+                AsyncMock(
+                    return_value={
+                        "site_id": "aiwelink",
+                        "external_user_id": None,
+                        "recognition_status": "pending",
+                    }
+                ),
+            ),
+            patch.object(service.repository, "replace_affected_aggregates", rebuild),
+        ):
+            result = await service.create_internal_user_config(
+                object(),
+                InternalUserCreate(site_id="aiwelink", email="unknown@example.com"),
+                actor_id="owner",
+            )
+
+        self.assertEqual(result["recognition_status"], "pending")
+        acquire_lock.assert_awaited_once()
+        rebuild.assert_not_awaited()
+
+    async def test_internal_user_update_rebuilds_site_even_when_identity_becomes_pending(self) -> None:
+        from app.modules.operations import service
+        from app.modules.operations.schemas import InternalUserUpdate
+
+        internal_user_id = uuid4()
+        calls = []
+
+        async def acquire_lock(connection, *, site_id):
+            calls.append(("lock", site_id))
+
+        async def update_user(connection, selected_id, payload, *, actor_id):
+            calls.append(("update", str(selected_id)))
+            return {
+                "site_id": "aiwelink",
+                "external_user_id": None,
+                "recognition_status": "pending",
+            }
+
+        async def rebuild(connection, *, site_id, start_at, end_at):
+            calls.append(("rebuild", site_id, start_at))
+
+        with (
+            patch.object(service, "growth_connection", lambda db, write=True: _async_context(object())),
+            patch.object(
+                service.repository,
+                "get_internal_user_site_id",
+                AsyncMock(return_value="aiwelink"),
+            ),
+            patch.object(service.repository, "acquire_operations_sync_lock", acquire_lock),
+            patch.object(service.repository, "update_internal_user", update_user),
+            patch.object(service.repository, "replace_affected_aggregates", rebuild),
+        ):
+            result = await service.update_internal_user_config(
+                object(),
+                internal_user_id,
+                InternalUserUpdate(email="unknown@example.com"),
+                actor_id="owner",
+                allowed_site_ids=("aiwelink",),
+            )
+
+        self.assertEqual(result["recognition_status"], "pending")
+        self.assertEqual(
+            calls,
+            [
+                ("lock", "aiwelink"),
+                ("update", str(internal_user_id)),
+                ("rebuild", "aiwelink", service.HISTORICAL_CONVERSION_RATE_START),
+            ],
+        )
+
+    async def test_internal_user_delete_rebuilds_history_under_site_lock(self) -> None:
+        from app.modules.operations import service
+
+        internal_user_id = uuid4()
+        calls = []
+
+        async def acquire_lock(connection, *, site_id):
+            calls.append(("lock", site_id))
+
+        async def delete_user(connection, selected_id):
+            calls.append(("delete", str(selected_id)))
+            return {
+                "internal_user_id": str(selected_id),
+                "site_id": "aiwelink",
+                "email": "staff@example.com",
+            }
+
+        async def rebuild(connection, *, site_id, start_at, end_at):
+            calls.append(("rebuild", site_id, start_at))
+
+        with (
+            patch.object(service, "growth_connection", lambda db, write=True: _async_context(object())),
+            patch.object(
+                service.repository,
+                "get_internal_user_site_id",
+                AsyncMock(return_value="aiwelink"),
+            ),
+            patch.object(service.repository, "acquire_operations_sync_lock", acquire_lock),
+            patch.object(service.repository, "delete_internal_user", delete_user, create=True),
+            patch.object(service.repository, "replace_affected_aggregates", rebuild),
+            patch.object(service.operations_response_cache, "invalidate") as invalidate,
+        ):
+            result = await service.delete_internal_user_config(
+                object(),
+                internal_user_id,
+                allowed_site_ids=("aiwelink",),
+            )
+
+        self.assertEqual(result["email"], "staff@example.com")
+        self.assertEqual(
+            calls,
+            [
+                ("lock", "aiwelink"),
+                ("delete", str(internal_user_id)),
+                ("rebuild", "aiwelink", service.HISTORICAL_CONVERSION_RATE_START),
+            ],
+        )
+        invalidate.assert_called_once_with(site_id="aiwelink")
 
 
 class OperationsConversionRateServiceTests(unittest.IsolatedAsyncioTestCase):

@@ -22,14 +22,14 @@
 | --- | --- | --- | --- |
 | 用户 | `users` | `id`, `email`, `username`, `status`, `balance`, `created_at`, `updated_at` | `ops_user_snapshots` |
 | 成功调用 | `usage_logs` | `id`, `user_id`, `actual_cost`, `created_at` | `usage_facts` |
-| 支付/退款 | `payment_orders` | `id`, `user_id`, `amount`, `pay_amount`, `paid_at`, `completed_at`, `updated_at`, `refund_amount`, `refund_at`, `order_type` | `credit_events` |
+| 支付/退款 | `payment_orders` | `id`, `user_id`, `amount`, `pay_amount`, `status`, `paid_at`, `completed_at`, `updated_at`, `refund_amount`, `refund_at`, `order_type` | `credit_events` |
 | 兑换码使用 | `redeem_codes` | `id`, `used_by`, `value`, `type`, `used_at`, `notes` | `credit_events` + `classification_tasks` |
 
 映射规则：
 
 - `users.id` 转为字符串业务用户 ID；账号展示名依次使用 `email`、`username`、`id`。
 - 每条 `usage_logs` 记录计为一次成功调用，`actual_cost` 作为消耗余额单位。
-- 已支付订单按 `purpose=sale` 写入；`pay_amount` 是实际 CNY 收入，`amount` 是到账余额单位。
+- 仅 `status=COMPLETED` 且存在 `completed_at` 的订单按 `purpose=sale` 写入；`pay_amount` 是实际 CNY 收入，`amount` 是到账余额单位。
 - `refund_amount > 0` 且存在 `refund_at` 时，生成独立的退款 debit 事件。
 - 已使用兑换码默认 `classification_status=pending`，禁止从备注文本猜测用途。
 - 当前换算比例：`1 CNY = 10` 个 AIWeLink 余额单位，按生效时间版本化保存。

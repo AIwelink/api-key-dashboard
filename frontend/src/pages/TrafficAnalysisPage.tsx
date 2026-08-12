@@ -1113,7 +1113,7 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
       </div>
 
       <div className="growth-workspace-tabs" role="tablist" aria-label="访问流量分析配置">
-        {([['overview', '流量概览'], ['links', '推广链接'], ['channels', '渠道管理'], ['campaigns', '活动管理'], ['sites', '站点接入']] as const).map(([key, label]) => (
+        {([['overview', '流量概览'], ['links', '推广链接'], ['campaigns', '活动管理'], ['channels', '渠道管理'], ['sites', '站点接入']] as const).map(([key, label]) => (
           <button
             className={activeTab === key ? "active" : ""}
             type="button"

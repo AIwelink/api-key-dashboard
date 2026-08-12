@@ -125,6 +125,33 @@ GROUP BY group_id
 ORDER BY group_id ASC
 """
 
+GROUP_MINUTE_USAGE_QUERY = """
+SELECT group_id,
+       date_trunc('minute', created_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS bucket_at,
+       COUNT(id) AS total_requests,
+       COALESCE(SUM(
+           COALESCE(input_tokens, 0)
+           + COALESCE(output_tokens, 0)
+           + COALESCE(cache_creation_tokens, 0)
+           + COALESCE(cache_read_tokens, 0)
+       ), 0) AS total_tokens,
+       COALESCE(SUM(input_tokens), 0) AS input_tokens,
+       COALESCE(SUM(output_tokens), 0) AS output_tokens,
+       COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
+       COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+       COALESCE(SUM(
+           COALESCE(account_stats_cost, total_cost)
+           * COALESCE(account_rate_multiplier, 1)
+       ), 0) AS account_cost,
+       MAX(created_at) AS source_updated_at
+FROM usage_logs
+WHERE group_id = ANY(CAST(:group_ids AS bigint[]))
+  AND created_at >= :start_at
+  AND created_at < :end_at
+GROUP BY group_id, bucket_at
+ORDER BY bucket_at ASC, group_id ASC
+"""
+
 
 async def fetch_site_dashboard_snapshot(
     sql_dsn: str,
@@ -252,6 +279,49 @@ async def fetch_group_hour_counters(
             "total_requests": _integer(row.get("total_requests")),
             "total_tokens": _integer(row.get("total_tokens")),
             "total_account_cost": _number(row.get("total_account_cost")),
+            "source_updated_at": _as_utc(row.get("source_updated_at")),
+        }
+    return result
+
+
+async def fetch_group_minute_usage(
+    sql_dsn: str,
+    *,
+    group_ids: list[int],
+    start_at: datetime,
+    end_at: datetime,
+    engine_factory: Callable[..., Any] = create_async_engine,
+) -> dict[tuple[int, datetime], dict[str, Any]]:
+    normalized_group_ids = sorted({int(group_id) for group_id in group_ids})
+    normalized_start = _as_utc(start_at)
+    normalized_end = _as_utc(end_at)
+    if not normalized_group_ids or normalized_start is None or normalized_end is None or normalized_end <= normalized_start:
+        return {}
+    rows = await _fetch_rows(
+        sql_dsn,
+        GROUP_MINUTE_USAGE_QUERY,
+        {
+            "group_ids": normalized_group_ids,
+            "start_at": normalized_start,
+            "end_at": normalized_end,
+        },
+        engine_factory=engine_factory,
+    )
+    allowed_group_ids = set(normalized_group_ids)
+    result: dict[tuple[int, datetime], dict[str, Any]] = {}
+    for row in rows:
+        group_id = _integer(row.get("group_id"))
+        bucket_at = _as_utc(row.get("bucket_at"))
+        if group_id not in allowed_group_ids or bucket_at is None:
+            continue
+        result[(group_id, bucket_at)] = {
+            "total_requests": _integer(row.get("total_requests")),
+            "total_tokens": _integer(row.get("total_tokens")),
+            "input_tokens": _integer(row.get("input_tokens")),
+            "output_tokens": _integer(row.get("output_tokens")),
+            "cache_creation_tokens": _integer(row.get("cache_creation_tokens")),
+            "cache_read_tokens": _integer(row.get("cache_read_tokens")),
+            "account_cost": _number(row.get("account_cost")),
             "source_updated_at": _as_utc(row.get("source_updated_at")),
         }
     return result

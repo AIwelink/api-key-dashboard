@@ -86,3 +86,9 @@
     border-bottom: 1px solid var(--line);
   }
 }
+.operations-row-actions {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  min-width: max-content;
+}

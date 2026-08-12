@@ -2048,7 +2048,8 @@ async def _load_group_tpm_samples(
         {
             "site_id": site_id,
             "group_id": group_id,
-            "schema_version": 2,
+            "schema_version": 3,
+            "counter_source": "postgresql_usage_logs_minute",
             "sampled_at": {"$gte": cutoff},
         },
         {
@@ -2057,6 +2058,7 @@ async def _load_group_tpm_samples(
             "rpm": 1,
             "average_duration_ms": 1,
             "current_concurrency": 1,
+            "minute_account_cost": 1,
             "total_account_cost": 1,
             "account_cost_delta": 1,
             "account_cost_per_minute": 1,
