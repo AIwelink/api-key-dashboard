@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   OperationsManagementPage,
   InternalUserActionButtons,
+  adjustmentSubmitDisabled,
   averageConsumption,
   buildOperationsQuery,
   buildRedemptionPayload,
@@ -19,6 +20,7 @@ import {
   preferredOperationsSiteId,
   recognitionStatusLabel,
   refreshFailureMessage,
+  redemptionSubmitDisabled,
 } from "./OperationsManagementPage";
 import type { OperationsSiteId } from "../types";
 
@@ -91,6 +93,23 @@ describe("operations management workspace", () => {
       note: "团队额度",
       idempotency_key: "batch-1",
     });
+  });
+
+  it("allows sale credit commands to be submitted without recorded cash", () => {
+    expect(redemptionSubmitDisabled({
+      ...emptyRedemptionForm,
+      purpose: "sale",
+      balance_units_per_code: "100",
+      cash_amount_cny: "0",
+    })).toBe(false);
+    expect(adjustmentSubmitDisabled({
+      site_id: "aiwelink",
+      external_user_id: "user-1",
+      purpose: "sale",
+      balance_units: "100",
+      cash_amount_cny: "0",
+      note: "",
+    })).toBe(false);
   });
 
   it("surfaces failed source refreshes with the affected site", () => {

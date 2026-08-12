@@ -125,7 +125,7 @@ Expected: import failures for the new module.
 
 - [ ] **Step 3: Implement focused domain functions and Pydantic models**
 
-Define `Purpose`, `UserSegment`, `CreditDirection`, `OperationsRange`, `InternalUserCreate/Update`, `ConversionRateCreate`, `RedemptionBatchCreate`, `BalanceAdjustmentCreate`, `ClassificationUpdate`, and `RefreshRequest`. Enforce sale cash amount and non-sale zero cash amount in model validators.
+Define `Purpose`, `UserSegment`, `CreditDirection`, `OperationsRange`, `InternalUserCreate/Update`, `ConversionRateCreate`, `RedemptionBatchCreate`, `BalanceAdjustmentCreate`, `ClassificationUpdate`, and `RefreshRequest`. Enforce non-negative sale cash amounts and non-sale zero cash amounts in model validators; a sale fact with zero cash records credit usage without asserting payment.
 
 ```python
 def convert_balance_to_cny(balance_units: Decimal, units_per_cny: Decimal) -> Decimal:

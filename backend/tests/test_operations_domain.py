@@ -131,18 +131,35 @@ class OperationsSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             InternalUserCreate(site_id="aigclink", email="not-an-email")
 
-    def test_sale_redemption_requires_actual_cash_amount(self) -> None:
+    def test_sale_redemption_without_cash_is_a_credit_fact_but_not_cash_income(self) -> None:
         from app.modules.operations.schemas import RedemptionBatchCreate
 
-        with self.assertRaises(ValidationError):
-            RedemptionBatchCreate(
-                site_id="aiwelink",
-                purpose="sale",
-                code_count=10,
-                balance_units_per_code=Decimal("100"),
-                cash_amount_cny=Decimal("0"),
-                idempotency_key="batch-1",
-            )
+        payload = RedemptionBatchCreate(
+            site_id="aiwelink",
+            purpose="sale",
+            code_count=10,
+            balance_units_per_code=Decimal("100"),
+            cash_amount_cny=Decimal("0"),
+            idempotency_key="batch-1",
+        )
+
+        self.assertEqual(payload.purpose.value, "sale")
+        self.assertEqual(payload.cash_amount_cny, Decimal("0"))
+
+    def test_sale_adjustment_without_cash_is_accepted_as_a_credit_fact(self) -> None:
+        from app.modules.operations.schemas import BalanceAdjustmentCreate
+
+        payload = BalanceAdjustmentCreate(
+            site_id="aiwelink",
+            external_user_id="user-1",
+            purpose="sale",
+            balance_units=Decimal("100"),
+            cash_amount_cny=Decimal("0"),
+            idempotency_key="adjustment-1",
+        )
+
+        self.assertEqual(payload.purpose.value, "sale")
+        self.assertEqual(payload.cash_amount_cny, Decimal("0"))
 
     def test_non_sale_redemption_rejects_cash_income(self) -> None:
         from app.modules.operations.schemas import RedemptionBatchCreate
@@ -157,11 +174,13 @@ class OperationsSchemaTests(unittest.TestCase):
                 idempotency_key="batch-2",
             )
 
-    def test_sale_classification_requires_actual_cash_amount(self) -> None:
+    def test_sale_classification_without_cash_is_accepted_as_a_credit_fact(self) -> None:
         from app.modules.operations.schemas import ClassificationUpdate
 
-        with self.assertRaises(ValidationError):
-            ClassificationUpdate(purpose="sale", cash_amount_cny=Decimal("0"))
+        payload = ClassificationUpdate(purpose="sale", cash_amount_cny=Decimal("0"))
+
+        self.assertEqual(payload.purpose.value, "sale")
+        self.assertEqual(payload.cash_amount_cny, Decimal("0"))
 
     def test_internal_user_window_must_be_ordered(self) -> None:
         from app.modules.operations.schemas import InternalUserCreate

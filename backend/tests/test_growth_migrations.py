@@ -74,6 +74,17 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("UNIQUE (site_id, source_type, source_record_id)", sql)
         self.assertIn("growth_subscription_entitlements_user_window_idx", sql)
 
+    def test_sale_credit_cash_migration_drops_only_positive_cash_checks(self) -> None:
+        from app.modules.growth.migrations import SALE_CREDIT_CASH_MIGRATION
+
+        sql = "\n".join(SALE_CREDIT_CASH_MIGRATION.statements)
+
+        self.assertIn("'redemption_batches', 'balance_adjustment_requests'", sql)
+        self.assertIn("namespace.nspname = 'growth'", sql)
+        self.assertIn("pg_get_constraintdef", sql)
+        self.assertIn("%cash_amount_cny%>%", sql)
+        self.assertNotIn("purpose = 'sale' OR cash_amount_cny = 0", sql)
+
     def test_required_tables_include_initial_and_operations_domains(self) -> None:
         from app.modules.growth.migrations import (
             INITIAL_DOMAIN_TABLES,
@@ -98,6 +109,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0002_operations_analytics",
                 "0003_operations_internal_email",
                 "0004_operations_lifecycle_metrics",
+                "0005_operations_sale_credit_without_cash",
             ],
         )
 
@@ -115,9 +127,10 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0002_operations_analytics",
                 "0003_operations_internal_email",
                 "0004_operations_lifecycle_metrics",
+                "0005_operations_sale_credit_without_cash",
             ],
         )
-        self.assertEqual(result["current_version"], "0004_operations_lifecycle_metrics")
+        self.assertEqual(result["current_version"], "0005_operations_sale_credit_without_cash")
         self.assertEqual(result["pending_versions"], [])
         executed_sql = "\n".join(connection.statements)
         for migration in MIGRATIONS:
@@ -134,13 +147,14 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0002_operations_analytics",
                 "0003_operations_internal_email",
                 "0004_operations_lifecycle_metrics",
+                "0005_operations_sale_credit_without_cash",
             ]
         )
 
         result = await apply_pending_migrations(connection)
 
         self.assertEqual(result["applied_versions"], [])
-        self.assertEqual(result["current_version"], "0004_operations_lifecycle_metrics")
+        self.assertEqual(result["current_version"], "0005_operations_sale_credit_without_cash")
         for migration in MIGRATIONS:
             for statement in migration.statements:
                 self.assertNotIn(statement, connection.statements)
@@ -161,6 +175,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0002_operations_analytics",
                 "0003_operations_internal_email",
                 "0004_operations_lifecycle_metrics",
+                "0005_operations_sale_credit_without_cash",
             ],
         )
         self.assertEqual(result["domain_table_count"], 0)
@@ -174,6 +189,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0002_operations_analytics",
                 "0003_operations_internal_email",
                 "0004_operations_lifecycle_metrics",
+                "0005_operations_sale_credit_without_cash",
             ],
             ledger_exists=True,
             domain_table_count=23,
@@ -182,7 +198,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
         result = await inspect_growth_schema(connection)
 
         self.assertTrue(result["initialized"])
-        self.assertEqual(result["current_version"], "0004_operations_lifecycle_metrics")
+        self.assertEqual(result["current_version"], "0005_operations_sale_credit_without_cash")
         self.assertEqual(result["pending_versions"], [])
         self.assertEqual(result["domain_table_count"], 23)
 
