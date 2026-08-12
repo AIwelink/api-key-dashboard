@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID
 
 from app.modules.growth.database import growth_connection
 from app.modules.operations import repository
 from app.modules.operations.cache import operations_response_cache
+from app.modules.operations.credit_commands import (
+    CreditCapabilityUnavailable,
+    create_credit_command_adapter,
+)
 from app.modules.operations.domain import resolve_operations_window, sync_health
 from app.modules.operations.schemas import (
     BalanceAdjustmentCreate,
@@ -24,10 +30,6 @@ from app.modules.system.client_sites import get_client_site
 
 
 HISTORICAL_CONVERSION_RATE_START = datetime(1970, 1, 1, tzinfo=UTC)
-
-
-class CreditCapabilityUnavailable(RuntimeError):
-    code = "capability_unavailable"
 
 
 class OperationsSiteAccessDenied(PermissionError):
@@ -408,13 +410,89 @@ async def create_redemption_batch(
     *,
     actor_id: str,
 ) -> dict[str, Any]:
-    del actor_id
     site = await get_client_site(mongo_db, payload.site_id, include_api_key=True)
     if site is None:
         raise LookupError("client site not found")
-    raise CreditCapabilityUnavailable(
-        "No verified redemption write adapter is available for this site version"
-    )
+    adapter = create_credit_command_adapter(site)
+    async with growth_connection(mongo_db, write=True) as connection:
+        batch = await repository.get_redemption_batch_by_idempotency(
+            connection,
+            site_id=payload.site_id,
+            idempotency_key=payload.idempotency_key,
+        )
+        if batch is None:
+            batch = await repository.create_redemption_batch_request(
+                connection,
+                payload,
+                actor_id=actor_id,
+            )
+        else:
+            _validate_redemption_idempotent_replay(batch, payload)
+            if batch.get("command_status") == "succeeded":
+                return batch | {
+                    "codes": [],
+                    "codes_available": False,
+                    "idempotent_replay": True,
+                }
+
+    batch_id = UUID(str(batch["redemption_batch_id"]))
+    try:
+        generated = await adapter.create_redemption_batch(site=site, payload=payload)
+        codes = [str(code) for code in generated.get("codes") or []]
+        if len(codes) != payload.code_count or len(set(codes)) != len(codes):
+            raise RuntimeError("redemption adapter returned an invalid code batch")
+        code_hashes = [hashlib.sha256(code.encode("utf-8")).hexdigest() for code in codes]
+        code_masks = [_mask_redemption_code(code) for code in codes]
+        async with growth_connection(mongo_db, write=True) as connection:
+            completed = await repository.complete_redemption_batch(
+                connection,
+                redemption_batch_id=batch_id,
+                source_batch_id=str(generated.get("source_batch_id") or ""),
+                code_hashes=code_hashes,
+                code_masks=code_masks,
+            )
+    except Exception as exc:
+        async with growth_connection(mongo_db, write=True) as connection:
+            await repository.fail_redemption_batch(
+                connection,
+                redemption_batch_id=batch_id,
+                error_code=exc.__class__.__name__,
+                error_message=str(exc),
+            )
+        raise
+    return completed | {
+        "codes": codes,
+        "codes_available": True,
+        "idempotent_replay": False,
+    }
+
+
+def _validate_redemption_idempotent_replay(
+    batch: dict[str, Any],
+    payload: RedemptionBatchCreate,
+) -> None:
+    expected = {
+        "site_id": payload.site_id,
+        "purpose": payload.purpose.value,
+        "code_count": payload.code_count,
+        "balance_units_per_code": payload.balance_units_per_code,
+        "cash_amount_cny": payload.cash_amount_cny,
+        "note": payload.note,
+    }
+    for field, value in expected.items():
+        existing = batch.get(field)
+        if field in {"balance_units_per_code", "cash_amount_cny"}:
+            if str(existing) == str(value) or Decimal(str(existing)) == value:
+                continue
+        elif existing == value:
+            continue
+        raise ValueError("idempotency_key is already used by a different redemption request")
+
+
+def _mask_redemption_code(code: str) -> str:
+    if len(code) <= 8:
+        return "*" * len(code)
+    return f"{code[:4]}...{code[-4:]}"
 
 
 async def create_balance_adjustment(
