@@ -159,3 +159,123 @@
   gap: 6px;
   min-width: max-content;
 }
+
+.operations-redemption-table table {
+  min-width: 1380px;
+}
+
+.operations-selection-cell {
+  text-align: center;
+  width: 42px;
+}
+
+.operations-code-mask {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: nowrap;
+}
+
+.operations-current-user-label {
+  color: var(--success);
+  display: block;
+  font-size: 11px;
+  margin-top: 3px;
+}
+
+.operations-pagination {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  display: flex;
+  font-size: 13px;
+  justify-content: space-between;
+  min-height: 48px;
+  padding: 0 12px;
+}
+
+.operations-pagination > div {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.danger-text {
+  color: var(--danger);
+}
+
+.operations-redemption-result-backdrop {
+  align-items: center;
+  background: rgb(15 23 42 / 45%);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 24px;
+  position: fixed;
+  z-index: 30;
+}
+
+.operations-redemption-result {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: 0 24px 70px rgb(15 23 42 / 20%);
+  max-width: 720px;
+  padding: 24px;
+  width: min(100%, 720px);
+}
+
+.operations-redemption-result-header,
+.operations-redemption-result-actions {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.operations-redemption-result h3 {
+  margin: 4px 0 0;
+}
+
+.operations-redemption-result-note {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 18px 0 12px;
+}
+
+.operations-redemption-result-codes {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  line-height: 1.8;
+  min-height: 180px;
+  padding: 12px;
+  resize: vertical;
+  width: 100%;
+}
+
+.operations-revealed-code {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 16px;
+  padding: 14px;
+  width: 100%;
+}
+
+.operations-redemption-result-actions {
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+@media (max-width: 620px) {
+  .operations-redemption-result-backdrop {
+    align-items: flex-end;
+    padding: 12px;
+  }
+
+  .operations-redemption-result-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

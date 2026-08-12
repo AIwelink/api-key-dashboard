@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
@@ -18,6 +18,8 @@ from app.modules.operations.schemas import (
     InternalUserUpdate,
     OperationsQuery,
     RedemptionBatchCreate,
+    RedemptionCodeBatchDelete,
+    RedemptionCodeListQuery,
     RefreshRequest,
 )
 from app.modules.system.audit import write_audit_log
@@ -410,6 +412,89 @@ async def patch_classification_task(
     return result
 
 
+@router.post("/redemption-codes/query")
+async def get_redemption_codes(
+    query: RedemptionCodeListQuery,
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    _resolve_operations_site_ids(actor, [query.site_id])
+    try:
+        return await service.list_redemption_codes(
+            db,
+            site_id=query.site_id,
+            page=query.page,
+            page_size=query.page_size,
+            status_filter=query.status,
+            origin=query.origin,
+            search=query.search,
+            actor_id=_actor_id(actor),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+
+
+@router.get("/redemption-codes/{site_id}/{code_id}/reveal")
+async def get_redemption_code_reveal(
+    site_id: str,
+    code_id: int,
+    response: Response,
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    _require_operations_writer(actor)
+    _resolve_operations_site_ids(actor, [site_id])
+    try:
+        result = await service.reveal_redemption_code(db, site_id=site_id, code_id=code_id)
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+    response.headers["Cache-Control"] = "no-store"
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="operations.redemption_code.reveal",
+        resource_type="operations_redemption_code",
+        resource_id=f"{site_id}:{code_id}",
+        after={
+            "site_id": site_id,
+            "code_id": code_id,
+            "code_mask": result.get("code_mask"),
+        },
+    )
+    return result
+
+
+@router.delete("/redemption-codes/{site_id}/{code_id}")
+async def delete_redemption_code_route(
+    site_id: str,
+    code_id: int,
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    _require_operations_writer(actor)
+    _resolve_operations_site_ids(actor, [site_id])
+    _raise_http_error(
+        service.CreditCapabilityUnavailable(
+            "Sub2API does not provide atomic delete-if-unused; redemption deletion is disabled"
+        )
+    )
+
+
+@router.post("/redemption-codes/batch-delete")
+async def post_redemption_code_batch_delete(
+    payload: RedemptionCodeBatchDelete,
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    _require_operations_writer(actor)
+    _resolve_operations_site_ids(actor, [payload.site_id])
+    _raise_http_error(
+        service.CreditCapabilityUnavailable(
+            "Sub2API does not provide atomic delete-if-unused; redemption deletion is disabled"
+        )
+    )
+
+
 @router.post("/redemption-batches", status_code=status.HTTP_201_CREATED)
 async def post_redemption_batch(
     payload: RedemptionBatchCreate,
@@ -432,7 +517,7 @@ async def post_redemption_batch(
         action="operations.redemption_batch.create",
         resource_type="operations_redemption_batch",
         resource_id=result.get("redemption_batch_id"),
-        after=result,
+        after={key: value for key, value in result.items() if key != "codes"},
     )
     return result
 

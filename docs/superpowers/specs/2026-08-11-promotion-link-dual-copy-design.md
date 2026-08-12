@@ -36,3 +36,4 @@ https://api.aiwelink.cc/r/{code}
 - “复制 API 链接”写入 `https://api.aiwelink.cc/r/{code}`。
 - 两种复制操作具有可区分的成功提示。
 - 现有推广链接创建、编辑、筛选和启停行为不变。
+Follow-up layout decision (2026-08-12): render the homepage and API URLs as two separate clickable rows. Each row places its matching copy button immediately after the URL; the existing edit and enable/disable actions remain in the right-side action area.

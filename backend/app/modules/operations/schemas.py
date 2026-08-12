@@ -133,6 +133,47 @@ class RedemptionBatchCreate(BaseModel):
         return self
 
 
+class RedemptionCodeListQuery(BaseModel):
+    site_id: str = Field(min_length=1, max_length=120)
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=100)
+    status: Literal["unused", "used", "expired", "disabled"] | None = None
+    origin: Literal["management_panel", "api_site"] | None = None
+    search: str | None = Field(default=None, max_length=100)
+
+    @field_validator("site_id")
+    @classmethod
+    def trim_site_id(cls, value: str) -> str:
+        return _trim(value)
+
+    @field_validator("search")
+    @classmethod
+    def trim_search(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = _trim(value)
+        return normalized or None
+
+
+class RedemptionCodeBatchDelete(BaseModel):
+    site_id: str = Field(min_length=1, max_length=120)
+    code_ids: list[int] = Field(min_length=1, max_length=100)
+
+    @field_validator("site_id")
+    @classmethod
+    def trim_site_id(cls, value: str) -> str:
+        return _trim(value)
+
+    @field_validator("code_ids")
+    @classmethod
+    def validate_code_ids(cls, value: list[int]) -> list[int]:
+        if any(code_id <= 0 for code_id in value):
+            raise ValueError("code_ids must contain only positive IDs")
+        if len(set(value)) != len(value):
+            raise ValueError("code_ids must not contain duplicates")
+        return value
+
+
 class BalanceAdjustmentCreate(BaseModel):
     site_id: str = Field(min_length=1, max_length=120)
     external_user_id: str = Field(min_length=1, max_length=240)
