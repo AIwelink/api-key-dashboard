@@ -11,6 +11,99 @@ from app.modules.sub2api.client import Sub2ApiClient
 
 
 class Sub2ApiClientUpdateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_redemption_codes_uses_admin_pagination_contract(self) -> None:
+        captured: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["method"] = request.method
+            captured["url"] = str(request.url)
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "message": "success",
+                    "data": {
+                        "items": [
+                            {
+                                "id": 101,
+                                "code": "redeem-alpha",
+                                "type": "balance",
+                                "value": 100,
+                                "status": "unused",
+                                "created_at": "2026-08-12T03:00:00Z",
+                            }
+                        ],
+                        "total": 1,
+                        "page": 1,
+                        "page_size": 1000,
+                        "pages": 1,
+                    },
+                },
+                request=request,
+            )
+
+        client = Sub2ApiClient(base_url="http://sub2.example.com", token="admin-key")
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+            result = await client.list_redemption_codes(
+                page=1,
+                page_size=1000,
+                status_filter="unused",
+                search="alpha",
+                http_client=http_client,
+            )
+
+        self.assertEqual(captured["method"], "GET")
+        self.assertEqual(
+            captured["url"],
+            "http://sub2.example.com/api/v1/admin/redeem-codes?page=1&page_size=1000&status=unused&search=alpha&sort_by=created_at&sort_order=desc",
+        )
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["items"][0]["code"], "redeem-alpha")
+
+    async def test_get_redemption_code_uses_official_admin_path(self) -> None:
+        requests: list[tuple[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append((request.method, str(request.url)))
+            data: object = {
+                "id": 101,
+                "code": "redeem-alpha",
+                "status": "unused",
+                "value": 100,
+            }
+            return httpx.Response(
+                200,
+                json={"code": 0, "message": "success", "data": data},
+                request=request,
+            )
+
+        client = Sub2ApiClient(base_url="http://sub2.example.com", token="admin-key")
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+            item = await client.get_redemption_code(101, http_client=http_client)
+
+        self.assertEqual(item["code"], "redeem-alpha")
+        self.assertEqual(
+            requests,
+            [
+                ("GET", "http://sub2.example.com/api/v1/admin/redeem-codes/101"),
+            ],
+        )
+
+    async def test_missing_redemption_code_preserves_not_found_status(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                404,
+                json={"code": 404, "message": "Redeem code not found"},
+                request=request,
+            )
+
+        client = Sub2ApiClient(base_url="http://sub2.example.com", token="admin-key")
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+            with self.assertRaises(HTTPException) as raised:
+                await client.get_redemption_code(101, http_client=http_client)
+
+        self.assertEqual(raised.exception.status_code, 404)
+
     async def test_generate_redemption_codes_uses_verified_admin_contract(self) -> None:
         captured: dict[str, object] = {}
 

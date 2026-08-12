@@ -11,6 +11,37 @@ NOW = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
 
 
 class OperationsDomainTests(unittest.TestCase):
+    def test_redemption_code_list_query_validates_pagination_and_filters(self) -> None:
+        from app.modules.operations.schemas import RedemptionCodeListQuery
+
+        query = RedemptionCodeListQuery(
+            site_id=" aiwelink ",
+            page=2,
+            page_size=100,
+            status="unused",
+            origin="management_panel",
+            search=" alpha ",
+        )
+
+        self.assertEqual(query.site_id, "aiwelink")
+        self.assertEqual(query.search, "alpha")
+        with self.assertRaises(ValidationError):
+            RedemptionCodeListQuery(site_id="aiwelink", page=0)
+        with self.assertRaises(ValidationError):
+            RedemptionCodeListQuery(site_id="aiwelink", page_size=101)
+
+    def test_redemption_batch_delete_requires_unique_positive_ids(self) -> None:
+        from app.modules.operations.schemas import RedemptionCodeBatchDelete
+
+        payload = RedemptionCodeBatchDelete(site_id=" aiwelink ", code_ids=[101, 102])
+
+        self.assertEqual(payload.site_id, "aiwelink")
+        self.assertEqual(payload.code_ids, [101, 102])
+        for invalid_ids in ([], [0], [101, 101], list(range(1, 102))):
+            with self.subTest(code_ids=invalid_ids):
+                with self.assertRaises(ValidationError):
+                    RedemptionCodeBatchDelete(site_id="aiwelink", code_ids=invalid_ids)
+
     def test_aiwelink_ten_units_cost_one_cny(self) -> None:
         from app.modules.operations.domain import convert_balance_to_cny
 

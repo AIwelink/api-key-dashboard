@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a secure, permission-aware redemption-code list with current-user-first ordering, temporary plaintext reveal, and single or batch deletion of unused codes.
+**Goal:** Add a secure, permission-aware redemption-code list with current-user-first ordering and temporary plaintext reveal, while refusing deletion until Sub2API exposes atomic delete-if-unused.
 
-**Architecture:** Sub2API remains authoritative for code value and status. The operations service fetches remote codes, joins them to Growth batch attribution, removes plaintext before returning list rows, sorts current-user-created rows first, and paginates the combined result. A focused React table component owns list rendering and selection while the existing operations page owns queries, network calls, reveal, and confirmation dialogs.
+**Architecture:** Sub2API remains authoritative for code value and status. The operations service fetches remote codes without forwarding sensitive search text in URLs, joins them to Growth batch attribution, returns an explicit public-field allowlist, sorts current-user-created rows first, and paginates the combined result. The deletion endpoints are capability guards because current Sub2API hard-deletes by ID without an atomic status predicate.
 
 **Tech Stack:** FastAPI, Pydantic, SQLAlchemy async PostgreSQL, Motor MongoDB, httpx, React 19, TypeScript, Vitest.
 
@@ -20,7 +20,7 @@
 
 - [ ] **Step 1: Write failing client tests**
 
-Add async tests using `httpx.MockTransport` for `list_redemption_codes`, `get_redemption_code`, `delete_redemption_code`, and `batch_delete_redemption_codes`. Assert exact official Sub2API paths and envelope normalization.
+Add async tests using `httpx.MockTransport` for `list_redemption_codes` and `get_redemption_code`. Assert exact official Sub2API paths, envelope normalization, and 404 preservation.
 
 - [ ] **Step 2: Run tests and verify RED**
 
@@ -40,8 +40,6 @@ Add methods that call:
 ```text
 GET    /redeem-codes
 GET    /redeem-codes/{id}
-DELETE /redeem-codes/{id}
-POST   /redeem-codes/batch-delete
 ```
 
 Normalize the Sub2API `{code,message,data}` envelope and validate list/item/delete result shapes without logging response bodies.
@@ -93,8 +91,7 @@ Cover these behaviors with remote adapter and Growth connection fakes:
 - origin filtering occurs before pagination
 - reaching the remote fetch limit sets truncated=true
 - reveal returns plaintext only from a single remote item
-- delete rejects any status other than unused
-- batch delete validates all records before invoking remote deletion
+- delete and batch delete return capability_unavailable without invoking the remote hard-delete APIs
 ```
 
 - [ ] **Step 5: Run service tests and verify RED**
@@ -103,7 +100,7 @@ Expected: missing service functions and error types.
 
 - [ ] **Step 6: Implement secure service operations**
 
-Add focused functions for list, reveal, single delete, and batch delete. Resolve creator labels from MongoDB users when possible and use the current actor email for the current user's rows. Use a stable error code `redemption_code_not_deletable` for status conflicts.
+Add focused functions for list and reveal. Resolve creator labels from MongoDB users when possible. Use explicit list-field allowlisting. Keep deletion guarded by `capability_unavailable` until an atomic upstream contract exists.
 
 - [ ] **Step 7: Verify service GREEN**
 
@@ -125,11 +122,11 @@ Test:
 - page >= 1, page_size <= 100, search <= 100
 - batch code_ids contains 1..100 unique positive IDs
 - list is available to a page-authorized read-only actor
-- reveal/delete/batch-delete require owner/admin
+- reveal and deletion capability probes require owner/admin
 - all routes enforce operations_site_ids
 - reveal sets Cache-Control: no-store
 - reveal audit contains only site_id, code_id, and mask
-- delete audits masks and IDs without plaintext
+- deletion capability probes never reach a remote mutation or write a false success audit
 ```
 
 - [ ] **Step 2: Run route tests and verify RED**
@@ -164,8 +161,8 @@ Render representative rows and assert:
 ```text
 - columns for mask, site, value, status, origin, creator, created/used details
 - labels 管理面板创建 and API站点创建
-- only unused rows have enabled selection/deletion for writable roles
-- read-only mode has no checkbox, reveal, or delete buttons
+- no roles receive selection/deletion controls while atomic deletion is unavailable
+- read-only mode has no reveal button
 - pagination buttons have stable accessible names
 ```
 
@@ -211,9 +208,9 @@ Add site, status, origin, search, page, loading, row, and selection state. Load 
 
 Open a no-persistence modal with the fetched plaintext. Clear it on close, tab switch, permission/site reset, and component unmount.
 
-- [ ] **Step 5: Implement single and batch delete confirmations**
+- [ ] **Step 5: Guard unsafe deletion**
 
-Use the existing `ConfirmDialog`. Refresh the list after success; clear deleted selections; move to the previous page if the current page becomes empty.
+Hide deletion controls and return `capability_unavailable` from both deletion endpoints. Do not call Sub2API hard-delete APIs or write through the read-only client database DSN.
 
 - [ ] **Step 6: Verify frontend GREEN**
 
