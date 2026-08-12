@@ -2,6 +2,7 @@ import json
 import asyncio
 import logging
 import time
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -68,6 +69,7 @@ class Sub2ApiClient:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         if not self.configured:
             raise HTTPException(
@@ -75,7 +77,14 @@ class Sub2ApiClient:
                 detail="sub2api site base_url is not configured",
             )
         async with httpx.AsyncClient(timeout=15) as client:
-            return await self._request_admin_with_client(client, method, path, params=params, json=json)
+            return await self._request_admin_with_client(
+                client,
+                method,
+                path,
+                params=params,
+                json=json,
+                headers=headers,
+            )
 
     async def _request_admin_with_client(
         self,
@@ -85,6 +94,7 @@ class Sub2ApiClient:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         if not self.configured:
             raise HTTPException(
@@ -99,7 +109,7 @@ class Sub2ApiClient:
                 response = await client.request(
                     method,
                     target_url,
-                    headers=self.headers(),
+                    headers=self.headers() | (headers or {}),
                     params=params,
                     json=json,
                 )
@@ -141,6 +151,66 @@ class Sub2ApiClient:
                 detail=message or f"sub2api {method} {target_url} failed with status {response.status_code}",
             )
         return payload if isinstance(payload, dict) else {"data": payload}
+
+    async def generate_redemption_codes(
+        self,
+        *,
+        count: int,
+        value: Decimal,
+        idempotency_key: str,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> list[dict[str, Any]]:
+        if not 1 <= count <= 100:
+            raise ValueError("Sub2API redemption generation count must be between 1 and 100")
+        if value <= 0:
+            raise ValueError("Sub2API redemption value must be greater than zero")
+        key = str(idempotency_key or "").strip()
+        if not key:
+            raise ValueError("Sub2API redemption generation requires an idempotency key")
+        request = {
+            "count": count,
+            "type": "balance",
+            "value": float(value),
+        }
+        request_headers = {"Idempotency-Key": key}
+        if http_client is None:
+            response = await self.request_admin(
+                "POST",
+                "/redeem-codes/generate",
+                json=request,
+                headers=request_headers,
+            )
+        else:
+            response = await self._request_admin_with_client(
+                http_client,
+                "POST",
+                "/redeem-codes/generate",
+                json=request,
+                headers=request_headers,
+            )
+        codes = response.get("data", response)
+        if not isinstance(codes, list) or len(codes) != count:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Sub2API returned an invalid redemption code batch",
+            )
+        normalized: list[dict[str, Any]] = []
+        plaintext_codes: set[str] = set()
+        for item in codes:
+            if not isinstance(item, dict):
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Sub2API returned an invalid redemption code record",
+                )
+            code = str(item.get("code") or "").strip()
+            if not code or code in plaintext_codes:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Sub2API returned a missing or duplicate redemption code",
+                )
+            plaintext_codes.add(code)
+            normalized.append(item | {"code": code})
+        return normalized
 
     async def create_account(self, payload: dict[str, Any]) -> dict[str, Any]:
         response = await self.request_admin("POST", "/accounts", json=payload)

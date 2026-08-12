@@ -160,6 +160,39 @@ type ModalState =
   | { kind: "classification"; item: ClassificationTask }
   | null;
 
+type RedemptionResultPanelProps = {
+  codes: string[];
+  onClose: () => void;
+  onCopy: () => void;
+  onDownload: () => void;
+};
+
+export function RedemptionResultPanel({
+  codes,
+  onClose,
+  onCopy,
+  onDownload,
+}: RedemptionResultPanelProps) {
+  return (
+    <div className="operations-redemption-result" role="dialog" aria-modal="true" aria-labelledby="operations-redemption-result-title">
+      <div className="operations-redemption-result-header">
+        <div>
+          <span className="operations-eyebrow">一次性展示</span>
+          <h3 id="operations-redemption-result-title">兑换码已生成</h3>
+        </div>
+        <button className="ghost icon-button" type="button" aria-label="关闭兑换码结果" onClick={onClose}>×</button>
+      </div>
+      <p className="operations-redemption-result-note">兑换码只在本次响应中显示，Growth 数据库不会保存明文。请立即复制或下载。</p>
+      <textarea className="operations-redemption-result-codes" readOnly value={codes.join("\n")} aria-label="生成的兑换码" />
+      <div className="operations-redemption-result-actions">
+        <button type="button" onClick={onCopy}>复制全部</button>
+        <button className="ghost" type="button" onClick={onDownload}>下载兑换码</button>
+        <button className="ghost" type="button" onClick={onClose}>完成</button>
+      </div>
+    </div>
+  );
+}
+
 const siteOptions: Array<{ value: OperationsSiteId; label: string }> = [
   { value: "aiwelink", label: "AIWeLink" },
   { value: "aigclink", label: "AIGCLink" },
@@ -448,6 +481,7 @@ export function OperationsManagementPage(
   const [modal, setModal] = useState<ModalState>(null);
   const [internalDeleteTarget, setInternalDeleteTarget] = useState<InternalUser | null>(null);
   const [saving, setSaving] = useState(false);
+  const [redemptionCodes, setRedemptionCodes] = useState<string[] | null>(null);
   const [internalForm, setInternalForm] = useState<InternalUserForm>(() => ({ ...emptyInternalUserForm, site_id: firstAllowedSiteId }));
   const [redemptionForm, setRedemptionForm] = useState<RedemptionForm>(() => ({ ...emptyRedemptionForm, site_id: firstAllowedSiteId }));
   const [adjustmentForm, setAdjustmentForm] = useState<AdjustmentForm>(() => ({ ...emptyAdjustmentForm, site_id: firstAllowedSiteId }));
@@ -487,6 +521,7 @@ export function OperationsManagementPage(
     setClassificationTasks([]);
     setLoadError("");
     setModal(null);
+    setRedemptionCodes(null);
     setInternalDeleteTarget(null);
     setInternalForm({ ...emptyInternalUserForm, site_id: firstAllowedSiteId });
     setRedemptionForm({ ...emptyRedemptionForm, site_id: firstAllowedSiteId });
@@ -663,14 +698,35 @@ export function OperationsManagementPage(
     if (!canWrite || !allowedSiteSet.has(redemptionForm.site_id as OperationsSiteId)) return;
     setSaving(true);
     try {
-      await api("/operations/redemption-batches", token, { method: "POST", body: JSON.stringify(buildRedemptionPayload(redemptionForm, idempotencyKey("redemption"))) });
+      const result = await api<{ codes?: string[] }>("/operations/redemption-batches", token, { method: "POST", body: JSON.stringify(buildRedemptionPayload(redemptionForm, idempotencyKey("redemption"))) });
       setModal(null);
-      showToast("兑换码批次已生成");
+      if (result.codes?.length) {
+        setRedemptionCodes(result.codes);
+      } else {
+        showToast("该幂等批次已处理，明文兑换码不会再次显示", true);
+      }
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
       setSaving(false);
     }
+  }
+
+  function copyRedemptionCodes() {
+    if (!redemptionCodes?.length) return;
+    void navigator.clipboard?.writeText(redemptionCodes.join("\n"));
+    showToast("兑换码已复制");
+  }
+
+  function downloadRedemptionCodes() {
+    if (!redemptionCodes?.length) return;
+    const blob = new Blob([`${redemptionCodes.join("\n")}\n`], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `redemption-codes-${new Date().toISOString().slice(0, 10)}.txt`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
 
   async function saveAdjustment() {
@@ -881,6 +937,8 @@ export function OperationsManagementPage(
       {modal?.kind === "internal" && <GrowthCreateModal title={modal.item ? "编辑内部人员" : "添加内部人员"} submitLabel={modal.item ? "保存修改" : "确认添加"} saving={saving} submitDisabled={!internalForm.site_id || !internalForm.email.trim()} onClose={() => setModal(null)} onSubmit={saveInternal}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect sites={allowedSites} includeAll={false} value={internalForm.site_id} onChange={(site_id) => setInternalForm({ ...internalForm, site_id })} /></label><label><span className="field-label"><strong>邮箱</strong></span><input type="email" autoComplete="off" value={internalForm.email} onChange={(event) => setInternalForm({ ...internalForm, email: event.target.value })} required /></label><label className="span-2"><span className="field-label"><strong>标记原因</strong><span>（可选）</span></span><input value={internalForm.reason} onChange={(event) => setInternalForm({ ...internalForm, reason: event.target.value })} /></label><label><span className="field-label"><strong>生效时间</strong></span><input type="datetime-local" value={internalForm.active_from} onChange={(event) => setInternalForm({ ...internalForm, active_from: event.target.value })} /></label><label><span className="field-label"><strong>失效时间</strong><span>（可选）</span></span><input type="datetime-local" value={internalForm.active_until} onChange={(event) => setInternalForm({ ...internalForm, active_until: event.target.value })} /></label></div></GrowthCreateModal>}
 
       {modal?.kind === "redemption" && <GrowthCreateModal title="生成兑换码" submitLabel="生成兑换码" saving={saving} submitDisabled={!redemptionForm.site_id || Number(redemptionForm.code_count) <= 0 || Number(redemptionForm.balance_units_per_code) <= 0 || (redemptionForm.purpose === "sale" && Number(redemptionForm.cash_amount_cny) <= 0)} onClose={() => setModal(null)} onSubmit={saveRedemption}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect sites={allowedSites} includeAll={false} value={redemptionForm.site_id} onChange={(site_id) => setRedemptionForm({ ...redemptionForm, site_id })} /></label><PurposeFields purpose={redemptionForm.purpose} cash={redemptionForm.cash_amount_cny} onPurpose={(purpose) => setRedemptionForm({ ...redemptionForm, purpose, cash_amount_cny: purpose === "sale" ? redemptionForm.cash_amount_cny : "0" })} onCash={(cash_amount_cny) => setRedemptionForm({ ...redemptionForm, cash_amount_cny })} /><label><span className="field-label"><strong>兑换码数量</strong></span><input type="number" min="1" max="10000" value={redemptionForm.code_count} onChange={(event) => setRedemptionForm({ ...redemptionForm, code_count: event.target.value })} /></label><label><span className="field-label"><strong>每个兑换码额度</strong></span><input type="number" min="0" step="any" value={redemptionForm.balance_units_per_code} onChange={(event) => setRedemptionForm({ ...redemptionForm, balance_units_per_code: event.target.value })} /></label><label className="span-2"><span className="field-label"><strong>备注</strong><span>（可选）</span></span><textarea value={redemptionForm.note} onChange={(event) => setRedemptionForm({ ...redemptionForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
+
+      {redemptionCodes && <div className="operations-redemption-result-backdrop"><RedemptionResultPanel codes={redemptionCodes} onClose={() => setRedemptionCodes(null)} onCopy={copyRedemptionCodes} onDownload={downloadRedemptionCodes} /></div>}
 
       {modal?.kind === "adjustment" && <GrowthCreateModal title="调整余额" submitLabel="提交调整" saving={saving} submitDisabled={!adjustmentForm.site_id || !adjustmentForm.external_user_id.trim() || Number(adjustmentForm.balance_units) === 0 || (adjustmentForm.purpose === "sale" && Number(adjustmentForm.cash_amount_cny) <= 0)} onClose={() => setModal(null)} onSubmit={saveAdjustment}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect sites={allowedSites} includeAll={false} value={adjustmentForm.site_id} onChange={(site_id) => setAdjustmentForm({ ...adjustmentForm, site_id })} /></label><label><span className="field-label"><strong>业务用户 ID</strong></span><input value={adjustmentForm.external_user_id} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, external_user_id: event.target.value })} /></label><PurposeFields purpose={adjustmentForm.purpose} cash={adjustmentForm.cash_amount_cny} onPurpose={(purpose) => setAdjustmentForm({ ...adjustmentForm, purpose, cash_amount_cny: purpose === "sale" ? adjustmentForm.cash_amount_cny : "0" })} onCash={(cash_amount_cny) => setAdjustmentForm({ ...adjustmentForm, cash_amount_cny })} /><label><span className="field-label"><strong>调整额度</strong></span><input type="number" step="any" value={adjustmentForm.balance_units} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, balance_units: event.target.value })} /><span className="growth-field-message is-muted">增加填正数，扣减填负数</span></label><label className="span-2"><span className="field-label"><strong>备注</strong><span>（可选）</span></span><textarea value={adjustmentForm.note} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, note: event.target.value })} /></label></div></GrowthCreateModal>}
 

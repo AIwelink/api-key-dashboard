@@ -412,7 +412,7 @@ async def post_redemption_batch(
         action="operations.redemption_batch.create",
         resource_type="operations_redemption_batch",
         resource_id=result.get("redemption_batch_id"),
-        after=result,
+        after={key: value for key, value in result.items() if key != "codes"},
     )
     return result
 

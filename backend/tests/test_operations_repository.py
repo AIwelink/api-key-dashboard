@@ -620,6 +620,67 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(connection.calls[0][1]["purpose"], "internal")
         self.assertEqual(connection.calls[1][1]["external_user_id"], "42")
 
+    async def test_redemption_batch_lifecycle_reads_and_completes_without_plaintext(self) -> None:
+        from app.modules.operations.repository import (
+            complete_redemption_batch,
+            get_redemption_batch_by_idempotency,
+        )
+
+        batch_id = uuid4()
+        connection = _FakeConnection(
+            [
+                {"redemption_batch_id": batch_id, "command_status": "pending"},
+                {
+                    "redemption_batch_id": batch_id,
+                    "command_status": "succeeded",
+                    "code_masks": ["rede...lpha"],
+                },
+            ]
+        )
+
+        existing = await get_redemption_batch_by_idempotency(
+            connection,
+            site_id="aiwelink",
+            idempotency_key="batch-1",
+        )
+        completed = await complete_redemption_batch(
+            connection,
+            redemption_batch_id=batch_id,
+            source_batch_id="101",
+            code_hashes=["digest"],
+            code_masks=["rede...lpha"],
+        )
+
+        self.assertEqual(existing["command_status"], "pending")
+        self.assertEqual(completed["command_status"], "succeeded")
+        self.assertIn("site_id = :site_id", connection.calls[0][0])
+        self.assertIn("idempotency_key = :idempotency_key", connection.calls[0][0])
+        self.assertIn("command_status = 'succeeded'", connection.calls[1][0])
+        self.assertEqual(connection.calls[1][1]["code_hashes"], '["digest"]')
+        self.assertEqual(connection.calls[1][1]["code_masks"], '["rede...lpha"]')
+        self.assertNotIn("redeem-alpha", str(connection.calls))
+
+    async def test_failed_redemption_batch_records_error_without_plaintext(self) -> None:
+        from app.modules.operations.repository import fail_redemption_batch
+
+        batch_id = uuid4()
+        connection = _FakeConnection(
+            [{"redemption_batch_id": batch_id, "command_status": "failed"}]
+        )
+
+        failed = await fail_redemption_batch(
+            connection,
+            redemption_batch_id=batch_id,
+            error_code="HTTPException",
+            error_message="upstream unavailable",
+        )
+
+        self.assertEqual(failed["command_status"], "failed")
+        statement, parameters = connection.calls[0]
+        self.assertIn("command_status = 'failed'", statement)
+        self.assertEqual(parameters["error_code"], "HTTPException")
+        self.assertEqual(parameters["error_message"], "upstream unavailable")
+
     async def test_operations_sync_run_lifecycle_uses_operations_stream(self) -> None:
         from app.modules.operations.repository import (
             finish_operations_sync_run,

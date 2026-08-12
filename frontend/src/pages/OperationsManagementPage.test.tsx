@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   OperationsManagementPage,
   InternalUserActionButtons,
+  RedemptionResultPanel,
   averageConsumption,
   buildOperationsQuery,
   buildRedemptionPayload,
@@ -28,6 +29,23 @@ const props = {
 };
 
 describe("operations management workspace", () => {
+  it("renders generated redemption codes as a one-time result", () => {
+    const html = renderToStaticMarkup(
+      <RedemptionResultPanel
+        codes={["redeem-alpha", "redeem-beta"]}
+        onClose={() => undefined}
+        onCopy={() => undefined}
+        onDownload={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("兑换码已生成");
+    expect(html).toContain("redeem-alpha");
+    expect(html).toContain("redeem-beta");
+    expect(html).toContain("复制全部");
+    expect(html).toContain("下载兑换码");
+  });
+
   it("prioritizes AIWeLink and falls back to the first authorized site", () => {
     const sites = [
       { value: "aigclink" as OperationsSiteId, label: "AIGCLink" },

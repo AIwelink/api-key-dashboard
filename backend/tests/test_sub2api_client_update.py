@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -10,6 +11,50 @@ from app.modules.sub2api.client import Sub2ApiClient
 
 
 class Sub2ApiClientUpdateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_generate_redemption_codes_uses_verified_admin_contract(self) -> None:
+        captured: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["method"] = request.method
+            captured["url"] = str(request.url)
+            captured["api_key"] = request.headers.get("x-api-key")
+            captured["idempotency_key"] = request.headers.get("Idempotency-Key")
+            captured["payload"] = request.content.decode("utf-8")
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "message": "success",
+                    "data": [
+                        {"id": 101, "code": "redeem-alpha", "type": "balance", "value": 100},
+                        {"id": 102, "code": "redeem-beta", "type": "balance", "value": 100},
+                    ],
+                },
+                request=request,
+            )
+
+        client = Sub2ApiClient(base_url="http://sub2.example.com", token="admin-key")
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+            result = await client.generate_redemption_codes(
+                count=2,
+                value=Decimal("100"),
+                idempotency_key="batch-1:chunk:1",
+                http_client=http_client,
+            )
+
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(
+            captured["url"],
+            "http://sub2.example.com/api/v1/admin/redeem-codes/generate",
+        )
+        self.assertEqual(captured["api_key"], "admin-key")
+        self.assertEqual(captured["idempotency_key"], "batch-1:chunk:1")
+        self.assertEqual(
+            captured["payload"],
+            '{"count":2,"type":"balance","value":100.0}',
+        )
+        self.assertEqual([item["code"] for item in result], ["redeem-alpha", "redeem-beta"])
+
     async def test_bulk_runtime_update_posts_the_admin_api_payload(self) -> None:
         client = Sub2ApiClient(base_url="http://sub2.example.com", token="admin-key")
         response = httpx.Response(

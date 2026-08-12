@@ -388,6 +388,42 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class OperationsCreditBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_redemption_batch_audit_excludes_plaintext_codes(self) -> None:
+        from app.routers import operations
+        from app.modules.operations.schemas import RedemptionBatchCreate
+
+        created = {
+            "redemption_batch_id": "batch-id",
+            "site_id": "aiwelink",
+            "command_status": "succeeded",
+            "code_masks": ["rede...lpha"],
+            "codes": ["redeem-alpha"],
+            "codes_available": True,
+        }
+        with (
+            patch.object(
+                operations.service,
+                "create_redemption_batch",
+                AsyncMock(return_value=created),
+            ),
+            patch.object(operations, "write_audit_log", AsyncMock()) as audit,
+        ):
+            result = await operations.post_redemption_batch(
+                payload=RedemptionBatchCreate(
+                    site_id="aiwelink",
+                    purpose="internal",
+                    code_count=1,
+                    balance_units_per_code=Decimal("100"),
+                    idempotency_key="batch-1",
+                ),
+                actor={"_id": "owner-1", "role": "owner", "operations_site_ids": ["aiwelink"]},
+                db=object(),
+            )
+
+        self.assertEqual(result["codes"], ["redeem-alpha"])
+        self.assertNotIn("codes", audit.await_args.kwargs["after"])
+        self.assertNotIn("redeem-alpha", str(audit.await_args.kwargs))
+
     async def test_unsupported_credit_adapter_returns_capability_unavailable(self) -> None:
         from app.routers import operations
         from app.modules.operations.schemas import RedemptionBatchCreate
@@ -397,18 +433,31 @@ class OperationsCreditBoundaryTests(unittest.IsolatedAsyncioTestCase):
             "get_client_site",
             AsyncMock(return_value={"id": "aiwelink", "client_type": "sub2api"}),
         ):
-            with self.assertRaises(HTTPException) as raised:
-                await operations.post_redemption_batch(
-                    payload=RedemptionBatchCreate(
-                        site_id="aiwelink",
-                        purpose="internal",
-                        code_count=1,
-                        balance_units_per_code=Decimal("100"),
-                        idempotency_key="batch-1",
-                    ),
-                    actor={"_id": "owner-1", "role": "owner", "operations_site_ids": ["aiwelink"]},
-                    db=object(),
-                )
+            with (
+                patch.object(
+                    operations.service,
+                    "growth_connection",
+                    lambda db, write=True: _async_context(object()),
+                ),
+                patch.object(
+                    operations.service.repository,
+                    "get_redemption_batch_by_idempotency",
+                    AsyncMock(return_value=None),
+                    create=True,
+                ),
+            ):
+                with self.assertRaises(HTTPException) as raised:
+                    await operations.post_redemption_batch(
+                        payload=RedemptionBatchCreate(
+                            site_id="aiwelink",
+                            purpose="internal",
+                            code_count=1,
+                            balance_units_per_code=Decimal("100"),
+                            idempotency_key="batch-1",
+                        ),
+                        actor={"_id": "owner-1", "role": "owner", "operations_site_ids": ["aiwelink"]},
+                        db=object(),
+                    )
 
         self.assertEqual(raised.exception.status_code, 409)
         self.assertEqual(raised.exception.detail["code"], "capability_unavailable")
