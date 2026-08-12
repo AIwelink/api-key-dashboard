@@ -10,6 +10,9 @@ import {
   canManageOperations,
   conversionRateEffectiveHint,
   emptyRedemptionForm,
+  formatLifecycleRate,
+  formatRetentionRate,
+  operationsIncomeLabel,
   orderOperationsSites,
   paymentRate,
   internalUserDeleteDetails,
@@ -139,6 +142,73 @@ describe("operations management workspace", () => {
     expect(paymentRate({ payer_count: 1, active_user_count: 4 })).toBe(25);
     expect(averageConsumption({ consumed_balance_units: 20, active_user_count: 0 })).toBe(0);
     expect(paymentRate({ payer_count: 1, active_user_count: 0 })).toBe(0);
+  });
+
+  it("formats lifecycle ratios without treating immature data as zero", () => {
+    expect(formatLifecycleRate(0.25)).toBe("25.0%");
+    expect(formatLifecycleRate(null)).toBe("--");
+    expect(formatRetentionRate({ numerator: 3, denominator: 4, rate: 0.75 })).toBe("75.0%");
+    expect(formatRetentionRate({ numerator: null, denominator: null, rate: null })).toBe("--");
+  });
+
+  it("uses site-specific income wording", () => {
+    expect(operationsIncomeLabel("aiwelink")).toBe("现金收入");
+    expect(operationsIncomeLabel("aigclink")).toBe("调用计费收入");
+    expect(operationsIncomeLabel("")).toBe("收入");
+  });
+
+  it("uses site-specific income wording in the overview summary", () => {
+    const aiwelinkHtml = renderToStaticMarkup(
+      <OperationsManagementPage {...props} allowedSiteIds={["aiwelink"]} />,
+    );
+    const aigclinkHtml = renderToStaticMarkup(
+      <OperationsManagementPage {...props} allowedSiteIds={["aigclink"]} />,
+    );
+
+    expect(aiwelinkHtml).toContain('<div class="operations-metric"><span>现金收入</span>');
+    expect(aigclinkHtml).toContain('<div class="operations-metric"><span>调用计费收入</span>');
+  });
+
+  it("hides AIGCLink value rankings when AIWeLink is the selected site", () => {
+    const aiwelinkHtml = renderToStaticMarkup(
+      <OperationsManagementPage {...props} allowedSiteIds={["aiwelink", "aigclink"]} />,
+    );
+    const aigclinkHtml = renderToStaticMarkup(
+      <OperationsManagementPage {...props} allowedSiteIds={["aigclink"]} />,
+    );
+
+    expect(aiwelinkHtml).not.toContain("模型计费排行");
+    expect(aiwelinkHtml).not.toContain("企业客户排行");
+    expect(aigclinkHtml).toContain("模型计费排行");
+    expect(aigclinkHtml).toContain("企业客户排行");
+  });
+
+  it("renders lifecycle, cohort, billing, and value ranking sections", () => {
+    const html = renderToStaticMarkup(<OperationsManagementPage {...props} />);
+    const aigclinkHtml = renderToStaticMarkup(
+      <OperationsManagementPage {...props} allowedSiteIds={["aigclink"]} />,
+    );
+
+    expect(html).toContain("生命周期指标");
+    expect(html).toContain("24 小时激活率");
+    expect(html).toContain("7 日激活率");
+    expect(html).toContain("D7 留存");
+    expect(html).toContain("活跃用户付费率");
+    expect(html).toContain("本期付款率");
+    expect(html).toContain("流失预警");
+    expect(html).toContain("使用流失");
+    expect(html).toContain("回流用户");
+    expect(html).toContain("付费与计费分层");
+    expect(html).toContain("现金收入");
+    expect(html).toContain("调用计费收入");
+    expect(html).toContain("订阅摊销收入");
+    expect(html).toContain("付费状态未知");
+    expect(html).toContain("留存 Cohort");
+    expect(html).toContain("D30");
+    expect(aigclinkHtml).toContain("模型计费排行");
+    expect(aigclinkHtml).toContain("企业客户排行");
+    expect(html).toContain('class="operations-lifecycle-grid"');
+    expect(aigclinkHtml).toContain('class="operations-value-grid"');
   });
 
   it("renders internal-user management as a table-based page", () => {

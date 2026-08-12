@@ -61,6 +61,98 @@ type TrendItem = OperationsSummary & {
   user_segment: UserSegment;
 };
 
+type LifecycleSummary = {
+  scope?: "all" | "site";
+  site_id?: string | null;
+  billing_mode?: "mixed" | "cash_and_subscription" | "usage_postpaid";
+  activation_24h_numerator?: number;
+  activation_24h_denominator?: number;
+  activation_24h_rate?: number | null;
+  activation_7d_numerator?: number;
+  activation_7d_denominator?: number;
+  activation_7d_rate?: number | null;
+  payer_7d_numerator?: number;
+  payer_7d_denominator?: number;
+  payer_7d_rate?: number | null;
+  payer_30d_numerator?: number;
+  payer_30d_denominator?: number;
+  payer_30d_rate?: number | null;
+  active_payer_numerator?: number;
+  active_payer_denominator?: number;
+  active_payer_rate?: number | null;
+  period_payer_numerator?: number;
+  period_payer_denominator?: number;
+  period_payer_rate?: number | null;
+  active_user_count?: number;
+  cumulative_payer_count?: number;
+  effective_payer_count?: number;
+  active_cash_payer_count?: number;
+  period_payer_count?: number;
+  unknown_payer_count?: number;
+  churn_warning_user_count?: number;
+  churned_user_count?: number;
+  returned_user_count?: number;
+  cash_income_cny?: number;
+  subscription_cash_income_cny?: number;
+  subscription_amortized_income_cny?: number;
+  recharge_event_count?: number;
+  recharge_balance_units?: number;
+  usage_billed_income_cny?: number;
+};
+
+type RetentionValue = {
+  numerator?: number | null;
+  denominator?: number | null;
+  rate?: number | null;
+};
+
+type RetentionRow = {
+  site_id: string;
+  cohort_date: string;
+  cohort_size: number;
+  d1_numerator?: number | null;
+  d1_denominator?: number | null;
+  d1_rate?: number | null;
+  d3_numerator?: number | null;
+  d3_denominator?: number | null;
+  d3_rate?: number | null;
+  d7_numerator?: number | null;
+  d7_denominator?: number | null;
+  d7_rate?: number | null;
+  d14_numerator?: number | null;
+  d14_denominator?: number | null;
+  d14_rate?: number | null;
+  d30_numerator?: number | null;
+  d30_denominator?: number | null;
+  d30_rate?: number | null;
+};
+
+type ModelBreakdownItem = {
+  model_name: string;
+  successful_call_count: number;
+  token_count: number;
+  billed_amount_cny: number;
+  revenue_share?: number | null;
+};
+
+type CustomerBreakdownItem = {
+  site_id: string;
+  external_user_id: string;
+  account_label?: string;
+  successful_call_count: number;
+  token_count: number;
+  billed_amount_cny: number;
+};
+
+type LifecycleResponse = {
+  summary: LifecycleSummary;
+  retention: RetentionRow[];
+  site_breakdown: LifecycleSummary[];
+  model_breakdown: ModelBreakdownItem[];
+  customer_breakdown: CustomerBreakdownItem[];
+  generated_at: string;
+};
+
 type SyncStatus = {
   site_id: string;
   status?: string;
@@ -286,6 +378,36 @@ function formatCurrency(value: number | undefined) {
   return `¥${formatNumber(value, 2)}`;
 }
 
+export function formatLifecycleRate(value: number | null | undefined) {
+  return value == null ? "--" : `${(Number(value) * 100).toFixed(1)}%`;
+}
+
+export function formatRetentionRate(value: RetentionValue) {
+  return value.denominator == null || Number(value.denominator) === 0
+    ? "--"
+    : formatLifecycleRate(value.rate);
+}
+
+export function operationsIncomeLabel(siteId: string) {
+  if (siteId === "aiwelink") return "现金收入";
+  if (siteId === "aigclink") return "调用计费收入";
+  return "收入";
+}
+
+function weightedRetentionRate(rows: RetentionRow[], day: 1 | 3 | 7 | 14 | 30) {
+  const numeratorKey = `d${day}_numerator` as keyof RetentionRow;
+  const denominatorKey = `d${day}_denominator` as keyof RetentionRow;
+  let numerator = 0;
+  let denominator = 0;
+  for (const row of rows) {
+    const rowDenominator = row[denominatorKey];
+    if (rowDenominator == null) continue;
+    numerator += Number(row[numeratorKey] || 0);
+    denominator += Number(rowDenominator);
+  }
+  return denominator > 0 ? numerator / denominator : null;
+}
+
 function formatDateTime(value?: string | null) {
   if (!value) return "-";
   const date = new Date(value);
@@ -426,12 +548,14 @@ export function OperationsManagementPage(
   const hasSiteAccess = allowedSites.length > 0;
   const showAllSites = allowedSites.length > 1;
   const allowedSiteSet = new Set(allowedSites.map((site) => site.value));
+  const hasAigclinkAccess = allowedSiteSet.has("aigclink");
   const normalizeSiteFilter = (siteId: string) => !siteId
     ? ""
     : allowedSiteSet.has(siteId as OperationsSiteId) ? siteId : defaultSiteFilter;
   const [tab, setTab] = useState<OperationsTab>(initialTab);
   const [query, setQuery] = useState<OperationsQueryState>({ siteId: defaultSiteFilter, segment: DEFAULT_OPERATIONS_SEGMENT, range: "7d" });
   const [overview, setOverview] = useState<OverviewResponse | null>(null);
+  const [lifecycle, setLifecycle] = useState<LifecycleResponse | null>(null);
   const [trends, setTrends] = useState<TrendItem[]>([]);
   const [syncStatuses, setSyncStatuses] = useState<SyncStatus[]>([]);
   const [internalUsers, setInternalUsers] = useState<InternalUser[]>([]);
@@ -480,6 +604,7 @@ export function OperationsManagementPage(
     setClassificationStatus("pending");
     setInternalSearch("");
     setOverview(null);
+    setLifecycle(null);
     setTrends([]);
     setSyncStatuses([]);
     setInternalUsers([]);
@@ -503,13 +628,15 @@ export function OperationsManagementPage(
     if (!background) setLoading(true);
     setLoadError("");
     try {
-      const [summary, trendData, syncData] = await Promise.all([
+      const [summary, trendData, lifecycleData, syncData] = await Promise.all([
         api<OverviewResponse>(`/operations/summary${operationsQuery}`, token),
         api<ListResponse<TrendItem>>(`/operations/trends${operationsQuery}`, token),
+        api<LifecycleResponse>(`/operations/lifecycle${operationsQuery}`, token),
         api<ListResponse<SyncStatus>>("/operations/sync-status", token),
       ]);
       setOverview(summary);
       setTrends(trendData.items);
+      setLifecycle(lifecycleData);
       setSyncStatuses(syncData.items);
     } catch (error) {
       const message = errorMessage(error);
@@ -763,6 +890,18 @@ export function OperationsManagementPage(
 
   const summary = overview?.summary || {};
   const previous = overview?.previous_summary || {};
+  const lifecycleSummary = lifecycle?.summary || {};
+  const visibleRetention = (lifecycle?.retention || []).filter((item) => (
+    allowedSiteSet.has(item.site_id as OperationsSiteId)
+  ));
+  const visibleLifecycleSites = (lifecycle?.site_breakdown || []).filter((item) => (
+    item.site_id && allowedSiteSet.has(item.site_id as OperationsSiteId)
+  ));
+  const visibleModels = lifecycle?.model_breakdown || [];
+  const visibleCustomers = (lifecycle?.customer_breakdown || []).filter((item) => (
+    allowedSiteSet.has(item.site_id as OperationsSiteId)
+  ));
+  const d7RetentionRate = weightedRetentionRate(visibleRetention, 7);
   const visibleSyncStatuses = syncStatuses.filter((item) => (
     allowedSiteSet.has(item.site_id as OperationsSiteId)
     && (!effectiveQuery.siteId || item.site_id === effectiveQuery.siteId)
@@ -779,6 +918,11 @@ export function OperationsManagementPage(
   const pageDescription = allowedSites.length === 1
     ? `查看 ${allowedSites[0].label} 的收入、消耗和用户构成`
     : "统一查看 AIWeLink 与 AIGCLink 的收入、消耗和用户构成";
+  const billingDescription = allowedSites.length > 1
+    ? "AIWeLink 按可核验现金，AIGCLink 按数据库调用标价"
+    : hasAigclinkAccess
+      ? "按数据库调用标价确认计费客户与收入"
+      : "按可核验现金确认付费身份，订阅收入单独摊销";
 
   return (
     <section className="view operations-workspace-page">
@@ -819,19 +963,54 @@ export function OperationsManagementPage(
             <Metric label="活跃用户" value={formatNumber(summary.active_user_count, 0)} previous={comparison(summary.active_user_count, previous.active_user_count)} />
             <Metric label="成功调用" value={formatNumber(summary.successful_call_count, 0)} previous={comparison(summary.successful_call_count, previous.successful_call_count)} />
             <Metric label="付费用户" value={formatNumber(summary.payer_count, 0)} previous={comparison(summary.payer_count, previous.payer_count)} />
-            <Metric label="收入" value={formatCurrency(summary.gross_income_cny)} previous={comparison(summary.gross_income_cny, previous.gross_income_cny)} />
+            <Metric label={operationsIncomeLabel(effectiveQuery.siteId)} value={formatCurrency(summary.gross_income_cny)} previous={comparison(summary.gross_income_cny, previous.gross_income_cny)} />
             <Metric label="退款" value={formatCurrency(summary.refund_cny)} previous={comparison(summary.refund_cny, previous.refund_cny)} />
           </div>
+
+          <section className="operations-lifecycle-band" aria-busy={loading}>
+            <div className="operations-section-head"><div><h3>生命周期指标</h3><span>成熟用户按完整观察窗口计算</span></div></div>
+            <div className="operations-lifecycle-grid">
+              <Metric label="24 小时激活率" value={formatLifecycleRate(lifecycleSummary.activation_24h_rate)} previous={`${formatNumber(lifecycleSummary.activation_24h_numerator, 0)} / ${formatNumber(lifecycleSummary.activation_24h_denominator, 0)}`} />
+              <Metric label="7 日激活率" value={formatLifecycleRate(lifecycleSummary.activation_7d_rate)} previous={`${formatNumber(lifecycleSummary.activation_7d_numerator, 0)} / ${formatNumber(lifecycleSummary.activation_7d_denominator, 0)}`} />
+              <Metric label="D7 留存" value={formatLifecycleRate(d7RetentionRate)} previous="成熟注册 cohort" />
+              <Metric label="活跃用户付费率" value={formatLifecycleRate(lifecycleSummary.active_payer_rate)} previous={`${formatNumber(lifecycleSummary.active_payer_numerator, 0)} / ${formatNumber(lifecycleSummary.active_payer_denominator, 0)}`} />
+              <Metric label="本期付款率" value={formatLifecycleRate(lifecycleSummary.period_payer_rate)} previous={effectiveQuery.siteId === "aigclink" ? "不适用" : `${formatNumber(lifecycleSummary.period_payer_numerator, 0)} / ${formatNumber(lifecycleSummary.period_payer_denominator, 0)}`} />
+              <Metric label="流失预警" value={formatNumber(lifecycleSummary.churn_warning_user_count, 0)} previous="14 至 30 天未调用" />
+              <Metric label="使用流失" value={formatNumber(lifecycleSummary.churned_user_count, 0)} previous="30 天以上未调用" />
+              <Metric label="回流用户" value={formatNumber(lifecycleSummary.returned_user_count, 0)} previous="间隔 30 天后再次调用" />
+            </div>
+          </section>
+
+          <section className="operations-data-section operations-billing-section">
+            <div className="operations-section-head"><div><h3>付费与计费分层</h3><span>{billingDescription}</span></div><span>{visibleLifecycleSites.length} 个站点</span></div>
+            <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>商业模式</th><th>付费 / 计费客户</th><th>有效付费</th><th>活跃付费</th><th>本期付款</th><th>付费状态未知</th><th>充值次数</th><th>充值额度</th><th>现金收入</th><th>订阅现金收入</th><th>订阅摊销收入</th><th>调用计费收入</th></tr></thead><tbody>{visibleLifecycleSites.length ? visibleLifecycleSites.map((item) => <tr key={item.site_id || "unknown"}><td><strong>{siteLabel(item.site_id || "")}</strong></td><td><span className={`operations-status-tag ${item.site_id === "aigclink" ? "usage-billed" : "cash-billed"}`}>{item.site_id === "aigclink" ? "企业后付费" : "余额与订阅"}</span></td><td>{formatNumber(item.cumulative_payer_count, 0)}</td><td>{item.site_id === "aigclink" ? "--" : formatNumber(item.effective_payer_count, 0)}</td><td>{formatNumber(item.site_id === "aigclink" ? item.active_payer_numerator : item.active_cash_payer_count, 0)}</td><td>{item.site_id === "aigclink" ? "--" : formatNumber(item.period_payer_count, 0)}</td><td>{item.site_id === "aigclink" ? "--" : formatNumber(item.unknown_payer_count, 0)}</td><td>{item.site_id === "aigclink" ? "--" : formatNumber(item.recharge_event_count, 0)}</td><td>{item.site_id === "aigclink" ? "--" : formatNumber(item.recharge_balance_units, 2)}</td><td>{item.site_id === "aigclink" ? "--" : formatCurrency(item.cash_income_cny)}</td><td>{item.site_id === "aigclink" ? "--" : formatCurrency(item.subscription_cash_income_cny)}</td><td>{item.site_id === "aigclink" ? "--" : formatCurrency(item.subscription_amortized_income_cny)}</td><td>{item.site_id === "aigclink" ? formatCurrency(item.usage_billed_income_cny) : "--"}</td></tr>) : <EmptyRow columns={13} text={loading ? "正在加载付费分层..." : "当前周期暂无付费分层数据"} />}</tbody></table></div>
+          </section>
+
+          <section className="operations-data-section operations-retention-section">
+            <div className="operations-section-head"><div><h3>留存 Cohort</h3><span>按上海自然日统计，未成熟观察日显示 --</span></div><span>{visibleRetention.length} 个 cohort</span></div>
+            <div className="operations-table-scroll"><table><thead><tr><th>注册日期</th><th>站点</th><th>注册人数</th><th>D1</th><th>D3</th><th>D7</th><th>D14</th><th>D30</th></tr></thead><tbody>{visibleRetention.length ? visibleRetention.map((item) => <tr key={`${item.site_id}-${item.cohort_date}`}><td>{item.cohort_date}</td><td>{siteLabel(item.site_id)}</td><td>{formatNumber(item.cohort_size, 0)}</td><td>{formatRetentionRate({ numerator: item.d1_numerator, denominator: item.d1_denominator, rate: item.d1_rate })}</td><td>{formatRetentionRate({ numerator: item.d3_numerator, denominator: item.d3_denominator, rate: item.d3_rate })}</td><td>{formatRetentionRate({ numerator: item.d7_numerator, denominator: item.d7_denominator, rate: item.d7_rate })}</td><td>{formatRetentionRate({ numerator: item.d14_numerator, denominator: item.d14_denominator, rate: item.d14_rate })}</td><td>{formatRetentionRate({ numerator: item.d30_numerator, denominator: item.d30_denominator, rate: item.d30_rate })}</td></tr>) : <EmptyRow columns={8} text={loading ? "正在加载留存数据..." : "当前周期暂无成熟 cohort"} />}</tbody></table></div>
+          </section>
+
+          {hasAigclinkAccess && effectiveQuery.siteId !== "aiwelink" && <div className="operations-value-grid">
+            <section className="operations-data-section operations-model-ranking">
+              <div className="operations-section-head"><div><h3>模型计费排行</h3><span>AIGCLink 数据库调用标价</span></div><span>前 {visibleModels.length} 项</span></div>
+              <div className="operations-table-scroll"><table><thead><tr><th>模型</th><th>成功调用</th><th>Token</th><th>调用计费收入</th><th>收入占比</th></tr></thead><tbody>{visibleModels.length ? visibleModels.map((item) => <tr key={item.model_name}><td><strong>{item.model_name}</strong></td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatNumber(item.token_count, 0)}</td><td>{formatCurrency(item.billed_amount_cny)}</td><td>{formatLifecycleRate(item.revenue_share)}</td></tr>) : <EmptyRow columns={5} text={loading ? "正在加载模型排行..." : "当前周期暂无模型计费数据"} />}</tbody></table></div>
+            </section>
+            <section className="operations-data-section operations-customer-ranking">
+              <div className="operations-section-head"><div><h3>企业客户排行</h3><span>AIGCLink 高价值计费客户</span></div><span>前 {visibleCustomers.length} 项</span></div>
+              <div className="operations-table-scroll"><table><thead><tr><th>客户</th><th>用户 ID</th><th>成功调用</th><th>Token</th><th>调用计费收入</th></tr></thead><tbody>{visibleCustomers.length ? visibleCustomers.map((item) => <tr key={`${item.site_id}-${item.external_user_id}`}><td><strong>{item.account_label || item.external_user_id}</strong></td><td>{item.external_user_id}</td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatNumber(item.token_count, 0)}</td><td>{formatCurrency(item.billed_amount_cny)}</td></tr>) : <EmptyRow columns={5} text={loading ? "正在加载客户排行..." : "当前周期暂无企业计费客户"} />}</tbody></table></div>
+            </section>
+          </div>}
 
           <div className="operations-overview-table-stack">
             <section className="operations-data-section operations-trend-section">
               <div className="operations-section-head"><div><h3>运营趋势</h3><span>48 小时内按小时，更长周期按天汇总</span></div></div>
-              <div className="operations-table-scroll"><table><thead><tr><th>时间</th><th>站点</th><th>注册</th><th>活跃</th><th>成功调用</th><th>消耗额度</th><th>付费用户</th><th>收入</th><th>退款</th></tr></thead><tbody>{visibleTrends.length ? visibleTrends.map((item, index) => <tr key={`${item.site_id}-${item.bucket}-${index}`}><td>{formatBucket(item.bucket)}</td><td>{siteLabel(item.site_id)}</td><td>{formatNumber(item.registered_user_count, 0)}</td><td>{formatNumber(item.active_user_count, 0)}</td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatNumber(item.consumed_balance_units, 2)}</td><td>{formatNumber(item.payer_count, 0)}</td><td>{formatCurrency(item.gross_income_cny)}</td><td>{formatCurrency(item.refund_cny)}</td></tr>) : <EmptyRow columns={9} text={loading ? "正在加载趋势..." : "当前周期暂无趋势数据"} />}</tbody></table></div>
+              <div className="operations-table-scroll"><table><thead><tr><th>时间</th><th>站点</th><th>注册</th><th>活跃</th><th>成功调用</th><th>消耗额度</th><th>付费用户</th><th>{operationsIncomeLabel(effectiveQuery.siteId)}</th><th>退款</th></tr></thead><tbody>{visibleTrends.length ? visibleTrends.map((item, index) => <tr key={`${item.site_id}-${item.bucket}-${index}`}><td>{formatBucket(item.bucket)}</td><td>{siteLabel(item.site_id)}</td><td>{formatNumber(item.registered_user_count, 0)}</td><td>{formatNumber(item.active_user_count, 0)}</td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatNumber(item.consumed_balance_units, 2)}</td><td>{formatNumber(item.payer_count, 0)}</td><td>{formatCurrency(item.gross_income_cny)}<small className="operations-cell-subtext">{operationsIncomeLabel(item.site_id)}</small></td><td>{formatCurrency(item.refund_cny)}</td></tr>) : <EmptyRow columns={9} text={loading ? "正在加载趋势..." : "当前周期暂无趋势数据"} />}</tbody></table></div>
             </section>
 
             <section className="operations-data-section operations-site-comparison">
               <div className="operations-section-head"><div><h3>站点运营对比</h3><span>按当前查询周期和用户群体汇总</span></div><span>{visibleSiteBreakdown.length} 个站点</span></div>
-              <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>注册用户</th><th>活跃用户</th><th>成功调用</th><th>消耗额度</th><th>付费用户</th><th>收入</th><th>退款</th><th>人均消耗</th><th>付费率</th></tr></thead><tbody>{visibleSiteBreakdown.length ? visibleSiteBreakdown.map((item) => <tr key={item.site_id}><td><strong>{siteLabel(item.site_id)}</strong></td><td>{formatNumber(item.registered_user_count, 0)}</td><td>{formatNumber(item.active_user_count, 0)}</td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatNumber(item.consumed_balance_units, 2)}</td><td>{formatNumber(item.payer_count, 0)}</td><td>{formatCurrency(item.gross_income_cny)}</td><td>{formatCurrency(item.refund_cny)}</td><td>{formatNumber(averageConsumption(item), 2)}</td><td>{paymentRate(item).toFixed(1)}%</td></tr>) : <EmptyRow columns={10} text={loading ? "正在加载站点对比..." : "当前周期暂无站点汇总"} />}</tbody></table></div>
+              <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>注册用户</th><th>活跃用户</th><th>成功调用</th><th>消耗额度</th><th>付费用户</th><th>{operationsIncomeLabel(effectiveQuery.siteId)}</th><th>退款</th><th>人均消耗</th><th>付费率</th></tr></thead><tbody>{visibleSiteBreakdown.length ? visibleSiteBreakdown.map((item) => <tr key={item.site_id}><td><strong>{siteLabel(item.site_id)}</strong></td><td>{formatNumber(item.registered_user_count, 0)}</td><td>{formatNumber(item.active_user_count, 0)}</td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatNumber(item.consumed_balance_units, 2)}</td><td>{formatNumber(item.payer_count, 0)}</td><td>{formatCurrency(item.gross_income_cny)}<small className="operations-cell-subtext">{operationsIncomeLabel(item.site_id)}</small></td><td>{formatCurrency(item.refund_cny)}</td><td>{formatNumber(averageConsumption(item), 2)}</td><td>{paymentRate(item).toFixed(1)}%</td></tr>) : <EmptyRow columns={10} text={loading ? "正在加载站点对比..." : "当前周期暂无站点汇总"} />}</tbody></table></div>
             </section>
           </div>
         </div>
