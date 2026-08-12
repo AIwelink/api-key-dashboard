@@ -147,6 +147,69 @@ async def get_operations_trend_data(
     return await operations_response_cache.get_or_load(key, load)
 
 
+async def get_operations_lifecycle_data(
+    mongo_db: Any,
+    query: OperationsQuery,
+    *,
+    allowed_site_ids: tuple[str, ...],
+) -> dict[str, Any]:
+    window = _window(query)
+    key = (
+        "lifecycle",
+        allowed_site_ids,
+        query.segment.value,
+        window.start_at.isoformat(),
+        window.end_at.isoformat(),
+    )
+
+    async def load():
+        async with growth_connection(mongo_db) as connection:
+            summary_rows = await repository.get_operations_lifecycle_summary(
+                connection,
+                allowed_site_ids=allowed_site_ids,
+                segment=query.segment.value,
+                start_at=window.start_at,
+                end_at=window.end_at,
+            )
+            retention = await repository.get_operations_retention(
+                connection,
+                allowed_site_ids=allowed_site_ids,
+                segment=query.segment.value,
+                start_at=window.start_at,
+                end_at=window.end_at,
+            )
+            model_breakdown = await repository.get_operations_model_breakdown(
+                connection,
+                allowed_site_ids=allowed_site_ids,
+                segment=query.segment.value,
+                start_at=window.start_at,
+                end_at=window.end_at,
+            )
+            customer_breakdown = await repository.get_operations_customer_breakdown(
+                connection,
+                allowed_site_ids=allowed_site_ids,
+                segment=query.segment.value,
+                start_at=window.start_at,
+                end_at=window.end_at,
+            )
+        summary = next((row for row in summary_rows if row.get("scope") == "all"), {})
+        site_breakdown = [row for row in summary_rows if row.get("scope") == "site"]
+        return {
+            "summary": summary,
+            "retention": retention,
+            "site_breakdown": site_breakdown,
+            "model_breakdown": model_breakdown,
+            "customer_breakdown": customer_breakdown,
+            "window": {
+                "start_at": window.start_at.isoformat(),
+                "end_at": window.end_at.isoformat(),
+            },
+            "generated_at": datetime.now(UTC).isoformat(),
+        }
+
+    return await operations_response_cache.get_or_load(key, load)
+
+
 async def get_operations_user_data(
     mongo_db: Any,
     query: OperationsQuery,

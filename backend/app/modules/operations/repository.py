@@ -783,6 +783,9 @@ async def upsert_usage_facts(connection: Any, records: list[Any]) -> int:
     for record in records:
         values = _record_dict(record)
         values.setdefault("usage_fact_id", uuid4())
+        values.setdefault("billed_amount_cny", Decimal("0"))
+        values.setdefault("model_name", "")
+        values.setdefault("token_count", 0)
         parameters.append(values)
     await connection.execute(
         text(
@@ -790,10 +793,12 @@ async def upsert_usage_facts(connection: Any, records: list[Any]) -> int:
             INSERT INTO growth.usage_facts (
                 usage_fact_id, site_id, external_user_id, source_type, source_record_id,
                 successful_call_count, consumed_balance_units, cost_cny,
+                billed_amount_cny, model_name, token_count,
                 conversion_rate_id, occurred_at, source_updated_at, synced_at
             ) VALUES (
                 :usage_fact_id, :site_id, :external_user_id, :source_type, :source_record_id,
                 :successful_call_count, :consumed_balance_units, :cost_cny,
+                :billed_amount_cny, :model_name, :token_count,
                 :conversion_rate_id, :occurred_at, :source_updated_at, NOW()
             )
             ON CONFLICT (site_id, source_type, source_record_id) DO UPDATE SET
@@ -801,8 +806,61 @@ async def upsert_usage_facts(connection: Any, records: list[Any]) -> int:
                 successful_call_count = EXCLUDED.successful_call_count,
                 consumed_balance_units = EXCLUDED.consumed_balance_units,
                 cost_cny = EXCLUDED.cost_cny,
+                billed_amount_cny = EXCLUDED.billed_amount_cny,
+                model_name = EXCLUDED.model_name,
+                token_count = EXCLUDED.token_count,
                 conversion_rate_id = EXCLUDED.conversion_rate_id,
                 occurred_at = EXCLUDED.occurred_at,
+                source_updated_at = EXCLUDED.source_updated_at,
+                synced_at = NOW()
+            """
+        ),
+        parameters,
+    )
+    return len(parameters)
+
+
+async def replace_subscription_entitlements(
+    connection: Any,
+    *,
+    site_id: str,
+    records: list[Any],
+) -> int:
+    await connection.execute(
+        text(
+            """
+            DELETE FROM growth.subscription_entitlements
+            WHERE site_id = :site_id
+            """
+        ),
+        {"site_id": site_id},
+    )
+    if not records:
+        return 0
+    parameters = []
+    for record in records:
+        values = _record_dict(record)
+        if values.get("site_id") != site_id:
+            raise ValueError("subscription entitlement site does not match replacement scope")
+        values.setdefault("subscription_entitlement_id", uuid4())
+        parameters.append(values)
+    await connection.execute(
+        text(
+            """
+            INSERT INTO growth.subscription_entitlements (
+                subscription_entitlement_id, site_id, external_user_id,
+                source_type, source_record_id, starts_at, ends_at, status,
+                source_updated_at, synced_at
+            ) VALUES (
+                :subscription_entitlement_id, :site_id, :external_user_id,
+                :source_type, :source_record_id, :starts_at, :ends_at, :status,
+                :source_updated_at, NOW()
+            )
+            ON CONFLICT (site_id, source_type, source_record_id) DO UPDATE SET
+                external_user_id = EXCLUDED.external_user_id,
+                starts_at = EXCLUDED.starts_at,
+                ends_at = EXCLUDED.ends_at,
+                status = EXCLUDED.status,
                 source_updated_at = EXCLUDED.source_updated_at,
                 synced_at = NOW()
             """
@@ -1045,7 +1103,17 @@ async def get_operations_summary(
                        COALESCE(SUM(usage.successful_call_count), 0) AS successful_call_count,
                        COALESCE(SUM(usage.consumed_balance_units), 0) AS consumed_balance_units,
                        COALESCE(SUM(usage.cost_cny), 0) AS cost_cny,
-                       COALESCE(SUM(usage.cost_cny) FILTER (
+                       COUNT(DISTINCT usage.external_user_id) FILTER (
+                           WHERE usage.site_id = 'aigclink'
+                             AND NOT snapshot.is_internal
+                             AND usage.billed_amount_cny > 0
+                       ) AS aigclink_payer_count,
+                       COUNT(*) FILTER (
+                           WHERE usage.site_id = 'aigclink'
+                             AND NOT snapshot.is_internal
+                             AND usage.billed_amount_cny > 0
+                       ) AS aigclink_sale_event_count,
+                       COALESCE(SUM(usage.billed_amount_cny) FILTER (
                            WHERE usage.site_id = 'aigclink'
                              AND NOT snapshot.is_internal
                        ), 0) AS aigclink_income_cny
@@ -1056,11 +1124,17 @@ async def get_operations_summary(
                 WHERE usage.occurred_at >= :start_at AND usage.occurred_at < :end_at
             ), credit_metrics AS (
                 SELECT COUNT(DISTINCT event.external_user_id) FILTER (
-                           WHERE event.direction = 'credit' AND event.purpose = 'sale'
-                       ) AS payer_count,
+                           WHERE event.site_id <> 'aigclink'
+                             AND event.direction = 'credit'
+                             AND event.purpose = 'sale'
+                             AND event.cash_amount_cny > 0
+                       ) AS aiwelink_payer_count,
                        COUNT(*) FILTER (
-                           WHERE event.direction = 'credit' AND event.purpose = 'sale'
-                       ) AS sale_event_count,
+                           WHERE event.site_id <> 'aigclink'
+                             AND event.direction = 'credit'
+                             AND event.purpose = 'sale'
+                             AND event.cash_amount_cny > 0
+                       ) AS aiwelink_sale_event_count,
                        COALESCE(SUM(event.cash_amount_cny) FILTER (
                            WHERE event.direction = 'credit'
                              AND event.purpose = 'sale'
@@ -1081,8 +1155,10 @@ async def get_operations_summary(
                    usage_metrics.successful_call_count,
                    usage_metrics.consumed_balance_units,
                    usage_metrics.cost_cny,
-                   credit_metrics.payer_count,
-                   credit_metrics.sale_event_count,
+                   usage_metrics.aigclink_payer_count
+                       + credit_metrics.aiwelink_payer_count AS payer_count,
+                   usage_metrics.aigclink_sale_event_count
+                       + credit_metrics.aiwelink_sale_event_count AS sale_event_count,
                    usage_metrics.aigclink_income_cny
                        + credit_metrics.aiwelink_income_cny AS gross_income_cny,
                    credit_metrics.refund_cny,
@@ -1135,7 +1211,17 @@ async def get_operations_site_breakdown(
                        COALESCE(SUM(usage.successful_call_count), 0) AS successful_call_count,
                        COALESCE(SUM(usage.consumed_balance_units), 0) AS consumed_balance_units,
                        COALESCE(SUM(usage.cost_cny), 0) AS cost_cny,
-                       COALESCE(SUM(usage.cost_cny) FILTER (
+                       COUNT(DISTINCT usage.external_user_id) FILTER (
+                           WHERE usage.site_id = 'aigclink'
+                             AND NOT snapshot.is_internal
+                             AND usage.billed_amount_cny > 0
+                       ) AS aigclink_payer_count,
+                       COUNT(*) FILTER (
+                           WHERE usage.site_id = 'aigclink'
+                             AND NOT snapshot.is_internal
+                             AND usage.billed_amount_cny > 0
+                       ) AS aigclink_sale_event_count,
+                       COALESCE(SUM(usage.billed_amount_cny) FILTER (
                            WHERE usage.site_id = 'aigclink'
                              AND NOT snapshot.is_internal
                        ), 0) AS aigclink_income_cny
@@ -1149,11 +1235,17 @@ async def get_operations_site_breakdown(
             ), credit_metrics AS (
                 SELECT event.site_id,
                        COUNT(DISTINCT event.external_user_id) FILTER (
-                           WHERE event.direction = 'credit' AND event.purpose = 'sale'
-                       ) AS payer_count,
+                           WHERE event.site_id <> 'aigclink'
+                             AND event.direction = 'credit'
+                             AND event.purpose = 'sale'
+                             AND event.cash_amount_cny > 0
+                       ) AS aiwelink_payer_count,
                        COUNT(*) FILTER (
-                           WHERE event.direction = 'credit' AND event.purpose = 'sale'
-                       ) AS sale_event_count,
+                           WHERE event.site_id <> 'aigclink'
+                             AND event.direction = 'credit'
+                             AND event.purpose = 'sale'
+                             AND event.cash_amount_cny > 0
+                       ) AS aiwelink_sale_event_count,
                        COALESCE(SUM(event.cash_amount_cny) FILTER (
                            WHERE event.direction = 'credit'
                              AND event.purpose = 'sale'
@@ -1177,8 +1269,10 @@ async def get_operations_site_breakdown(
                    COALESCE(usage.successful_call_count, 0) AS successful_call_count,
                    COALESCE(usage.consumed_balance_units, 0) AS consumed_balance_units,
                    COALESCE(usage.cost_cny, 0) AS cost_cny,
-                   COALESCE(credit.payer_count, 0) AS payer_count,
-                   COALESCE(credit.sale_event_count, 0) AS sale_event_count,
+                   COALESCE(usage.aigclink_payer_count, 0)
+                       + COALESCE(credit.aiwelink_payer_count, 0) AS payer_count,
+                   COALESCE(usage.aigclink_sale_event_count, 0)
+                       + COALESCE(credit.aiwelink_sale_event_count, 0) AS sale_event_count,
                    COALESCE(usage.aigclink_income_cny, 0)
                        + COALESCE(credit.aiwelink_income_cny, 0) AS gross_income_cny,
                    COALESCE(credit.refund_cny, 0) AS refund_cny,
@@ -1213,17 +1307,6 @@ async def get_operations_trends(
     hourly = end_at - start_at <= timedelta(hours=48)
     table_name = "ops_hourly_stats" if hourly else "ops_daily_stats"
     bucket_name = "bucket_start" if hourly else "bucket_date"
-    timezone_join = "AND ordinary.timezone = stats.timezone" if not hourly else ""
-    income_expression = """
-        COALESCE(
-            CASE
-                WHEN stats.site_id = 'aigclink' AND stats.user_segment = 'internal' THEN 0
-                WHEN stats.site_id = 'aigclink' THEN ordinary.cost_cny
-                ELSE stats.gross_income_cny
-            END,
-            0
-        )
-    """.strip()
     result = await connection.execute(
         text(
             f"""
@@ -1231,16 +1314,11 @@ async def get_operations_trends(
                    stats.registered_user_count, stats.active_user_count,
                    stats.successful_call_count, stats.consumed_balance_units,
                    stats.cost_cny, stats.payer_count, stats.sale_event_count,
-                   {income_expression} AS gross_income_cny,
+                   stats.gross_income_cny,
                    stats.refund_cny,
-                   {income_expression} - stats.refund_cny AS net_income_cny,
+                   stats.gross_income_cny - stats.refund_cny AS net_income_cny,
                    stats.computed_at
             FROM growth.{table_name} AS stats
-            LEFT JOIN growth.{table_name} AS ordinary
-              ON ordinary.site_id = stats.site_id
-             AND ordinary.{bucket_name} = stats.{bucket_name}
-             AND ordinary.user_segment = 'ordinary'
-             {timezone_join}
             WHERE stats.site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
               AND stats.user_segment = :segment
               AND stats.{bucket_name} >= :start_at
@@ -1253,6 +1331,588 @@ async def get_operations_trends(
             "segment": segment,
             "start_at": start_at,
             "end_at": end_at,
+        },
+    )
+    return _all(result)
+
+
+async def get_operations_lifecycle_summary(
+    connection: Any,
+    *,
+    allowed_site_ids: tuple[str, ...],
+    segment: str,
+    start_at: datetime,
+    end_at: datetime,
+) -> list[dict[str, Any]]:
+    segment_filter = _segment_filter("snapshot")
+    result = await connection.execute(
+        text(
+            f"""
+            WITH scoped_users AS (
+                SELECT snapshot.*
+                FROM growth.ops_user_snapshots AS snapshot
+                WHERE snapshot.site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
+                  AND {segment_filter}
+            ), usage_sequence AS (
+                SELECT usage.site_id, usage.external_user_id, usage.occurred_at,
+                       usage.successful_call_count, usage.billed_amount_cny,
+                       snapshot.is_internal,
+                       LAG(usage.occurred_at) OVER (
+                           PARTITION BY usage.site_id, usage.external_user_id
+                           ORDER BY usage.occurred_at, usage.usage_fact_id
+                       ) AS previous_used_at
+                FROM growth.usage_facts AS usage
+                JOIN scoped_users AS snapshot
+                  ON snapshot.site_id = usage.site_id
+                 AND snapshot.external_user_id = usage.external_user_id
+                WHERE usage.successful_call_count > 0
+                  AND usage.occurred_at < :end_at
+            ), usage_by_user AS (
+                SELECT usage.site_id, usage.external_user_id,
+                       MIN(usage.occurred_at) AS first_used_at,
+                       MAX(usage.occurred_at) AS last_used_at,
+                       COALESCE(SUM(usage.successful_call_count) FILTER (
+                           WHERE usage.occurred_at >= :start_at
+                       ), 0) AS window_call_count,
+                       COALESCE(SUM(usage.billed_amount_cny) FILTER (
+                           WHERE usage.site_id = 'aigclink'
+                             AND NOT usage.is_internal
+                             AND usage.occurred_at >= :start_at
+                             AND usage.billed_amount_cny > 0
+                       ), 0) AS aigclink_window_billed_cny,
+                       MIN(usage.occurred_at) FILTER (
+                           WHERE usage.site_id = 'aigclink'
+                             AND NOT usage.is_internal
+                             AND usage.billed_amount_cny > 0
+                       ) AS aigclink_first_billed_at,
+                       BOOL_OR(
+                           usage.occurred_at >= :start_at
+                           AND usage.previous_used_at IS NOT NULL
+                           AND usage.occurred_at - usage.previous_used_at >= INTERVAL '30 days'
+                       ) AS returned_in_window
+                FROM usage_sequence AS usage
+                GROUP BY usage.site_id, usage.external_user_id
+            ), sale_credit_events AS (
+                SELECT event.*
+                FROM growth.credit_events AS event
+                JOIN scoped_users AS snapshot
+                  ON snapshot.site_id = event.site_id
+                 AND snapshot.external_user_id = event.external_user_id
+                WHERE event.site_id <> 'aigclink'
+                  AND event.direction = 'credit'
+                  AND event.purpose = 'sale'
+                  AND event.classification_status = 'classified'
+                  AND event.occurred_at < :end_at
+            ), cash_events AS (
+                SELECT event.*
+                FROM sale_credit_events AS event
+                WHERE event.cash_amount_cny > 0
+            ), cash_by_user AS (
+                SELECT event.site_id, event.external_user_id,
+                       MIN(event.occurred_at) AS first_cash_paid_at,
+                       COALESCE(SUM(event.cash_amount_cny) FILTER (
+                           WHERE event.occurred_at >= :start_at
+                       ), 0) AS window_cash_income_cny,
+                       COALESCE(SUM(event.cash_amount_cny) FILTER (
+                           WHERE event.occurred_at >= :start_at
+                             AND event.source_type = 'payment'
+                             AND event.source_metadata ->> 'order_type' = 'subscription'
+                       ), 0) AS subscription_cash_income_cny,
+                       BOOL_OR(event.occurred_at >= :start_at) AS paid_in_window,
+                       COALESCE(SUM(
+                           CASE
+                               WHEN event.source_type = 'payment'
+                                AND event.source_metadata ->> 'order_type' = 'subscription'
+                                AND COALESCE(
+                                    NULLIF(event.source_metadata ->> 'subscription_days', '')::INTEGER,
+                                    0
+                                ) > 0
+                                AND event.occurred_at < :end_at
+                                AND event.occurred_at
+                                    + COALESCE(
+                                        NULLIF(event.source_metadata ->> 'subscription_days', '')::INTEGER,
+                                        0
+                                      ) * INTERVAL '1 day' > :start_at
+                               THEN event.cash_amount_cny
+                                  / COALESCE(
+                                        NULLIF(event.source_metadata ->> 'subscription_days', '')::INTEGER,
+                                        1
+                                    )
+                                  * EXTRACT(EPOCH FROM (
+                                        LEAST(
+                                            :end_at,
+                                            event.occurred_at
+                                                + COALESCE(
+                                                    NULLIF(event.source_metadata ->> 'subscription_days', '')::INTEGER,
+                                                    0
+                                                  ) * INTERVAL '1 day'
+                                        ) - GREATEST(:start_at, event.occurred_at)
+                                    )) / 86400
+                               ELSE 0
+                           END
+                       ), 0) AS subscription_amortized_income_cny,
+                       BOOL_OR(
+                           event.source_type = 'payment'
+                           AND event.source_metadata ->> 'order_type' = 'subscription'
+                           AND COALESCE(
+                               NULLIF(event.source_metadata ->> 'subscription_days', '')::INTEGER,
+                               0
+                           ) > 0
+                           AND event.occurred_at <= :end_at
+                           AND event.occurred_at
+                               + COALESCE(
+                                   NULLIF(event.source_metadata ->> 'subscription_days', '')::INTEGER,
+                                   0
+                                 ) * INTERVAL '1 day' > :end_at
+                       ) AS has_active_paid_subscription_purchase
+                FROM cash_events AS event
+                GROUP BY event.site_id, event.external_user_id
+            ), recharge_by_user AS (
+                SELECT event.site_id, event.external_user_id,
+                       COUNT(*) FILTER (
+                           WHERE event.occurred_at >= :start_at
+                             AND event.balance_units > 0
+                             AND NOT (
+                                 event.source_type = 'payment'
+                                 AND COALESCE(
+                                     event.source_metadata ->> 'order_type', ''
+                                 ) = 'subscription'
+                             )
+                       ) AS recharge_event_count,
+                       COALESCE(SUM(event.balance_units) FILTER (
+                           WHERE event.occurred_at >= :start_at
+                             AND event.balance_units > 0
+                             AND NOT (
+                                 event.source_type = 'payment'
+                                 AND COALESCE(
+                                     event.source_metadata ->> 'order_type', ''
+                                 ) = 'subscription'
+                             )
+                       ), 0) AS recharge_balance_units
+                FROM sale_credit_events AS event
+                GROUP BY event.site_id, event.external_user_id
+            ), active_subscriptions AS (
+                SELECT DISTINCT entitlement.site_id, entitlement.external_user_id
+                FROM growth.subscription_entitlements AS entitlement
+                JOIN cash_by_user AS cash
+                 ON cash.site_id = entitlement.site_id
+                 AND cash.external_user_id = entitlement.external_user_id
+                 AND cash.has_active_paid_subscription_purchase
+                WHERE entitlement.starts_at <= :end_at
+                  AND entitlement.ends_at > :end_at
+                  AND lower(entitlement.status) IN ('active', 'enabled', 'valid')
+            ), pending_redemptions AS (
+                SELECT DISTINCT event.site_id, event.external_user_id
+                FROM growth.credit_events AS event
+                JOIN scoped_users AS snapshot
+                  ON snapshot.site_id = event.site_id
+                 AND snapshot.external_user_id = event.external_user_id
+                WHERE event.site_id <> 'aigclink'
+                  AND event.source_type = 'redemption'
+                  AND event.classification_status = 'pending'
+                  AND event.occurred_at < :end_at
+            ), user_metrics AS (
+                SELECT snapshot.site_id, snapshot.external_user_id,
+                       snapshot.registered_at, snapshot.balance_units,
+                       usage.first_used_at, usage.last_used_at,
+                       COALESCE(usage.window_call_count, 0) AS window_call_count,
+                       COALESCE(usage.aigclink_window_billed_cny, 0)
+                           AS aigclink_window_billed_cny,
+                       COALESCE(usage.returned_in_window, FALSE) AS returned_in_window,
+                       CASE
+                           WHEN snapshot.site_id = 'aigclink'
+                           THEN usage.aigclink_first_billed_at
+                           ELSE cash.first_cash_paid_at
+                       END AS first_paid_at,
+                       cash.first_cash_paid_at,
+                       COALESCE(cash.window_cash_income_cny, 0) AS window_cash_income_cny,
+                       COALESCE(cash.subscription_cash_income_cny, 0)
+                           AS subscription_cash_income_cny,
+                       COALESCE(recharge.recharge_event_count, 0) AS recharge_event_count,
+                       COALESCE(recharge.recharge_balance_units, 0) AS recharge_balance_units,
+                       COALESCE(cash.subscription_amortized_income_cny, 0)
+                           AS subscription_amortized_income_cny,
+                       COALESCE(cash.paid_in_window, FALSE) AS paid_in_window,
+                       subscription.external_user_id IS NOT NULL AS has_active_paid_subscription,
+                       pending.external_user_id IS NOT NULL AS has_pending_redemption
+                FROM scoped_users AS snapshot
+                LEFT JOIN usage_by_user AS usage
+                  ON usage.site_id = snapshot.site_id
+                 AND usage.external_user_id = snapshot.external_user_id
+                LEFT JOIN cash_by_user AS cash
+                  ON cash.site_id = snapshot.site_id
+                 AND cash.external_user_id = snapshot.external_user_id
+                LEFT JOIN recharge_by_user AS recharge
+                  ON recharge.site_id = snapshot.site_id
+                 AND recharge.external_user_id = snapshot.external_user_id
+                LEFT JOIN active_subscriptions AS subscription
+                  ON subscription.site_id = snapshot.site_id
+                 AND subscription.external_user_id = snapshot.external_user_id
+                LEFT JOIN pending_redemptions AS pending
+                  ON pending.site_id = snapshot.site_id
+                 AND pending.external_user_id = snapshot.external_user_id
+            ), expanded AS (
+                SELECT metric.*, scope.scope,
+                       CASE WHEN scope.scope = 'site' THEN metric.site_id END AS grouping_site_id
+                FROM user_metrics AS metric
+                CROSS JOIN LATERAL (VALUES ('site'), ('all')) AS scope(scope)
+            ), aggregated AS (
+                SELECT scope, grouping_site_id AS site_id,
+                       COUNT(*) FILTER (
+                           WHERE registered_at >= :start_at AND registered_at < :end_at
+                       ) AS registered_user_count,
+                       COUNT(*) FILTER (
+                           WHERE registered_at >= :start_at
+                             AND registered_at <= :end_at - INTERVAL '24 hours'
+                       ) AS activation_24h_denominator,
+                       COUNT(*) FILTER (
+                           WHERE registered_at >= :start_at
+                             AND registered_at <= :end_at - INTERVAL '24 hours'
+                             AND first_used_at >= registered_at
+                             AND first_used_at <= registered_at + INTERVAL '24 hours'
+                       ) AS activation_24h_numerator,
+                       COUNT(*) FILTER (
+                           WHERE registered_at >= :start_at
+                             AND registered_at <= :end_at - INTERVAL '7 days'
+                       ) AS activation_7d_denominator,
+                       COUNT(*) FILTER (
+                           WHERE registered_at >= :start_at
+                             AND registered_at <= :end_at - INTERVAL '7 days'
+                             AND first_used_at >= registered_at
+                             AND first_used_at <= registered_at + INTERVAL '7 days'
+                       ) AS activation_7d_numerator,
+                       COUNT(*) FILTER (
+                           WHERE registered_at >= :start_at
+                             AND registered_at <= :end_at - INTERVAL '7 days'
+                       ) AS payer_7d_denominator,
+                       COUNT(*) FILTER (
+                           WHERE registered_at >= :start_at
+                             AND registered_at <= :end_at - INTERVAL '7 days'
+                             AND first_paid_at >= registered_at
+                             AND first_paid_at <= registered_at + INTERVAL '7 days'
+                       ) AS payer_7d_numerator,
+                       COUNT(*) FILTER (
+                           WHERE registered_at >= :start_at
+                             AND registered_at <= :end_at - INTERVAL '30 days'
+                       ) AS payer_30d_denominator,
+                       COUNT(*) FILTER (
+                           WHERE registered_at >= :start_at
+                             AND registered_at <= :end_at - INTERVAL '30 days'
+                             AND first_paid_at >= registered_at
+                             AND first_paid_at <= registered_at + INTERVAL '30 days'
+                       ) AS payer_30d_numerator,
+                       COUNT(*) FILTER (WHERE window_call_count > 0) AS active_user_count,
+                       COUNT(*) FILTER (
+                           WHERE window_call_count > 0
+                             AND (
+                                 (site_id = 'aigclink' AND aigclink_window_billed_cny > 0)
+                                 OR (site_id <> 'aigclink' AND first_cash_paid_at IS NOT NULL)
+                             )
+                       ) AS active_payer_count,
+                       COUNT(*) FILTER (
+                           WHERE site_id <> 'aigclink' AND window_call_count > 0
+                       ) AS period_payer_denominator,
+                       COUNT(*) FILTER (
+                           WHERE site_id <> 'aigclink'
+                             AND window_call_count > 0
+                             AND paid_in_window
+                       ) AS period_payer_numerator,
+                       COUNT(*) FILTER (
+                           WHERE (site_id = 'aigclink' AND aigclink_window_billed_cny > 0)
+                              OR (site_id <> 'aigclink' AND first_cash_paid_at IS NOT NULL)
+                       ) AS cumulative_payer_count,
+                       COUNT(*) FILTER (
+                           WHERE site_id <> 'aigclink'
+                             AND first_cash_paid_at IS NOT NULL
+                             AND (balance_units > 0 OR has_active_paid_subscription)
+                       ) AS effective_payer_count,
+                       COUNT(*) FILTER (
+                           WHERE site_id <> 'aigclink'
+                             AND first_cash_paid_at IS NOT NULL
+                             AND window_call_count > 0
+                       ) AS active_cash_payer_count,
+                       COUNT(*) FILTER (
+                           WHERE site_id <> 'aigclink' AND paid_in_window
+                       ) AS period_payer_count,
+                       COUNT(*) FILTER (
+                           WHERE site_id <> 'aigclink'
+                             AND has_pending_redemption
+                             AND first_cash_paid_at IS NULL
+                       ) AS unknown_payer_count,
+                       COUNT(*) FILTER (
+                           WHERE last_used_at <= :end_at - INTERVAL '14 days'
+                             AND last_used_at > :end_at - INTERVAL '30 days'
+                       ) AS churn_warning_user_count,
+                       COUNT(*) FILTER (
+                           WHERE last_used_at <= :end_at - INTERVAL '30 days'
+                       ) AS churned_user_count,
+                       COUNT(*) FILTER (WHERE returned_in_window) AS returned_user_count,
+                       COALESCE(SUM(window_cash_income_cny), 0) AS cash_income_cny,
+                       COALESCE(SUM(subscription_cash_income_cny), 0)
+                           AS subscription_cash_income_cny,
+                       COALESCE(SUM(recharge_event_count), 0) AS recharge_event_count,
+                       COALESCE(SUM(recharge_balance_units), 0) AS recharge_balance_units,
+                       COALESCE(SUM(subscription_amortized_income_cny), 0)
+                           AS subscription_amortized_income_cny,
+                       COALESCE(SUM(aigclink_window_billed_cny), 0)
+                           AS usage_billed_income_cny
+                FROM expanded
+                GROUP BY scope, grouping_site_id
+            )
+            SELECT scope, site_id,
+                   CASE
+                       WHEN scope = 'all' THEN 'mixed'
+                       WHEN site_id = 'aigclink' THEN 'usage_postpaid'
+                       ELSE 'cash_and_subscription'
+                   END AS billing_mode,
+                   registered_user_count,
+                   activation_24h_numerator, activation_24h_denominator,
+                   CASE WHEN activation_24h_denominator = 0 THEN NULL
+                        ELSE activation_24h_numerator::NUMERIC / activation_24h_denominator
+                   END AS activation_24h_rate,
+                   activation_7d_numerator, activation_7d_denominator,
+                   CASE WHEN activation_7d_denominator = 0 THEN NULL
+                        ELSE activation_7d_numerator::NUMERIC / activation_7d_denominator
+                   END AS activation_7d_rate,
+                   payer_7d_numerator, payer_7d_denominator,
+                   CASE WHEN payer_7d_denominator = 0 THEN NULL
+                        ELSE payer_7d_numerator::NUMERIC / payer_7d_denominator
+                   END AS payer_7d_rate,
+                   payer_30d_numerator, payer_30d_denominator,
+                   CASE WHEN payer_30d_denominator = 0 THEN NULL
+                        ELSE payer_30d_numerator::NUMERIC / payer_30d_denominator
+                   END AS payer_30d_rate,
+                   active_payer_count AS active_payer_numerator,
+                   active_user_count AS active_payer_denominator,
+                   CASE WHEN active_user_count = 0 THEN NULL
+                        ELSE active_payer_count::NUMERIC / active_user_count
+                   END AS active_payer_rate,
+                   period_payer_numerator, period_payer_denominator,
+                   CASE WHEN site_id = 'aigclink' OR period_payer_denominator = 0 THEN NULL
+                        ELSE period_payer_numerator::NUMERIC / period_payer_denominator
+                   END AS period_payer_rate,
+                   active_user_count, cumulative_payer_count, effective_payer_count,
+                   active_cash_payer_count, period_payer_count, unknown_payer_count,
+                   churn_warning_user_count, churned_user_count, returned_user_count,
+                   cash_income_cny, subscription_cash_income_cny,
+                   recharge_event_count, recharge_balance_units,
+                   subscription_amortized_income_cny,
+                   usage_billed_income_cny
+            FROM aggregated
+            ORDER BY CASE WHEN scope = 'all' THEN 0 ELSE 1 END, site_id
+            """
+        ),
+        {
+            "allowed_site_ids": allowed_site_ids,
+            "segment": segment,
+            "start_at": start_at,
+            "end_at": end_at,
+        },
+    )
+    return _all(result)
+
+
+async def get_operations_retention(
+    connection: Any,
+    *,
+    allowed_site_ids: tuple[str, ...],
+    segment: str,
+    start_at: datetime,
+    end_at: datetime,
+) -> list[dict[str, Any]]:
+    segment_filter = _segment_filter("snapshot")
+    result = await connection.execute(
+        text(
+            f"""
+            WITH scoped_users AS (
+                SELECT snapshot.site_id, snapshot.external_user_id,
+                       (snapshot.registered_at AT TIME ZONE 'Asia/Shanghai')::date
+                           AS cohort_date
+                FROM growth.ops_user_snapshots AS snapshot
+                WHERE snapshot.site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
+                  AND {segment_filter}
+                  AND snapshot.registered_at >= :start_at
+                  AND snapshot.registered_at < :end_at
+            ), successful_days AS (
+                SELECT DISTINCT usage.site_id, usage.external_user_id,
+                       (usage.occurred_at AT TIME ZONE 'Asia/Shanghai')::date AS usage_date
+                FROM growth.usage_facts AS usage
+                JOIN scoped_users AS snapshot
+                  ON snapshot.site_id = usage.site_id
+                 AND snapshot.external_user_id = usage.external_user_id
+                WHERE usage.successful_call_count > 0
+                  AND usage.occurred_at < :end_at
+            ), user_retention AS (
+                SELECT snapshot.site_id, snapshot.external_user_id, snapshot.cohort_date,
+                       BOOL_OR(day.usage_date = snapshot.cohort_date + INTERVAL '1 days') AS d1,
+                       BOOL_OR(day.usage_date = snapshot.cohort_date + INTERVAL '3 days') AS d3,
+                       BOOL_OR(day.usage_date = snapshot.cohort_date + INTERVAL '7 days') AS d7,
+                       BOOL_OR(day.usage_date = snapshot.cohort_date + INTERVAL '14 days') AS d14,
+                       BOOL_OR(day.usage_date = snapshot.cohort_date + INTERVAL '30 days') AS d30
+                FROM scoped_users AS snapshot
+                LEFT JOIN successful_days AS day
+                  ON day.site_id = snapshot.site_id
+                 AND day.external_user_id = snapshot.external_user_id
+                GROUP BY snapshot.site_id, snapshot.external_user_id, snapshot.cohort_date
+            ), cohorts AS (
+                SELECT site_id, cohort_date, COUNT(*) AS cohort_size,
+                       COUNT(*) FILTER (WHERE d1) AS d1_retained,
+                       COUNT(*) FILTER (WHERE d3) AS d3_retained,
+                       COUNT(*) FILTER (WHERE d7) AS d7_retained,
+                       COUNT(*) FILTER (WHERE d14) AS d14_retained,
+                       COUNT(*) FILTER (WHERE d30) AS d30_retained
+                FROM user_retention
+                GROUP BY site_id, cohort_date
+            )
+            SELECT site_id, cohort_date, cohort_size,
+                   CASE WHEN cohort_date + INTERVAL '1 days'
+                                  < (:end_at AT TIME ZONE 'Asia/Shanghai')::date
+                        THEN d1_retained ELSE NULL END AS d1_numerator,
+                   CASE WHEN cohort_date + INTERVAL '1 days'
+                                  < (:end_at AT TIME ZONE 'Asia/Shanghai')::date
+                        THEN cohort_size ELSE NULL END AS d1_denominator,
+                   CASE WHEN cohort_date + INTERVAL '1 days'
+                                  < (:end_at AT TIME ZONE 'Asia/Shanghai')::date
+                        THEN d1_retained::NUMERIC / NULLIF(cohort_size, 0) ELSE NULL END AS d1_rate,
+                   CASE WHEN cohort_date + INTERVAL '3 days'
+                                  < (:end_at AT TIME ZONE 'Asia/Shanghai')::date
+                        THEN d3_retained ELSE NULL END AS d3_numerator,
+                   CASE WHEN cohort_date + INTERVAL '3 days'
+                                  < (:end_at AT TIME ZONE 'Asia/Shanghai')::date
+                        THEN cohort_size ELSE NULL END AS d3_denominator,
+                   CASE WHEN cohort_date + INTERVAL '3 days'
+                                  < (:end_at AT TIME ZONE 'Asia/Shanghai')::date
+                        THEN d3_retained::NUMERIC / NULLIF(cohort_size, 0) ELSE NULL END AS d3_rate,
+                   CASE WHEN cohort_date + INTERVAL '7 days'
+                                  < (:end_at AT TIME ZONE 'Asia/Shanghai')::date
+                        THEN d7_retained ELSE NULL END AS d7_numerator,
+                   CASE WHEN cohort_date + INTERVAL '7 days'
+                                  < (:end_at AT TIME ZONE 'Asia/Shanghai')::date
+                        THEN cohort_size ELSE NULL END AS d7_denominator,
+                   CASE WHEN cohort_date + INTERVAL '7 days'
+                                  < (:end_at AT TIME ZONE 'Asia/Shanghai')::date
+                        THEN d7_retained::NUMERIC / NULLIF(cohort_size, 0) ELSE NULL END AS d7_rate,
+                   CASE WHEN cohort_date + INTERVAL '14 days'
+                                  < (:end_at AT TIME ZONE 'Asia/Shanghai')::date
+                        THEN d14_retained ELSE NULL END AS d14_numerator,
+                   CASE WHEN cohort_date + INTERVAL '14 days'
+                                  < (:end_at AT TIME ZONE 'Asia/Shanghai')::date
+                        THEN cohort_size ELSE NULL END AS d14_denominator,
+                   CASE WHEN cohort_date + INTERVAL '14 days'
+                                  < (:end_at AT TIME ZONE 'Asia/Shanghai')::date
+                        THEN d14_retained::NUMERIC / NULLIF(cohort_size, 0) ELSE NULL END AS d14_rate,
+                   CASE WHEN cohort_date + INTERVAL '30 days'
+                                  < (:end_at AT TIME ZONE 'Asia/Shanghai')::date
+                        THEN d30_retained ELSE NULL END AS d30_numerator,
+                   CASE WHEN cohort_date + INTERVAL '30 days'
+                                  < (:end_at AT TIME ZONE 'Asia/Shanghai')::date
+                        THEN cohort_size ELSE NULL END AS d30_denominator,
+                   CASE WHEN cohort_date + INTERVAL '30 days'
+                                  < (:end_at AT TIME ZONE 'Asia/Shanghai')::date
+                        THEN d30_retained::NUMERIC / NULLIF(cohort_size, 0) ELSE NULL END AS d30_rate
+            FROM cohorts
+            ORDER BY cohort_date DESC, site_id
+            """
+        ),
+        {
+            "allowed_site_ids": allowed_site_ids,
+            "segment": segment,
+            "start_at": start_at,
+            "end_at": end_at,
+        },
+    )
+    return _all(result)
+
+
+async def get_operations_model_breakdown(
+    connection: Any,
+    *,
+    allowed_site_ids: tuple[str, ...],
+    segment: str,
+    start_at: datetime,
+    end_at: datetime,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    segment_filter = _segment_filter("snapshot")
+    result = await connection.execute(
+        text(
+            f"""
+            WITH model_totals AS (
+                SELECT COALESCE(NULLIF(trim(usage.model_name), ''), 'unknown') AS model_name,
+                       SUM(usage.successful_call_count) AS successful_call_count,
+                       SUM(usage.token_count) AS token_count,
+                       SUM(usage.billed_amount_cny) AS billed_amount_cny
+                FROM growth.usage_facts AS usage
+                JOIN growth.ops_user_snapshots AS snapshot
+                  ON snapshot.site_id = usage.site_id
+                 AND snapshot.external_user_id = usage.external_user_id
+                WHERE usage.site_id = 'aigclink'
+                  AND usage.site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
+                  AND {segment_filter}
+                  AND NOT snapshot.is_internal
+                  AND usage.occurred_at >= :start_at
+                  AND usage.occurred_at < :end_at
+                GROUP BY COALESCE(NULLIF(trim(usage.model_name), ''), 'unknown')
+            )
+            SELECT model_name, successful_call_count, token_count, billed_amount_cny,
+                   CASE WHEN SUM(billed_amount_cny) OVER () = 0 THEN NULL
+                        ELSE billed_amount_cny / SUM(billed_amount_cny) OVER ()
+                   END AS revenue_share
+            FROM model_totals
+            ORDER BY billed_amount_cny DESC, model_name
+            LIMIT :limit
+            """
+        ),
+        {
+            "allowed_site_ids": allowed_site_ids,
+            "segment": segment,
+            "start_at": start_at,
+            "end_at": end_at,
+            "limit": limit,
+        },
+    )
+    return _all(result)
+
+
+async def get_operations_customer_breakdown(
+    connection: Any,
+    *,
+    allowed_site_ids: tuple[str, ...],
+    segment: str,
+    start_at: datetime,
+    end_at: datetime,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    segment_filter = _segment_filter("snapshot")
+    result = await connection.execute(
+        text(
+            f"""
+            SELECT usage.site_id, usage.external_user_id, snapshot.account_label,
+                   SUM(usage.successful_call_count) AS successful_call_count,
+                   SUM(usage.token_count) AS token_count,
+                   SUM(usage.billed_amount_cny) AS billed_amount_cny
+            FROM growth.usage_facts AS usage
+            JOIN growth.ops_user_snapshots AS snapshot
+              ON snapshot.site_id = usage.site_id
+             AND snapshot.external_user_id = usage.external_user_id
+            WHERE usage.site_id = 'aigclink'
+              AND usage.site_id = ANY(CAST(:allowed_site_ids AS TEXT[]))
+              AND {segment_filter}
+              AND NOT snapshot.is_internal
+              AND usage.occurred_at >= :start_at
+              AND usage.occurred_at < :end_at
+            GROUP BY usage.site_id, usage.external_user_id, snapshot.account_label
+            HAVING SUM(usage.billed_amount_cny) > 0
+            ORDER BY billed_amount_cny DESC, usage.external_user_id
+            LIMIT :limit
+            """
+        ),
+        {
+            "allowed_site_ids": allowed_site_ids,
+            "segment": segment,
+            "start_at": start_at,
+            "end_at": end_at,
+            "limit": limit,
         },
     )
     return _all(result)
@@ -1540,10 +2200,17 @@ async def _replace_aggregate_table(
                 UNION ALL
                 SELECT usage.site_id, usage.external_user_id, usage.occurred_at,
                        snapshot.is_internal, 0, usage.successful_call_count,
-                       usage.consumed_balance_units, usage.cost_cny, 0,
+                       usage.consumed_balance_units, usage.cost_cny,
+                       CASE
+                           WHEN usage.site_id = 'aigclink'
+                            AND NOT snapshot.is_internal
+                            AND usage.billed_amount_cny > 0
+                           THEN 1
+                           ELSE 0
+                       END,
                        CASE
                            WHEN usage.site_id = 'aigclink' AND NOT snapshot.is_internal
-                           THEN usage.cost_cny
+                           THEN usage.billed_amount_cny
                            ELSE 0
                        END,
                        0
@@ -1557,7 +2224,14 @@ async def _replace_aggregate_table(
                 UNION ALL
                 SELECT event.site_id, event.external_user_id, event.occurred_at,
                        snapshot.is_internal, 0, 0, 0, 0,
-                       CASE WHEN event.direction = 'credit' AND event.purpose = 'sale' THEN 1 ELSE 0 END,
+                       CASE
+                           WHEN event.site_id <> 'aigclink'
+                            AND event.direction = 'credit'
+                            AND event.purpose = 'sale'
+                            AND event.cash_amount_cny > 0
+                           THEN 1
+                           ELSE 0
+                       END,
                        CASE
                            WHEN event.site_id <> 'aigclink'
                             AND event.direction = 'credit'

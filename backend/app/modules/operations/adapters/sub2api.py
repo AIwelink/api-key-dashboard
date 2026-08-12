@@ -8,6 +8,7 @@ from sqlalchemy import text
 
 from app.modules.operations.adapters.base import (
     CreditEventInput,
+    SubscriptionEntitlementInput,
     UsageFactInput,
     UserSnapshotInput,
     datetime_value,
@@ -24,7 +25,7 @@ ORDER BY id
 """
 
 USAGE_QUERY = """
-SELECT id, user_id, actual_cost, created_at
+SELECT id, user_id, actual_cost, model, input_tokens, output_tokens, created_at
 FROM usage_logs
 WHERE user_id IS NOT NULL AND created_at >= :since_at
 ORDER BY created_at, id
@@ -32,7 +33,7 @@ ORDER BY created_at, id
 
 PAYMENT_ORDERS_QUERY = """
 SELECT id, user_id, amount, pay_amount, status, paid_at, completed_at, updated_at,
-       refund_amount, refund_at, order_type
+       refund_amount, refund_at, order_type, subscription_days
 FROM payment_orders
 WHERE status = 'COMPLETED'
   AND completed_at IS NOT NULL
@@ -43,6 +44,15 @@ WHERE status = 'COMPLETED'
       OR refund_at >= :since_at
   )
 ORDER BY updated_at, id
+"""
+
+SUBSCRIPTION_ENTITLEMENTS_QUERY = """
+SELECT id, user_id, starts_at, expires_at, status, updated_at
+FROM user_subscriptions
+WHERE deleted_at IS NULL
+  AND starts_at IS NOT NULL
+  AND expires_at IS NOT NULL
+ORDER BY id
 """
 
 REDEEM_CODES_QUERY = """
@@ -80,6 +90,26 @@ class Sub2ApiOperationsAdapter:
             consumed_balance_units=max(decimal_value(row.get("actual_cost")), Decimal("0")),
             occurred_at=occurred_at,
             source_updated_at=occurred_at,
+            model_name=str(row.get("model") or ""),
+            token_count=max(
+                int(row.get("input_tokens") or 0) + int(row.get("output_tokens") or 0),
+                0,
+            ),
+        )
+
+    def map_subscription_entitlement(
+        self,
+        row: dict[str, Any],
+    ) -> SubscriptionEntitlementInput:
+        return SubscriptionEntitlementInput(
+            site_id=self.site_id,
+            external_user_id=str(row["user_id"]),
+            source_type="user_subscription",
+            source_record_id=str(row["id"]),
+            starts_at=required_datetime(row.get("starts_at")),
+            ends_at=required_datetime(row.get("expires_at")),
+            status=str(row.get("status") or "unknown"),
+            source_updated_at=datetime_value(row.get("updated_at")),
         )
 
     def map_payment_order(self, row: dict[str, Any]) -> list[CreditEventInput]:
@@ -98,7 +128,10 @@ class Sub2ApiOperationsAdapter:
                 cash_amount_cny=max(decimal_value(row.get("pay_amount")), Decimal("0")),
                 occurred_at=paid_at,
                 source_updated_at=source_updated_at,
-                source_metadata={"order_type": str(row.get("order_type") or "")},
+                source_metadata={
+                    "order_type": str(row.get("order_type") or ""),
+                    "subscription_days": max(int(row.get("subscription_days") or 0), 0),
+                },
             )
         ]
         refund_amount = max(decimal_value(row.get("refund_amount")), Decimal("0"))
@@ -177,3 +210,14 @@ class Sub2ApiOperationsAdapter:
         ]
         facts.extend(self.map_redemption(dict(row)) for row in redemption_result.mappings().all())
         return facts
+
+    async def read_subscription_entitlements(
+        self,
+        *,
+        connection: Any,
+    ) -> list[SubscriptionEntitlementInput]:
+        result = await connection.execute(text(SUBSCRIPTION_ENTITLEMENTS_QUERY))
+        return [
+            self.map_subscription_entitlement(dict(row))
+            for row in result.mappings().all()
+        ]

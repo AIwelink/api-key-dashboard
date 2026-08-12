@@ -35,6 +35,61 @@
   min-width: 0;
 }
 
+.operations-lifecycle-band {
+  min-width: 0;
+  border-block: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.operations-lifecycle-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(132px, 1fr));
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.operations-lifecycle-grid .operations-metric {
+  min-height: 98px;
+}
+
+.operations-lifecycle-grid .operations-metric strong {
+  font-size: 20px;
+}
+
+.operations-billing-section .operations-table-scroll table {
+  min-width: 1540px;
+}
+
+.operations-retention-section .operations-table-scroll table {
+  min-width: 760px;
+}
+
+.operations-value-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.operations-value-grid .operations-table-scroll table {
+  min-width: 620px;
+}
+
+.operations-value-grid td:first-child {
+  min-width: 140px;
+  white-space: normal;
+}
+
+.operations-status-tag.cash-billed {
+  background: #e8f6ee;
+  color: var(--success);
+}
+
+.operations-status-tag.usage-billed {
+  background: #eef3f7;
+  color: #34556b;
+}
+
 .operations-trend-section .operations-table-scroll table,
 .operations-site-comparison .operations-table-scroll table {
   min-width: 1060px;
@@ -67,6 +122,14 @@
   .operations-workspace-page .operations-metric:nth-child(-n + 3) {
     border-bottom: 1px solid var(--line);
   }
+
+  .operations-lifecycle-grid {
+    grid-template-columns: repeat(4, minmax(144px, 1fr));
+  }
+
+  .operations-value-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 620px) {
@@ -84,6 +147,10 @@
 
   .operations-workspace-page .operations-metric:nth-child(-n + 4) {
     border-bottom: 1px solid var(--line);
+  }
+
+  .operations-lifecycle-grid {
+    grid-template-columns: repeat(2, minmax(144px, 1fr));
   }
 }
 .operations-row-actions {

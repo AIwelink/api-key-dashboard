@@ -31,6 +31,21 @@ class UsageFactInput:
     source_updated_at: datetime | None
     cost_cny: Decimal = Decimal("0")
     conversion_rate_id: UUID | None = None
+    billed_amount_cny: Decimal = Decimal("0")
+    model_name: str = ""
+    token_count: int = 0
+
+
+@dataclass(frozen=True)
+class SubscriptionEntitlementInput:
+    site_id: str
+    external_user_id: str
+    source_type: str
+    source_record_id: str
+    starts_at: datetime
+    ends_at: datetime
+    status: str
+    source_updated_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -61,6 +76,12 @@ class OperationsSourceAdapter(Protocol):
         connection: Any,
         since: datetime,
     ) -> list[CreditEventInput]: ...
+
+    async def read_subscription_entitlements(
+        self,
+        *,
+        connection: Any,
+    ) -> list[SubscriptionEntitlementInput]: ...
 
 
 def decimal_value(value: Any, *, default: str = "0") -> Decimal:

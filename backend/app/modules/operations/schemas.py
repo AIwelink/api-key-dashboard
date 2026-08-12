@@ -45,8 +45,6 @@ def _validate_window(start_at: datetime | None, end_at: datetime | None) -> None
 
 
 def _validate_purpose_cash(purpose: Purpose, cash_amount_cny: Decimal) -> None:
-    if purpose is Purpose.SALE and cash_amount_cny <= 0:
-        raise ValueError("sale purpose requires a positive actual cash amount")
     if purpose is not Purpose.SALE and cash_amount_cny != 0:
         raise ValueError("non-sale purpose cannot record cash income")
 
