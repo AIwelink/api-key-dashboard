@@ -25,7 +25,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
 
         sql = "\n".join(OPERATIONS_MIGRATION.statements)
 
-        self.assertEqual(len(OPERATIONS_DOMAIN_TABLES), 10)
+        self.assertEqual(len(OPERATIONS_DOMAIN_TABLES), 11)
         for table_name in (
             "internal_users",
             "balance_conversion_rates",
@@ -56,6 +56,24 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("HAVING COUNT(*) = 1", sql)
         self.assertIn("growth_internal_users_site_email_unique_idx", sql)
 
+    def test_lifecycle_migration_adds_priced_usage_and_subscription_entitlements(self) -> None:
+        from app.modules.growth.migrations import LIFECYCLE_METRICS_MIGRATION
+
+        sql = "\n".join(LIFECYCLE_METRICS_MIGRATION.statements)
+
+        self.assertIn(
+            "ADD COLUMN IF NOT EXISTS billed_amount_cny NUMERIC(30, 10)",
+            sql,
+        )
+        self.assertIn("ADD COLUMN IF NOT EXISTS model_name TEXT", sql)
+        self.assertIn("ADD COLUMN IF NOT EXISTS token_count BIGINT", sql)
+        self.assertIn(
+            "CREATE TABLE IF NOT EXISTS growth.subscription_entitlements",
+            sql,
+        )
+        self.assertIn("UNIQUE (site_id, source_type, source_record_id)", sql)
+        self.assertIn("growth_subscription_entitlements_user_window_idx", sql)
+
     def test_required_tables_include_initial_and_operations_domains(self) -> None:
         from app.modules.growth.migrations import (
             INITIAL_DOMAIN_TABLES,
@@ -64,7 +82,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(REQUIRED_DOMAIN_TABLES, INITIAL_DOMAIN_TABLES + OPERATIONS_DOMAIN_TABLES)
-        self.assertEqual(len(REQUIRED_DOMAIN_TABLES), 22)
+        self.assertEqual(len(REQUIRED_DOMAIN_TABLES), 23)
 
     def test_migrations_are_ordered_and_uniquely_versioned(self) -> None:
         from app.modules.growth.migrations import MIGRATIONS
@@ -79,6 +97,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0001_initial",
                 "0002_operations_analytics",
                 "0003_operations_internal_email",
+                "0004_operations_lifecycle_metrics",
             ],
         )
 
@@ -95,9 +114,10 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0001_initial",
                 "0002_operations_analytics",
                 "0003_operations_internal_email",
+                "0004_operations_lifecycle_metrics",
             ],
         )
-        self.assertEqual(result["current_version"], "0003_operations_internal_email")
+        self.assertEqual(result["current_version"], "0004_operations_lifecycle_metrics")
         self.assertEqual(result["pending_versions"], [])
         executed_sql = "\n".join(connection.statements)
         for migration in MIGRATIONS:
@@ -113,13 +133,14 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0001_initial",
                 "0002_operations_analytics",
                 "0003_operations_internal_email",
+                "0004_operations_lifecycle_metrics",
             ]
         )
 
         result = await apply_pending_migrations(connection)
 
         self.assertEqual(result["applied_versions"], [])
-        self.assertEqual(result["current_version"], "0003_operations_internal_email")
+        self.assertEqual(result["current_version"], "0004_operations_lifecycle_metrics")
         for migration in MIGRATIONS:
             for statement in migration.statements:
                 self.assertNotIn(statement, connection.statements)
@@ -139,6 +160,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0001_initial",
                 "0002_operations_analytics",
                 "0003_operations_internal_email",
+                "0004_operations_lifecycle_metrics",
             ],
         )
         self.assertEqual(result["domain_table_count"], 0)
@@ -151,17 +173,18 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0001_initial",
                 "0002_operations_analytics",
                 "0003_operations_internal_email",
+                "0004_operations_lifecycle_metrics",
             ],
             ledger_exists=True,
-            domain_table_count=22,
+            domain_table_count=23,
         )
 
         result = await inspect_growth_schema(connection)
 
         self.assertTrue(result["initialized"])
-        self.assertEqual(result["current_version"], "0003_operations_internal_email")
+        self.assertEqual(result["current_version"], "0004_operations_lifecycle_metrics")
         self.assertEqual(result["pending_versions"], [])
-        self.assertEqual(result["domain_table_count"], 22)
+        self.assertEqual(result["domain_table_count"], 23)
 
 
 class _FakeScalarResult:

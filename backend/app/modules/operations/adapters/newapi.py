@@ -8,6 +8,7 @@ from sqlalchemy import text
 
 from app.modules.operations.adapters.base import (
     CreditEventInput,
+    SubscriptionEntitlementInput,
     UsageFactInput,
     UserSnapshotInput,
     datetime_value,
@@ -24,10 +25,17 @@ ORDER BY id
 """
 
 USAGE_QUERY = """
-SELECT id, user_id, count, quota, created_at
+SELECT id, user_id, count, quota, model_name, token_used, created_at
 FROM quota_data
 WHERE user_id IS NOT NULL AND created_at >= UNIX_TIMESTAMP(:since_at)
 ORDER BY created_at, id
+"""
+
+SUBSCRIPTION_ENTITLEMENTS_QUERY = """
+SELECT id, user_id, start_time, end_time, status, updated_at
+FROM user_subscriptions
+WHERE start_time > 0 AND end_time > start_time
+ORDER BY id
 """
 
 TOP_UPS_QUERY = """
@@ -89,6 +97,24 @@ class NewApiOperationsAdapter:
             consumed_balance_units=max(self._balance_units(row.get("quota")), Decimal("0")),
             occurred_at=occurred_at,
             source_updated_at=occurred_at,
+            billed_amount_cny=max(self._balance_units(row.get("quota")), Decimal("0")),
+            model_name=str(row.get("model_name") or ""),
+            token_count=max(int(row.get("token_used") or 0), 0),
+        )
+
+    def map_subscription_entitlement(
+        self,
+        row: dict[str, Any],
+    ) -> SubscriptionEntitlementInput:
+        return SubscriptionEntitlementInput(
+            site_id=self.site_id,
+            external_user_id=str(row["user_id"]),
+            source_type="user_subscription",
+            source_record_id=str(row["id"]),
+            starts_at=required_datetime(row.get("start_time"), unix=True),
+            ends_at=required_datetime(row.get("end_time"), unix=True),
+            status=str(row.get("status") or "unknown"),
+            source_updated_at=datetime_value(row.get("updated_at"), unix=True),
         )
 
     def map_top_up(self, row: dict[str, Any]) -> CreditEventInput:
@@ -180,3 +206,14 @@ class NewApiOperationsAdapter:
         )
         facts.extend(self.map_redemption(dict(row)) for row in redemption_result.mappings().all())
         return facts
+
+    async def read_subscription_entitlements(
+        self,
+        *,
+        connection: Any,
+    ) -> list[SubscriptionEntitlementInput]:
+        result = await connection.execute(text(SUBSCRIPTION_ENTITLEMENTS_QUERY))
+        return [
+            self.map_subscription_entitlement(dict(row))
+            for row in result.mappings().all()
+        ]

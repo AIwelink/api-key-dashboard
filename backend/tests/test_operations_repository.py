@@ -287,6 +287,9 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
                     "successful_call_count": 1,
                     "consumed_balance_units": Decimal("2"),
                     "cost_cny": Decimal("0.2"),
+                    "billed_amount_cny": Decimal("0.15"),
+                    "model_name": "claude-sonnet-4",
+                    "token_count": 30,
                     "conversion_rate_id": None,
                     "occurred_at": NOW,
                     "source_updated_at": NOW,
@@ -317,6 +320,42 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         for statement, parameters in connection.calls:
             self.assertIn("ON CONFLICT (site_id, source_type, source_record_id)", statement)
             self.assertEqual(parameters[0]["source_record_id"], parameters[0]["source_record_id"])
+        usage_statement, usage_parameters = connection.calls[0]
+        self.assertIn("billed_amount_cny", usage_statement)
+        self.assertIn("model_name", usage_statement)
+        self.assertIn("token_count", usage_statement)
+        self.assertEqual(usage_parameters[0]["billed_amount_cny"], Decimal("0.15"))
+
+    async def test_subscription_entitlements_replace_only_selected_site(self) -> None:
+        from app.modules.operations.adapters.base import SubscriptionEntitlementInput
+        from app.modules.operations.repository import replace_subscription_entitlements
+
+        connection = _FakeConnection([None, None])
+        entitlement = SubscriptionEntitlementInput(
+            site_id="aiwelink",
+            external_user_id="42",
+            source_type="user_subscription",
+            source_record_id="subscription-1",
+            starts_at=NOW,
+            ends_at=datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
+            status="active",
+            source_updated_at=NOW,
+        )
+
+        count = await replace_subscription_entitlements(
+            connection,
+            site_id="aiwelink",
+            records=[entitlement],
+        )
+
+        delete_statement, delete_parameters = connection.calls[0]
+        insert_statement, insert_parameters = connection.calls[1]
+        self.assertIn("DELETE FROM growth.subscription_entitlements", delete_statement)
+        self.assertEqual(delete_parameters, {"site_id": "aiwelink"})
+        self.assertIn("INSERT INTO growth.subscription_entitlements", insert_statement)
+        self.assertIn("ON CONFLICT (site_id, source_type, source_record_id)", insert_statement)
+        self.assertEqual(insert_parameters[0]["external_user_id"], "42")
+        self.assertEqual(count, 1)
 
     async def test_delete_source_credit_events_is_scoped_to_site_and_types(self) -> None:
         from app.modules.operations import repository

@@ -673,6 +673,9 @@ async def upsert_usage_facts(connection: Any, records: list[Any]) -> int:
     for record in records:
         values = _record_dict(record)
         values.setdefault("usage_fact_id", uuid4())
+        values.setdefault("billed_amount_cny", Decimal("0"))
+        values.setdefault("model_name", "")
+        values.setdefault("token_count", 0)
         parameters.append(values)
     await connection.execute(
         text(
@@ -680,10 +683,12 @@ async def upsert_usage_facts(connection: Any, records: list[Any]) -> int:
             INSERT INTO growth.usage_facts (
                 usage_fact_id, site_id, external_user_id, source_type, source_record_id,
                 successful_call_count, consumed_balance_units, cost_cny,
+                billed_amount_cny, model_name, token_count,
                 conversion_rate_id, occurred_at, source_updated_at, synced_at
             ) VALUES (
                 :usage_fact_id, :site_id, :external_user_id, :source_type, :source_record_id,
                 :successful_call_count, :consumed_balance_units, :cost_cny,
+                :billed_amount_cny, :model_name, :token_count,
                 :conversion_rate_id, :occurred_at, :source_updated_at, NOW()
             )
             ON CONFLICT (site_id, source_type, source_record_id) DO UPDATE SET
@@ -691,8 +696,61 @@ async def upsert_usage_facts(connection: Any, records: list[Any]) -> int:
                 successful_call_count = EXCLUDED.successful_call_count,
                 consumed_balance_units = EXCLUDED.consumed_balance_units,
                 cost_cny = EXCLUDED.cost_cny,
+                billed_amount_cny = EXCLUDED.billed_amount_cny,
+                model_name = EXCLUDED.model_name,
+                token_count = EXCLUDED.token_count,
                 conversion_rate_id = EXCLUDED.conversion_rate_id,
                 occurred_at = EXCLUDED.occurred_at,
+                source_updated_at = EXCLUDED.source_updated_at,
+                synced_at = NOW()
+            """
+        ),
+        parameters,
+    )
+    return len(parameters)
+
+
+async def replace_subscription_entitlements(
+    connection: Any,
+    *,
+    site_id: str,
+    records: list[Any],
+) -> int:
+    await connection.execute(
+        text(
+            """
+            DELETE FROM growth.subscription_entitlements
+            WHERE site_id = :site_id
+            """
+        ),
+        {"site_id": site_id},
+    )
+    if not records:
+        return 0
+    parameters = []
+    for record in records:
+        values = _record_dict(record)
+        if values.get("site_id") != site_id:
+            raise ValueError("subscription entitlement site does not match replacement scope")
+        values.setdefault("subscription_entitlement_id", uuid4())
+        parameters.append(values)
+    await connection.execute(
+        text(
+            """
+            INSERT INTO growth.subscription_entitlements (
+                subscription_entitlement_id, site_id, external_user_id,
+                source_type, source_record_id, starts_at, ends_at, status,
+                source_updated_at, synced_at
+            ) VALUES (
+                :subscription_entitlement_id, :site_id, :external_user_id,
+                :source_type, :source_record_id, :starts_at, :ends_at, :status,
+                :source_updated_at, NOW()
+            )
+            ON CONFLICT (site_id, source_type, source_record_id) DO UPDATE SET
+                external_user_id = EXCLUDED.external_user_id,
+                starts_at = EXCLUDED.starts_at,
+                ends_at = EXCLUDED.ends_at,
+                status = EXCLUDED.status,
                 source_updated_at = EXCLUDED.source_updated_at,
                 synced_at = NOW()
             """

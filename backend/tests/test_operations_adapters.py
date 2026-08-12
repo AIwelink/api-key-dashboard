@@ -43,13 +43,35 @@ class Sub2ApiOperationsAdapterTests(unittest.TestCase):
                 "id": 1001,
                 "user_id": "user-1",
                 "actual_cost": Decimal("2.5"),
+                "model": "claude-sonnet-4",
+                "input_tokens": 20,
+                "output_tokens": 10,
                 "created_at": NOW,
             }
         )
 
         self.assertEqual(fact.successful_call_count, 1)
         self.assertEqual(fact.consumed_balance_units, Decimal("2.5"))
+        self.assertEqual(fact.billed_amount_cny, Decimal("0"))
+        self.assertEqual(fact.model_name, "claude-sonnet-4")
+        self.assertEqual(fact.token_count, 30)
         self.assertEqual(fact.source_record_id, "1001")
+
+    def test_subscription_entitlement_uses_explicit_source_window(self) -> None:
+        fact = self.adapter.map_subscription_entitlement(
+            {
+                "id": "subscription-1",
+                "user_id": "user-1",
+                "starts_at": NOW,
+                "expires_at": datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
+                "status": "active",
+                "updated_at": NOW,
+            }
+        )
+
+        self.assertEqual(fact.external_user_id, "user-1")
+        self.assertEqual(fact.source_record_id, "subscription-1")
+        self.assertEqual(fact.status, "active")
 
     def test_paid_order_is_sale_and_refund_is_separate_debit(self) -> None:
         facts = self.adapter.map_payment_order(
@@ -62,6 +84,8 @@ class Sub2ApiOperationsAdapterTests(unittest.TestCase):
                 "updated_at": NOW,
                 "refund_amount": Decimal("3"),
                 "refund_at": NOW,
+                "order_type": "subscription",
+                "subscription_days": 30,
             }
         )
 
@@ -69,6 +93,7 @@ class Sub2ApiOperationsAdapterTests(unittest.TestCase):
         self.assertEqual(facts[0].purpose, "sale")
         self.assertEqual(facts[0].classification_status, "classified")
         self.assertEqual(facts[0].cash_amount_cny, Decimal("10"))
+        self.assertEqual(facts[0].source_metadata["subscription_days"], 30)
         self.assertEqual(facts[1].direction, "debit")
         self.assertEqual(facts[1].source_type, "refund")
 
@@ -96,9 +121,10 @@ class Sub2ApiOperationsAdapterReadTests(unittest.IsolatedAsyncioTestCase):
         connection = _FakeConnection(
             [
                 [{"id": "u1", "email": "u@example.com", "username": "u", "status": "active", "balance": 1, "created_at": NOW, "updated_at": NOW}],
-                [{"id": 1, "user_id": "u1", "actual_cost": 1, "created_at": NOW}],
-                [{"id": "p1", "user_id": "u1", "amount": 10, "pay_amount": 1, "status": "COMPLETED", "paid_at": NOW, "completed_at": NOW, "updated_at": NOW, "refund_amount": 0, "refund_at": None}],
+                [{"id": 1, "user_id": "u1", "actual_cost": 1, "model": "claude", "input_tokens": 2, "output_tokens": 3, "created_at": NOW}],
+                [{"id": "p1", "user_id": "u1", "amount": 10, "pay_amount": 1, "status": "COMPLETED", "paid_at": NOW, "completed_at": NOW, "updated_at": NOW, "refund_amount": 0, "refund_at": None, "order_type": "balance", "subscription_days": None}],
                 [{"id": "r1", "used_by": "u1", "value": 10, "type": "balance", "used_at": NOW, "notes": ""}],
+                [{"id": "s1", "user_id": "u1", "starts_at": NOW, "expires_at": datetime(2026, 8, 25, 12, 0, tzinfo=UTC), "status": "active", "updated_at": NOW}],
             ]
         )
         adapter = Sub2ApiOperationsAdapter(site_id="aiwelink")
@@ -106,14 +132,15 @@ class Sub2ApiOperationsAdapterReadTests(unittest.IsolatedAsyncioTestCase):
         users = await adapter.read_users(connection=connection, since=NOW)
         usage = await adapter.read_usage(connection=connection, since=NOW)
         credits = await adapter.read_credit_events(connection=connection, since=NOW)
+        entitlements = await adapter.read_subscription_entitlements(connection=connection)
 
-        self.assertEqual((len(users), len(usage), len(credits)), (1, 1, 2))
+        self.assertEqual((len(users), len(usage), len(credits), len(entitlements)), (1, 1, 2, 1))
         sql = "\n".join(statement for statement, _ in connection.calls).lower()
         self.assertNotIn("password_hash", sql)
         self.assertNotIn("totp_secret", sql)
         self.assertIn("status = 'completed'", sql)
         self.assertIn("completed_at is not null", sql)
-        for _, parameters in connection.calls[1:]:
+        for _, parameters in connection.calls[1:4]:
             self.assertEqual(parameters["since_at"], NOW)
 
 
@@ -154,12 +181,33 @@ class NewApiOperationsAdapterTests(unittest.TestCase):
                 "user_id": 7,
                 "count": 3,
                 "quota": 750_000,
+                "model_name": "gpt-5",
+                "token_used": 12_345,
                 "created_at": int(NOW.timestamp()),
             }
         )
 
         self.assertEqual(fact.successful_call_count, 3)
         self.assertEqual(fact.consumed_balance_units, Decimal("1.5"))
+        self.assertEqual(fact.billed_amount_cny, Decimal("1.5"))
+        self.assertEqual(fact.model_name, "gpt-5")
+        self.assertEqual(fact.token_count, 12_345)
+
+    def test_subscription_entitlement_uses_unix_source_window(self) -> None:
+        fact = self.adapter.map_subscription_entitlement(
+            {
+                "id": 44,
+                "user_id": 7,
+                "start_time": int(NOW.timestamp()),
+                "end_time": int(datetime(2026, 8, 25, 12, 0, tzinfo=UTC).timestamp()),
+                "status": "active",
+                "updated_at": int(NOW.timestamp()),
+            }
+        )
+
+        self.assertEqual(fact.external_user_id, "7")
+        self.assertEqual(fact.source_record_id, "44")
+        self.assertEqual(fact.status, "active")
 
     def test_completed_topup_is_classified_sale(self) -> None:
         fact = self.adapter.map_top_up(
@@ -200,10 +248,11 @@ class NewApiOperationsAdapterReadTests(unittest.IsolatedAsyncioTestCase):
         connection = _FakeConnection(
             [
                 [{"id": 7, "username": "u", "email": "u@example.com", "display_name": "", "status": 1, "quota": 500000, "created_at": timestamp, "last_login_at": timestamp}],
-                [{"id": 1, "user_id": 7, "count": 1, "quota": 500000, "created_at": timestamp}],
+                [{"id": 1, "user_id": 7, "count": 1, "quota": 500000, "model_name": "gpt-5", "token_used": 10, "created_at": timestamp}],
                 [{"id": 2, "user_id": 7, "amount": 500000, "money": 1, "complete_time": timestamp, "create_time": timestamp}],
                 [],
                 [{"id": 3, "used_user_id": 7, "quota": 500000, "redeemed_time": timestamp, "name": "offline"}],
+                [{"id": 4, "user_id": 7, "start_time": timestamp, "end_time": timestamp + 86400, "status": "active", "updated_at": timestamp}],
             ]
         )
         adapter = NewApiOperationsAdapter(site_id="aigclink", quota_per_unit=Decimal("500000"))
@@ -211,12 +260,13 @@ class NewApiOperationsAdapterReadTests(unittest.IsolatedAsyncioTestCase):
         users = await adapter.read_users(connection=connection, since=NOW)
         usage = await adapter.read_usage(connection=connection, since=NOW)
         credits = await adapter.read_credit_events(connection=connection, since=NOW)
+        entitlements = await adapter.read_subscription_entitlements(connection=connection)
 
-        self.assertEqual((len(users), len(usage), len(credits)), (1, 1, 2))
+        self.assertEqual((len(users), len(usage), len(credits), len(entitlements)), (1, 1, 2, 1))
         sql = "\n".join(statement for statement, _ in connection.calls).lower()
         self.assertNotIn("password", sql)
         self.assertNotIn("access_token", sql)
-        for _, parameters in connection.calls[1:]:
+        for _, parameters in connection.calls[1:5]:
             self.assertEqual(parameters["since_at"], NOW)
 
 

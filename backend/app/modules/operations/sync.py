@@ -30,7 +30,7 @@ from app.modules.system.sql_dsn import parse_sql_dsn, redact_sql_error
 OPERATIONS_SYNC_INTERVAL_SECONDS = 900
 OPERATIONS_RECONCILIATION_WINDOW = timedelta(hours=48)
 OPERATIONS_INITIAL_SYNC_WINDOW = timedelta(days=30)
-OPERATIONS_AGGREGATE_VERSION = 2
+OPERATIONS_AGGREGATE_VERSION = 3
 OPERATIONS_AGGREGATE_HISTORY_START = datetime(1970, 1, 1, tzinfo=UTC)
 SOURCE_DATABASE_TIMEOUT_SECONDS = 30
 NEWAPI_DEFAULT_QUOTA_PER_UNIT = Decimal("500000")
@@ -129,11 +129,13 @@ async def sync_adapter_records(
         site_id=adapter.site_id,
     )
     users = await adapter.read_users(connection=source_connection, since=since)
-    usage = await adapter.read_usage(connection=source_connection, since=since)
+    usage_since = min(value for value in (since, aggregate_start) if value is not None)
+    usage = await adapter.read_usage(connection=source_connection, since=usage_since)
     credit_since = min(
         value for value in (since, aggregate_start) if value is not None
     )
     credits = await adapter.read_credit_events(connection=source_connection, since=credit_since)
+    entitlements = await adapter.read_subscription_entitlements(connection=source_connection)
     rates = await repository.list_conversion_rates(
         growth_connection,
         allowed_site_ids=(adapter.site_id,),
@@ -159,6 +161,11 @@ async def sync_adapter_records(
     if recognized_internal_user_count > 0 or reclassified_internal_user_count > 0:
         selected_aggregate_start = OPERATIONS_AGGREGATE_HISTORY_START
     usage_count = await repository.upsert_usage_facts(growth_connection, converted_usage)
+    entitlement_count = await repository.replace_subscription_entitlements(
+        growth_connection,
+        site_id=adapter.site_id,
+        records=entitlements,
+    )
     if aggregate_start is not None:
         await repository.delete_source_credit_events(
             growth_connection,
@@ -180,9 +187,10 @@ async def sync_adapter_records(
         "users": user_count,
         "usage": usage_count,
         "credits": credit_count,
+        "subscription_entitlements": entitlement_count,
         "classification_tasks": task_count,
-        "rows_scanned": len(users) + len(usage) + len(credits),
-        "rows_upserted": user_count + usage_count + credit_count,
+        "rows_scanned": len(users) + len(usage) + len(credits) + len(entitlements),
+        "rows_upserted": user_count + usage_count + credit_count + entitlement_count,
     }
 
 
