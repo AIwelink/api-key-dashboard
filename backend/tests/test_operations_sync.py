@@ -13,10 +13,10 @@ NOW = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
 
 
 class OperationsSyncRuleTests(unittest.TestCase):
-    def test_payment_status_repair_uses_aggregate_version_two(self) -> None:
+    def test_lifecycle_repair_uses_aggregate_version_three(self) -> None:
         from app.modules.operations.sync import OPERATIONS_AGGREGATE_VERSION
 
-        self.assertEqual(OPERATIONS_AGGREGATE_VERSION, 2)
+        self.assertEqual(OPERATIONS_AGGREGATE_VERSION, 3)
 
     def test_first_sync_reads_30_days_when_no_cursor_or_override_exists(self) -> None:
         from app.modules.operations.sync import reconciliation_start
@@ -88,6 +88,17 @@ class OperationsSyncRuleTests(unittest.TestCase):
 
 
 class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        from app.modules.operations import sync
+
+        self.entitlement_replacement = patch.object(
+            sync.repository,
+            "replace_subscription_entitlements",
+            AsyncMock(return_value=0),
+        )
+        self.entitlement_replacement.start()
+        self.addCleanup(self.entitlement_replacement.stop)
+
     async def asyncTearDown(self) -> None:
         from app.modules.operations.sync import clear_refresh_tasks
 
@@ -322,6 +333,7 @@ class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         adapter.read_users.return_value = []
         adapter.read_usage.return_value = []
         adapter.read_credit_events.return_value = []
+        adapter.read_subscription_entitlements.return_value = []
         growth_connection = object()
         deleted = AsyncMock()
 
@@ -342,6 +354,12 @@ class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch.object(sync.repository, "upsert_usage_facts", AsyncMock(return_value=0)),
             patch.object(sync.repository, "upsert_credit_events", AsyncMock(return_value=0)),
+            patch.object(
+                sync.repository,
+                "replace_subscription_entitlements",
+                AsyncMock(return_value=0),
+                create=True,
+            ) as replace_entitlements,
             patch.object(sync.repository, "create_pending_classification_tasks", AsyncMock(return_value=0)),
             patch.object(sync.repository, "replace_affected_aggregates", AsyncMock()),
         ):
@@ -355,6 +373,10 @@ class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(
+            adapter.read_usage.await_args.kwargs["since"],
+            sync.OPERATIONS_AGGREGATE_HISTORY_START,
+        )
+        self.assertEqual(
             adapter.read_credit_events.await_args.kwargs["since"],
             sync.OPERATIONS_AGGREGATE_HISTORY_START,
         )
@@ -362,6 +384,11 @@ class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             growth_connection,
             site_id="aiwelink",
             source_types=("payment", "refund"),
+        )
+        replace_entitlements.assert_awaited_once_with(
+            growth_connection,
+            site_id="aiwelink",
+            records=[],
         )
 
     async def test_new_internal_user_recognition_rebuilds_complete_history(self) -> None:
@@ -561,7 +588,7 @@ class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             cursor_loader=AsyncMock(
                 return_value={
                     "last_success_at": last_success.isoformat(),
-                    "cursor_value": {"aggregate_version": 2},
+                    "cursor_value": {"aggregate_version": 3},
                 }
             ),
             run_starter=AsyncMock(return_value={"run_id": str(run_id)}),
@@ -577,7 +604,7 @@ class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(records_sync.await_args.kwargs["aggregate_start"])
         self.assertEqual(records_sync.await_args.kwargs["source_connection"], source)
         self.assertEqual(run_finisher.await_args.kwargs["status"], "succeeded")
-        self.assertEqual(run_finisher.await_args.kwargs.get("aggregate_version"), 2)
+        self.assertEqual(run_finisher.await_args.kwargs.get("aggregate_version"), 3)
         self.assertEqual(result["run_id"], str(run_id))
 
     async def test_site_sync_invalidates_cache_after_fact_transaction_commits(self) -> None:
@@ -672,7 +699,7 @@ class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             records_sync.await_args.kwargs.get("aggregate_start"),
             datetime(1970, 1, 1, tzinfo=UTC),
         )
-        self.assertEqual(run_finisher.await_args.kwargs.get("aggregate_version"), 2)
+        self.assertEqual(run_finisher.await_args.kwargs.get("aggregate_version"), 3)
 
     async def test_site_sync_records_failure_after_fact_transaction_rolls_back(self) -> None:
         from app.modules.operations import sync

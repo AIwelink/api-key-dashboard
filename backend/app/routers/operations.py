@@ -129,6 +129,26 @@ async def get_operations_trends(
         _raise_http_error(exc)
 
 
+@router.get("/lifecycle")
+async def get_operations_lifecycle(
+    query: OperationsQuery = Depends(),
+    actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    allowed_site_ids = _resolve_operations_site_ids(
+        actor,
+        [query.site_id] if query.site_id else None,
+    )
+    try:
+        return await service.get_operations_lifecycle_data(
+            db,
+            query,
+            allowed_site_ids=allowed_site_ids,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_error(exc)
+
+
 @router.get("/users")
 async def get_operations_users(
     query: OperationsQuery = Depends(),

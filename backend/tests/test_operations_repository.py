@@ -313,6 +313,9 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
                     "successful_call_count": 1,
                     "consumed_balance_units": Decimal("2"),
                     "cost_cny": Decimal("0.2"),
+                    "billed_amount_cny": Decimal("0.15"),
+                    "model_name": "claude-sonnet-4",
+                    "token_count": 30,
                     "conversion_rate_id": None,
                     "occurred_at": NOW,
                     "source_updated_at": NOW,
@@ -343,6 +346,42 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         for statement, parameters in connection.calls:
             self.assertIn("ON CONFLICT (site_id, source_type, source_record_id)", statement)
             self.assertEqual(parameters[0]["source_record_id"], parameters[0]["source_record_id"])
+        usage_statement, usage_parameters = connection.calls[0]
+        self.assertIn("billed_amount_cny", usage_statement)
+        self.assertIn("model_name", usage_statement)
+        self.assertIn("token_count", usage_statement)
+        self.assertEqual(usage_parameters[0]["billed_amount_cny"], Decimal("0.15"))
+
+    async def test_subscription_entitlements_replace_only_selected_site(self) -> None:
+        from app.modules.operations.adapters.base import SubscriptionEntitlementInput
+        from app.modules.operations.repository import replace_subscription_entitlements
+
+        connection = _FakeConnection([None, None])
+        entitlement = SubscriptionEntitlementInput(
+            site_id="aiwelink",
+            external_user_id="42",
+            source_type="user_subscription",
+            source_record_id="subscription-1",
+            starts_at=NOW,
+            ends_at=datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
+            status="active",
+            source_updated_at=NOW,
+        )
+
+        count = await replace_subscription_entitlements(
+            connection,
+            site_id="aiwelink",
+            records=[entitlement],
+        )
+
+        delete_statement, delete_parameters = connection.calls[0]
+        insert_statement, insert_parameters = connection.calls[1]
+        self.assertIn("DELETE FROM growth.subscription_entitlements", delete_statement)
+        self.assertEqual(delete_parameters, {"site_id": "aiwelink"})
+        self.assertIn("INSERT INTO growth.subscription_entitlements", insert_statement)
+        self.assertIn("ON CONFLICT (site_id, source_type, source_record_id)", insert_statement)
+        self.assertEqual(insert_parameters[0]["external_user_id"], "42")
+        self.assertEqual(count, 1)
 
     async def test_delete_source_credit_events_is_scoped_to_site_and_types(self) -> None:
         from app.modules.operations import repository
@@ -519,7 +558,7 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parameters["allowed_site_ids"], ("aiwelink",))
         self.assertEqual(parameters["segment"], "ordinary")
 
-    async def test_summary_uses_usage_revenue_only_for_ordinary_aigclink_users(self) -> None:
+    async def test_summary_uses_source_priced_revenue_and_billed_aigclink_customers(self) -> None:
         from app.modules.operations.repository import get_operations_summary
 
         connection = _FakeConnection([{"gross_income_cny": Decimal("12") }])
@@ -535,10 +574,12 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         statement, _ = connection.calls[0]
         self.assertIn("usage.site_id = 'aigclink'", statement)
         self.assertIn("NOT snapshot.is_internal", statement)
-        self.assertIn("SUM(usage.cost_cny)", statement)
+        self.assertIn("SUM(usage.billed_amount_cny)", statement)
+        self.assertIn("usage.billed_amount_cny > 0", statement)
+        self.assertIn("aigclink_payer_count", statement)
         self.assertIn("event.site_id <> 'aigclink'", statement)
 
-    async def test_trends_derive_historical_aigclink_revenue_from_ordinary_cost(self) -> None:
+    async def test_trends_use_v3_aggregate_income_without_cost_reinterpretation(self) -> None:
         from app.modules.operations.repository import get_operations_trends
 
         connection = _FakeConnection([None])
@@ -553,10 +594,8 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
         statement, _ = connection.calls[0]
         self.assertIn("FROM growth.ops_hourly_stats AS stats", statement)
-        self.assertIn("LEFT JOIN growth.ops_hourly_stats AS ordinary", statement)
-        self.assertIn("stats.site_id = 'aigclink'", statement)
-        self.assertIn("stats.user_segment = 'internal'", statement)
-        self.assertIn("THEN ordinary.cost_cny", statement)
+        self.assertIn("stats.gross_income_cny", statement)
+        self.assertNotIn("ordinary.cost_cny", statement)
 
     async def test_site_breakdown_groups_current_metrics_by_authorized_site(self) -> None:
         from app.modules.operations.repository import get_operations_site_breakdown
@@ -584,7 +623,145 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("GROUP BY usage.site_id", statement)
         self.assertIn("event.site_id <> 'aigclink'", statement)
         self.assertIn("NOT snapshot.is_internal", statement)
+        self.assertIn("SUM(usage.billed_amount_cny)", statement)
+        self.assertIn("usage.billed_amount_cny > 0", statement)
         self.assertEqual(parameters["allowed_site_ids"], ("aigclink",))
+
+    async def test_aggregate_income_uses_billed_usage_only_for_ordinary_aigclink_users(self) -> None:
+        from app.modules.operations import repository
+
+        connection = _FakeConnection([None, None, None, None])
+
+        await repository.replace_affected_aggregates(
+            connection,
+            site_id="aigclink",
+            start_at=NOW,
+            end_at=NOW,
+        )
+
+        statements = "\n".join(statement for statement, _ in connection.calls)
+        self.assertIn("usage.billed_amount_cny", statements)
+        self.assertIn("usage.billed_amount_cny > 0", statements)
+        self.assertIn("NOT snapshot.is_internal", statements)
+        self.assertIn("event.site_id <> 'aigclink'", statements)
+
+    async def test_lifecycle_summary_uses_mature_activation_and_usage_churn_boundaries(self) -> None:
+        from app.modules.operations.repository import get_operations_lifecycle_summary
+
+        connection = _FakeConnection([{"scope": "all", "site_id": None}])
+        rows = await get_operations_lifecycle_summary(
+            connection,
+            allowed_site_ids=("aiwelink", "aigclink"),
+            segment="ordinary",
+            start_at=NOW,
+            end_at=NOW,
+        )
+
+        statement, parameters = connection.calls[0]
+        self.assertEqual(rows[0]["scope"], "all")
+        self.assertIn("INTERVAL '24 hours'", statement)
+        self.assertIn("INTERVAL '7 days'", statement)
+        self.assertIn("registered_at <= :end_at - INTERVAL '24 hours'", statement)
+        self.assertIn("first_used_at <= registered_at + INTERVAL '24 hours'", statement)
+        self.assertIn("INTERVAL '14 days'", statement)
+        self.assertIn("INTERVAL '30 days'", statement)
+        self.assertIn("LAG(usage.occurred_at)", statement)
+        self.assertIn("successful_call_count > 0", statement)
+        self.assertIn("CASE WHEN", statement)
+        self.assertIn("THEN NULL", statement)
+        self.assertEqual(parameters["allowed_site_ids"], ("aiwelink", "aigclink"))
+        self.assertEqual(parameters["segment"], "ordinary")
+
+    async def test_lifecycle_summary_preserves_site_specific_payment_semantics(self) -> None:
+        from app.modules.operations.repository import get_operations_lifecycle_summary
+
+        connection = _FakeConnection([None])
+        await get_operations_lifecycle_summary(
+            connection,
+            allowed_site_ids=("aiwelink", "aigclink"),
+            segment="ordinary",
+            start_at=NOW,
+            end_at=NOW,
+        )
+
+        statement, _ = connection.calls[0]
+        self.assertIn("event.site_id <> 'aigclink'", statement)
+        self.assertIn("event.cash_amount_cny > 0", statement)
+        self.assertIn("usage.site_id = 'aigclink'", statement)
+        self.assertIn("usage.billed_amount_cny > 0", statement)
+        self.assertIn(
+            "site_id = 'aigclink' AND aigclink_window_billed_cny > 0",
+            statement,
+        )
+        self.assertIn("site_id <> 'aigclink' AND first_cash_paid_at IS NOT NULL", statement)
+        self.assertIn("growth.subscription_entitlements", statement)
+        self.assertIn("balance_units > 0 OR has_active_paid_subscription", statement)
+        self.assertIn("classification_status = 'pending'", statement)
+        self.assertIn("source_type = 'redemption'", statement)
+        self.assertIn("subscription_days", statement)
+        self.assertIn("order_type", statement)
+        self.assertIn("sale_credit_events AS", statement)
+        self.assertIn("event.balance_units > 0", statement)
+        self.assertIn("recharge_event_count", statement)
+        self.assertIn("recharge_balance_units", statement)
+        self.assertIn("subscription_cash_income_cny", statement)
+
+    async def test_retention_uses_shanghai_natural_days_and_null_immature_cells(self) -> None:
+        from app.modules.operations.repository import get_operations_retention
+
+        connection = _FakeConnection([{"site_id": "aiwelink", "cohort_date": "2026-07-01"}])
+        rows = await get_operations_retention(
+            connection,
+            allowed_site_ids=("aiwelink",),
+            segment="ordinary",
+            start_at=NOW,
+            end_at=NOW,
+        )
+
+        statement, _ = connection.calls[0]
+        self.assertEqual(rows[0]["site_id"], "aiwelink")
+        self.assertIn("AT TIME ZONE 'Asia/Shanghai'", statement)
+        for day in (1, 3, 7, 14, 30):
+            self.assertIn(f"INTERVAL '{day} days'", statement)
+            self.assertIn(f"d{day}_rate", statement)
+        self.assertIn("ELSE NULL", statement)
+
+    async def test_value_rankings_are_source_priced_and_bounded(self) -> None:
+        from app.modules.operations.repository import (
+            get_operations_customer_breakdown,
+            get_operations_model_breakdown,
+        )
+
+        connection = _FakeConnection([{"model_name": "gpt"}, {"external_user_id": "7"}])
+        await get_operations_model_breakdown(
+            connection,
+            allowed_site_ids=("aigclink",),
+            segment="ordinary",
+            start_at=NOW,
+            end_at=NOW,
+        )
+        await get_operations_customer_breakdown(
+            connection,
+            allowed_site_ids=("aigclink",),
+            segment="ordinary",
+            start_at=NOW,
+            end_at=NOW,
+        )
+
+        model_statement, model_parameters = connection.calls[0]
+        customer_statement, customer_parameters = connection.calls[1]
+        self.assertIn("usage.model_name", model_statement)
+        self.assertIn("SUM(usage.token_count)", model_statement)
+        self.assertIn("SUM(usage.billed_amount_cny)", model_statement)
+        self.assertIn("NOT snapshot.is_internal", model_statement)
+        self.assertIn("revenue_share", model_statement)
+        self.assertIn("ORDER BY billed_amount_cny DESC", model_statement)
+        self.assertIn("snapshot.account_label", customer_statement)
+        self.assertIn("SUM(usage.billed_amount_cny)", customer_statement)
+        self.assertIn("NOT snapshot.is_internal", customer_statement)
+        self.assertIn("ORDER BY billed_amount_cny DESC", customer_statement)
+        self.assertEqual(model_parameters["limit"], 20)
+        self.assertEqual(customer_parameters["limit"], 20)
 
     async def test_all_user_facing_reads_require_bound_site_collections(self) -> None:
         from app.modules.operations import repository

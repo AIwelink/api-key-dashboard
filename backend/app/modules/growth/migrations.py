@@ -32,6 +32,7 @@ OPERATIONS_DOMAIN_TABLES = (
     "classification_tasks",
     "ops_hourly_stats",
     "ops_daily_stats",
+    "subscription_entitlements",
 )
 
 REQUIRED_DOMAIN_TABLES = INITIAL_DOMAIN_TABLES + OPERATIONS_DOMAIN_TABLES
@@ -623,7 +624,84 @@ INTERNAL_EMAIL_MIGRATION = Migration(
 )
 
 
-MIGRATIONS = (INITIAL_MIGRATION, OPERATIONS_MIGRATION, INTERNAL_EMAIL_MIGRATION)
+LIFECYCLE_METRICS_MIGRATION = Migration(
+    version="0004_operations_lifecycle_metrics",
+    description="Add lifecycle subscription and source-priced usage facts",
+    statements=(
+        "ALTER TABLE growth.usage_facts ADD COLUMN IF NOT EXISTS billed_amount_cny NUMERIC(30, 10) NOT NULL DEFAULT 0 CHECK (billed_amount_cny >= 0)",
+        "ALTER TABLE growth.usage_facts ADD COLUMN IF NOT EXISTS model_name TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE growth.usage_facts ADD COLUMN IF NOT EXISTS token_count BIGINT NOT NULL DEFAULT 0 CHECK (token_count >= 0)",
+        """
+        CREATE TABLE IF NOT EXISTS growth.subscription_entitlements (
+            subscription_entitlement_id UUID PRIMARY KEY,
+            site_id TEXT NOT NULL REFERENCES growth.sites(site_id),
+            external_user_id TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            source_record_id TEXT NOT NULL,
+            starts_at TIMESTAMPTZ NOT NULL,
+            ends_at TIMESTAMPTZ NOT NULL,
+            status TEXT NOT NULL,
+            source_updated_at TIMESTAMPTZ,
+            synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (site_id, source_type, source_record_id),
+            CHECK (ends_at > starts_at)
+        )
+        """.strip(),
+        """
+        CREATE INDEX IF NOT EXISTS growth_subscription_entitlements_user_window_idx
+        ON growth.subscription_entitlements (site_id, external_user_id, starts_at, ends_at)
+        """.strip(),
+        """
+        CREATE INDEX IF NOT EXISTS growth_usage_facts_model_time_idx
+        ON growth.usage_facts (site_id, model_name, occurred_at DESC)
+        """.strip(),
+    ),
+)
+
+
+SALE_CREDIT_CASH_MIGRATION = Migration(
+    version="0005_operations_sale_credit_without_cash",
+    description="Allow sale credit facts without verified cash income",
+    statements=(
+        """
+        DO $$
+        DECLARE
+            constraint_row RECORD;
+        BEGIN
+            FOR constraint_row IN
+                SELECT namespace.nspname AS schema_name,
+                       relation.relname AS table_name,
+                       constraint_entry.conname AS constraint_name
+                FROM pg_constraint AS constraint_entry
+                JOIN pg_class AS relation ON relation.oid = constraint_entry.conrelid
+                JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+                WHERE namespace.nspname = 'growth'
+                  AND relation.relname IN ('redemption_batches', 'balance_adjustment_requests')
+                  AND constraint_entry.contype = 'c'
+                  AND pg_get_constraintdef(constraint_entry.oid) LIKE '%purpose%<>%sale%'
+                  AND pg_get_constraintdef(constraint_entry.oid) LIKE '%cash_amount_cny%>%'
+            LOOP
+                EXECUTE format(
+                    'ALTER TABLE %I.%I DROP CONSTRAINT %I',
+                    constraint_row.schema_name,
+                    constraint_row.table_name,
+                    constraint_row.constraint_name
+                );
+            END LOOP;
+        END
+        $$
+        """.strip(),
+    ),
+)
+
+
+MIGRATIONS = (
+    INITIAL_MIGRATION,
+    OPERATIONS_MIGRATION,
+    INTERNAL_EMAIL_MIGRATION,
+    LIFECYCLE_METRICS_MIGRATION,
+    SALE_CREDIT_CASH_MIGRATION,
+)
 
 
 async def apply_pending_migrations(connection: Any) -> dict[str, Any]:
