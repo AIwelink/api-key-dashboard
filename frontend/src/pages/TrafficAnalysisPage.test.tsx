@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import { formatDateTime } from "../utils/format";
 import {
   TrafficAnalysisPage,
   TrafficAnalysisWorkspace,
@@ -101,6 +102,7 @@ const trackingLink: GrowthTrackingLink = {
   landing_path: "/register",
   extra_dimensions: {},
   status: "active",
+  created_at: "2026-08-12T09:30:00+08:00",
   campaign_name: campaign.name,
   channel_name: channel.name,
   site_name: site.site_name,
@@ -292,6 +294,8 @@ describe("traffic analysis configuration workspace", () => {
     expect(html).toContain(`href="${homepageUrl}"`);
     expect(html).toContain(`href="${apiUrl}"`);
     expect(html.indexOf(homepageUrl)).toBeLessThan(html.indexOf(apiUrl));
+    expect(html).toContain("创建时间");
+    expect(html).toContain(formatDateTime(trackingLink.created_at));
     expect(html).toContain("Claude API 入门第 3 篇");
     expect(html).not.toContain("点击人数");
     expect(html).not.toContain("注册率");
