@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { api } from "../api/client";
 import { GrowthCreateModal } from "../components/GrowthCreateModal";
-import { errorMessage } from "../utils/format";
+import { errorMessage, formatDateTime } from "../utils/format";
 import { TrafficOverview } from "./trafficAnalysis/TrafficOverview";
 
 
@@ -82,6 +82,7 @@ export type GrowthTrackingLink = {
   status: GrowthStatus;
   valid_from?: string | null;
   valid_until?: string | null;
+  created_at?: string | null;
   campaign_name?: string;
   channel_name?: string;
   site_name?: string;
@@ -1211,6 +1212,7 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
                       </div>
                     </div>
                     <span>{link.channel_name || "未命名渠道"} · {link.campaign_name || "未命名活动"} · {sourceTypeLabels[link.source_type]}</span>
+                    <span className="growth-link-created-at">创建时间：{formatDateTime(link.created_at)}</span>
                   </div>
                   <div className="growth-row-actions">
                     <button aria-label={`编辑推广链接 ${link.source_name}`} className="ghost compact-button" disabled={saving} type="button" onClick={() => onOpenLinkEdit(link)}>编辑</button>

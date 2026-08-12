@@ -524,6 +524,11 @@
   font-size: 11px;
 }
 
+.growth-link-created-at {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .growth-workspace-page .status-pill {
   display: inline-flex;
   align-items: center;
