@@ -44,6 +44,10 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         priority: int = 250,
         concurrency: int = 20,
         used: float = 20,
+        created_at: str | None = None,
+        status: str = "active",
+        schedulable: bool | None = True,
+        error_message: str | None = None,
     ) -> dict[str, object]:
         return {
             "remote_account_id": remote_id,
@@ -51,12 +55,26 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             "priority": priority,
             "concurrency": concurrency,
             "group_ids": group_ids or [3],
+            "created_at": created_at
+            or (self.now + timedelta(seconds=remote_id)).isoformat(),
+            "status": status,
+            "schedulable": schedulable,
+            "error_message": error_message,
             "usage_snapshot": {
                 "codex_7d_used_percent": used,
                 "codex_7d_reset_at": (self.now + timedelta(days=3)).isoformat(),
                 "codex_usage_synced_at": self.now.isoformat(),
             },
         }
+
+    @staticmethod
+    def bulk_targets(client: SimpleNamespace) -> dict[int, dict[str, object]]:
+        targets: dict[int, dict[str, object]] = {}
+        for call in client.bulk_update_accounts_runtime.await_args_list:
+            account_ids, payload = call.args
+            for account_id in account_ids:
+                targets[int(account_id)] = payload
+        return targets
 
     def db(
         self,
@@ -138,7 +156,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         client.get_account.assert_awaited_once_with(7)
         client.bulk_update_accounts_runtime.assert_awaited_once_with(
             [7],
-            {"priority": 250, "concurrency": 30, "group_ids": [3, 4]},
+            {"priority": 200, "concurrency": 30, "group_ids": [3, 4]},
         )
         self.assertEqual(result["scanned"], 1)
         self.assertEqual(result["changed"], 1)
@@ -151,7 +169,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(release_filter["_id"], "smart-scheduling:api-5001")
         self.assertTrue(release_filter["owner"])
 
-    async def test_accounts_with_same_target_and_groups_share_one_bulk_update(self) -> None:
+    async def test_accounts_with_same_groups_receive_distinct_queue_priorities(self) -> None:
         client = SimpleNamespace(
             get_account=AsyncMock(
                 side_effect=[
@@ -160,12 +178,10 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
                 ]
             ),
             bulk_update_accounts_runtime=AsyncMock(
-                return_value={
-                    "success": 2,
-                    "failed": 0,
-                    "success_ids": [7, 8],
-                    "failed_ids": [],
-                }
+                side_effect=[
+                    {"success": 1, "failed": 0, "success_ids": [7], "failed_ids": []},
+                    {"success": 1, "failed": 0, "success_ids": [8], "failed_ids": []},
+                ]
             ),
         )
 
@@ -185,9 +201,12 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             now=self.now,
         )
 
-        client.bulk_update_accounts_runtime.assert_awaited_once_with(
-            [7, 8],
-            {"priority": 250, "concurrency": 30, "group_ids": [3]},
+        self.assertEqual(
+            [call.args for call in client.bulk_update_accounts_runtime.await_args_list],
+            [
+                ([7], {"priority": 200, "concurrency": 30, "group_ids": [3]}),
+                ([8], {"priority": 201, "concurrency": 30, "group_ids": [3]}),
+            ],
         )
         self.assertEqual(result["changed"], 2)
         self.assertEqual(result["failed"], 0)
@@ -226,12 +245,277 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [call.args for call in client.bulk_update_accounts_runtime.await_args_list],
             [
-                ([7], {"priority": 250, "concurrency": 30, "group_ids": [3]}),
-                ([8], {"priority": 250, "concurrency": 30, "group_ids": [4]}),
+                ([7], {"priority": 200, "concurrency": 30, "group_ids": [3]}),
+                ([8], {"priority": 201, "concurrency": 30, "group_ids": [4]}),
             ],
         )
         self.assertEqual(result["changed"], 2)
         self.assertEqual(result["failed"], 0)
+
+    async def test_site_wide_team_queue_spans_enabled_groups(self) -> None:
+        client = SimpleNamespace(
+            get_account=AsyncMock(
+                side_effect=[
+                    {"id": 7, "priority": 50, "concurrency": 20, "group_ids": [3]},
+                    {"id": 8, "priority": 51, "concurrency": 20, "group_ids": [4]},
+                ]
+            ),
+            bulk_update_accounts_runtime=AsyncMock(
+                side_effect=[
+                    {"success_ids": [7], "failed_ids": []},
+                    {"success_ids": [8], "failed_ids": []},
+                ]
+            ),
+        )
+        accounts = [
+            self.account(
+                7,
+                account_type="team",
+                group_ids=[3],
+                created_at="2026-01-02T00:00:00+00:00",
+                priority=50,
+            ),
+            self.account(
+                8,
+                account_type="team",
+                group_ids=[4],
+                created_at="2026-01-01T00:00:00+00:00",
+                priority=51,
+            ),
+        ]
+
+        result = await run_smart_scheduling(
+            self.db(),
+            site=self.site(),
+            accounts=accounts,
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": False,
+                },
+                4: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": False,
+                },
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=client,
+            now=self.now,
+        )
+
+        self.assertEqual(
+            self.bulk_targets(client),
+            {
+                8: {"priority": 50, "concurrency": 30, "group_ids": [4]},
+                7: {"priority": 51, "concurrency": 30, "group_ids": [3]},
+            },
+        )
+        self.assertEqual(result["changed"], 2)
+
+    async def test_unavailable_oldest_moves_back_and_recovery_returns_it_to_head(self) -> None:
+        oldest = self.account(
+            1,
+            account_type="team",
+            created_at="2026-01-01T00:00:00+00:00",
+            priority=50,
+            error_message="API returned 429",
+        )
+        newer = self.account(
+            2,
+            account_type="team",
+            created_at="2026-01-02T00:00:00+00:00",
+            priority=51,
+        )
+        first_client = SimpleNamespace(
+            get_account=AsyncMock(
+                side_effect=[
+                    {"id": 1, "priority": 50, "concurrency": 20, "group_ids": [3]},
+                    {"id": 2, "priority": 51, "concurrency": 20, "group_ids": [3]},
+                ]
+            ),
+            bulk_update_accounts_runtime=AsyncMock(
+                side_effect=[
+                    {"success_ids": [1], "failed_ids": []},
+                    {"success_ids": [2], "failed_ids": []},
+                ]
+            ),
+        )
+
+        first = await run_smart_scheduling(
+            self.db(),
+            site=self.site(),
+            accounts=[oldest, newer],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": False,
+                }
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=first_client,
+            now=self.now,
+        )
+
+        self.assertEqual(
+            self.bulk_targets(first_client),
+            {
+                2: {"priority": 50, "concurrency": 30, "group_ids": [3]},
+                1: {"priority": 51, "concurrency": 30, "group_ids": [3]},
+            },
+        )
+        self.assertEqual(first["changed"], 2)
+
+        recovered_oldest = dict(oldest)
+        recovered_oldest.update(
+            {"priority": 51, "concurrency": 30, "error_message": None}
+        )
+        advanced_newer = dict(newer)
+        advanced_newer.update({"priority": 50, "concurrency": 30})
+        second_client = SimpleNamespace(
+            get_account=AsyncMock(
+                side_effect=[
+                    {"id": 1, "priority": 51, "concurrency": 30, "group_ids": [3]},
+                    {"id": 2, "priority": 50, "concurrency": 30, "group_ids": [3]},
+                ]
+            ),
+            bulk_update_accounts_runtime=AsyncMock(
+                side_effect=[
+                    {"success_ids": [1], "failed_ids": []},
+                    {"success_ids": [2], "failed_ids": []},
+                ]
+            ),
+        )
+
+        second = await run_smart_scheduling(
+            self.db(),
+            site=self.site(),
+            accounts=[recovered_oldest, advanced_newer],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": False,
+                }
+            },
+            probe_run_id="probe-2",
+            rules=self.rules,
+            client=second_client,
+            now=self.now,
+        )
+
+        self.assertEqual(
+            self.bulk_targets(second_client),
+            {
+                1: {"priority": 50, "concurrency": 30, "group_ids": [3]},
+                2: {"priority": 51, "concurrency": 30, "group_ids": [3]},
+            },
+        )
+        self.assertEqual(second["changed"], 2)
+
+    async def test_extreme_account_does_not_consume_team_normal_slot(self) -> None:
+        extreme = self.account(
+            1,
+            account_type="team",
+            created_at="2026-01-01T00:00:00+00:00",
+            priority=10,
+            concurrency=100,
+            used=90,
+        )
+        normal = self.account(
+            2,
+            account_type="team",
+            created_at="2026-01-02T00:00:00+00:00",
+            priority=51,
+        )
+        client = SimpleNamespace(
+            get_account=AsyncMock(
+                return_value={
+                    "id": 2,
+                    "priority": 51,
+                    "concurrency": 20,
+                    "group_ids": [3],
+                }
+            ),
+            bulk_update_accounts_runtime=AsyncMock(
+                return_value={"success_ids": [2], "failed_ids": []}
+            ),
+        )
+
+        result = await run_smart_scheduling(
+            self.db(),
+            site=self.site(),
+            accounts=[extreme, normal],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": True,
+                }
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=client,
+            now=self.now,
+        )
+
+        client.get_account.assert_awaited_once_with(2)
+        client.bulk_update_accounts_runtime.assert_awaited_once_with(
+            [2], {"priority": 50, "concurrency": 30, "group_ids": [3]}
+        )
+        self.assertEqual(result["changed"], 1)
+
+    async def test_queue_metadata_is_persisted_in_state_and_outcome(self) -> None:
+        client = SimpleNamespace(
+            get_account=AsyncMock(
+                return_value={
+                    "id": 1,
+                    "priority": 51,
+                    "concurrency": 20,
+                    "group_ids": [3],
+                }
+            ),
+            bulk_update_accounts_runtime=AsyncMock(
+                return_value={"success_ids": [1], "failed_ids": []}
+            ),
+        )
+        db = self.db()
+
+        await run_smart_scheduling(
+            db,
+            site=self.site(),
+            accounts=[
+                self.account(
+                    1,
+                    account_type="team",
+                    created_at="2026-01-01T00:00:00+00:00",
+                    priority=51,
+                )
+            ],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": False,
+                }
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=client,
+            now=self.now,
+        )
+
+        state_update = (
+            db.sub2api_smart_scheduling_states.update_one.await_args.args[1]["$set"]
+        )
+        outcome_update = (
+            db.sub2api_smart_scheduling_outcomes.update_one.await_args.args[1]["$set"]
+        )
+        self.assertEqual(state_update["queue_partition"], "usable")
+        self.assertEqual(state_update["queue_index"], 0)
+        self.assertEqual(state_update["queue_priority"], 50)
+        self.assertEqual(
+            outcome_update["queue_created_at"],
+            "2026-01-01T00:00:00+00:00",
+        )
 
     async def test_multi_group_flags_are_aggregated_by_enabled_strategy(self) -> None:
         account = self.account(7, group_ids=[3], used=90)
@@ -310,8 +594,11 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         client.get_account.assert_awaited_once_with(7)
-        client.bulk_update_accounts_runtime.assert_not_awaited()
-        self.assertEqual(result["unchanged"], 1)
+        client.bulk_update_accounts_runtime.assert_awaited_once_with(
+            [7],
+            {"priority": 200, "concurrency": 30, "group_ids": [3]},
+        )
+        self.assertEqual(result["changed"], 1)
 
     async def test_default_off_does_not_acquire_lease_or_call_remote_api(self) -> None:
         db = self.db()
@@ -405,7 +692,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         client.get_account.assert_awaited_once_with(7)
         client.bulk_update_accounts_runtime.assert_awaited_once_with(
             [7],
-            {"priority": 250, "concurrency": 30, "group_ids": [3]},
+            {"priority": 200, "concurrency": 30, "group_ids": [3]},
         )
         self.assertEqual(result["changed"], 1)
 
@@ -418,16 +705,22 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
                 ]
             ),
             bulk_update_accounts_runtime=AsyncMock(
-                return_value={
-                    "success": 1,
-                    "failed": 1,
-                    "success_ids": [8],
-                    "failed_ids": [7],
-                    "results": [
-                        {"account_id": 7, "success": False},
-                        {"account_id": 8, "success": True},
-                    ],
-                }
+                side_effect=[
+                    {
+                        "success": 0,
+                        "failed": 1,
+                        "success_ids": [],
+                        "failed_ids": [7],
+                        "results": [{"account_id": 7, "success": False}],
+                    },
+                    {
+                        "success": 1,
+                        "failed": 0,
+                        "success_ids": [8],
+                        "failed_ids": [],
+                        "results": [{"account_id": 8, "success": True}],
+                    },
+                ]
             ),
         )
         db = self.db()
@@ -450,9 +743,12 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["failed"], 1)
         self.assertEqual(result["changed"], 1)
-        client.bulk_update_accounts_runtime.assert_awaited_once_with(
-            [7, 8],
-            {"priority": 250, "concurrency": 30, "group_ids": [3]},
+        self.assertEqual(
+            [call.args for call in client.bulk_update_accounts_runtime.await_args_list],
+            [
+                ([7], {"priority": 200, "concurrency": 30, "group_ids": [3]}),
+                ([8], {"priority": 201, "concurrency": 30, "group_ids": [3]}),
+            ],
         )
         first_outcome = (
             db.sub2api_smart_scheduling_outcomes.update_one.await_args_list[0]
@@ -788,7 +1084,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
 
         client.bulk_update_accounts_runtime.assert_awaited_once_with(
             [7],
-            {"priority": 191, "concurrency": 30, "group_ids": [3]},
+            {"priority": 200, "concurrency": 30, "group_ids": [3]},
         )
         self.assertEqual(result["changed"], 1)
         state = (

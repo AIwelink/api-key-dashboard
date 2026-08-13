@@ -11,6 +11,7 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from app.modules.sub2api.smart_scheduling import (
+    build_type_priority_queue,
     default_smart_scheduling_rules,
     evaluate_account,
     normalize_smart_scheduling_rules,
@@ -274,6 +275,17 @@ async def _run_smart_scheduling_locked(
             item["remote_account_id"] for item in eligible.values()
         ],
     )
+    queue_plan = build_type_priority_queue(
+        [
+            {
+                **item,
+                "state": states.get(str(item["remote_account_id"])),
+            }
+            for item in eligible.values()
+        ],
+        rules=effective_rules,
+        now=now,
+    )
     effective_client = client
     pending_updates: list[dict[str, Any]] = []
 
@@ -302,13 +314,18 @@ async def _run_smart_scheduling_locked(
         account = item["account"]
         remote_account_id = item["remote_account_id"]
         state = states.get(str(remote_account_id))
-        decision = evaluate_account(
-            account=account,
-            rules=effective_rules,
-            type_priority_enabled=item["type_priority_enabled"],
-            quota_acceleration_enabled=item["quota_acceleration_enabled"],
-            state=state,
-            now=now,
+        queue_entry = queue_plan.get(str(remote_account_id))
+        decision = _with_queue_metadata(
+            evaluate_account(
+                account=account,
+                rules=effective_rules,
+                type_priority_enabled=item["type_priority_enabled"],
+                quota_acceleration_enabled=item["quota_acceleration_enabled"],
+                state=state,
+                now=now,
+                normal_priority=(queue_entry or {}).get("priority"),
+            ),
+            queue_entry,
         )
         before = _runtime_values(account)
         outcome_status = decision["status"]
@@ -335,13 +352,17 @@ async def _run_smart_scheduling_locked(
                     "concurrency": latest.get("concurrency"),
                 }
                 before = _runtime_values(latest_account)
-                decision = evaluate_account(
-                    account=latest_account,
-                    rules=effective_rules,
-                    type_priority_enabled=item["type_priority_enabled"],
-                    quota_acceleration_enabled=item["quota_acceleration_enabled"],
-                    state=state,
-                    now=now,
+                decision = _with_queue_metadata(
+                    evaluate_account(
+                        account=latest_account,
+                        rules=effective_rules,
+                        type_priority_enabled=item["type_priority_enabled"],
+                        quota_acceleration_enabled=item["quota_acceleration_enabled"],
+                        state=state,
+                        now=now,
+                        normal_priority=(queue_entry or {}).get("priority"),
+                    ),
+                    queue_entry,
                 )
             if decision["status"] == "change":
                 pending_updates.append(
@@ -613,6 +634,10 @@ async def _persist_scheduler_state(
         "seven_day_used_percent": decision.get("seven_day_used_percent"),
         "seven_day_reset_at": decision.get("seven_day_reset_at"),
         "rate_limit_detected_at": decision.get("rate_limit_detected_at"),
+        "queue_partition": decision.get("queue_partition"),
+        "queue_index": decision.get("queue_index"),
+        "queue_priority": decision.get("queue_priority"),
+        "queue_created_at": decision.get("queue_created_at"),
         "last_probe_run_id": probe_run_id,
         "last_run_id": run_id,
         "last_evaluated_at": evaluated_at,
@@ -663,6 +688,10 @@ async def _persist_outcome(
                 ),
                 "seven_day_reset_at": decision.get("seven_day_reset_at"),
                 "quota_fresh": decision.get("quota_fresh"),
+                "queue_partition": decision.get("queue_partition"),
+                "queue_index": decision.get("queue_index"),
+                "queue_priority": decision.get("queue_priority"),
+                "queue_created_at": decision.get("queue_created_at"),
                 "before": before,
                 "target": decision.get("target"),
                 "status": status,
@@ -676,6 +705,20 @@ async def _persist_outcome(
         },
         upsert=True,
     )
+
+
+def _with_queue_metadata(
+    decision: dict[str, Any],
+    queue_entry: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not queue_entry:
+        return decision
+    return decision | {
+        "queue_partition": queue_entry["queue_partition"],
+        "queue_index": queue_entry["queue_index"],
+        "queue_priority": queue_entry["priority"],
+        "queue_created_at": queue_entry["queue_created_at"],
+    }
 
 
 async def _build_site_client(site: dict[str, Any]) -> Sub2ApiClient:
