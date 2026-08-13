@@ -695,12 +695,50 @@ SALE_CREDIT_CASH_MIGRATION = Migration(
 )
 
 
+OPERATIONS_SYNC_SINGLE_FLIGHT_MIGRATION = Migration(
+    version="0006_operations_sync_single_flight",
+    description="Enforce one active operations sync per site",
+    statements=(
+        "LOCK TABLE growth.sync_runs IN SHARE ROW EXCLUSIVE MODE",
+        """
+        WITH ranked AS (
+            SELECT run_id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY site_id
+                       ORDER BY started_at DESC, created_at DESC, run_id DESC
+                   ) AS active_rank
+            FROM growth.sync_runs
+            WHERE stream_name = 'operations'
+              AND status = 'running'
+        )
+        UPDATE growth.sync_runs
+        SET status = 'failed',
+            finished_at = NOW(),
+            error_code = 'SyncInterrupted',
+            error_message = 'Operations sync was interrupted before completion'
+        FROM ranked
+        WHERE growth.sync_runs.run_id = ranked.run_id
+          AND (
+              ranked.active_rank > 1
+              OR growth.sync_runs.started_at < NOW() - INTERVAL '15 minutes'
+          )
+        """.strip(),
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS growth_operations_sync_running_site_unique_idx
+        ON growth.sync_runs (site_id)
+        WHERE stream_name = 'operations' AND status = 'running'
+        """.strip(),
+    ),
+)
+
+
 MIGRATIONS = (
     INITIAL_MIGRATION,
     OPERATIONS_MIGRATION,
     INTERNAL_EMAIL_MIGRATION,
     LIFECYCLE_METRICS_MIGRATION,
     SALE_CREDIT_CASH_MIGRATION,
+    OPERATIONS_SYNC_SINGLE_FLIGHT_MIGRATION,
 )
 
 

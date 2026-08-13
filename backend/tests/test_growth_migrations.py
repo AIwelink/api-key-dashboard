@@ -85,6 +85,21 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("%cash_amount_cny%>%", sql)
         self.assertNotIn("purpose = 'sale' OR cash_amount_cny = 0", sql)
 
+    def test_operations_sync_single_flight_migration_closes_legacy_runs(self) -> None:
+        from app.modules.growth.migrations import OPERATIONS_SYNC_SINGLE_FLIGHT_MIGRATION
+
+        sql = "\n".join(OPERATIONS_SYNC_SINGLE_FLIGHT_MIGRATION.statements)
+
+        self.assertIn("LOCK TABLE growth.sync_runs", sql)
+        self.assertIn("status = 'failed'", sql)
+        self.assertIn("error_code = 'SyncInterrupted'", sql)
+        self.assertIn("ROW_NUMBER() OVER", sql)
+        self.assertIn("ranked.active_rank > 1", sql)
+        self.assertIn("INTERVAL '15 minutes'", sql)
+        self.assertIn("CREATE UNIQUE INDEX", sql)
+        self.assertIn("growth_operations_sync_running_site_unique_idx", sql)
+        self.assertIn("WHERE stream_name = 'operations' AND status = 'running'", sql)
+
     def test_required_tables_include_initial_and_operations_domains(self) -> None:
         from app.modules.growth.migrations import (
             INITIAL_DOMAIN_TABLES,
@@ -110,6 +125,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0003_operations_internal_email",
                 "0004_operations_lifecycle_metrics",
                 "0005_operations_sale_credit_without_cash",
+                "0006_operations_sync_single_flight",
             ],
         )
 
@@ -128,9 +144,10 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0003_operations_internal_email",
                 "0004_operations_lifecycle_metrics",
                 "0005_operations_sale_credit_without_cash",
+                "0006_operations_sync_single_flight",
             ],
         )
-        self.assertEqual(result["current_version"], "0005_operations_sale_credit_without_cash")
+        self.assertEqual(result["current_version"], "0006_operations_sync_single_flight")
         self.assertEqual(result["pending_versions"], [])
         executed_sql = "\n".join(connection.statements)
         for migration in MIGRATIONS:
@@ -148,13 +165,14 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0003_operations_internal_email",
                 "0004_operations_lifecycle_metrics",
                 "0005_operations_sale_credit_without_cash",
+                "0006_operations_sync_single_flight",
             ]
         )
 
         result = await apply_pending_migrations(connection)
 
         self.assertEqual(result["applied_versions"], [])
-        self.assertEqual(result["current_version"], "0005_operations_sale_credit_without_cash")
+        self.assertEqual(result["current_version"], "0006_operations_sync_single_flight")
         for migration in MIGRATIONS:
             for statement in migration.statements:
                 self.assertNotIn(statement, connection.statements)
@@ -176,6 +194,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0003_operations_internal_email",
                 "0004_operations_lifecycle_metrics",
                 "0005_operations_sale_credit_without_cash",
+                "0006_operations_sync_single_flight",
             ],
         )
         self.assertEqual(result["domain_table_count"], 0)
@@ -190,6 +209,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0003_operations_internal_email",
                 "0004_operations_lifecycle_metrics",
                 "0005_operations_sale_credit_without_cash",
+                "0006_operations_sync_single_flight",
             ],
             ledger_exists=True,
             domain_table_count=23,
@@ -198,7 +218,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
         result = await inspect_growth_schema(connection)
 
         self.assertTrue(result["initialized"])
-        self.assertEqual(result["current_version"], "0005_operations_sale_credit_without_cash")
+        self.assertEqual(result["current_version"], "0006_operations_sync_single_flight")
         self.assertEqual(result["pending_versions"], [])
         self.assertEqual(result["domain_table_count"], 23)
 

@@ -32,6 +32,8 @@ OPERATIONS_RECONCILIATION_WINDOW = timedelta(hours=48)
 OPERATIONS_INITIAL_SYNC_WINDOW = timedelta(days=30)
 OPERATIONS_AGGREGATE_VERSION = 3
 OPERATIONS_AGGREGATE_HISTORY_START = datetime(1970, 1, 1, tzinfo=UTC)
+OPERATIONS_SYNC_TIMEOUT_SECONDS = 600
+OPERATIONS_SYNC_STALE_AFTER = timedelta(minutes=15)
 SOURCE_DATABASE_TIMEOUT_SECONDS = 30
 NEWAPI_DEFAULT_QUOTA_PER_UNIT = Decimal("500000")
 OPERATIONS_SYNC_ACTOR = {
@@ -136,11 +138,14 @@ async def sync_adapter_records(
     )
     credits = await adapter.read_credit_events(connection=source_connection, since=credit_since)
     entitlements = await adapter.read_subscription_entitlements(connection=source_connection)
-    rates = await repository.list_conversion_rates(
-        growth_connection,
-        allowed_site_ids=(adapter.site_id,),
-    )
-    converted_usage = apply_usage_conversion_rates(usage, rates)
+    if adapter.site_id == "aigclink":
+        converted_usage = usage
+    else:
+        rates = await repository.list_conversion_rates(
+            growth_connection,
+            allowed_site_ids=(adapter.site_id,),
+        )
+        converted_usage = apply_usage_conversion_rates(usage, rates)
     selected_aggregate_start = min(
         [
             since,
@@ -251,7 +256,8 @@ async def run_operations_sync_cycle(
                 site_id=site_id,
                 trigger_type="schedule",
             )
-            results.append({"site_id": site_id, "status": "succeeded", "result": result})
+            result_status = str(result.get("status") or "succeeded")
+            results.append({"site_id": site_id, "status": result_status, "result": result})
         except Exception as exc:  # One source outage must not stop other sites.
             logger.exception("operations_sync_site_failed site_id=%s", site_id)
             results.append(
@@ -313,6 +319,7 @@ async def sync_site_operations(
     cursor_loader: Callable[..., Awaitable[dict[str, Any]]] = repository.get_operations_sync_cursor,
     run_starter: Callable[..., Awaitable[dict[str, Any]]] = repository.start_operations_sync_run,
     run_finisher: Callable[..., Awaitable[dict[str, Any]]] = repository.finish_operations_sync_run,
+    sync_timeout_seconds: float = OPERATIONS_SYNC_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     current_time = now or datetime.now(UTC)
     site = await site_loader(mongo_db, site_id, include_api_key=True)
@@ -348,57 +355,73 @@ async def sync_site_operations(
             adapter_name=client_type,
             trigger_type=trigger_type,
             started_at=current_time,
+            stale_after=OPERATIONS_SYNC_STALE_AFTER,
         )
+    if not started:
+        return {
+            "site_id": site_id,
+            "status": "skipped",
+            "reason": "already_running",
+        }
     run_id = UUID(str(started["run_id"]))
 
     try:
-        async with selected_source_factory(site) as source:
-            async with growth_connection_factory(mongo_db, write=True) as connection:
-                counts = await records_sync(
-                    adapter=adapter,
-                    source_connection=source,
-                    growth_connection=connection,
-                    since=since,
-                    now=current_time,
-                    aggregate_start=aggregate_start,
-                )
+        async with asyncio.timeout(sync_timeout_seconds):
+            async with selected_source_factory(site) as source:
+                async with growth_connection_factory(mongo_db, write=True) as connection:
+                    counts = await records_sync(
+                        adapter=adapter,
+                        source_connection=source,
+                        growth_connection=connection,
+                        since=since,
+                        now=current_time,
+                        aggregate_start=aggregate_start,
+                    )
             operations_response_cache.invalidate(site_id=site_id)
-    except Exception as exc:
+            finished_at = datetime.now(UTC) if now is None else current_time
+            async with growth_connection_factory(mongo_db, write=True) as connection:
+                finished = await run_finisher(
+                    connection,
+                    run_id=run_id,
+                    site_id=site_id,
+                    adapter_name=client_type,
+                    status="succeeded",
+                    finished_at=finished_at,
+                    rows_scanned=counts.get("rows_scanned", 0),
+                    rows_upserted=counts.get("rows_upserted", 0),
+                    aggregate_version=OPERATIONS_AGGREGATE_VERSION,
+                )
+                if not finished:
+                    raise RuntimeError("operations sync run is no longer active")
+    except (Exception, asyncio.CancelledError) as exc:
         database_type = "mysql" if client_type == "newapi" else "postgresql"
         error_message = redact_sql_error(
             exc,
             str(site.get("sql_dsn") or ""),
             database_type,
         )
-        async with growth_connection_factory(mongo_db, write=True) as connection:
-            await run_finisher(
-                connection,
-                run_id=run_id,
-                site_id=site_id,
-                adapter_name=client_type,
-                status="failed",
-                finished_at=datetime.now(UTC) if now is None else current_time,
-                rows_scanned=0,
-                rows_upserted=0,
-                aggregate_version=OPERATIONS_AGGREGATE_VERSION,
-                error_code=exc.__class__.__name__,
-                error_message=error_message,
+        try:
+            async with growth_connection_factory(mongo_db, write=True) as connection:
+                await run_finisher(
+                    connection,
+                    run_id=run_id,
+                    site_id=site_id,
+                    adapter_name=client_type,
+                    status="failed",
+                    finished_at=datetime.now(UTC) if now is None else current_time,
+                    rows_scanned=0,
+                    rows_upserted=0,
+                    aggregate_version=OPERATIONS_AGGREGATE_VERSION,
+                    error_code=exc.__class__.__name__,
+                    error_message=error_message,
+                )
+        except Exception:
+            logger.exception(
+                "operations_sync_failure_finalize_failed site_id=%s run_id=%s",
+                site_id,
+                run_id,
             )
         raise
-
-    finished_at = datetime.now(UTC) if now is None else current_time
-    async with growth_connection_factory(mongo_db, write=True) as connection:
-        await run_finisher(
-            connection,
-            run_id=run_id,
-            site_id=site_id,
-            adapter_name=client_type,
-            status="succeeded",
-            finished_at=finished_at,
-            rows_scanned=counts.get("rows_scanned", 0),
-            rows_upserted=counts.get("rows_upserted", 0),
-            aggregate_version=OPERATIONS_AGGREGATE_VERSION,
-        )
     return {
         "site_id": site_id,
         "run_id": str(run_id),
