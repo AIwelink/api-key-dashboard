@@ -1,5 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+import { api } from "../api/client";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 
 import {
   OperationsManagementPage,
@@ -17,6 +20,8 @@ import {
   operationsIncomeLabel,
   orderOperationsSites,
   paymentRate,
+  shouldAutoRefreshOperationsOverview,
+  shouldApplyOperationsOverviewResponse,
   shouldApplyRedemptionReveal,
   supportsSafeRedemptionDeletion,
   shouldApplyRedemptionResponse,
@@ -27,6 +32,13 @@ import {
   redemptionSubmitDisabled,
 } from "./OperationsManagementPage";
 import type { OperationsSiteId } from "../types";
+
+
+vi.mock("../api/client", () => ({ api: vi.fn() }));
+vi.mock("../hooks/usePageAutoRefresh", () => ({ usePageAutoRefresh: vi.fn() }));
+
+const apiMock = vi.mocked(api);
+const usePageAutoRefreshMock = vi.mocked(usePageAutoRefresh);
 
 
 const props = {
@@ -87,6 +99,83 @@ describe("operations management workspace", () => {
     expect(buildOperationsQuery({ siteId: "aiwelink", segment: "internal", range: "30d" })).toBe(
       "?site_id=aiwelink&segment=internal&range=30d",
     );
+  });
+
+  it("auto refreshes only an idle valid overview", () => {
+    expect(shouldAutoRefreshOperationsOverview({
+      tab: "overview",
+      hasSiteAccess: true,
+      queryIsValid: true,
+      busy: false,
+    })).toBe(true);
+    expect(shouldAutoRefreshOperationsOverview({
+      tab: "credits",
+      hasSiteAccess: true,
+      queryIsValid: true,
+      busy: false,
+    })).toBe(false);
+    expect(shouldAutoRefreshOperationsOverview({
+      tab: "overview",
+      hasSiteAccess: false,
+      queryIsValid: true,
+      busy: false,
+    })).toBe(false);
+    expect(shouldAutoRefreshOperationsOverview({
+      tab: "overview",
+      hasSiteAccess: true,
+      queryIsValid: false,
+      busy: false,
+    })).toBe(false);
+    expect(shouldAutoRefreshOperationsOverview({
+      tab: "overview",
+      hasSiteAccess: true,
+      queryIsValid: true,
+      busy: true,
+    })).toBe(false);
+  });
+
+  it("rejects stale overview responses after a newer request or query change", () => {
+    expect(shouldApplyOperationsOverviewResponse(2, 2, "query-a", "query-a")).toBe(true);
+    expect(shouldApplyOperationsOverviewResponse(1, 2, "query-a", "query-a")).toBe(false);
+    expect(shouldApplyOperationsOverviewResponse(2, 2, "query-a", "query-b")).toBe(false);
+  });
+
+  it("wires the shared scheduler to all overview data requests", async () => {
+    apiMock.mockImplementation(async (path: string) => {
+      if (path.startsWith("/operations/summary")) {
+        return { summary: {}, previous_summary: {}, site_breakdown: [] };
+      }
+      if (path.startsWith("/operations/trends")) return { items: [], total: 0 };
+      if (path.startsWith("/operations/lifecycle")) {
+        return {
+          summary: {},
+          retention: [],
+          site_breakdown: [],
+          model_breakdown: [],
+          customer_breakdown: [],
+          generated_at: "2026-08-13T06:00:00Z",
+        };
+      }
+      if (path === "/operations/sync-status") return { items: [], total: 0 };
+      throw new Error(`Unexpected path: ${path}`);
+    });
+    usePageAutoRefreshMock.mockClear();
+
+    renderToStaticMarkup(<OperationsManagementPage {...props} />);
+    const [refresh, options] = usePageAutoRefreshMock.mock.calls.at(-1) || [];
+
+    expect(options).toMatchObject({ enabled: true });
+    await refresh?.();
+    expect(apiMock.mock.calls.map(([path]) => path)).toEqual([
+      "/operations/summary?site_id=aiwelink&segment=ordinary&range=7d",
+      "/operations/trends?site_id=aiwelink&segment=ordinary&range=7d",
+      "/operations/lifecycle?site_id=aiwelink&segment=ordinary&range=7d",
+      "/operations/sync-status",
+    ]);
+
+    usePageAutoRefreshMock.mockClear();
+    renderToStaticMarkup(<OperationsManagementPage {...props} initialTab="credits" />);
+    expect(usePageAutoRefreshMock.mock.calls.at(-1)?.[1]).toMatchObject({ enabled: false });
   });
 
   it("limits write controls to owner and admin", () => {
