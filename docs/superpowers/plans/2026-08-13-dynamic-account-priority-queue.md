@@ -16,7 +16,7 @@
 - Modify: `backend/app/modules/sub2api/smart_scheduling.py`
 - Modify: `backend/tests/test_smart_scheduling.py`
 
-- [ ] **Step 1: Add failing queue-planner tests**
+- [x] **Step 1: Add failing queue-planner tests**
 
 Import `build_type_priority_queue` and add a helper returning entries with `remote_account_id`, `account`, `state`, `type_priority_enabled`, and `quota_acceleration_enabled`. Add tests equivalent to:
 
@@ -64,7 +64,7 @@ Also cover:
 - `extreme` and initial `rate_limit_pending` entries do not consume normal slots;
 - cooldown, disabled, unschedulable, 403, error, and 429 entries occupy the temporarily-unusable tail.
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 ```powershell
 cd backend
@@ -73,7 +73,7 @@ cd backend
 
 Expected: import/test failure because `build_type_priority_queue` does not exist.
 
-- [ ] **Step 3: Implement the planner**
+- [x] **Step 3: Implement the planner**
 
 In `smart_scheduling.py`:
 
@@ -104,7 +104,7 @@ Add helpers for usability and stable ID/time ordering. Do not mutate input entri
 
 Extend `evaluate_account` with `normal_priority: int | None = None`. All normal, recovery, and cooldown targets use `normal_priority` when provided, otherwise retain `automatic_priority` as a compatibility fallback. Extreme and initial 429 pending targets always retain the extreme priority.
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest tests.test_smart_scheduling -v
@@ -112,7 +112,7 @@ Extend `evaluate_account` with `normal_priority: int | None = None`. All normal,
 
 Expected: all pure scheduling tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add backend/app/modules/sub2api/smart_scheduling.py backend/tests/test_smart_scheduling.py
@@ -125,7 +125,7 @@ git commit -m "feat: add chronological account priority queues"
 - Modify: `backend/app/modules/sub2api/smart_scheduling_service.py`
 - Modify: `backend/tests/test_smart_scheduling_service.py`
 
-- [ ] **Step 1: Add failing service tests**
+- [x] **Step 1: Add failing service tests**
 
 Extend the service test account helper with `created_at`, `status`, `schedulable`, and `error_message`. Add tests that run `run_smart_scheduling` and assert:
 
@@ -164,7 +164,7 @@ self.assertEqual(
 
 Update existing expectations that intentionally preserved manual values such as `250`; with type priority enabled they now expect the calculated queue value, normally `200` for the first plus account. Tests for quota-only groups continue expecting no normal queue rewrite.
 
-- [ ] **Step 2: Run service tests to verify RED**
+- [x] **Step 2: Run service tests to verify RED**
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest tests.test_smart_scheduling_service -v
@@ -172,7 +172,7 @@ Update existing expectations that intentionally preserved manual values such as 
 
 Expected: new and changed expectations fail because the service still uses fixed/manual normal priorities.
 
-- [ ] **Step 3: Integrate the planner**
+- [x] **Step 3: Integrate the planner**
 
 In `_run_smart_scheduling_locked`, build queue entries after `_states_for_accounts` and call the planner once. Retrieve each account's queue entry and use:
 
@@ -210,7 +210,7 @@ def _with_queue_metadata(
 
 Extend `_persist_scheduler_state` and `_persist_outcome` to write these four fields, using `None` when the account has no normal queue slot. Keep existing lease renewal, lazy client creation, per-account remote reads, batch grouping, partial success, error redaction, and state modes unchanged.
 
-- [ ] **Step 4: Run service tests to verify GREEN**
+- [x] **Step 4: Run service tests to verify GREEN**
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest tests.test_smart_scheduling_service -v
@@ -218,7 +218,7 @@ Extend `_persist_scheduler_state` and `_persist_outcome` to write these four fie
 
 Expected: all service tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add backend/app/modules/sub2api/smart_scheduling_service.py backend/tests/test_smart_scheduling_service.py
@@ -232,7 +232,7 @@ git commit -m "feat: apply site-wide account priority queues"
 - Verify: `backend/app/modules/sub2api/smart_scheduling_service.py`
 - Verify: smart scheduling, account probe, and snapshot tests.
 
-- [ ] **Step 1: Run focused scheduling tests**
+- [x] **Step 1: Run focused scheduling tests**
 
 ```powershell
 cd backend
@@ -241,7 +241,7 @@ cd backend
 
 Expected: zero failures and errors.
 
-- [ ] **Step 2: Run source regressions**
+- [x] **Step 2: Run source regressions**
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest tests.test_account_probe tests.test_sub2api_snapshot_source tests.test_sub2api_account_list -v
@@ -249,7 +249,7 @@ Expected: zero failures and errors.
 
 Expected: zero failures and errors; `created_at`, group membership, and PostgreSQL snapshot behavior remain intact.
 
-- [ ] **Step 3: Run the complete backend suite**
+- [x] **Step 3: Run the complete backend suite**
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests
@@ -257,7 +257,7 @@ Expected: zero failures and errors; `created_at`, group membership, and PostgreS
 
 Expected: zero failures and errors.
 
-- [ ] **Step 4: Check branch scope**
+- [x] **Step 4: Check branch scope**
 
 ```powershell
 git diff --check origin/achernar/dev...HEAD
