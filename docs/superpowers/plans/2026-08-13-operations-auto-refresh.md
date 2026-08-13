@@ -41,5 +41,5 @@
 - [x] Run the production build.
 - [x] Validate component-to-scheduler wiring and interval behavior with focused tests; the in-app browser control runtime was unavailable in this session.
 - [x] Inspect the final diff and run `git diff --check`.
-- [ ] Commit and push `codex/operations-auto-refresh`.
-- [ ] Open a pull request targeting `achernar/dev`.
+- [x] Commit and push `codex/operations-auto-refresh`.
+- [x] Open a pull request targeting `achernar/dev`.
