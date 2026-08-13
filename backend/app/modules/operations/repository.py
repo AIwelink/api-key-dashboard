@@ -2023,7 +2023,38 @@ async def start_operations_sync_run(
     trigger_type: str,
     started_at: datetime,
     run_id: UUID | None = None,
+    stale_after: timedelta = timedelta(minutes=15),
 ) -> dict[str, Any]:
+    await connection.execute(
+        text(
+            """
+            SELECT pg_advisory_xact_lock(
+                hashtext('growth-operations-run:' || CAST(:site_id AS TEXT))
+            )
+            """
+        ),
+        {"site_id": site_id},
+    )
+    await connection.execute(
+        text(
+            """
+            UPDATE growth.sync_runs
+            SET status = 'failed',
+                finished_at = :started_at,
+                error_code = 'SyncTimedOut',
+                error_message = 'Operations sync exceeded its maximum runtime'
+            WHERE site_id = :site_id
+              AND stream_name = 'operations'
+              AND status = 'running'
+              AND started_at < :stale_before
+            """
+        ),
+        {
+            "site_id": site_id,
+            "started_at": started_at,
+            "stale_before": started_at - stale_after,
+        },
+    )
     result = await connection.execute(
         text(
             """
@@ -2034,6 +2065,9 @@ async def start_operations_sync_run(
                 :run_id, :site_id, :adapter_name, 'operations', :trigger_type,
                 'running', :started_at
             )
+            ON CONFLICT (site_id)
+            WHERE stream_name = 'operations' AND status = 'running'
+            DO NOTHING
             RETURNING *
             """
         ),
@@ -2076,6 +2110,7 @@ async def finish_operations_sync_run(
                     error_code = :error_code,
                     error_message = :error_message
                 WHERE run_id = :run_id
+                  AND status = 'running'
                 RETURNING *
             ), cursor_update AS (
                 INSERT INTO growth.sync_cursors (
@@ -2083,7 +2118,9 @@ async def finish_operations_sync_run(
                     watermark_at, last_success_at, last_run_id, updated_at
                 )
                 SELECT :site_id, :adapter_name, 'operations',
-                       jsonb_build_object('aggregate_version', :aggregate_version),
+                       jsonb_build_object(
+                           'aggregate_version', CAST(:aggregate_version AS INTEGER)
+                       ),
                        :finished_at, :finished_at, :run_id, NOW()
                 FROM finished
                 WHERE finished.status = 'succeeded'
