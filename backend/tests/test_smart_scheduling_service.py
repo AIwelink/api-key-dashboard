@@ -1095,6 +1095,59 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             state["rate_limit_detected_at"], detected_at.isoformat()
         )
 
+    async def test_disabling_quota_strategy_keeps_cooldown_in_normal_queue(self) -> None:
+        detected_at = self.now - timedelta(minutes=31)
+        db = self.db(
+            states=[
+                {
+                    "remote_account_id": 7,
+                    "mode": "rate_limited_cooldown",
+                    "rate_limit_detected_at": detected_at,
+                }
+            ]
+        )
+        client = SimpleNamespace(
+            get_account=AsyncMock(
+                return_value={
+                    "id": 7,
+                    "priority": 191,
+                    "concurrency": 100,
+                    "group_ids": [3],
+                }
+            ),
+            bulk_update_accounts_runtime=AsyncMock(
+                return_value={"success_ids": [7], "failed_ids": []}
+            ),
+        )
+
+        result = await run_smart_scheduling(
+            db,
+            site=self.site(),
+            accounts=[self.account(7, priority=191, concurrency=100, used=95)],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": False,
+                }
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=client,
+            now=self.now,
+        )
+
+        client.bulk_update_accounts_runtime.assert_awaited_once_with(
+            [7],
+            {"priority": 200, "concurrency": 30, "group_ids": [3]},
+        )
+        self.assertEqual(result["changed"], 1)
+        state = (
+            db.sub2api_smart_scheduling_states.update_one.await_args.args[1]["$set"]
+        )
+        self.assertEqual(state["mode"], "rate_limited_cooldown")
+        self.assertEqual(state["queue_partition"], "temporarily_unusable")
+        self.assertEqual(state["queue_priority"], 200)
+
     async def test_failed_delayed_recovery_does_not_advance_cooldown_state(self) -> None:
         detected_at = self.now - timedelta(minutes=31)
         db = self.db(

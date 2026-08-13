@@ -171,8 +171,20 @@ def evaluate_account(
     state_mode = str(state.get("mode") or "")
     managed_modes = {"extreme", "rate_limit_pending", "rate_limited_cooldown"}
 
-    if state_mode in managed_modes and not quota_acceleration_enabled:
+    if (
+        state_mode in {"extreme", "rate_limit_pending"}
+        and not quota_acceleration_enabled
+    ):
         return base | _result("held", reason="quota_strategy_disabled_extreme_held")
+    if state_mode == "rate_limited_cooldown" and not quota_acceleration_enabled:
+        return base | _target_result(
+            account,
+            priority=effective_normal_priority,
+            concurrency=int(rule["normal_concurrency"]),
+            strategy="rate_limit_recovery",
+            mode="rate_limited_cooldown",
+            reason="rate_limit_cooldown_held",
+        )
 
     if state_mode in managed_modes:
         previous_reset = _datetime_identity(state.get("seven_day_reset_at"))
