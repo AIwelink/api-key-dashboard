@@ -272,19 +272,19 @@ Expected: no whitespace errors, no uncommitted changes, and only this feature's 
 **Files:**
 - Verify: Git branch and GitHub PR metadata.
 
-- [ ] **Step 1: Push the branch**
+- [x] **Step 1: Push the branch**
 
 ```powershell
 git push -u origin codex/dynamic-account-priority-queue
 ```
 
-- [ ] **Step 2: Create the PR**
+- [x] **Step 2: Create the PR**
 
 ```powershell
 gh pr create --base achernar/dev --head codex/dynamic-account-priority-queue --title "feat: dynamically queue account priorities" --body "## Summary`n- Order enabled account types by usability and remote creation time.`n- Move later usable accounts forward and restore recovered accounts to chronological position.`n- Preserve extreme quota and delayed 429 behavior.`n`n## Test Plan`n- Focused smart scheduling tests`n- Snapshot and account probe tests`n- Complete backend unittest suite"
 ```
 
-- [ ] **Step 3: Verify the PR target**
+- [x] **Step 3: Verify the PR target**
 
 ```powershell
 gh pr view --json baseRefName,headRefName,state,url,title
