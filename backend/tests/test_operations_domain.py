@@ -113,6 +113,28 @@ class OperationsDomainTests(unittest.TestCase):
             "healthy",
         )
 
+    def test_sync_status_treats_expired_running_run_as_delayed(self) -> None:
+        from app.modules.operations.domain import sync_health
+
+        self.assertEqual(
+            sync_health(
+                now=NOW,
+                last_success_at=NOW - timedelta(minutes=5),
+                running=True,
+                started_at=NOW - timedelta(minutes=31),
+            ),
+            "delayed",
+        )
+        self.assertEqual(
+            sync_health(
+                now=NOW,
+                last_success_at=NOW - timedelta(minutes=5),
+                running=True,
+                started_at=NOW - timedelta(minutes=2),
+            ),
+            "running",
+        )
+
     def test_seven_day_range_includes_current_instant_and_previous_period(self) -> None:
         from app.modules.operations.domain import resolve_operations_window
 

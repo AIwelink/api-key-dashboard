@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -674,6 +674,34 @@ class OperationsServiceCacheTests(unittest.IsolatedAsyncioTestCase):
         from app.modules.operations.cache import operations_response_cache
 
         operations_response_cache.invalidate()
+
+    async def test_sync_status_marks_expired_running_row_as_delayed(self) -> None:
+        from app.modules.operations import service
+
+        with (
+            patch.object(service, "growth_connection", lambda db: _async_context(object())),
+            patch.object(
+                service.repository,
+                "get_sync_status",
+                AsyncMock(
+                    return_value=[
+                        {
+                            "site_id": "aiwelink",
+                            "status": "running",
+                            "started_at": NOW - timedelta(minutes=31),
+                            "last_success_at": NOW - timedelta(minutes=5),
+                        }
+                    ]
+                ),
+            ),
+            patch.object(service, "datetime") as clock,
+        ):
+            clock.now.return_value = NOW
+            result = await service.get_operations_sync_status(
+                object(), allowed_site_ids=("aiwelink",)
+            )
+
+        self.assertEqual(result["items"][0]["health"], "delayed")
 
     async def test_same_summary_query_reuses_60_second_cache(self) -> None:
         from app.modules.operations import service

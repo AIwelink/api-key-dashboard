@@ -39,9 +39,13 @@ def sync_health(
     now: datetime,
     last_success_at: datetime | None,
     running: bool,
+    started_at: datetime | None = None,
     delay_after: timedelta = timedelta(minutes=30),
+    running_timeout: timedelta = timedelta(minutes=15),
 ) -> SyncHealth:
     if running:
+        if started_at is not None and now - started_at > running_timeout:
+            return "delayed"
         return "running"
     if last_success_at is None:
         return "never"

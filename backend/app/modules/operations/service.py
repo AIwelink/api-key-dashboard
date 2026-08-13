@@ -263,10 +263,14 @@ async def get_operations_sync_status(
             last_success_at = item.get("last_success_at")
             if isinstance(last_success_at, str):
                 last_success_at = datetime.fromisoformat(last_success_at.replace("Z", "+00:00"))
+            started_at = item.get("started_at")
+            if isinstance(started_at, str):
+                started_at = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
             item["health"] = sync_health(
                 now=now,
                 last_success_at=last_success_at,
                 running=item.get("status") == "running",
+                started_at=started_at,
             )
         return {"items": items, "total": len(items), "generated_at": now.isoformat()}
 

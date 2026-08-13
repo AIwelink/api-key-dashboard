@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -913,6 +913,8 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         connection = _FakeConnection(
             [
                 {"last_success_at": NOW, "cursor_value": {"aggregate_version": 1}},
+                None,
+                None,
                 {"run_id": run_id, "status": "running"},
                 {"run_id": run_id, "status": "succeeded"},
             ]
@@ -946,9 +948,38 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("stream_name = 'operations'", sql)
         self.assertIn("growth.sync_cursors", sql)
         self.assertIn("cursor_value", connection.calls[0][0])
-        self.assertIn("cursor_value = COALESCE", connection.calls[2][0])
-        self.assertIn("|| EXCLUDED.cursor_value", connection.calls[2][0])
-        self.assertEqual(connection.calls[2][1].get("aggregate_version"), 1)
+        self.assertIn("cursor_value = COALESCE", connection.calls[4][0])
+        self.assertIn("|| EXCLUDED.cursor_value", connection.calls[4][0])
+        self.assertIn("CAST(:aggregate_version AS INTEGER)", connection.calls[4][0])
+        self.assertIn("AND status = 'running'", connection.calls[4][0])
+        self.assertEqual(connection.calls[4][1].get("aggregate_version"), 1)
+
+    async def test_start_sync_run_expires_stale_run_and_skips_active_duplicate(self) -> None:
+        from app.modules.operations.repository import start_operations_sync_run
+
+        connection = _FakeConnection([None, None, None])
+
+        started = await start_operations_sync_run(
+            connection,
+            site_id="aiwelink",
+            adapter_name="sub2api",
+            trigger_type="schedule",
+            started_at=NOW,
+            stale_after=timedelta(minutes=30),
+        )
+
+        self.assertEqual(started, {})
+        lock_statement, lock_parameters = connection.calls[0]
+        expire_statement, expire_parameters = connection.calls[1]
+        insert_statement, _ = connection.calls[2]
+        self.assertIn("pg_advisory_xact_lock", lock_statement)
+        self.assertEqual(lock_parameters, {"site_id": "aiwelink"})
+        self.assertIn("status = 'failed'", expire_statement)
+        self.assertIn("error_code = 'SyncTimedOut'", expire_statement)
+        self.assertEqual(expire_parameters["stale_before"], NOW - timedelta(minutes=30))
+        self.assertIn("ON CONFLICT (site_id)", insert_statement)
+        self.assertIn("WHERE stream_name = 'operations' AND status = 'running'", insert_statement)
+        self.assertIn("DO NOTHING", insert_statement)
 
     async def test_sync_status_keeps_last_success_when_latest_run_failed(self) -> None:
         from app.modules.operations.repository import get_sync_status
