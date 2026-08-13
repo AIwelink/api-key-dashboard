@@ -134,6 +134,7 @@ def evaluate_account(
     quota_acceleration_enabled: bool,
     state: dict[str, Any] | None,
     now: datetime,
+    normal_priority: int | None = None,
 ) -> dict[str, Any]:
     normalized_rules = normalize_smart_scheduling_rules(rules)
     state = state if isinstance(state, dict) else {}
@@ -154,6 +155,11 @@ def evaluate_account(
         return base | _result("skipped", reason="unsupported_account_type")
 
     rule = normalized_rules["account_types"][account_type]
+    effective_normal_priority = (
+        int(normal_priority)
+        if normal_priority is not None
+        else int(rule["automatic_priority"])
+    )
     quota = _seven_day_quota(account, now=now)
     base.update(
         {
@@ -165,8 +171,20 @@ def evaluate_account(
     state_mode = str(state.get("mode") or "")
     managed_modes = {"extreme", "rate_limit_pending", "rate_limited_cooldown"}
 
-    if state_mode in managed_modes and not quota_acceleration_enabled:
+    if (
+        state_mode in {"extreme", "rate_limit_pending"}
+        and not quota_acceleration_enabled
+    ):
         return base | _result("held", reason="quota_strategy_disabled_extreme_held")
+    if state_mode == "rate_limited_cooldown" and not quota_acceleration_enabled:
+        return base | _target_result(
+            account,
+            priority=effective_normal_priority,
+            concurrency=int(rule["normal_concurrency"]),
+            strategy="rate_limit_recovery",
+            mode="rate_limited_cooldown",
+            reason="rate_limit_cooldown_held",
+        )
 
     if state_mode in managed_modes:
         previous_reset = _datetime_identity(state.get("seven_day_reset_at"))
@@ -182,7 +200,7 @@ def evaluate_account(
         if reset_changed or recovered:
             return (base | {"rate_limit_detected_at": None}) | _target_result(
                 account,
-                priority=int(rule["automatic_priority"]),
+                priority=effective_normal_priority,
                 concurrency=int(rule["normal_concurrency"]),
                 strategy="quota_recovery",
                 mode="normal",
@@ -191,7 +209,7 @@ def evaluate_account(
         if state_mode == "rate_limited_cooldown":
             return base | _target_result(
                 account,
-                priority=int(rule["automatic_priority"]),
+                priority=effective_normal_priority,
                 concurrency=int(rule["normal_concurrency"]),
                 strategy="rate_limit_recovery",
                 mode="rate_limited_cooldown",
@@ -203,7 +221,7 @@ def evaluate_account(
             if now.astimezone(UTC) - detected_at >= RATE_LIMIT_RECOVERY_DELAY:
                 return base | _target_result(
                     account,
-                    priority=int(rule["automatic_priority"]),
+                    priority=effective_normal_priority,
                     concurrency=int(rule["normal_concurrency"]),
                     strategy="rate_limit_recovery",
                     mode="rate_limited_cooldown",
@@ -256,14 +274,20 @@ def evaluate_account(
     if type_priority_enabled:
         current_priority = _optional_int(account.get("priority"))
         target_priority = (
-            current_priority
+            effective_normal_priority
+            if normal_priority is not None
+            else current_priority
             if current_priority is not None and priority_in_normal_bands(current_priority, rule)
-            else int(rule["automatic_priority"])
+            else effective_normal_priority
         )
-        reason = "type_normalized"
-        if quota_acceleration_enabled and quota["reason"] == "quota_stale":
+        reason = (
+            "type_queue_positioned"
+            if normal_priority is not None
+            else "type_normalized"
+        )
+        if normal_priority is None and quota_acceleration_enabled and quota["reason"] == "quota_stale":
             reason = "quota_stale_type_normalized"
-        elif quota_acceleration_enabled and quota["reason"] != "quota_ready":
+        elif normal_priority is None and quota_acceleration_enabled and quota["reason"] != "quota_ready":
             reason = "quota_missing_type_normalized"
         return base | _target_result(
             account,
@@ -279,6 +303,116 @@ def evaluate_account(
     if quota["reason"] != "quota_ready":
         return base | _result("skipped", reason="quota_missing")
     return base | _result("skipped", reason="quota_below_threshold")
+
+
+def build_type_priority_queue(
+    entries: list[dict[str, Any]],
+    *,
+    rules: dict[str, Any],
+    now: datetime,
+) -> dict[str, dict[str, Any]]:
+    normalized_rules = normalize_smart_scheduling_rules(rules)
+    by_type: dict[str, list[dict[str, Any]]] = {
+        account_type: [] for account_type in SUPPORTED_TYPES
+    }
+
+    for entry in entries:
+        if entry.get("type_priority_enabled") is not True:
+            continue
+        account = entry.get("account")
+        if not isinstance(account, dict):
+            continue
+        remote_account_id = entry.get("remote_account_id")
+        if remote_account_id is None:
+            continue
+        account_type = adapted_scheduling_type(
+            account.get("account_type") or account.get("plan_type")
+        )
+        if account_type is None:
+            continue
+        state = entry.get("state") if isinstance(entry.get("state"), dict) else None
+        state_mode = str((state or {}).get("mode") or "")
+        preliminary = evaluate_account(
+            account=account,
+            rules=normalized_rules,
+            type_priority_enabled=True,
+            quota_acceleration_enabled=(
+                entry.get("quota_acceleration_enabled") is True
+            ),
+            state=state,
+            now=now,
+        )
+        if preliminary.get("mode") in {"extreme", "rate_limit_pending"}:
+            continue
+        if (
+            state_mode in {"extreme", "rate_limit_pending"}
+            and preliminary.get("target") is None
+        ):
+            continue
+        created_at = _parse_datetime(account.get("created_at"))
+        by_type[account_type].append(
+            {
+                "remote_account_id": remote_account_id,
+                "account": account,
+                "created_at": created_at,
+                "usable": _queue_account_is_usable(
+                    account,
+                    preliminary_mode=str(preliminary.get("mode") or state_mode),
+                ),
+            }
+        )
+
+    plan: dict[str, dict[str, Any]] = {}
+    for account_type, typed_entries in by_type.items():
+        rule = normalized_rules["account_types"][account_type]
+        ordered = sorted(typed_entries, key=_queue_sort_key)
+        for queue_index, entry in enumerate(ordered):
+            created_at = entry["created_at"]
+            plan[str(entry["remote_account_id"])] = {
+                "priority": min(
+                    int(rule["manual_priority_min"]) + queue_index,
+                    int(rule["manual_priority_max"]),
+                ),
+                "queue_index": queue_index,
+                "queue_partition": (
+                    "usable" if entry["usable"] else "temporarily_unusable"
+                ),
+                "queue_created_at": (
+                    created_at.isoformat() if created_at is not None else None
+                ),
+            }
+    return plan
+
+
+def _queue_account_is_usable(
+    account: dict[str, Any],
+    *,
+    preliminary_mode: str,
+) -> bool:
+    if preliminary_mode in {"rate_limit_pending", "rate_limited_cooldown"}:
+        return False
+    status = str(account.get("status") or "").strip().lower()
+    if status not in {"active", "ok", "healthy", "available"}:
+        return False
+    if account.get("schedulable") is not True:
+        return False
+    if str(account.get("error_message") or "").strip():
+        return False
+    return not _account_is_rate_limited(account)
+
+
+def _queue_sort_key(entry: dict[str, Any]) -> tuple[Any, ...]:
+    created_at = entry.get("created_at")
+    remote_account_id = entry.get("remote_account_id")
+    parsed_id = _optional_int(remote_account_id)
+    return (
+        0 if entry.get("usable") else 1,
+        0 if created_at is not None else 1,
+        created_at or datetime.max.replace(tzinfo=UTC),
+        0 if parsed_id is not None else 1,
+        parsed_id if parsed_id is not None else 0,
+        str(remote_account_id),
+    )
 
 
 def _account_is_rate_limited(account: dict[str, Any]) -> bool:
