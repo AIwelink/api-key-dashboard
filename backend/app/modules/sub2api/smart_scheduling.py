@@ -315,11 +315,7 @@ def build_type_priority_queue(
         if account_type is None:
             continue
         state = entry.get("state") if isinstance(entry.get("state"), dict) else None
-        if str((state or {}).get("mode") or "") in {
-            "extreme",
-            "rate_limit_pending",
-        }:
-            continue
+        state_mode = str((state or {}).get("mode") or "")
         preliminary = evaluate_account(
             account=account,
             rules=normalized_rules,
@@ -331,6 +327,11 @@ def build_type_priority_queue(
             now=now,
         )
         if preliminary.get("mode") in {"extreme", "rate_limit_pending"}:
+            continue
+        if (
+            state_mode in {"extreme", "rate_limit_pending"}
+            and preliminary.get("target") is None
+        ):
             continue
         created_at = _parse_datetime(account.get("created_at"))
         by_type[account_type].append(

@@ -300,6 +300,39 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
         self.assertNotIn("1", plan)
         self.assertEqual(plan["2"]["priority"], 50)
 
+    def test_recovered_extreme_state_rejoins_the_normal_queue(self) -> None:
+        entry = self.queue_entry(
+            1,
+            created_at="2026-01-01T00:00:00+00:00",
+            mode="extreme",
+            used=79.9,
+            quota_enabled=True,
+        )
+
+        plan = build_type_priority_queue([entry], rules=self.rules, now=self.now)
+
+        self.assertEqual(plan["1"]["priority"], 50)
+        self.assertEqual(plan["1"]["queue_partition"], "usable")
+
+    def test_elapsed_rate_limit_pending_rejoins_the_unusable_tail(self) -> None:
+        entry = self.queue_entry(
+            1,
+            created_at="2026-01-01T00:00:00+00:00",
+            mode="rate_limit_pending",
+            used=90,
+            quota_enabled=True,
+        )
+        entry["state"]["rate_limit_detected_at"] = (
+            self.now - timedelta(minutes=31)
+        ).isoformat()
+
+        plan = build_type_priority_queue([entry], rules=self.rules, now=self.now)
+
+        self.assertEqual(plan["1"]["priority"], 50)
+        self.assertEqual(
+            plan["1"]["queue_partition"], "temporarily_unusable"
+        )
+
     def test_type_aliases_share_team_queue_and_disabled_entries_are_ignored(self) -> None:
         plan = build_type_priority_queue(
             [
