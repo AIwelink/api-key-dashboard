@@ -442,6 +442,20 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
                     decision["target"], {"priority": priority, "concurrency": 30}
                 )
 
+    def test_planned_normal_priority_uses_queue_specific_reason(self) -> None:
+        decision = evaluate_account(
+            account=self.account("plus", priority=250),
+            rules=self.rules,
+            type_priority_enabled=True,
+            quota_acceleration_enabled=False,
+            state=None,
+            now=self.now,
+            normal_priority=200,
+        )
+
+        self.assertEqual(decision["reason"], "type_queue_positioned")
+        self.assertEqual(decision["target"], {"priority": 200, "concurrency": 30})
+
     def test_extreme_precedes_type_normalization_at_exact_threshold(self) -> None:
         decision = self.evaluate(self.account("plus", priority=250, used=90))
 

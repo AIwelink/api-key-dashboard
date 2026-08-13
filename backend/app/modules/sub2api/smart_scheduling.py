@@ -268,10 +268,14 @@ def evaluate_account(
             if current_priority is not None and priority_in_normal_bands(current_priority, rule)
             else effective_normal_priority
         )
-        reason = "type_normalized"
-        if quota_acceleration_enabled and quota["reason"] == "quota_stale":
+        reason = (
+            "type_queue_positioned"
+            if normal_priority is not None
+            else "type_normalized"
+        )
+        if normal_priority is None and quota_acceleration_enabled and quota["reason"] == "quota_stale":
             reason = "quota_stale_type_normalized"
-        elif quota_acceleration_enabled and quota["reason"] != "quota_ready":
+        elif normal_priority is None and quota_acceleration_enabled and quota["reason"] != "quota_ready":
             reason = "quota_missing_type_normalized"
         return base | _target_result(
             account,
