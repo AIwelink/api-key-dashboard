@@ -33,6 +33,7 @@ OPERATIONS_INITIAL_SYNC_WINDOW = timedelta(days=30)
 OPERATIONS_AGGREGATE_VERSION = 3
 OPERATIONS_AGGREGATE_HISTORY_START = datetime(1970, 1, 1, tzinfo=UTC)
 OPERATIONS_SYNC_TIMEOUT_SECONDS = 600
+OPERATIONS_FAILURE_FINALIZE_TIMEOUT_SECONDS = 10
 OPERATIONS_SYNC_STALE_AFTER = timedelta(minutes=15)
 SOURCE_DATABASE_TIMEOUT_SECONDS = 30
 NEWAPI_DEFAULT_QUOTA_PER_UNIT = Decimal("500000")
@@ -320,53 +321,56 @@ async def sync_site_operations(
     run_starter: Callable[..., Awaitable[dict[str, Any]]] = repository.start_operations_sync_run,
     run_finisher: Callable[..., Awaitable[dict[str, Any]]] = repository.finish_operations_sync_run,
     sync_timeout_seconds: float = OPERATIONS_SYNC_TIMEOUT_SECONDS,
+    failure_finalize_timeout_seconds: float = OPERATIONS_FAILURE_FINALIZE_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     current_time = now or datetime.now(UTC)
-    site = await site_loader(mongo_db, site_id, include_api_key=True)
-    if site is None:
-        raise LookupError("client site not found")
-    if not str(site.get("sql_dsn") or "").strip():
-        raise ValueError("client site SQL_DSN is not configured")
-    client_type = str(site.get("client_type") or "").strip().lower()
-    selected_adapter_factory = adapter_factory or create_source_adapter
-    adapter_result = selected_adapter_factory(site)
-    adapter = await adapter_result if inspect.isawaitable(adapter_result) else adapter_result
-    selected_source_factory = source_connection_factory or source_database_connection
-
-    async with growth_connection_factory(mongo_db, write=True) as connection:
-        cursor = await cursor_loader(connection, site_id=site_id)
-        since = reconciliation_start(
-            now=current_time,
-            last_success_at=_datetime(cursor.get("last_success_at")),
-            initial_sync_from=_datetime(site.get("initial_sync_from")),
-        )
-        cursor_value = cursor.get("cursor_value")
-        aggregate_version = (
-            cursor_value.get("aggregate_version") if isinstance(cursor_value, dict) else None
-        )
-        aggregate_start = (
-            None
-            if aggregate_version == OPERATIONS_AGGREGATE_VERSION
-            else OPERATIONS_AGGREGATE_HISTORY_START
-        )
-        started = await run_starter(
-            connection,
-            site_id=site_id,
-            adapter_name=client_type,
-            trigger_type=trigger_type,
-            started_at=current_time,
-            stale_after=OPERATIONS_SYNC_STALE_AFTER,
-        )
-    if not started:
-        return {
-            "site_id": site_id,
-            "status": "skipped",
-            "reason": "already_running",
-        }
-    run_id = UUID(str(started["run_id"]))
-
     try:
         async with asyncio.timeout(sync_timeout_seconds):
+            site = await site_loader(mongo_db, site_id, include_api_key=True)
+            if site is None:
+                raise LookupError("client site not found")
+            if not str(site.get("sql_dsn") or "").strip():
+                raise ValueError("client site SQL_DSN is not configured")
+            client_type = str(site.get("client_type") or "").strip().lower()
+            selected_adapter_factory = adapter_factory or create_source_adapter
+            adapter_result = selected_adapter_factory(site)
+            adapter = await adapter_result if inspect.isawaitable(adapter_result) else adapter_result
+            selected_source_factory = source_connection_factory or source_database_connection
+
+            async with growth_connection_factory(mongo_db, write=True) as connection:
+                cursor = await cursor_loader(connection, site_id=site_id)
+                since = reconciliation_start(
+                    now=current_time,
+                    last_success_at=_datetime(cursor.get("last_success_at")),
+                    initial_sync_from=_datetime(site.get("initial_sync_from")),
+                )
+                cursor_value = cursor.get("cursor_value")
+                aggregate_version = (
+                    cursor_value.get("aggregate_version")
+                    if isinstance(cursor_value, dict)
+                    else None
+                )
+                aggregate_start = (
+                    None
+                    if aggregate_version == OPERATIONS_AGGREGATE_VERSION
+                    else OPERATIONS_AGGREGATE_HISTORY_START
+                )
+                started = await run_starter(
+                    connection,
+                    site_id=site_id,
+                    adapter_name=client_type,
+                    trigger_type=trigger_type,
+                    started_at=current_time,
+                    stale_after=OPERATIONS_SYNC_STALE_AFTER,
+                )
+            if not started:
+                return {
+                    "site_id": site_id,
+                    "status": "skipped",
+                    "reason": "already_running",
+                }
+            run_id = UUID(str(started["run_id"]))
+
             async with selected_source_factory(site) as source:
                 async with growth_connection_factory(mongo_db, write=True) as connection:
                     counts = await records_sync(
@@ -394,6 +398,8 @@ async def sync_site_operations(
                 if not finished:
                     raise RuntimeError("operations sync run is no longer active")
     except (Exception, asyncio.CancelledError) as exc:
+        if "run_id" not in locals():
+            raise
         database_type = "mysql" if client_type == "newapi" else "postgresql"
         error_message = redact_sql_error(
             exc,
@@ -401,20 +407,21 @@ async def sync_site_operations(
             database_type,
         )
         try:
-            async with growth_connection_factory(mongo_db, write=True) as connection:
-                await run_finisher(
-                    connection,
-                    run_id=run_id,
-                    site_id=site_id,
-                    adapter_name=client_type,
-                    status="failed",
-                    finished_at=datetime.now(UTC) if now is None else current_time,
-                    rows_scanned=0,
-                    rows_upserted=0,
-                    aggregate_version=OPERATIONS_AGGREGATE_VERSION,
-                    error_code=exc.__class__.__name__,
-                    error_message=error_message,
-                )
+            async with asyncio.timeout(failure_finalize_timeout_seconds):
+                async with growth_connection_factory(mongo_db, write=True) as connection:
+                    await run_finisher(
+                        connection,
+                        run_id=run_id,
+                        site_id=site_id,
+                        adapter_name=client_type,
+                        status="failed",
+                        finished_at=datetime.now(UTC) if now is None else current_time,
+                        rows_scanned=0,
+                        rows_upserted=0,
+                        aggregate_version=OPERATIONS_AGGREGATE_VERSION,
+                        error_code=exc.__class__.__name__,
+                        error_message=error_message,
+                    )
         except Exception:
             logger.exception(
                 "operations_sync_failure_finalize_failed site_id=%s run_id=%s",

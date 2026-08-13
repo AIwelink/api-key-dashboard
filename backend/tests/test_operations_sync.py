@@ -860,6 +860,81 @@ class OperationsSyncCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(finisher.await_args.kwargs["status"], "failed")
         self.assertEqual(finisher.await_args.kwargs["error_code"], "TimeoutError")
 
+    async def test_site_sync_timeout_covers_run_start(self) -> None:
+        from app.modules.operations import sync
+
+        async def starter_never_finishes(*args, **kwargs):
+            await asyncio.Event().wait()
+
+        source_factory = Mock(side_effect=AssertionError("source must not be opened"))
+        finisher = AsyncMock()
+
+        with self.assertRaises(TimeoutError):
+            await asyncio.wait_for(
+                sync.sync_site_operations(
+                    object(),
+                    site_id="aiwelink",
+                    trigger_type="schedule",
+                    now=NOW,
+                    sync_timeout_seconds=0.01,
+                    site_loader=AsyncMock(
+                        return_value={
+                            "id": "aiwelink",
+                            "client_type": "sub2api",
+                            "sql_dsn": "postgresql://reader:secret@db/sub2api",
+                        }
+                    ),
+                    adapter_factory=AsyncMock(return_value=AsyncMock(site_id="aiwelink")),
+                    source_connection_factory=source_factory,
+                    growth_connection_factory=lambda db, write=True: _async_context(object()),
+                    records_sync=AsyncMock(),
+                    cursor_loader=AsyncMock(return_value={}),
+                    run_starter=starter_never_finishes,
+                    run_finisher=finisher,
+                ),
+                timeout=0.2,
+            )
+
+        source_factory.assert_not_called()
+        finisher.assert_not_awaited()
+
+    async def test_failure_finalizer_timeout_preserves_original_error(self) -> None:
+        from app.modules.operations import sync
+
+        run_id = uuid4()
+
+        async def sync_fails(**kwargs):
+            raise RuntimeError("facts transaction failed")
+
+        async def finalizer_never_finishes(*args, **kwargs):
+            await asyncio.Event().wait()
+
+        with self.assertRaisesRegex(RuntimeError, "facts transaction failed"):
+            await asyncio.wait_for(
+                sync.sync_site_operations(
+                    object(),
+                    site_id="aiwelink",
+                    trigger_type="schedule",
+                    now=NOW,
+                    failure_finalize_timeout_seconds=0.01,
+                    site_loader=AsyncMock(
+                        return_value={
+                            "id": "aiwelink",
+                            "client_type": "sub2api",
+                            "sql_dsn": "postgresql://reader:secret@db/sub2api",
+                        }
+                    ),
+                    adapter_factory=AsyncMock(return_value=AsyncMock(site_id="aiwelink")),
+                    source_connection_factory=lambda site: _async_context(object()),
+                    growth_connection_factory=lambda db, write=True: _async_context(object()),
+                    records_sync=sync_fails,
+                    cursor_loader=AsyncMock(return_value={}),
+                    run_starter=AsyncMock(return_value={"run_id": str(run_id)}),
+                    run_finisher=finalizer_never_finishes,
+                ),
+                timeout=0.2,
+            )
+
     async def test_success_finalizer_failure_is_recorded_as_failed(self) -> None:
         from app.modules.operations import sync
 
