@@ -338,9 +338,11 @@ def build_type_priority_queue(
             {
                 "remote_account_id": remote_account_id,
                 "account": account,
-                "state": entry.get("state"),
                 "created_at": created_at,
-                "usable": _queue_account_is_usable(account, entry.get("state")),
+                "usable": _queue_account_is_usable(
+                    account,
+                    preliminary_mode=str(preliminary.get("mode") or state_mode),
+                ),
             }
         )
 
@@ -366,9 +368,12 @@ def build_type_priority_queue(
     return plan
 
 
-def _queue_account_is_usable(account: dict[str, Any], state: Any) -> bool:
-    state_mode = str(state.get("mode") or "") if isinstance(state, dict) else ""
-    if state_mode in {"rate_limit_pending", "rate_limited_cooldown"}:
+def _queue_account_is_usable(
+    account: dict[str, Any],
+    *,
+    preliminary_mode: str,
+) -> bool:
+    if preliminary_mode in {"rate_limit_pending", "rate_limited_cooldown"}:
         return False
     status = str(account.get("status") or "").strip().lower()
     if status not in {"active", "ok", "healthy", "available"}:

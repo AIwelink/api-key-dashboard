@@ -333,6 +333,20 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
             plan["1"]["queue_partition"], "temporarily_unusable"
         )
 
+    def test_recovered_cooldown_state_returns_to_the_usable_head(self) -> None:
+        entry = self.queue_entry(
+            1,
+            created_at="2026-01-01T00:00:00+00:00",
+            mode="rate_limited_cooldown",
+            used=79.9,
+            quota_enabled=True,
+        )
+
+        plan = build_type_priority_queue([entry], rules=self.rules, now=self.now)
+
+        self.assertEqual(plan["1"]["priority"], 50)
+        self.assertEqual(plan["1"]["queue_partition"], "usable")
+
     def test_type_aliases_share_team_queue_and_disabled_entries_are_ignored(self) -> None:
         plan = build_type_priority_queue(
             [
