@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.modules.sub2api.smart_scheduling import (
     adapted_scheduling_type,
+    build_type_priority_queue,
     default_smart_scheduling_rules,
     evaluate_account,
     normalize_smart_scheduling_rules,
@@ -133,6 +134,210 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
             quota_acceleration_enabled=quota_enabled,
             state=state,
             now=self.now,
+        )
+
+    def queue_entry(
+        self,
+        remote_id: int,
+        *,
+        account_type: str = "team",
+        created_at: str | None = None,
+        priority: int = 50,
+        status: str = "active",
+        schedulable: bool | None = True,
+        error_message: str | None = None,
+        mode: str | None = None,
+        used: float | None = 20,
+        type_enabled: bool = True,
+        quota_enabled: bool = False,
+    ) -> dict[str, object]:
+        account = self.account(
+            account_type,
+            priority=priority,
+            used=used,
+            status=status,
+            error_message=error_message,
+        )
+        account["remote_account_id"] = remote_id
+        account["created_at"] = created_at
+        account["schedulable"] = schedulable
+        return {
+            "remote_account_id": remote_id,
+            "account": account,
+            "state": {"mode": mode} if mode else None,
+            "type_priority_enabled": type_enabled,
+            "quota_acceleration_enabled": quota_enabled,
+        }
+
+    def test_oldest_usable_accounts_receive_contiguous_type_priorities(self) -> None:
+        plan = build_type_priority_queue(
+            [
+                self.queue_entry(3, created_at="2026-01-03T00:00:00+00:00"),
+                self.queue_entry(1, created_at="2026-01-01T00:00:00+00:00"),
+                self.queue_entry(2, created_at="2026-01-02T00:00:00+00:00"),
+            ],
+            rules=self.rules,
+            now=self.now,
+        )
+
+        self.assertEqual(
+            {account_id: data["priority"] for account_id, data in plan.items()},
+            {"1": 50, "2": 51, "3": 52},
+        )
+        self.assertEqual(plan["1"]["queue_partition"], "usable")
+        self.assertEqual(plan["2"]["queue_index"], 1)
+
+    def test_unusable_oldest_moves_after_usable_and_recovery_returns_head(self) -> None:
+        entries = [
+            self.queue_entry(1, created_at="2026-01-01T00:00:00+00:00"),
+            self.queue_entry(2, created_at="2026-01-02T00:00:00+00:00"),
+            self.queue_entry(3, created_at="2026-01-03T00:00:00+00:00"),
+        ]
+        entries[0]["account"]["error_message"] = "API returned 429"
+
+        unavailable = build_type_priority_queue(entries, rules=self.rules, now=self.now)
+
+        self.assertEqual(
+            {account_id: data["priority"] for account_id, data in unavailable.items()},
+            {"2": 50, "3": 51, "1": 52},
+        )
+        self.assertEqual(
+            unavailable["1"]["queue_partition"], "temporarily_unusable"
+        )
+
+        entries[0]["account"]["error_message"] = None
+        recovered = build_type_priority_queue(entries, rules=self.rules, now=self.now)
+
+        self.assertEqual(recovered["1"]["priority"], 50)
+        self.assertEqual(recovered["1"]["queue_partition"], "usable")
+
+    def test_queue_tie_breaks_by_remote_id_and_missing_created_at_is_last(self) -> None:
+        plan = build_type_priority_queue(
+            [
+                self.queue_entry(8, created_at=None),
+                self.queue_entry(2, created_at="2026-01-01T00:00:00+00:00"),
+                self.queue_entry(1, created_at="2026-01-01T00:00:00+00:00"),
+            ],
+            rules=self.rules,
+            now=self.now,
+        )
+
+        self.assertEqual(plan["1"]["priority"], 50)
+        self.assertEqual(plan["2"]["priority"], 51)
+        self.assertEqual(plan["8"]["priority"], 52)
+        self.assertIsNone(plan["8"]["queue_created_at"])
+
+    def test_each_type_uses_its_configured_manual_priority_minimum(self) -> None:
+        plan = build_type_priority_queue(
+            [
+                self.queue_entry(1, account_type="team"),
+                self.queue_entry(2, account_type="k12", priority=100),
+                self.queue_entry(3, account_type="plus", priority=200),
+                self.queue_entry(4, account_type="pro", priority=1000),
+            ],
+            rules=self.rules,
+            now=self.now,
+        )
+
+        self.assertEqual(
+            {account_id: data["priority"] for account_id, data in plan.items()},
+            {"1": 50, "2": 100, "3": 200, "4": 1000},
+        )
+
+    def test_queue_clamps_overflow_to_manual_band_maximum(self) -> None:
+        plan = build_type_priority_queue(
+            [self.queue_entry(remote_id) for remote_id in range(1, 45)],
+            rules=self.rules,
+            now=self.now,
+        )
+
+        self.assertEqual(plan["1"]["priority"], 50)
+        self.assertEqual(plan["41"]["priority"], 90)
+        self.assertEqual(plan["44"]["priority"], 90)
+
+    def test_extreme_and_pending_accounts_do_not_consume_normal_slots(self) -> None:
+        plan = build_type_priority_queue(
+            [
+                self.queue_entry(
+                    1,
+                    created_at="2026-01-01T00:00:00+00:00",
+                    mode="extreme",
+                    used=90,
+                    quota_enabled=True,
+                ),
+                self.queue_entry(
+                    2,
+                    created_at="2026-01-02T00:00:00+00:00",
+                    mode="rate_limit_pending",
+                    used=90,
+                    quota_enabled=True,
+                ),
+                self.queue_entry(3, created_at="2026-01-03T00:00:00+00:00"),
+            ],
+            rules=self.rules,
+            now=self.now,
+        )
+
+        self.assertNotIn("1", plan)
+        self.assertNotIn("2", plan)
+        self.assertEqual(plan["3"]["priority"], 50)
+
+    def test_owned_extreme_state_never_consumes_a_normal_slot(self) -> None:
+        plan = build_type_priority_queue(
+            [
+                self.queue_entry(
+                    1,
+                    created_at="2026-01-01T00:00:00+00:00",
+                    mode="extreme",
+                    quota_enabled=False,
+                ),
+                self.queue_entry(2, created_at="2026-01-02T00:00:00+00:00"),
+            ],
+            rules=self.rules,
+            now=self.now,
+        )
+
+        self.assertNotIn("1", plan)
+        self.assertEqual(plan["2"]["priority"], 50)
+
+    def test_type_aliases_share_team_queue_and_disabled_entries_are_ignored(self) -> None:
+        plan = build_type_priority_queue(
+            [
+                self.queue_entry(
+                    1,
+                    account_type="bug_team",
+                    created_at="2026-01-01T00:00:00+00:00",
+                ),
+                self.queue_entry(
+                    2,
+                    account_type="special_team",
+                    created_at="2026-01-02T00:00:00+00:00",
+                ),
+                self.queue_entry(3, type_enabled=False),
+            ],
+            rules=self.rules,
+            now=self.now,
+        )
+
+        self.assertEqual(plan["1"]["priority"], 50)
+        self.assertEqual(plan["2"]["priority"], 51)
+        self.assertNotIn("3", plan)
+
+    def test_unusable_conditions_share_the_tail_partition(self) -> None:
+        entries = [
+            self.queue_entry(1, schedulable=False),
+            self.queue_entry(2, status="error"),
+            self.queue_entry(3, error_message="API returned 403"),
+            self.queue_entry(4, mode="rate_limited_cooldown"),
+            self.queue_entry(5, status="", schedulable=True),
+            self.queue_entry(6, status="active", schedulable=None),
+        ]
+
+        plan = build_type_priority_queue(entries, rules=self.rules, now=self.now)
+
+        self.assertEqual(
+            {data["queue_partition"] for data in plan.values()},
+            {"temporarily_unusable"},
         )
 
     def test_adapted_types_use_the_supported_scheduling_tiers(self) -> None:
