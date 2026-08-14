@@ -133,7 +133,7 @@ def validate_update(
         plan_type == "temporary_unavailable"
         and (
             existing.get("plan_type") != "temporary_unavailable"
-            or "start_time" in fields_set
+            or start_minute != existing.get("start_minute")
         )
     )
     if temporary_start_became_relevant:

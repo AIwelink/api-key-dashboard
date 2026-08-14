@@ -301,6 +301,28 @@ class WorkPlanUpdateRuleTests(unittest.TestCase):
         self.assertEqual(note_updates["note"], "changed")
         self.assertEqual(end_updates["end_minute"], 9 * 60 + 30)
 
+    def test_unchanged_temporary_full_form_update_ignores_elapsed_lead_time(self) -> None:
+        existing = existing_plan(
+            plan_date="2026-08-15",
+            plan_type="temporary_unavailable",
+            start_minute=8 * 60,
+            end_minute=9 * 60,
+        )
+        payload = WorkPlanUpdate(
+            plan_type="temporary_unavailable",
+            start_time="08:00",
+            end_time="09:00",
+            note="changed",
+            expected_updated_at=existing["updated_at"],
+        )
+
+        updates = validate_update(existing, payload, OBSERVED_AT)
+
+        self.assertEqual(updates["plan_type"], "temporary_unavailable")
+        self.assertEqual(updates["start_minute"], 8 * 60)
+        self.assertEqual(updates["end_minute"], 9 * 60)
+        self.assertEqual(updates["note"], "changed")
+
     def test_temporary_unavailable_start_or_type_change_rechecks_lead_time(self) -> None:
         existing_temporary = existing_plan(
             plan_date="2026-08-15",
@@ -316,7 +338,7 @@ class WorkPlanUpdateRuleTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(WorkPlanRuleError, "至少晚于当前时间 1 小时"):
-            validate_update(existing_temporary, WorkPlanUpdate(start_time="08:00"), OBSERVED_AT)
+            validate_update(existing_temporary, WorkPlanUpdate(start_time="08:30"), OBSERVED_AT)
         with self.assertRaisesRegex(WorkPlanRuleError, "至少晚于当前时间 1 小时"):
             validate_update(
                 existing_work,
