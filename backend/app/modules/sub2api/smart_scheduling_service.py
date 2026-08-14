@@ -367,8 +367,15 @@ async def _run_smart_scheduling_locked(
                     ),
                     queue_entry,
                 )
-            if _needs_original_load_factor_capture(decision, state):
-                original_load_factor = before.get("load_factor")
+            if _needs_managed_load_factor_state_prewrite(decision, state):
+                saved_original_load_factor = _optional_int(
+                    (state or {}).get("original_load_factor")
+                )
+                original_load_factor = (
+                    saved_original_load_factor
+                    if saved_original_load_factor is not None
+                    else before.get("load_factor")
+                )
                 if original_load_factor is None:
                     raise ValueError(
                         "Cannot enter extreme scheduling without a valid load_factor"
@@ -378,12 +385,17 @@ async def _run_smart_scheduling_locked(
                     site_id=site_id,
                     remote_account_id=remote_account_id,
                     original_load_factor=original_load_factor,
+                    decision=decision,
                     captured_at=now,
                 )
                 state = {
                     **(state or {}),
+                    **_managed_load_factor_state(decision),
                     "original_load_factor": original_load_factor,
-                    "original_load_factor_captured_at": now,
+                    "original_load_factor_captured_at": (
+                        (state or {}).get("original_load_factor_captured_at")
+                        or now
+                    ),
                 }
                 states[str(remote_account_id)] = state
             if decision["status"] == "change":
@@ -713,6 +725,7 @@ async def _capture_original_load_factor(
     site_id: str,
     remote_account_id: Any,
     original_load_factor: int,
+    decision: dict[str, Any],
     captured_at: datetime,
 ) -> None:
     state_id = f"{site_id}:{remote_account_id}"
@@ -720,10 +733,11 @@ async def _capture_original_load_factor(
         "original_load_factor": original_load_factor,
         "original_load_factor_captured_at": captured_at,
     }
+    managed_state = _managed_load_factor_state(decision)
     await db.sub2api_smart_scheduling_states.update_one(
         {"_id": state_id},
         {
-            "$set": {"updated_at": captured_at},
+            "$set": {**managed_state, "updated_at": captured_at},
             "$setOnInsert": {
                 "site_id": site_id,
                 "remote_account_id": remote_account_id,
@@ -834,17 +848,31 @@ def _runtime_values(account: dict[str, Any]) -> dict[str, int | None]:
     }
 
 
-def _needs_original_load_factor_capture(
+def _needs_managed_load_factor_state_prewrite(
     decision: dict[str, Any],
     state: dict[str, Any] | None,
 ) -> bool:
     target = decision.get("target")
+    desired_mode = decision.get("mode")
     return bool(
         isinstance(target, dict)
         and target.get("load_factor") is not None
-        and decision.get("mode") in {"extreme", "rate_limit_pending"}
-        and _optional_int((state or {}).get("original_load_factor")) is None
+        and desired_mode in {"extreme", "rate_limit_pending"}
+        and (
+            _optional_int((state or {}).get("original_load_factor")) is None
+            or (state or {}).get("mode") != desired_mode
+        )
     )
+
+
+def _managed_load_factor_state(decision: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "mode": decision.get("mode"),
+        "adapted_type": decision.get("adapted_type"),
+        "seven_day_used_percent": decision.get("seven_day_used_percent"),
+        "seven_day_reset_at": decision.get("seven_day_reset_at"),
+        "rate_limit_detected_at": decision.get("rate_limit_detected_at"),
+    }
 
 
 def _should_clear_original_load_factor(
