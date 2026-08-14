@@ -35,6 +35,8 @@ The page contains one desktop workspace with these controls:
 
 The member column remains sticky while dates scroll. Each date column contains a 00:00-24:00 axis. Work bars use green, temporary-unavailable bars use amber, and cancelled bars are neutral and dashed. The current-day column and current-time marker are highlighted without presenting a compliance alert.
 
+Selecting a plan bar opens its detail panel. The plan owner and `owner/admin` users see edit and cancel actions; other members see read-only details. Managers also receive an `含已取消` filter in the all-records view so they can inspect and manage complete history without exposing manager actions to ordinary members.
+
 Rows show member name, current online/offline state, last online time, and collaboration status:
 
 - `计划工作中` when current time is inside a work plan;
