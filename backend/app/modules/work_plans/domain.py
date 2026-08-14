@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime, time, timedelta, timezone
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import UUID, uuid5
 
 from app.modules.work_plans.schemas import WorkPlanCreate, WorkPlanUpdate
 
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
+_WORK_PLAN_ID_NAMESPACE = UUID("aa757b4f-ee11-57fb-87ea-1278f5e6a310")
 
 
 class WorkPlanRuleError(ValueError):
@@ -19,6 +20,8 @@ class WorkPlanConflictError(WorkPlanRuleError):
 
 
 def time_to_minute(value: time) -> int:
+    if value.tzinfo is not None:
+        raise WorkPlanRuleError("时间不能包含时区，请使用 Asia/Shanghai 当地时间")
     if value.second != 0 or value.microsecond != 0 or value.minute not in {0, 30}:
         raise WorkPlanRuleError("时间必须以 30 分钟为间隔，且不能包含秒")
     return value.hour * 60 + value.minute
@@ -39,7 +42,7 @@ def deterministic_plan_id(
         ensure_ascii=True,
         separators=(",", ":"),
     )
-    return str(uuid5(NAMESPACE_URL, identity))
+    return str(uuid5(_WORK_PLAN_ID_NAMESPACE, identity))
 
 
 def is_plan_manager(actor: dict) -> bool:
@@ -126,7 +129,14 @@ def validate_update(
     )
     _validate_time_window(start_minute, end_minute)
 
-    if plan_type == "temporary_unavailable":
+    temporary_start_became_relevant = (
+        plan_type == "temporary_unavailable"
+        and (
+            existing.get("plan_type") != "temporary_unavailable"
+            or "start_time" in fields_set
+        )
+    )
+    if temporary_start_became_relevant:
         _validate_temporary_unavailable_start(
             plan_date=date.fromisoformat(existing["plan_date"]),
             start_time=_minute_to_time(start_minute),

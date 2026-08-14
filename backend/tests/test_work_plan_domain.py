@@ -4,6 +4,8 @@ import unittest
 from datetime import UTC, date, datetime, time, timedelta
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from app.modules.work_plans.domain import (
     WorkPlanConflictError,
     WorkPlanRuleError,
@@ -74,6 +76,17 @@ class WorkPlanTimeRuleTests(unittest.TestCase):
             with self.subTest(invalid_value=invalid_value):
                 with self.assertRaisesRegex(WorkPlanRuleError, "30"):
                     time_to_minute(invalid_value)
+
+    def test_schema_and_domain_reject_timezone_aware_times(self) -> None:
+        for field_name in ("start_time", "end_time"):
+            with self.subTest(schema_field=field_name):
+                with self.assertRaisesRegex(ValidationError, "时区"):
+                    create_payload(**{field_name: "09:00Z"})
+
+        with self.assertRaisesRegex(ValidationError, "时区"):
+            WorkPlanUpdate(start_time="09:00+08:00")
+        with self.assertRaisesRegex(WorkPlanRuleError, "时区"):
+            time_to_minute(time(9, tzinfo=UTC))
 
     def test_create_requires_end_time_later_than_start_time(self) -> None:
         for end_time in ("09:00", "08:30"):
@@ -158,7 +171,7 @@ class WorkPlanCreateRuleTests(unittest.TestCase):
 
         self.assertEqual(first, repeated)
         self.assertNotEqual(first, next_date)
-        UUID(first)
+        self.assertEqual(first, "fff97f7c-f2bd-5e7c-b9e8-b88bbb2c1825")
 
     def test_only_owner_and_admin_are_plan_managers(self) -> None:
         for role in ("owner", "admin"):
@@ -168,7 +181,11 @@ class WorkPlanCreateRuleTests(unittest.TestCase):
             with self.subTest(role=role):
                 self.assertFalse(is_plan_manager({"role": role}))
 
-    def test_drafts_use_actor_identity_and_name_not_client_member_id(self) -> None:
+    def test_create_schema_rejects_client_member_identity(self) -> None:
+        with self.assertRaises(ValidationError):
+            create_payload(member_id="forged-member")
+
+    def test_drafts_use_actor_identity_and_name(self) -> None:
         payload = WorkPlanCreate.model_validate(
             {
                 "plan_type": "work",
@@ -177,7 +194,6 @@ class WorkPlanCreateRuleTests(unittest.TestCase):
                 "end_time": "18:00",
                 "note": "  client note  ",
                 "idempotency_key": str(IDEMPOTENCY_KEY),
-                "member_id": "forged-member",
             }
         )
 
@@ -193,23 +209,25 @@ class WorkPlanCreateRuleTests(unittest.TestCase):
         self.assertEqual(draft["status"], "active")
         self.assertFalse(draft["is_cancelled"])
         self.assertEqual(draft["idempotency_key"], str(IDEMPOTENCY_KEY))
-        self.assertNotEqual(draft["member_id"], "forged-member")
 
     def test_blank_create_note_is_stored_as_none(self) -> None:
         draft = build_plan_drafts(ACTOR, create_payload(note="   "), OBSERVED_AT)[0]
 
         self.assertIsNone(draft["note"])
 
+    def test_create_note_is_trimmed_before_max_length_validation(self) -> None:
+        payload = create_payload(note=f"  {'x' * 500}  ")
+
+        self.assertEqual(payload.note, "x" * 500)
+        self.assertEqual(build_plan_drafts(ACTOR, payload, OBSERVED_AT)[0]["note"], "x" * 500)
+
+        with self.assertRaises(ValidationError):
+            create_payload(note=f"  {'x' * 501}  ")
+
 
 class WorkPlanUpdateRuleTests(unittest.TestCase):
-    def test_update_merges_omitted_fields_and_keeps_date_and_owner_immutable(self) -> None:
-        payload = WorkPlanUpdate.model_validate(
-            {
-                "start_time": "10:00",
-                "plan_date": "2026-09-01",
-                "member_id": "forged-member",
-            }
-        )
+    def test_update_merges_omitted_fields_and_excludes_immutable_fields(self) -> None:
+        payload = WorkPlanUpdate(start_time="10:00")
 
         updates = validate_update(existing_plan(), payload, OBSERVED_AT)
 
@@ -226,11 +244,85 @@ class WorkPlanUpdateRuleTests(unittest.TestCase):
         self.assertNotIn("plan_date", updates)
         self.assertNotIn("member_id", updates)
 
+    def test_update_schema_rejects_immutable_and_unknown_fields(self) -> None:
+        for field_name, value in (
+            ("plan_date", "2026-09-01"),
+            ("member_id", "forged-member"),
+            ("unknown", True),
+        ):
+            with self.subTest(field_name=field_name):
+                with self.assertRaises(ValidationError):
+                    WorkPlanUpdate.model_validate({"note": "changed", field_name: value})
+
+    def test_update_requires_at_least_one_mutable_field(self) -> None:
+        invalid_payloads = (
+            {},
+            {"expected_updated_at": datetime(2026, 8, 14, 12, tzinfo=UTC)},
+        )
+
+        for values in invalid_payloads:
+            with self.subTest(values=values):
+                with self.assertRaisesRegex(ValidationError, "至少提供一个可更新字段"):
+                    WorkPlanUpdate.model_validate(values)
+
+    def test_update_rejects_null_required_mutable_values_but_allows_note_clear(self) -> None:
+        for field_name in ("plan_type", "start_time", "end_time"):
+            with self.subTest(field_name=field_name):
+                with self.assertRaisesRegex(ValidationError, "不能为 null"):
+                    WorkPlanUpdate.model_validate({field_name: None})
+
+        payload = WorkPlanUpdate(note=None)
+        self.assertIn("note", payload.model_fields_set)
+
+    def test_update_note_is_trimmed_before_max_length_validation(self) -> None:
+        payload = WorkPlanUpdate(note=f"  {'x' * 500}  ")
+
+        self.assertEqual(payload.note, "x" * 500)
+        with self.assertRaises(ValidationError):
+            WorkPlanUpdate(note=f"  {'x' * 501}  ")
+
     def test_update_rejects_invalid_merged_time_window(self) -> None:
         payload = WorkPlanUpdate(end_time="08:30")
 
         with self.assertRaisesRegex(WorkPlanRuleError, "结束时间"):
             validate_update(existing_plan(), payload, OBSERVED_AT)
+
+    def test_temporary_unavailable_note_and_end_updates_ignore_elapsed_lead_time(self) -> None:
+        existing = existing_plan(
+            plan_date="2026-08-15",
+            plan_type="temporary_unavailable",
+            start_minute=8 * 60,
+            end_minute=9 * 60,
+        )
+
+        note_updates = validate_update(existing, WorkPlanUpdate(note="changed"), OBSERVED_AT)
+        end_updates = validate_update(existing, WorkPlanUpdate(end_time="09:30"), OBSERVED_AT)
+
+        self.assertEqual(note_updates["note"], "changed")
+        self.assertEqual(end_updates["end_minute"], 9 * 60 + 30)
+
+    def test_temporary_unavailable_start_or_type_change_rechecks_lead_time(self) -> None:
+        existing_temporary = existing_plan(
+            plan_date="2026-08-15",
+            plan_type="temporary_unavailable",
+            start_minute=8 * 60,
+            end_minute=9 * 60,
+        )
+        existing_work = existing_plan(
+            plan_date="2026-08-15",
+            plan_type="work",
+            start_minute=8 * 60,
+            end_minute=9 * 60,
+        )
+
+        with self.assertRaisesRegex(WorkPlanRuleError, "至少晚于当前时间 1 小时"):
+            validate_update(existing_temporary, WorkPlanUpdate(start_time="08:00"), OBSERVED_AT)
+        with self.assertRaisesRegex(WorkPlanRuleError, "至少晚于当前时间 1 小时"):
+            validate_update(
+                existing_work,
+                WorkPlanUpdate(plan_type="temporary_unavailable"),
+                OBSERVED_AT,
+            )
 
     def test_update_normalizes_blank_note_and_preserves_omitted_note(self) -> None:
         cleared = validate_update(existing_plan(), WorkPlanUpdate(note="   "), OBSERVED_AT)
