@@ -297,9 +297,9 @@ git add docs/superpowers/plans/2026-08-14-sparse-smart-scheduling-events.md
 git commit -m "docs: complete sparse scheduling event plan"
 ```
 
-- [ ] **Step 5: Push and open a pull request**
+- [x] **Step 5: Push and open a pull request**
 
-Push `codex/sparse-smart-scheduling-events` and open a ready PR targeting
+Push `codex/sparse-smart-scheduling-events` and open a draft PR targeting
 `achernar/dev`. The PR body must summarize sparse state/event storage, 7-day
 retention, redundant-index removal, verification results, and the fact that
 historical outcome cleanup is excluded.
