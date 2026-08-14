@@ -158,6 +158,13 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.api_tokens.create_index("token_prefix")
     await db.api_tokens.create_index("status")
     await db.api_tokens.create_index("created_at")
+    await db.work_plans.create_index(
+        [("member_id", 1), ("idempotency_key", 1), ("plan_date", 1)],
+        unique=True,
+    )
+    await db.work_plans.create_index([("plan_date", 1), ("member_id", 1), ("created_at", -1)])
+    await db.work_plans.create_index([("member_id", 1), ("plan_date", -1), ("created_at", -1)])
+    await db.work_plans.create_index([("is_cancelled", 1), ("plan_date", 1)])
     await ensure_frontend_presence_indexes(db)
     await db.frontend_presence_minutes.create_index([("user_id", 1), ("bucket_at", 1)], unique=True)
     await db.frontend_presence_minutes.create_index([("bucket_at", -1)])

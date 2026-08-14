@@ -26,6 +26,7 @@ ROLE_LABELS = {
 OWNER_REQUIRED_VIEWS = {"system-management", "api-tokens", "users"}
 SYSTEM_MANAGEMENT_ROLES = {"owner", "admin"}
 AVAILABLE_VIEWS: tuple[ViewName, ...] = (
+    "work-plans",
     "upload",
     "todos",
     "push-error-todos",
@@ -51,6 +52,7 @@ AVAILABLE_VIEWS: tuple[ViewName, ...] = (
     "logs",
 )
 AVAILABLE_VIEW_SET = set(AVAILABLE_VIEWS)
+MANDATORY_ROLE_VIEWS: set[ViewName] = {"work-plans"}
 
 DEFAULT_ROLE_VIEWS: dict[str, list[ViewName]] = {
     "owner": list(AVAILABLE_VIEWS),
@@ -60,7 +62,7 @@ DEFAULT_ROLE_VIEWS: dict[str, list[ViewName]] = {
         for view in AVAILABLE_VIEWS
         if view not in {"presence", "traffic-analysis", "traffic-analysis-config", "system-management", "api-tokens", "users"}
     ],
-    "operator": ["traffic-analysis", "operations-management"],
+    "operator": ["work-plans", "traffic-analysis", "operations-management"],
     "viewer": [
         view
         for view in AVAILABLE_VIEWS
@@ -412,6 +414,8 @@ def _normalize_entry(role: str, value: dict[str, Any], *, fallback: dict[str, An
         allowed_views = _dedupe_valid_views(fallback.get("allowed_views", []))
     if "pool-lifecycle" in allowed_views and "auto-replenishment" not in allowed_views:
         allowed_views.append("auto-replenishment")
+    allowed_set = set(allowed_views) | MANDATORY_ROLE_VIEWS
+    allowed_views = [view for view in AVAILABLE_VIEWS if view in allowed_set]
     if role == "owner":
         allowed_views = [view for view in AVAILABLE_VIEWS if view in set(allowed_views) | OWNER_REQUIRED_VIEWS]
     else:
