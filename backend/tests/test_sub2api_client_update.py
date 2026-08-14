@@ -242,6 +242,35 @@ class Sub2ApiClientUpdateTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result["success_ids"], [5864, 5863])
 
+    async def test_bulk_runtime_update_reports_missing_required_fields(self) -> None:
+        client = Sub2ApiClient(base_url="http://sub2.example.com", token="admin-key")
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "^bulk runtime account updates are missing required fields: group_ids$",
+        ):
+            await client.bulk_update_accounts_runtime(
+                [5864],
+                {"concurrency": 100, "priority": 10},
+            )
+
+    async def test_bulk_runtime_update_reports_unsupported_fields(self) -> None:
+        client = Sub2ApiClient(base_url="http://sub2.example.com", token="admin-key")
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "^bulk runtime account updates contain unsupported fields: rate_multiplier$",
+        ):
+            await client.bulk_update_accounts_runtime(
+                [5864],
+                {
+                    "concurrency": 100,
+                    "priority": 10,
+                    "group_ids": [3],
+                    "rate_multiplier": 2,
+                },
+            )
+
     async def test_patch_404_fetches_current_account_and_retries_with_full_put(self) -> None:
         client = Sub2ApiClient(base_url="http://sub2.example.com", token="admin-key")
         patch_response = httpx.Response(

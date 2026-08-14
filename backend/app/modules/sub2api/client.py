@@ -318,9 +318,18 @@ class Sub2ApiClient:
     ) -> dict[str, Any]:
         required_fields = {"priority", "concurrency", "group_ids"}
         optional_fields = {"load_factor"}
-        if not required_fields.issubset(payload) or set(payload) - required_fields - optional_fields:
+        payload_fields = set(payload)
+        missing_fields = required_fields - payload_fields
+        unsupported_fields = payload_fields - required_fields - optional_fields
+        if missing_fields:
             raise ValueError(
-                "bulk runtime account updates require priority, concurrency, and group_ids"
+                "bulk runtime account updates are missing required fields: "
+                + ", ".join(sorted(missing_fields))
+            )
+        if unsupported_fields:
+            raise ValueError(
+                "bulk runtime account updates contain unsupported fields: "
+                + ", ".join(sorted(unsupported_fields))
             )
         if not account_ids:
             return {
