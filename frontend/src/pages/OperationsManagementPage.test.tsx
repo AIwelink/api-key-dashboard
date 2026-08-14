@@ -23,6 +23,7 @@ import {
   shouldAutoRefreshOperationsOverview,
   shouldApplyOperationsOverviewResponse,
   shouldApplyRedemptionReveal,
+  sortNewestFirst,
   supportsSafeRedemptionDeletion,
   shouldApplyRedemptionResponse,
   internalUserDeleteDetails,
@@ -76,6 +77,24 @@ describe("operations management workspace", () => {
     expect(preferredOperationsSiteId(sites)).toBe("aiwelink");
     expect(preferredOperationsSiteId([sites[0]])).toBe("aigclink");
     expect(preferredOperationsSiteId([])).toBe("");
+  });
+
+  it("sorts time rows newest first without mutating equal-time input order", () => {
+    const rows = [
+      { id: "older", timestamp: "2026-08-12T08:00:00Z" },
+      { id: "same-a", timestamp: "2026-08-13T08:00:00Z" },
+      { id: "latest", timestamp: "2026-08-14T08:00:00Z" },
+      { id: "same-b", timestamp: "2026-08-13T08:00:00Z" },
+    ];
+    const originalRows = [...rows];
+
+    expect(sortNewestFirst(rows, (item) => item.timestamp).map((item) => item.id)).toEqual([
+      "latest",
+      "same-a",
+      "same-b",
+      "older",
+    ]);
+    expect(rows).toEqual(originalRows);
   });
 
   it("defaults multi-site selectors to AIWeLink while keeping all-sites explicit", () => {
