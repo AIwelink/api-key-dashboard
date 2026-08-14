@@ -152,12 +152,7 @@ async def ensure_frontend_presence_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.frontend_presence.create_index("expires_at", expireAfterSeconds=0)
 
 
-async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
-    await db.users.create_index("email", unique=True)
-    await db.api_tokens.create_index("token_hash", unique=True)
-    await db.api_tokens.create_index("token_prefix")
-    await db.api_tokens.create_index("status")
-    await db.api_tokens.create_index("created_at")
+async def ensure_work_plan_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.work_plans.create_index(
         [("member_id", 1), ("idempotency_key", 1), ("plan_date", 1)],
         unique=True,
@@ -165,6 +160,15 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.work_plans.create_index([("plan_date", 1), ("member_id", 1), ("created_at", -1)])
     await db.work_plans.create_index([("member_id", 1), ("plan_date", -1), ("created_at", -1)])
     await db.work_plans.create_index([("is_cancelled", 1), ("plan_date", 1)])
+
+
+async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
+    await db.users.create_index("email", unique=True)
+    await db.api_tokens.create_index("token_hash", unique=True)
+    await db.api_tokens.create_index("token_prefix")
+    await db.api_tokens.create_index("status")
+    await db.api_tokens.create_index("created_at")
+    await ensure_work_plan_indexes(db)
     await ensure_frontend_presence_indexes(db)
     await db.frontend_presence_minutes.create_index([("user_id", 1), ("bucket_at", 1)], unique=True)
     await db.frontend_presence_minutes.create_index([("bucket_at", -1)])

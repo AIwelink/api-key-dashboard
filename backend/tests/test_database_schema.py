@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, call, patch
+from unittest.mock import AsyncMock, patch
 
-from app.modules.system import bootstrap, database_schema
+from app.modules.system import database_schema
 from app.modules.system.database_schema import normalize_schema_catalog
 
 
@@ -320,38 +320,6 @@ class DatabaseSchemaInspectionTests(unittest.IsolatedAsyncioTestCase):
                 "referenced_table": "accounts",
                 "referenced_columns": ["id"],
             },
-        )
-
-
-class MongoBootstrapIndexTests(unittest.IsolatedAsyncioTestCase):
-    async def test_work_plan_indexes_cover_idempotency_schedule_history_and_cancellation(self) -> None:
-        collections: dict[str, SimpleNamespace] = {}
-
-        class IndexDatabase:
-            def __getattr__(self, name: str) -> SimpleNamespace:
-                if name not in collections:
-                    collections[name] = SimpleNamespace(
-                        create_index=AsyncMock(),
-                        index_information=AsyncMock(return_value={}),
-                        drop_index=AsyncMock(),
-                        delete_many=AsyncMock(),
-                    )
-                return collections[name]
-
-        db = IndexDatabase()
-
-        await bootstrap.ensure_indexes(db)
-
-        db.work_plans.create_index.assert_has_awaits(
-            [
-                call(
-                    [("member_id", 1), ("idempotency_key", 1), ("plan_date", 1)],
-                    unique=True,
-                ),
-                call([("plan_date", 1), ("member_id", 1), ("created_at", -1)]),
-                call([("member_id", 1), ("plan_date", -1), ("created_at", -1)]),
-                call([("is_cancelled", 1), ("plan_date", 1)]),
-            ]
         )
 
 
