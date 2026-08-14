@@ -163,13 +163,172 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["scanned"], 1)
         self.assertEqual(result["changed"], 1)
         self.assertEqual(result["failed"], 0)
-        self.assertEqual(
-            db.sub2api_smart_scheduling_outcomes.update_one.await_count,
-            1,
-        )
+        db.sub2api_smart_scheduling_outcomes.update_one.assert_not_awaited()
         release_filter = db.operation_locks.delete_one.await_args.args[0]
         self.assertEqual(release_filter["_id"], "smart-scheduling:api-5001")
         self.assertTrue(release_filter["owner"])
+
+    async def test_existing_state_mode_transition_writes_sparse_event(self) -> None:
+        db = self.db(
+            states=[
+                {
+                    "remote_account_id": 7,
+                    "mode": "normal",
+                    "last_target": {"priority": 250, "concurrency": 30},
+                }
+            ]
+        )
+        client = SimpleNamespace(
+            get_account=AsyncMock(
+                return_value={"id": 7, "priority": 250, "concurrency": 30}
+            ),
+            bulk_update_accounts_runtime=AsyncMock(
+                return_value={"success_ids": [7], "failed_ids": []}
+            ),
+        )
+
+        result = await run_smart_scheduling(
+            db,
+            site=self.site(),
+            accounts=[self.account(7, used=90)],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": True,
+                }
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=client,
+            now=self.now,
+        )
+
+        self.assertEqual(result["changed"], 1)
+        outcome = db.sub2api_smart_scheduling_outcomes.update_one.await_args.args[1][
+            "$set"
+        ]
+        self.assertEqual(outcome["event_type"], "state_transition")
+        self.assertEqual(
+            outcome["previous_state"],
+            {"mode": "normal", "target": {"priority": 250, "concurrency": 30}},
+        )
+        self.assertEqual(
+            outcome["applied_state"],
+            {
+                "mode": "extreme",
+                "target": {
+                    "priority": 10,
+                    "concurrency": 100,
+                    "load_factor": 10000,
+                },
+            },
+        )
+
+    async def test_reason_only_state_refresh_does_not_write_event(self) -> None:
+        db = self.db(
+            states=[
+                {
+                    "remote_account_id": 7,
+                    "mode": "normal",
+                    "last_target": {"priority": 200, "concurrency": 30},
+                    "last_reason": "previous_reason",
+                }
+            ]
+        )
+
+        result = await run_smart_scheduling(
+            db,
+            site=self.site(),
+            accounts=[self.account(7, priority=200, concurrency=30)],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": False,
+                }
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=SimpleNamespace(
+                get_account=AsyncMock(),
+                bulk_update_accounts_runtime=AsyncMock(),
+            ),
+            now=self.now,
+        )
+
+        self.assertEqual(result["unchanged"], 1)
+        db.sub2api_smart_scheduling_outcomes.update_one.assert_not_awaited()
+
+    async def test_target_only_transition_writes_sparse_event(self) -> None:
+        db = self.db(
+            states=[
+                {
+                    "remote_account_id": 7,
+                    "mode": "normal",
+                    "last_target": {"priority": 201, "concurrency": 30},
+                }
+            ]
+        )
+        client = SimpleNamespace(
+            get_account=AsyncMock(
+                return_value={"id": 7, "priority": 250, "concurrency": 30}
+            ),
+            bulk_update_accounts_runtime=AsyncMock(
+                return_value={"success_ids": [7], "failed_ids": []}
+            ),
+        )
+
+        await run_smart_scheduling(
+            db,
+            site=self.site(),
+            accounts=[self.account(7, concurrency=30)],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": False,
+                }
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=client,
+            now=self.now,
+        )
+
+        outcome = db.sub2api_smart_scheduling_outcomes.update_one.await_args.args[1][
+            "$set"
+        ]
+        self.assertEqual(outcome["event_type"], "state_transition")
+        self.assertEqual(outcome["previous_state"]["mode"], "normal")
+        self.assertEqual(outcome["applied_state"]["mode"], "normal")
+        self.assertEqual(
+            outcome["previous_state"]["target"]["priority"],
+            201,
+        )
+        self.assertEqual(outcome["applied_state"]["target"]["priority"], 200)
+
+    async def test_skipped_decision_does_not_write_event(self) -> None:
+        result_db = self.db()
+
+        result = await run_smart_scheduling(
+            result_db,
+            site=self.site(),
+            accounts=[self.account(7, account_type="free")],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": False,
+                }
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=SimpleNamespace(
+                get_account=AsyncMock(),
+                bulk_update_accounts_runtime=AsyncMock(),
+            ),
+            now=self.now,
+        )
+
+        self.assertEqual(result["skipped"], 1)
+        result_db.sub2api_smart_scheduling_outcomes.update_one.assert_not_awaited()
 
     async def test_accounts_with_same_groups_receive_distinct_queue_priorities(self) -> None:
         client = SimpleNamespace(
@@ -509,16 +668,10 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         state_update = (
             db.sub2api_smart_scheduling_states.update_one.await_args.args[1]["$set"]
         )
-        outcome_update = (
-            db.sub2api_smart_scheduling_outcomes.update_one.await_args.args[1]["$set"]
-        )
         self.assertEqual(state_update["queue_partition"], "usable")
         self.assertEqual(state_update["queue_index"], 0)
         self.assertEqual(state_update["queue_priority"], 50)
-        self.assertEqual(
-            outcome_update["queue_created_at"],
-            "2026-01-01T00:00:00+00:00",
-        )
+        db.sub2api_smart_scheduling_outcomes.update_one.assert_not_awaited()
 
     async def test_multi_group_flags_are_aggregated_by_enabled_strategy(self) -> None:
         account = self.account(7, group_ids=[3], used=90)
@@ -763,6 +916,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             .args[1]["$set"]
         )
         self.assertEqual(first_outcome["status"], "failed")
+        self.assertEqual(first_outcome["event_type"], "remote_update_failed")
         self.assertEqual(first_outcome["error_code"], "remote_update_failed")
         self.assertEqual(first_outcome["error_type"], "BulkUpdateAccountFailed")
         self.assertEqual(
@@ -812,6 +966,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(failed_outcome["error_code"], "admin_auth_error")
         self.assertEqual(failed_outcome["error_type"], "InvalidAdminApiKeyError")
+        self.assertEqual(failed_outcome["event_type"], "remote_update_failed")
         self.assertNotIn("admin-secret", str(failed_outcome))
 
     async def test_client_configuration_failure_stops_before_later_accounts(self) -> None:
@@ -865,6 +1020,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             "admin_api_configuration_error",
         )
         self.assertEqual(failed_outcome["error_type"], "ValueError")
+        self.assertEqual(failed_outcome["event_type"], "remote_update_failed")
         self.assertNotIn("reader:secret", str(failed_outcome))
 
     async def test_missing_sql_dsn_does_not_fall_back_to_site_token(self) -> None:
@@ -918,6 +1074,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             failed_outcome["error_code"],
             "admin_api_configuration_error",
         )
+        self.assertEqual(failed_outcome["event_type"], "remote_update_failed")
         self.assertNotIn("legacy-admin-secret", str(failed_outcome))
 
     async def test_stale_extreme_state_is_held_without_remote_calls(self) -> None:
@@ -960,6 +1117,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["skipped"], 1)
         client.get_account.assert_not_awaited()
         client.bulk_update_accounts_runtime.assert_not_awaited()
+        db.sub2api_smart_scheduling_outcomes.update_one.assert_not_awaited()
 
     async def test_states_are_preloaded_once_with_compact_projection(self) -> None:
         reset_at = self.now + timedelta(days=3)
@@ -1010,6 +1168,10 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             {
                 "remote_account_id": 1,
                 "mode": 1,
+                "adapted_type": 1,
+                "last_strategy": 1,
+                "last_reason": 1,
+                "last_target": 1,
                 "seven_day_reset_at": 1,
                 "rate_limit_detected_at": 1,
                 "original_load_factor": 1,
@@ -1639,7 +1801,15 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("$unset", state_calls[0].args[1])
 
     async def test_successful_extreme_update_persists_scheduler_state(self) -> None:
-        db = self.db()
+        db = self.db(
+            states=[
+                {
+                    "remote_account_id": 7,
+                    "mode": "normal",
+                    "last_target": {"priority": 250, "concurrency": 30},
+                }
+            ]
+        )
         client = SimpleNamespace(
             get_account=AsyncMock(
                 return_value={"id": 7, "priority": 250, "concurrency": 30}
@@ -1692,8 +1862,12 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         outcome_call = db.sub2api_smart_scheduling_outcomes.update_one.await_args
         self.assertTrue(outcome_call.kwargs["upsert"])
         self.assertEqual(
+            outcome_call.args[1]["$set"]["event_type"],
+            "state_transition",
+        )
+        self.assertEqual(
             outcome_call.args[1]["$set"]["expires_at"],
-            self.now + timedelta(days=30),
+            self.now + timedelta(days=7),
         )
 
     async def test_active_lease_conflict_skips_the_runner(self) -> None:
@@ -1769,6 +1943,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         client.bulk_update_accounts_runtime.assert_not_awaited()
         self.assertEqual(result["failed"], 1)
         outcome = db.sub2api_smart_scheduling_outcomes.update_one.await_args.args[1]["$set"]
+        self.assertEqual(outcome["event_type"], "remote_update_failed")
         self.assertEqual(outcome["error_code"], "scheduling_lease_lost")
 
     async def test_lease_release_failure_does_not_mask_run_result(self) -> None:
