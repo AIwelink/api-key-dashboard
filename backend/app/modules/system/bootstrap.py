@@ -65,7 +65,11 @@ async def ensure_smart_scheduling_indexes(db: AsyncIOMotorDatabase) -> None:
         outcome_indexes = {}
     legacy_outcome_index = "site_id_1_run_id_1_remote_account_id_1"
     if legacy_outcome_index in outcome_indexes:
-        await db.sub2api_smart_scheduling_outcomes.drop_index(legacy_outcome_index)
+        try:
+            await db.sub2api_smart_scheduling_outcomes.drop_index(legacy_outcome_index)
+        except OperationFailure as exc:
+            if exc.code != 27:
+                raise
     await db.sub2api_smart_scheduling_outcomes.create_index(
         "expires_at",
         expireAfterSeconds=0,

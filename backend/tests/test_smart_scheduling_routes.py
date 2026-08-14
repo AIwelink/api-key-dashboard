@@ -7,6 +7,7 @@ from unittest.mock import ANY, AsyncMock, patch
 
 from fastapi import HTTPException
 from pydantic import ValidationError
+from pymongo.errors import OperationFailure
 
 from app.modules.sub2api.smart_scheduling import default_smart_scheduling_rules
 from app.modules.sub2api.smart_scheduling_service import (
@@ -293,6 +294,38 @@ class SmartSchedulingIndexTests(unittest.IsolatedAsyncioTestCase):
         await bootstrap.ensure_smart_scheduling_indexes(db)
 
         outcomes.drop_index.assert_not_awaited()
+        outcomes.create_index.assert_awaited_once_with(
+            "expires_at",
+            expireAfterSeconds=0,
+        )
+
+    async def test_indexes_tolerate_concurrent_legacy_index_removal(self) -> None:
+        outcomes = SimpleNamespace(
+            index_information=AsyncMock(
+                return_value={
+                    "site_id_1_run_id_1_remote_account_id_1": {"key": []}
+                }
+            ),
+            drop_index=AsyncMock(
+                side_effect=OperationFailure("index not found", code=27)
+            ),
+            create_index=AsyncMock(),
+        )
+        db = SimpleNamespace(
+            sub2api_smart_scheduling_states=SimpleNamespace(
+                create_index=AsyncMock()
+            ),
+            sub2api_smart_scheduling_runs=SimpleNamespace(
+                create_index=AsyncMock()
+            ),
+            sub2api_smart_scheduling_outcomes=outcomes,
+        )
+
+        await bootstrap.ensure_smart_scheduling_indexes(db)
+
+        outcomes.drop_index.assert_awaited_once_with(
+            "site_id_1_run_id_1_remote_account_id_1"
+        )
         outcomes.create_index.assert_awaited_once_with(
             "expires_at",
             expireAfterSeconds=0,
