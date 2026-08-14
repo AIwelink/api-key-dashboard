@@ -224,6 +224,22 @@ class SmartSchedulingRouteTests(unittest.IsolatedAsyncioTestCase):
 
 class SmartSchedulingIndexTests(unittest.IsolatedAsyncioTestCase):
     async def test_indexes_cover_state_runs_outcomes_and_retention(self) -> None:
+        outcomes = SimpleNamespace(
+            index_information=AsyncMock(
+                return_value={
+                    "_id_": {"key": [("_id", 1)]},
+                    "site_id_1_run_id_1_remote_account_id_1": {
+                        "key": [
+                            ("site_id", 1),
+                            ("run_id", 1),
+                            ("remote_account_id", 1),
+                        ]
+                    },
+                }
+            ),
+            drop_index=AsyncMock(),
+            create_index=AsyncMock(),
+        )
         db = SimpleNamespace(
             sub2api_smart_scheduling_states=SimpleNamespace(
                 create_index=AsyncMock()
@@ -231,9 +247,7 @@ class SmartSchedulingIndexTests(unittest.IsolatedAsyncioTestCase):
             sub2api_smart_scheduling_runs=SimpleNamespace(
                 create_index=AsyncMock()
             ),
-            sub2api_smart_scheduling_outcomes=SimpleNamespace(
-                create_index=AsyncMock()
-            ),
+            sub2api_smart_scheduling_outcomes=outcomes,
         )
 
         await bootstrap.ensure_smart_scheduling_indexes(db)
@@ -249,11 +263,37 @@ class SmartSchedulingIndexTests(unittest.IsolatedAsyncioTestCase):
             "expires_at",
             expireAfterSeconds=0,
         )
-        db.sub2api_smart_scheduling_outcomes.create_index.assert_any_await(
-            [("site_id", 1), ("run_id", 1), ("remote_account_id", 1)],
-            unique=True,
+        outcomes.index_information.assert_awaited_once_with()
+        outcomes.drop_index.assert_awaited_once_with(
+            "site_id_1_run_id_1_remote_account_id_1"
         )
-        db.sub2api_smart_scheduling_outcomes.create_index.assert_any_await(
+        outcomes.create_index.assert_awaited_once_with(
+            "expires_at",
+            expireAfterSeconds=0,
+        )
+
+    async def test_indexes_do_not_drop_missing_legacy_outcome_index(self) -> None:
+        outcomes = SimpleNamespace(
+            index_information=AsyncMock(
+                return_value={"_id_": {"key": [("_id", 1)]}}
+            ),
+            drop_index=AsyncMock(),
+            create_index=AsyncMock(),
+        )
+        db = SimpleNamespace(
+            sub2api_smart_scheduling_states=SimpleNamespace(
+                create_index=AsyncMock()
+            ),
+            sub2api_smart_scheduling_runs=SimpleNamespace(
+                create_index=AsyncMock()
+            ),
+            sub2api_smart_scheduling_outcomes=outcomes,
+        )
+
+        await bootstrap.ensure_smart_scheduling_indexes(db)
+
+        outcomes.drop_index.assert_not_awaited()
+        outcomes.create_index.assert_awaited_once_with(
             "expires_at",
             expireAfterSeconds=0,
         )
