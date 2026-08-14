@@ -72,6 +72,6 @@ Run: `git diff --check`
 
 Expected: no whitespace errors.
 
-- [ ] **Step 4: Commit and publish**
+- [x] **Step 4: Commit and publish**
 
 Stage only the design, plan, operations page, and page test. Commit the implementation, push `codex/operations-newest-first`, and create a draft PR targeting `achernar/dev`.
