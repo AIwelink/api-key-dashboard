@@ -16,7 +16,7 @@
 - Modify: `backend/tests/test_smart_scheduling_service.py`
 - Modify: `backend/app/modules/sub2api/smart_scheduling_service.py`
 
-- [ ] **Step 1: Write failing suppression and transition tests**
+- [x] **Step 1: Write failing suppression and transition tests**
 
 Add focused service tests covering an unchanged account, a held account, an
 initial successful change, an existing-state mode transition, a target-only
@@ -56,7 +56,7 @@ Update older tests that expected a baseline or no-op outcome so they assert
 state/run behavior instead. Tests whose purpose is transition event content
 must provide an existing state fixture.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run:
 
@@ -67,7 +67,7 @@ backend\.venv\Scripts\python.exe -m pytest backend\tests\test_smart_scheduling_s
 Expected: new suppression assertions fail because the service currently writes
 an outcome for every evaluated account, and new event fields are absent.
 
-- [ ] **Step 3: Load transition fields from reusable state records**
+- [x] **Step 3: Load transition fields from reusable state records**
 
 Expand `_states_for_accounts` projection with the existing persisted fields:
 
@@ -80,7 +80,7 @@ Expand `_states_for_accounts` projection with the existing persisted fields:
 
 Do not fetch full account documents or credentials.
 
-- [ ] **Step 4: Add a stable transition comparison helper**
+- [x] **Step 4: Add a stable transition comparison helper**
 
 Add focused pure helpers near `_runtime_values`:
 
@@ -122,7 +122,7 @@ def _state_transition(
 This deliberately ignores reason, strategy, quota, timestamps, and queue
 metadata.
 
-- [ ] **Step 5: Gate outcome writes by event type**
+- [x] **Step 5: Gate outcome writes by event type**
 
 Extend `_persist_outcome` with:
 
@@ -154,11 +154,11 @@ event_type="remote_update_failed"
 and do not persist the proposed decision as the applied state. Preserve existing
 lease-stop, error sanitization, counters, and bulk update behavior.
 
-- [ ] **Step 6: Run focused tests and verify GREEN**
+- [x] **Step 6: Run focused tests and verify GREEN**
 
 Run the Task 1 pytest command. Expected: all smart-scheduling service tests pass.
 
-- [ ] **Step 7: Commit sparse service events**
+- [x] **Step 7: Commit sparse service events**
 
 ```powershell
 git add backend/app/modules/sub2api/smart_scheduling_service.py backend/tests/test_smart_scheduling_service.py
@@ -173,7 +173,7 @@ git commit -m "feat: store sparse smart scheduling events"
 - Modify: `backend/app/modules/system/bootstrap.py`
 - Modify: `backend/app/modules/sub2api/smart_scheduling_service.py`
 
-- [ ] **Step 1: Write failing retention and migration tests**
+- [x] **Step 1: Write failing retention and migration tests**
 
 Change the event-retention assertion to:
 
@@ -206,7 +206,7 @@ outcomes.create_index.assert_awaited_once_with(
 Add a fresh-database case where `index_information` returns only `_id_` and
 assert `drop_index` is not awaited.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run:
 
@@ -217,7 +217,7 @@ backend\.venv\Scripts\python.exe -m pytest backend\tests\test_smart_scheduling_s
 Expected: retention remains 30 days and bootstrap still creates the compound
 index.
 
-- [ ] **Step 3: Implement retention and idempotent index removal**
+- [x] **Step 3: Implement retention and idempotent index removal**
 
 Set:
 
@@ -242,11 +242,11 @@ await db.sub2api_smart_scheduling_outcomes.create_index(
 Remove creation of the redundant compound index. Do not alter state or run
 indexes and do not issue document deletes.
 
-- [ ] **Step 4: Run focused tests and verify GREEN**
+- [x] **Step 4: Run focused tests and verify GREEN**
 
 Run the Task 2 pytest command. Expected: both test modules pass.
 
-- [ ] **Step 5: Commit retention and index migration**
+- [x] **Step 5: Commit retention and index migration**
 
 ```powershell
 git add backend/app/modules/sub2api/smart_scheduling_service.py backend/app/modules/system/bootstrap.py backend/tests/test_smart_scheduling_service.py backend/tests/test_smart_scheduling_routes.py
@@ -258,7 +258,7 @@ git commit -m "perf: reduce smart scheduling event storage"
 **Files:**
 - Modify: `docs/superpowers/plans/2026-08-14-sparse-smart-scheduling-events.md`
 
-- [ ] **Step 1: Run the complete backend suite**
+- [x] **Step 1: Run the complete backend suite**
 
 ```powershell
 backend\.venv\Scripts\python.exe -m pytest backend\tests -q
@@ -266,7 +266,7 @@ backend\.venv\Scripts\python.exe -m pytest backend\tests -q
 
 Expected: all backend tests pass with no failures.
 
-- [ ] **Step 2: Run static repository checks**
+- [x] **Step 2: Run static repository checks**
 
 ```powershell
 git diff --check origin/achernar/dev...HEAD
@@ -276,7 +276,7 @@ git status --short
 Expected: no whitespace errors and only the intended plan checkbox update, if
 not yet committed.
 
-- [ ] **Step 3: Audit requirements against current code**
+- [x] **Step 3: Audit requirements against current code**
 
 Confirm with searches and test evidence that:
 
@@ -288,7 +288,7 @@ Confirm with searches and test evidence that:
 - no historical document deletion code was added;
 - frontend files are unchanged.
 
-- [ ] **Step 4: Mark the plan complete and commit documentation**
+- [x] **Step 4: Mark the plan complete and commit documentation**
 
 Change all plan checkboxes to `[x]`, then run:
 
