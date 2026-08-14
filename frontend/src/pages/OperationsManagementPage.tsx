@@ -362,6 +362,12 @@ export function orderOperationsSites<T extends { value: string }>(sites: T[]) {
   ));
 }
 
+export function sortNewestFirst<T>(items: T[], timestamp: (item: T) => string) {
+  return [...items].sort((left, right) => (
+    Date.parse(timestamp(right)) - Date.parse(timestamp(left))
+  ));
+}
+
 export function preferredOperationsSiteId<T extends { value: string }>(sites: T[]) {
   return sites.find((site) => site.value === "aiwelink")?.value || sites[0]?.value || "";
 }
@@ -1145,9 +1151,12 @@ export function OperationsManagementPage(
   const summary = overview?.summary || {};
   const previous = overview?.previous_summary || {};
   const lifecycleSummary = lifecycle?.summary || {};
-  const visibleRetention = (lifecycle?.retention || []).filter((item) => (
-    allowedSiteSet.has(item.site_id as OperationsSiteId)
-  ));
+  const visibleRetention = sortNewestFirst(
+    (lifecycle?.retention || []).filter((item) => (
+      allowedSiteSet.has(item.site_id as OperationsSiteId)
+    )),
+    (item) => item.cohort_date,
+  );
   const visibleLifecycleSites = (lifecycle?.site_breakdown || []).filter((item) => (
     item.site_id && allowedSiteSet.has(item.site_id as OperationsSiteId)
   ));
@@ -1160,7 +1169,10 @@ export function OperationsManagementPage(
     allowedSiteSet.has(item.site_id as OperationsSiteId)
     && (!effectiveQuery.siteId || item.site_id === effectiveQuery.siteId)
   ));
-  const visibleTrends = trends.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
+  const visibleTrends = sortNewestFirst(
+    trends.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId)),
+    (item) => item.bucket,
+  );
   const visibleSiteBreakdown = (overview?.site_breakdown || []).filter((item) => (
     allowedSiteSet.has(item.site_id as OperationsSiteId)
   ));

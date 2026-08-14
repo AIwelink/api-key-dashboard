@@ -16,17 +16,17 @@
 - Modify: `frontend/src/pages/OperationsManagementPage.test.tsx`
 - Modify: `frontend/src/pages/OperationsManagementPage.tsx`
 
-- [ ] **Step 1: Write the failing immutable ordering test**
+- [x] **Step 1: Write the failing immutable ordering test**
 
 Import `sortNewestFirst` and add a test with rows ordered as older, latest, same-time A, and same-time B. Assert the returned IDs are latest, same-time A, same-time B, and older, and assert the original array remains in its initial order.
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `npm test -- --run src/pages/OperationsManagementPage.test.tsx`
 
 Expected: FAIL because `sortNewestFirst` is not exported.
 
-- [ ] **Step 3: Add the minimal pure helper**
+- [x] **Step 3: Add the minimal pure helper**
 
 Add this exported helper near the existing operations ordering helpers:
 
@@ -38,11 +38,11 @@ export function sortNewestFirst<T>(items: T[], timestamp: (item: T) => string) {
 }
 ```
 
-- [ ] **Step 4: Apply it to both visible time tables**
+- [x] **Step 4: Apply it to both visible time tables**
 
 Wrap the filtered retention rows with `sortNewestFirst(..., (item) => item.cohort_date)` and the filtered trend rows with `sortNewestFirst(..., (item) => item.bucket)`.
 
-- [ ] **Step 5: Run the focused test and verify GREEN**
+- [x] **Step 5: Run the focused test and verify GREEN**
 
 Run: `npm test -- --run src/pages/OperationsManagementPage.test.tsx`
 
@@ -54,19 +54,19 @@ Expected: the page test file passes with no failures.
 - Verify: `frontend/src/pages/OperationsManagementPage.tsx`
 - Verify: `frontend/src/pages/OperationsManagementPage.test.tsx`
 
-- [ ] **Step 1: Run the complete frontend test suite**
+- [x] **Step 1: Run the complete frontend test suite**
 
 Run: `npm test -- --run`
 
 Expected: all test files pass.
 
-- [ ] **Step 2: Build the production frontend**
+- [x] **Step 2: Build the production frontend**
 
 Run: `npm run build`
 
 Expected: TypeScript and Vite complete successfully.
 
-- [ ] **Step 3: Check the final diff**
+- [x] **Step 3: Check the final diff**
 
 Run: `git diff --check`
 
