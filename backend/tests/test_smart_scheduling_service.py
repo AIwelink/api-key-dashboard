@@ -626,7 +626,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result["changed"], 1)
 
-    async def test_queue_metadata_is_persisted_in_state_and_outcome(self) -> None:
+    async def test_queue_metadata_is_persisted_without_baseline_event(self) -> None:
         client = SimpleNamespace(
             get_account=AsyncMock(
                 return_value={
@@ -917,6 +917,8 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(first_outcome["status"], "failed")
         self.assertEqual(first_outcome["event_type"], "remote_update_failed")
+        self.assertNotIn("previous_state", first_outcome)
+        self.assertNotIn("applied_state", first_outcome)
         self.assertEqual(first_outcome["error_code"], "remote_update_failed")
         self.assertEqual(first_outcome["error_type"], "BulkUpdateAccountFailed")
         self.assertEqual(
