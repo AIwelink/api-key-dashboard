@@ -43,6 +43,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         account_type: str = "plus",
         priority: int = 250,
         concurrency: int = 20,
+        load_factor: int = 10,
         used: float = 20,
         created_at: str | None = None,
         status: str = "active",
@@ -54,6 +55,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             "account_type": account_type,
             "priority": priority,
             "concurrency": concurrency,
+            "load_factor": load_factor,
             "group_ids": group_ids or [3],
             "created_at": created_at
             or (self.now + timedelta(seconds=remote_id)).isoformat(),
@@ -420,6 +422,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             created_at="2026-01-01T00:00:00+00:00",
             priority=10,
             concurrency=100,
+            load_factor=10000,
             used=90,
         )
         normal = self.account(
@@ -557,7 +560,12 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
 
         client.bulk_update_accounts_runtime.assert_awaited_once_with(
             [7],
-            {"priority": 10, "concurrency": 100, "group_ids": [3, 4]},
+            {
+                "priority": 10,
+                "concurrency": 100,
+                "load_factor": 10000,
+                "group_ids": [3, 4],
+            },
         )
         self.assertEqual(result["scanned"], 1)
         self.assertEqual(result["changed"], 1)
@@ -1004,11 +1012,19 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
                 "mode": 1,
                 "seven_day_reset_at": 1,
                 "rate_limit_detected_at": 1,
+                "original_load_factor": 1,
+                "original_load_factor_captured_at": 1,
             },
         )
 
     async def test_first_extreme_429_persists_pending_without_remote_update(self) -> None:
-        account = self.account(7, priority=10, concurrency=100, used=95)
+        account = self.account(
+            7,
+            priority=10,
+            concurrency=100,
+            load_factor=10000,
+            used=95,
+        )
         account["error_message"] = "API returned 429"
         db = self.db(states=[{"remote_account_id": 7, "mode": "extreme"}])
         client = SimpleNamespace(
@@ -1049,6 +1065,9 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
                     "remote_account_id": 7,
                     "mode": "rate_limit_pending",
                     "rate_limit_detected_at": detected_at,
+                    "original_load_factor": 7,
+                    "original_load_factor_captured_at": self.now
+                    - timedelta(hours=1),
                 }
             ]
         )
@@ -1084,7 +1103,12 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
 
         client.bulk_update_accounts_runtime.assert_awaited_once_with(
             [7],
-            {"priority": 200, "concurrency": 30, "group_ids": [3]},
+            {
+                "priority": 200,
+                "concurrency": 30,
+                "load_factor": 7,
+                "group_ids": [3],
+            },
         )
         self.assertEqual(result["changed"], 1)
         state = (
@@ -1093,6 +1117,16 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["mode"], "rate_limited_cooldown")
         self.assertEqual(
             state["rate_limit_detected_at"], detected_at.isoformat()
+        )
+        state_update = (
+            db.sub2api_smart_scheduling_states.update_one.await_args.args[1]
+        )
+        self.assertEqual(
+            state_update["$unset"],
+            {
+                "original_load_factor": "",
+                "original_load_factor_captured_at": "",
+            },
         )
 
     async def test_disabling_quota_strategy_keeps_cooldown_in_normal_queue(self) -> None:
@@ -1138,7 +1172,12 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
 
         client.bulk_update_accounts_runtime.assert_awaited_once_with(
             [7],
-            {"priority": 200, "concurrency": 30, "group_ids": [3]},
+            {
+                "priority": 200,
+                "concurrency": 30,
+                "load_factor": 10,
+                "group_ids": [3],
+            },
         )
         self.assertEqual(result["changed"], 1)
         state = (
@@ -1192,6 +1231,413 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["failed"], 1)
         db.sub2api_smart_scheduling_states.update_one.assert_not_awaited()
 
+    async def test_extreme_update_captures_latest_load_factor_before_bulk(self) -> None:
+        events: list[tuple[str, object]] = []
+        db = self.db()
+
+        async def record_state_update(
+            query: dict[str, object],
+            update: dict[str, object],
+            **_kwargs: object,
+        ) -> SimpleNamespace:
+            events.append(("state", {"query": query, "update": update}))
+            return SimpleNamespace(matched_count=1, upserted_id=None)
+
+        async def record_bulk(
+            account_ids: list[int],
+            payload: dict[str, object],
+        ) -> dict[str, object]:
+            events.append(("bulk", payload))
+            return {"success_ids": account_ids, "failed_ids": []}
+
+        db.sub2api_smart_scheduling_states.update_one.side_effect = (
+            record_state_update
+        )
+        client = SimpleNamespace(
+            get_account=AsyncMock(
+                return_value={
+                    "id": 7,
+                    "priority": 250,
+                    "concurrency": 30,
+                    "load_factor": 7,
+                    "group_ids": [3],
+                }
+            ),
+            bulk_update_accounts_runtime=AsyncMock(side_effect=record_bulk),
+        )
+
+        result = await run_smart_scheduling(
+            db,
+            site=self.site(),
+            accounts=[self.account(7, load_factor=3, used=90)],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": True,
+                }
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=client,
+            now=self.now,
+        )
+
+        self.assertEqual(result["changed"], 1)
+        bulk_index = next(
+            index for index, (event, _value) in enumerate(events) if event == "bulk"
+        )
+        capture_updates = [
+            value["update"]
+            for event, value in events[:bulk_index]
+            if event == "state"
+            and (
+                "original_load_factor" in value["update"].get("$set", {})
+                or "original_load_factor"
+                in value["update"].get("$setOnInsert", {})
+            )
+        ]
+        self.assertTrue(capture_updates)
+        self.assertTrue(
+            any(
+                update.get("$set", {}).get("original_load_factor") == 7
+                or update.get("$setOnInsert", {}).get("original_load_factor") == 7
+                for update in capture_updates
+            )
+        )
+        capture_calls = (
+            db.sub2api_smart_scheduling_states.update_one.await_args_list[:2]
+        )
+        self.assertEqual(capture_calls[0].args[0], {"_id": "api-5001:7"})
+        self.assertTrue(capture_calls[0].kwargs["upsert"])
+        self.assertFalse(capture_calls[1].kwargs["upsert"])
+        client.bulk_update_accounts_runtime.assert_awaited_once_with(
+            [7],
+            {
+                "priority": 10,
+                "concurrency": 100,
+                "load_factor": 10000,
+                "group_ids": [3],
+            },
+        )
+        successful_state_update = events[-1][1]["update"]
+        self.assertEqual(
+            successful_state_update["$set"]["last_target"]["load_factor"],
+            10000,
+        )
+        self.assertNotIn("$unset", successful_state_update)
+
+    async def test_successful_quota_recovery_restores_and_clears_original_load_factor(self) -> None:
+        reset_at = self.now + timedelta(days=3)
+        db = self.db(
+            states=[
+                {
+                    "remote_account_id": 7,
+                    "mode": "extreme",
+                    "seven_day_reset_at": reset_at.isoformat(),
+                    "original_load_factor": 7,
+                    "original_load_factor_captured_at": self.now
+                    - timedelta(hours=1),
+                }
+            ]
+        )
+        client = SimpleNamespace(
+            get_account=AsyncMock(
+                return_value={
+                    "id": 7,
+                    "priority": 10,
+                    "concurrency": 100,
+                    "load_factor": 10000,
+                    "group_ids": [3],
+                }
+            ),
+            bulk_update_accounts_runtime=AsyncMock(
+                return_value={"success_ids": [7], "failed_ids": []}
+            ),
+        )
+
+        result = await run_smart_scheduling(
+            db,
+            site=self.site(),
+            accounts=[
+                self.account(
+                    7,
+                    priority=10,
+                    concurrency=100,
+                    load_factor=10000,
+                    used=79.9,
+                )
+            ],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": True,
+                }
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=client,
+            now=self.now,
+        )
+
+        self.assertEqual(result["changed"], 1)
+        client.bulk_update_accounts_runtime.assert_awaited_once_with(
+            [7],
+            {
+                "priority": 200,
+                "concurrency": 30,
+                "load_factor": 7,
+                "group_ids": [3],
+            },
+        )
+        state_update = (
+            db.sub2api_smart_scheduling_states.update_one.await_args.args[1]
+        )
+        self.assertEqual(
+            state_update["$unset"],
+            {
+                "original_load_factor": "",
+                "original_load_factor_captured_at": "",
+            },
+        )
+
+    async def test_failed_first_extreme_update_recovers_capture_on_next_run(self) -> None:
+        first_db = self.db()
+        first_client = SimpleNamespace(
+            get_account=AsyncMock(
+                return_value={
+                    "id": 7,
+                    "priority": 250,
+                    "concurrency": 30,
+                    "load_factor": 7,
+                    "group_ids": [3],
+                }
+            ),
+            bulk_update_accounts_runtime=AsyncMock(
+                return_value={"success_ids": [], "failed_ids": [7]}
+            ),
+        )
+
+        first = await run_smart_scheduling(
+            first_db,
+            site=self.site(),
+            accounts=[self.account(7, load_factor=7, used=90)],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": True,
+                }
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=first_client,
+            now=self.now,
+        )
+
+        self.assertEqual(first["failed"], 1)
+        captured_state: dict[str, object] = {}
+        for call in (
+            first_db.sub2api_smart_scheduling_states.update_one.await_args_list
+        ):
+            update = call.args[1]
+            captured_state.update(update.get("$setOnInsert", {}))
+            captured_state.update(update.get("$set", {}))
+        self.assertEqual(captured_state["original_load_factor"], 7)
+        self.assertEqual(captured_state["mode"], "extreme")
+        self.assertEqual(
+            captured_state["seven_day_reset_at"],
+            (self.now + timedelta(days=3)).isoformat(),
+        )
+
+        second_db = self.db(states=[captured_state])
+        second_client = SimpleNamespace(
+            get_account=AsyncMock(
+                return_value={
+                    "id": 7,
+                    "priority": 250,
+                    "concurrency": 30,
+                    "load_factor": 7,
+                    "group_ids": [3],
+                }
+            ),
+            bulk_update_accounts_runtime=AsyncMock(
+                return_value={"success_ids": [7], "failed_ids": []}
+            ),
+        )
+
+        second = await run_smart_scheduling(
+            second_db,
+            site=self.site(),
+            accounts=[
+                self.account(
+                    7,
+                    priority=250,
+                    concurrency=30,
+                    load_factor=7,
+                    used=79.9,
+                )
+            ],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": True,
+                }
+            },
+            probe_run_id="probe-2",
+            rules=self.rules,
+            client=second_client,
+            now=self.now + timedelta(minutes=1),
+        )
+
+        self.assertEqual(second["changed"], 1)
+        second_client.bulk_update_accounts_runtime.assert_awaited_once_with(
+            [7],
+            {
+                "priority": 200,
+                "concurrency": 30,
+                "load_factor": 7,
+                "group_ids": [3],
+            },
+        )
+        recovery_update = (
+            second_db.sub2api_smart_scheduling_states.update_one.await_args.args[1]
+        )
+        self.assertEqual(
+            recovery_update["$unset"],
+            {
+                "original_load_factor": "",
+                "original_load_factor_captured_at": "",
+            },
+        )
+
+    async def test_unchanged_recovery_clears_saved_original_load_factor(self) -> None:
+        reset_at = self.now + timedelta(days=3)
+        db = self.db(
+            states=[
+                {
+                    "remote_account_id": 7,
+                    "mode": "extreme",
+                    "seven_day_reset_at": reset_at.isoformat(),
+                    "original_load_factor": 7,
+                    "original_load_factor_captured_at": self.now,
+                }
+            ]
+        )
+        client = SimpleNamespace(
+            get_account=AsyncMock(),
+            bulk_update_accounts_runtime=AsyncMock(),
+        )
+
+        result = await run_smart_scheduling(
+            db,
+            site=self.site(),
+            accounts=[
+                self.account(
+                    7,
+                    priority=200,
+                    concurrency=30,
+                    load_factor=7,
+                    used=79.9,
+                )
+            ],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": True,
+                }
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=client,
+            now=self.now,
+        )
+
+        self.assertEqual(result["unchanged"], 1)
+        client.get_account.assert_not_awaited()
+        client.bulk_update_accounts_runtime.assert_not_awaited()
+        state_update = (
+            db.sub2api_smart_scheduling_states.update_one.await_args.args[1]
+        )
+        self.assertEqual(
+            state_update["$unset"],
+            {
+                "original_load_factor": "",
+                "original_load_factor_captured_at": "",
+            },
+        )
+
+    async def test_partial_recovery_failure_keeps_failed_account_original_load_factor(self) -> None:
+        detected_at = self.now - timedelta(minutes=31)
+        db = self.db(
+            states=[
+                {
+                    "remote_account_id": remote_id,
+                    "mode": "rate_limit_pending",
+                    "rate_limit_detected_at": detected_at,
+                    "original_load_factor": 7,
+                    "original_load_factor_captured_at": self.now,
+                }
+                for remote_id in (7, 8)
+            ]
+        )
+        client = SimpleNamespace(
+            get_account=AsyncMock(
+                side_effect=[
+                    {
+                        "id": remote_id,
+                        "priority": 10,
+                        "concurrency": 100,
+                        "load_factor": 10000,
+                        "group_ids": [3],
+                    }
+                    for remote_id in (7, 8)
+                ]
+            ),
+            bulk_update_accounts_runtime=AsyncMock(
+                return_value={"success_ids": [7], "failed_ids": [8]}
+            ),
+        )
+
+        result = await run_smart_scheduling(
+            db,
+            site=self.site(),
+            accounts=[
+                self.account(
+                    remote_id,
+                    priority=10,
+                    concurrency=100,
+                    load_factor=10000,
+                    used=95,
+                )
+                for remote_id in (7, 8)
+            ],
+            group_settings={
+                3: {
+                    "type_priority_enabled": False,
+                    "quota_acceleration_enabled": True,
+                }
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=client,
+            now=self.now,
+        )
+
+        self.assertEqual(result["changed"], 1)
+        self.assertEqual(result["failed"], 1)
+        client.bulk_update_accounts_runtime.assert_awaited_once_with(
+            [7, 8],
+            {
+                "priority": 191,
+                "concurrency": 30,
+                "load_factor": 7,
+                "group_ids": [3],
+            },
+        )
+        state_calls = db.sub2api_smart_scheduling_states.update_one.await_args_list
+        self.assertEqual(len(state_calls), 1)
+        self.assertEqual(state_calls[0].args[0]["_id"], "api-5001:7")
+        self.assertIn("$unset", state_calls[0].args[1])
+
     async def test_successful_extreme_update_persists_scheduler_state(self) -> None:
         db = self.db()
         client = SimpleNamespace(
@@ -1230,7 +1676,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state_update["mode"], "extreme")
         self.assertEqual(
             state_update["last_target"],
-            {"priority": 10, "concurrency": 100},
+            {"priority": 10, "concurrency": 100, "load_factor": 10000},
         )
         self.assertEqual(state_update["adapted_type"], "plus")
         self.assertEqual(state_update["last_probe_run_id"], "probe-1")

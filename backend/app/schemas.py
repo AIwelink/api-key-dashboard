@@ -337,6 +337,7 @@ class SmartSchedulingAccountRule(BaseModel):
     extreme_entry_percent: float = Field(ge=0, le=100)
     recovery_percent: float = Field(ge=0, le=100)
     extreme_concurrency: int = Field(ge=1, le=10_000)
+    extreme_load_factor: int = Field(ge=1, le=100_000)
 
 
 class SmartSchedulingAccountTypes(BaseModel):

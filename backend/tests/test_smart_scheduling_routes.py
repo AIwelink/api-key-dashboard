@@ -21,8 +21,10 @@ from app.schemas import SmartSchedulingSettingsUpdate
 
 class SmartSchedulingSchemaTests(unittest.TestCase):
     def test_schema_accepts_the_confirmed_defaults(self) -> None:
+        rules = default_smart_scheduling_rules()
+        rules["account_types"]["pro"]["extreme_load_factor"] = 23456
         payload = SmartSchedulingSettingsUpdate(
-            rules=default_smart_scheduling_rules()
+            rules=rules
         )
 
         self.assertEqual(
@@ -30,6 +32,17 @@ class SmartSchedulingSchemaTests(unittest.TestCase):
             191,
         )
         self.assertEqual(payload.rules.extreme.priority, 10)
+        self.assertEqual(
+            payload.rules.account_types.pro.extreme_load_factor,
+            23456,
+        )
+
+    def test_schema_rejects_extreme_load_factor_below_one(self) -> None:
+        rules = default_smart_scheduling_rules()
+        rules["account_types"]["plus"]["extreme_load_factor"] = 0
+
+        with self.assertRaises(ValidationError):
+            SmartSchedulingSettingsUpdate(rules=rules)
 
     def test_schema_rejects_overlapping_priority_bands(self) -> None:
         rules = default_smart_scheduling_rules()
@@ -74,6 +87,30 @@ class SmartSchedulingSettingsTests(unittest.IsolatedAsyncioTestCase):
             {"site_id": "api-5001"},
             sort=[("started_at", -1)],
         )
+
+    async def test_legacy_settings_get_fills_extreme_load_factor_defaults(self) -> None:
+        legacy_rules = default_smart_scheduling_rules()
+        for rule in legacy_rules["account_types"].values():
+            rule.pop("extreme_load_factor", None)
+        stored = {
+            "_id": smart_scheduling_setting_id("api-5001"),
+            "site_id": "api-5001",
+            "rules": legacy_rules,
+        }
+        db = SimpleNamespace(
+            app_settings=SimpleNamespace(find_one=AsyncMock(return_value=stored)),
+            sub2api_smart_scheduling_runs=SimpleNamespace(
+                find_one=AsyncMock(return_value=None)
+            ),
+        )
+
+        result = await get_smart_scheduling_settings(db, "api-5001")
+
+        for account_type in ("pro", "plus", "k12", "team"):
+            self.assertEqual(
+                result["rules"]["account_types"][account_type]["extreme_load_factor"],
+                10000,
+            )
 
     async def test_update_persists_normalized_rules_and_actor(self) -> None:
         now = datetime(2026, 7, 27, 7, 0, tzinfo=UTC)
@@ -136,8 +173,11 @@ class SmartSchedulingRouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_patch_updates_settings_and_writes_audit(self) -> None:
         rules = default_smart_scheduling_rules()
+        custom_values = {"pro": 11000, "plus": 12000, "k12": 13000, "team": 14000}
+        for account_type, value in custom_values.items():
+            rules["account_types"][account_type]["extreme_load_factor"] = value
         payload = SmartSchedulingSettingsUpdate(rules=rules)
-        updated = {"site_id": "api-5001", "rules": rules}
+        updated = {"site_id": "api-5001", "rules": payload.rules.model_dump()}
         actor = {"_id": "admin@example.com"}
         with (
             patch.object(
@@ -160,6 +200,11 @@ class SmartSchedulingRouteTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result, updated)
+        for account_type, value in custom_values.items():
+            self.assertEqual(
+                result["rules"]["account_types"][account_type]["extreme_load_factor"],
+                value,
+            )
         service.assert_awaited_once_with(
             ANY,
             site_id="api-5001",

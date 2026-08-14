@@ -25,6 +25,7 @@ DEFAULT_SMART_SCHEDULING_RULES: dict[str, Any] = {
             "extreme_entry_percent": 95.0,
             "recovery_percent": 80.0,
             "extreme_concurrency": 100,
+            "extreme_load_factor": 10000,
         },
         "plus": {
             "manual_priority_min": 200,
@@ -36,6 +37,7 @@ DEFAULT_SMART_SCHEDULING_RULES: dict[str, Any] = {
             "extreme_entry_percent": 90.0,
             "recovery_percent": 80.0,
             "extreme_concurrency": 100,
+            "extreme_load_factor": 10000,
         },
         "k12": {
             "manual_priority_min": 100,
@@ -47,6 +49,7 @@ DEFAULT_SMART_SCHEDULING_RULES: dict[str, Any] = {
             "extreme_entry_percent": 90.0,
             "recovery_percent": 80.0,
             "extreme_concurrency": 100,
+            "extreme_load_factor": 10000,
         },
         "team": {
             "manual_priority_min": 50,
@@ -58,6 +61,7 @@ DEFAULT_SMART_SCHEDULING_RULES: dict[str, Any] = {
             "extreme_entry_percent": 90.0,
             "recovery_percent": 80.0,
             "extreme_concurrency": 100,
+            "extreme_load_factor": 10000,
         },
     },
     "extreme": {
@@ -75,6 +79,7 @@ _ACCOUNT_INTEGER_FIELDS = (
     "automatic_priority",
     "normal_concurrency",
     "extreme_concurrency",
+    "extreme_load_factor",
 )
 _ACCOUNT_PERCENT_FIELDS = ("extreme_entry_percent", "recovery_percent")
 
@@ -181,6 +186,7 @@ def evaluate_account(
             account,
             priority=effective_normal_priority,
             concurrency=int(rule["normal_concurrency"]),
+            load_factor=_recovery_load_factor(state, account),
             strategy="rate_limit_recovery",
             mode="rate_limited_cooldown",
             reason="rate_limit_cooldown_held",
@@ -202,6 +208,7 @@ def evaluate_account(
                 account,
                 priority=effective_normal_priority,
                 concurrency=int(rule["normal_concurrency"]),
+                load_factor=_recovery_load_factor(state, account),
                 strategy="quota_recovery",
                 mode="normal",
                 reason="seven_day_window_reset" if reset_changed else "quota_recovered",
@@ -211,6 +218,7 @@ def evaluate_account(
                 account,
                 priority=effective_normal_priority,
                 concurrency=int(rule["normal_concurrency"]),
+                load_factor=_recovery_load_factor(state, account),
                 strategy="rate_limit_recovery",
                 mode="rate_limited_cooldown",
                 reason="rate_limit_cooldown_held",
@@ -223,6 +231,7 @@ def evaluate_account(
                     account,
                     priority=effective_normal_priority,
                     concurrency=int(rule["normal_concurrency"]),
+                    load_factor=_recovery_load_factor(state, account),
                     strategy="rate_limit_recovery",
                     mode="rate_limited_cooldown",
                     reason="rate_limit_delay_elapsed",
@@ -231,6 +240,7 @@ def evaluate_account(
                 account,
                 priority=int(normalized_rules["extreme"]["priority"]),
                 concurrency=int(rule["extreme_concurrency"]),
+                load_factor=int(rule["extreme_load_factor"]),
                 strategy="rate_limit_recovery",
                 mode="rate_limit_pending",
                 reason="rate_limit_delay_pending",
@@ -241,6 +251,7 @@ def evaluate_account(
                 account,
                 priority=int(normalized_rules["extreme"]["priority"]),
                 concurrency=int(rule["extreme_concurrency"]),
+                load_factor=int(rule["extreme_load_factor"]),
                 strategy="rate_limit_recovery",
                 mode="rate_limit_pending",
                 reason="rate_limit_delay_started",
@@ -252,6 +263,7 @@ def evaluate_account(
             account,
             priority=int(normalized_rules["extreme"]["priority"]),
             concurrency=int(rule["extreme_concurrency"]),
+            load_factor=int(rule["extreme_load_factor"]),
             strategy="quota_acceleration",
             mode="extreme",
             reason="quota_extreme_continues",
@@ -266,6 +278,7 @@ def evaluate_account(
             account,
             priority=int(normalized_rules["extreme"]["priority"]),
             concurrency=int(rule["extreme_concurrency"]),
+            load_factor=int(rule["extreme_load_factor"]),
             strategy="quota_acceleration",
             mode="extreme",
             reason="quota_threshold_reached",
@@ -444,15 +457,19 @@ def _target_result(
     *,
     priority: int,
     concurrency: int,
+    load_factor: int | None = None,
     strategy: str,
     mode: str,
     reason: str,
 ) -> dict[str, Any]:
-    target = {"priority": priority, "concurrency": concurrency}
+    target: dict[str, int] = {"priority": priority, "concurrency": concurrency}
     current = {
         "priority": _optional_int(account.get("priority")),
         "concurrency": _optional_int(account.get("concurrency")),
     }
+    if load_factor is not None:
+        target["load_factor"] = load_factor
+        current["load_factor"] = _optional_int(account.get("load_factor"))
     status = "unchanged" if current == target else "change"
     return _result(
         status,
@@ -461,6 +478,14 @@ def _target_result(
         strategy=strategy,
         mode=mode,
     )
+
+
+def _recovery_load_factor(
+    state: dict[str, Any],
+    account: dict[str, Any],
+) -> int | None:
+    original = _optional_int(state.get("original_load_factor"))
+    return original if original is not None else _optional_int(account.get("load_factor"))
 
 
 def _seven_day_quota(account: dict[str, Any], *, now: datetime) -> dict[str, Any]:
