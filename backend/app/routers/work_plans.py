@@ -35,6 +35,7 @@ async def get_work_plan_schedule(
     range_name: Literal["7d", "30d", "all"] = Query(default="7d", alias="range"),
     member_ids: list[str] | None = Query(default=None, alias="member_id"),
     include_cancelled: bool = Query(default=False),
+    cursor: str | None = Query(default=None),
     actor: dict = Depends(WORK_PLAN_PERMISSION),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
@@ -50,6 +51,7 @@ async def get_work_plan_schedule(
             range_name=range_name,
             member_ids=member_ids,
             include_cancelled=include_cancelled,
+            cursor=cursor,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -57,12 +59,16 @@ async def get_work_plan_schedule(
 
 @router.get("/mine")
 async def get_my_work_plans(
-    limit: int = Query(default=1_000, ge=1, le=4_000),
+    limit: int = Query(default=100, ge=1, le=200),
+    cursor: str | None = Query(default=None),
     actor: dict = Depends(WORK_PLAN_PERMISSION),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     _require_browser_actor(actor)
-    return await list_my_work_plans(db, actor=actor, limit=limit)
+    try:
+        return await list_my_work_plans(db, actor=actor, limit=limit, cursor=cursor)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

@@ -43,8 +43,9 @@ describe("work plan view model", () => {
   });
 
   it("uses neutral Chinese collaboration labels", () => {
+    expect(collaborationLabel("in_plan")).toBe("计划工作中");
     expect(collaborationLabel("online")).toBe("当前在线");
-    expect(collaborationLabel("planned_offline")).toBe("计划时段内，当前离线");
+    expect(collaborationLabel("planned_offline")).toBe("计划时段内，暂未在线");
     expect(collaborationLabel("temporary_unavailable")).toBe("临时有事");
     expect(collaborationLabel("offline")).toBe("当前离线");
   });

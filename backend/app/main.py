@@ -22,6 +22,7 @@ from app.modules.sub2api.capacity_sampler import capacity_sampler_loop
 from app.modules.sub2api.hourly_forecast_evaluation_service import forecast_accuracy_evaluator_loop
 from app.modules.sub2api.plus_self_produced import scheduler_loop as plus_self_produced_scheduler_loop
 from app.modules.sub2api.tpm_sampler import tpm_sampler_loop
+from app.modules.work_plans.service import work_plan_audit_reconciliation_loop
 
 
 settings_obj = get_settings()
@@ -50,6 +51,10 @@ async def lifespan(app_instance: FastAPI):
     forecast_accuracy_task = asyncio.create_task(forecast_accuracy_evaluator_loop(db))
     client_metric_sampler_task = asyncio.create_task(client_metric_sampler_loop(db))
     operations_sync_task = asyncio.create_task(operations_sync_loop(db))
+    work_plan_audit_task = asyncio.create_task(
+        work_plan_audit_reconciliation_loop(db),
+        name="work-plan-audit-reconciliation",
+    )
     cleanup_task = asyncio.create_task(log_cleanup_loop(settings_obj))
     await start_agent_scheduler(app_instance)
     try:
@@ -69,6 +74,7 @@ async def lifespan(app_instance: FastAPI):
             forecast_accuracy_task,
             client_metric_sampler_task,
             operations_sync_task,
+            work_plan_audit_task,
             cleanup_task,
         )
         for task in background_tasks:

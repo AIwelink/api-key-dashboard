@@ -16,6 +16,7 @@ describe("work plan date selection", () => {
       "2027-01-01",
       "2027-01-02",
     ]);
+    expect(isoDateRange("2026-01-01", "2099-12-31", 6)).toHaveLength(6);
   });
 
   it("resolves weekdays chronologically and rejects more than five dates", () => {
@@ -43,10 +44,19 @@ describe("work plan date selection", () => {
     expect(validateSelectedDates([])).toBe("请至少选择 1 个计划日期");
   });
 
+  it("treats cleared native date inputs as an empty selection", () => {
+    expect(isoDateRange("", "2026-08-20", 6)).toEqual([]);
+    expect(resolveWeekdays("2026-08-15", "", [1], 6)).toEqual([]);
+    expect(normalizeSelectedDates([""])).toEqual([]);
+  });
+
   it("provides every stable half-hour option", () => {
     const options = thirtyMinuteOptions();
     expect(options).toHaveLength(48);
     expect(options[0]).toEqual({ value: "00:00", label: "00:00" });
     expect(options.at(-1)).toEqual({ value: "23:30", label: "23:30" });
+    const endOptions = thirtyMinuteOptions({ includeEndOfDay: true });
+    expect(endOptions).toHaveLength(49);
+    expect(endOptions.at(-1)).toEqual({ value: "24:00", label: "24:00" });
   });
 });

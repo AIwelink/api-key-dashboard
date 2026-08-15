@@ -48,12 +48,31 @@ class WorkPlanRouterTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as raised:
             await work_plans_router.get_my_work_plans(
                 limit=100,
+                cursor=None,
                 actor={"_id": "api_token:one", "actor_type": "api_token"},
                 db=SimpleNamespace(),
             )
 
         self.assertEqual(raised.exception.status_code, 403)
         self.assertIn("浏览器", raised.exception.detail)
+
+    async def test_history_route_forwards_cursor_and_maps_invalid_cursor_to_400(self) -> None:
+        with patch.object(
+            work_plans_router,
+            "list_my_work_plans",
+            new=AsyncMock(side_effect=ValueError("分页位置已失效，请刷新后重试")),
+        ) as history:
+            with self.assertRaises(HTTPException) as raised:
+                await work_plans_router.get_my_work_plans(
+                    limit=100,
+                    cursor="invalid",
+                    actor={"_id": "member@example.com", "actor_type": "user"},
+                    db=SimpleNamespace(),
+                )
+
+        history.assert_awaited_once()
+        self.assertEqual(history.await_args.kwargs["cursor"], "invalid")
+        self.assertEqual(raised.exception.status_code, 400)
 
     async def test_update_conflict_maps_to_chinese_409(self) -> None:
         with patch.object(

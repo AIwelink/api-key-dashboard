@@ -1,6 +1,6 @@
 export type WorkPlanType = "work" | "temporary_unavailable";
 export type WorkPlanStatus = "active" | "cancelled";
-export type CollaborationStatus = "online" | "offline" | "planned_offline" | "temporary_unavailable";
+export type CollaborationStatus = "in_plan" | "online" | "offline" | "planned_offline" | "temporary_unavailable";
 export type WorkPlanRange = "7d" | "30d" | "all";
 
 export type WorkPlan = {
@@ -41,11 +41,16 @@ export type WorkPlanScheduleResponse = {
   end_date: string;
   observed_at: string;
   timezone: string;
+  total: number;
+  has_more: boolean;
+  next_cursor: string | null;
 };
 
 export type WorkPlanHistoryResponse = {
   items: WorkPlan[];
   total: number;
+  has_more: boolean;
+  next_cursor: string | null;
 };
 
 export type WorkPlanCreatePayload = {
@@ -70,7 +75,7 @@ export type WorkPlanMutationResult = {
   total: number;
   results: Array<{
     plan_date: string;
-    outcome: "created" | "duplicate" | "failed";
+    outcome: "created" | "duplicate" | "failed" | "uncertain";
     plan?: WorkPlan;
     error?: string;
   }>;

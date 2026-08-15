@@ -12,8 +12,10 @@ from bson import ObjectId
 
 from app.modules.work_plans.domain import WorkPlanConflictError, WorkPlanRuleError, deterministic_plan_id
 from app.modules.work_plans.schemas import WorkPlanCreate, WorkPlanUpdate
+from app.modules.work_plans import service as work_plan_service
 from app.modules.work_plans.service import (
     WorkPlanAccessError,
+    WorkPlanNotFoundError,
     WorkPlanPermissionError,
     cancel_work_plan,
     create_work_plans,
@@ -102,9 +104,11 @@ class FakeCollection:
             document["_id"]: deepcopy(document) for document in (documents or [])
         }
         self.update_calls: list[tuple[dict, dict, bool]] = []
+        self.find_one_and_update_calls: list[tuple[dict, dict]] = []
         self.find_calls: list[dict] = []
         self.insert_calls: list[dict] = []
         self.last_cursor: FakeCursor | None = None
+        self.find_cursors: list[FakeCursor] = []
         self.fail_before_write: dict[object, int] = {}
         self.fail_after_write: dict[object, int] = {}
         self.fail_before_write_exceptions: dict[object, Exception] = {}
@@ -136,7 +140,7 @@ class FakeCollection:
                 None,
             )
             if existing is not None:
-                existing.update(deepcopy(update.get("$set", {})))
+                self._apply_update(existing, update)
                 return FakeUpdateResult()
             if not upsert:
                 return FakeUpdateResult()
@@ -148,6 +152,30 @@ class FakeCollection:
                 self.fail_after_write[query_key] -= 1
                 raise RuntimeError("write acknowledgement lost")
             return FakeUpdateResult(upserted_id=document_id)
+
+    async def find_one_and_update(
+        self,
+        query: dict,
+        update: dict,
+        *,
+        return_document: object | None = None,
+    ) -> dict | None:
+        del return_document
+        self.find_one_and_update_calls.append((deepcopy(query), deepcopy(update)))
+        await asyncio.sleep(0)
+        async with self._update_lock:
+            existing = next(
+                (
+                    document
+                    for document in self.documents.values()
+                    if self._matches(document, query)
+                ),
+                None,
+            )
+            if existing is None:
+                return None
+            self._apply_update(existing, update)
+            return deepcopy(existing)
 
     def find(self, query: dict, projection: dict | None = None) -> FakeCursor:
         self.find_calls.append(deepcopy(query))
@@ -162,7 +190,11 @@ class FakeCollection:
             documents,
             iteration_error_after=self.find_iteration_error_after,
         )
+        self.find_cursors.append(self.last_cursor)
         return self.last_cursor
+
+    async def count_documents(self, query: dict) -> int:
+        return sum(1 for document in self.documents.values() if self._matches(document, query))
 
     async def find_one(self, query: dict) -> dict | None:
         self.find_one_calls.append(deepcopy(query))
@@ -193,20 +225,61 @@ class FakeCollection:
     @staticmethod
     def _matches(document: dict, query: dict) -> bool:
         for field, expected in query.items():
-            actual = document.get(field)
+            if field == "$or":
+                if not any(FakeCollection._matches(document, branch) for branch in expected):
+                    return False
+                continue
+            actual: object = document
+            field_exists = True
+            for part in field.split("."):
+                if isinstance(actual, dict) and part in actual:
+                    actual = actual[part]
+                elif isinstance(actual, list) and part.isdigit() and int(part) < len(actual):
+                    actual = actual[int(part)]
+                else:
+                    field_exists = False
+                    actual = None
+                    break
             if not isinstance(expected, dict):
                 if actual != expected:
                     return False
                 continue
+            if "$exists" in expected and field_exists != expected["$exists"]:
+                return False
             if "$in" in expected and actual not in expected["$in"]:
                 return False
             if "$gte" in expected and (actual is None or actual < expected["$gte"]):
                 return False
             if "$lte" in expected and (actual is None or actual > expected["$lte"]):
                 return False
+            if "$gt" in expected and (actual is None or actual <= expected["$gt"]):
+                return False
+            if "$lt" in expected and (actual is None or actual >= expected["$lt"]):
+                return False
             if "$ne" in expected and actual == expected["$ne"]:
                 return False
         return True
+
+    @staticmethod
+    def _apply_update(document: dict, update: dict) -> None:
+        document.update(deepcopy(update.get("$set", {})))
+        for field in update.get("$unset", {}):
+            document.pop(field, None)
+        for field, value in update.get("$push", {}).items():
+            document.setdefault(field, []).append(deepcopy(value))
+        for field, criteria in update.get("$pull", {}).items():
+            values = document.get(field)
+            if not isinstance(values, list):
+                continue
+            document[field] = [
+                item
+                for item in values
+                if not (
+                    isinstance(item, dict)
+                    and isinstance(criteria, dict)
+                    and all(item.get(key) == value for key, value in criteria.items())
+                )
+            ]
 
     @staticmethod
     def _query_key(query: dict) -> object:
@@ -265,7 +338,9 @@ class WorkPlanCreateServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["outcome"] for item in response["results"]], ["created", "created"])
         self.assertEqual(len(db.work_plans.documents), 2)
         self.assertEqual(len({item["plan"]["id"] for item in response["results"]}), 2)
-        for query, update, upsert in db.work_plans.update_calls:
+        create_calls = [call for call in db.work_plans.update_calls if call[2]]
+        self.assertEqual(len(create_calls), 2)
+        for query, update, upsert in create_calls:
             self.assertEqual(query, {"_id": update["$setOnInsert"]["_id"]})
             self.assertEqual(set(update), {"$setOnInsert"})
             self.assertTrue(upsert)
@@ -458,6 +533,82 @@ class WorkPlanCreateServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("original note", logged_text)
         self.assertNotIn(ACTOR["name"], logged_text)
 
+    async def test_create_audit_outage_persists_intent_until_explicit_repair(self) -> None:
+        db = fake_db()
+        plan_id = deterministic_plan_id(ACTOR["_id"], IDEMPOTENCY_KEY, date(2026, 8, 18))
+        dedupe_key = f"work_plan.create:{plan_id}"
+        db.audit_logs.fail_before_write[dedupe_key] = 1
+
+        response = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=create_payload(),
+            observed_at=OBSERVED_AT,
+        )
+
+        stored = db.work_plans.documents[plan_id]
+        self.assertEqual(response["results"][0]["outcome"], "created")
+        self.assertNotIn("_audit_intents", response["results"][0]["plan"])
+        self.assertIn("_audit_intents", stored)
+        self.assertEqual(len(stored["_audit_intents"]), 1)
+        self.assertEqual(stored["_audit_intents"][0]["dedupe_key"], dedupe_key)
+        self.assertEqual(db.audit_logs.documents, {})
+        self.assertTrue(hasattr(work_plan_service, "reconcile_work_plan_audit_intents"))
+
+        repaired = await work_plan_service.reconcile_work_plan_audit_intents(db)
+
+        self.assertEqual(repaired, 1)
+        self.assertEqual(stored["_audit_intents"], [])
+        self.assertEqual(len(db.audit_logs.documents), 1)
+        audit = next(iter(db.audit_logs.documents.values()))
+        self.assertIsNone(audit["before"])
+        self.assertEqual(audit["after"]["_id"], plan_id)
+        self.assertNotIn("_audit_intents", audit["after"])
+
+    async def test_audit_reconciliation_loop_retries_after_transient_failure(self) -> None:
+        reconcile = AsyncMock(side_effect=[RuntimeError("audit unavailable"), asyncio.CancelledError()])
+        sleep = AsyncMock()
+
+        with (
+            patch.object(work_plan_service, "reconcile_work_plan_audit_intents", reconcile),
+            patch.object(work_plan_service.asyncio, "sleep", sleep),
+            self.assertLogs("app.modules.work_plans.service", level="ERROR") as captured,
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await work_plan_service.work_plan_audit_reconciliation_loop(
+                    object(),
+                    interval_seconds=0,
+                )
+
+        self.assertEqual(reconcile.await_count, 2)
+        sleep.assert_awaited_once_with(0)
+        self.assertIn("exception_type=RuntimeError", captured.output[0])
+        self.assertNotIn("audit unavailable", captured.output[0])
+
+    async def test_repair_deduplicates_audit_after_lost_write_acknowledgement(self) -> None:
+        db = fake_db()
+        plan_id = deterministic_plan_id(ACTOR["_id"], IDEMPOTENCY_KEY, date(2026, 8, 18))
+        dedupe_key = f"work_plan.create:{plan_id}"
+        db.audit_logs.fail_after_write[dedupe_key] = 1
+
+        response = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=create_payload(),
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertEqual(response["results"][0]["outcome"], "created")
+        self.assertEqual(len(db.audit_logs.documents), 1)
+        self.assertIn("_audit_intents", db.work_plans.documents[plan_id])
+        self.assertEqual(len(db.work_plans.documents[plan_id]["_audit_intents"]), 1)
+
+        repaired = await work_plan_service.reconcile_work_plan_audit_intents(db)
+
+        self.assertEqual(repaired, 1)
+        self.assertEqual(len(db.audit_logs.documents), 1)
+        self.assertEqual(db.work_plans.documents[plan_id]["_audit_intents"], [])
+
     async def test_bulk_query_error_falls_back_to_per_id_readback(self) -> None:
         db = fake_db()
         plan_date = date(2026, 8, 18)
@@ -620,6 +771,38 @@ class WorkPlanCreateServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response["results"][0]["outcome"], "failed")
         self.assertEqual(db.audit_logs.documents, {})
+
+    async def test_lost_write_ack_with_unavailable_readbacks_is_uncertain(self) -> None:
+        plan_date = date(2026, 8, 18)
+        plan_id = deterministic_plan_id(ACTOR["_id"], IDEMPOTENCY_KEY, plan_date)
+        db = fake_db()
+        db.work_plans.fail_after_write[plan_id] = 1
+        db.work_plans.find_error = RuntimeError("query disconnected")
+        db.work_plans.find_one_errors[plan_id] = 1
+
+        response = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=create_payload(dates=[plan_date]),
+            observed_at=OBSERVED_AT,
+        )
+
+        result = response["results"][0]
+        self.assertEqual(result["outcome"], "uncertain")
+        self.assertRegex(result["error"], "无法确认|相同.*重试")
+        self.assertFalse(response["duplicate_submission"])
+        self.assertIn(plan_id, db.work_plans.documents)
+
+        db.work_plans.find_error = None
+        retry = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=create_payload(dates=[plan_date]),
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertEqual(retry["results"][0]["outcome"], "duplicate")
+        self.assertEqual(len(db.work_plans.documents), 1)
 
     async def test_concurrent_identical_submissions_create_once_without_overwrite(self) -> None:
         db = fake_db()
@@ -959,8 +1142,30 @@ class WorkPlanScheduleServiceTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(len(response["plans"]), 4_000)
-        self.assertEqual(response["start_date"], plans[0]["plan_date"])
+        self.assertEqual(response["start_date"], plans[1]["plan_date"])
         self.assertEqual(response["end_date"], plans[-1]["plan_date"])
+        self.assertEqual(response["total"], 4_001)
+        self.assertTrue(response["has_more"])
+        self.assertIsInstance(response["next_cursor"], str)
+        self.assertEqual(response["plans"][0]["id"], "plan-0001")
+        self.assertEqual(response["plans"][-1]["id"], "plan-4000")
+
+        with patch(
+            "app.modules.work_plans.service.list_member_presence_summaries",
+            new=AsyncMock(return_value={}),
+        ):
+            older = await list_work_plan_schedule(
+                db,
+                range_name="all",
+                member_ids=None,
+                include_cancelled=False,
+                cursor=response["next_cursor"],
+                observed_at=OBSERVED_AT,
+            )
+
+        self.assertEqual([plan["id"] for plan in older["plans"]], ["plan-0000"])
+        self.assertFalse(older["has_more"])
+        self.assertIsNone(older["next_cursor"])
 
     async def test_schedule_metadata_includes_active_deleted_member_beyond_plan_limit(self) -> None:
         first_date = date(2010, 1, 1)
@@ -1006,6 +1211,10 @@ class WorkPlanScheduleServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(members["deleted-active"]["member_name"], "Deleted Active Member")
         self.assertEqual(members["deleted-active"]["active_plan"]["id"], "active-after-cap")
         self.assertEqual(members["deleted-active"]["collaboration_status"], "planned_offline")
+        self.assertLessEqual(
+            max((cursor.limit_value or 0) for cursor in db.work_plans.find_cursors),
+            4_001,
+        )
 
     async def test_member_filter_does_not_synthesize_unknown_members_without_plans(self) -> None:
         db = fake_db(users=[{"_id": "known", "name": "Known"}])
@@ -1065,21 +1274,55 @@ class WorkPlanHistoryServiceTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
-        response = await list_my_work_plans(db, actor=ACTOR, limit=9_999)
+        response = await list_my_work_plans(db, actor=ACTOR, limit=200)
 
         self.assertEqual(db.work_plans.find_calls, [{"member_id": ACTOR["_id"]}])
         self.assertEqual(
             db.work_plans.last_cursor.sort_spec,
-            [("plan_date", -1), ("created_at", -1)],
+            [("plan_date", -1), ("created_at", -1), ("_id", -1)],
         )
-        self.assertEqual(db.work_plans.last_cursor.limit_value, 4_000)
+        self.assertEqual(db.work_plans.last_cursor.limit_value, 201)
         self.assertEqual(response["total"], 3)
+        self.assertFalse(response["has_more"])
+        self.assertIsNone(response["next_cursor"])
         self.assertEqual(
             [item["id"] for item in response["items"]],
             [str(newer_id), str(cancelled_id), "66bb00000000000000000004"],
         )
         self.assertTrue(response["items"][1]["is_cancelled"])
         self.assertEqual(response["items"][0]["created_at"], "2026-08-15T09:00:00+00:00")
+
+    async def test_history_cursor_pages_through_every_record_without_duplicates(self) -> None:
+        plans = [
+            {
+                "_id": f"plan-{index}",
+                "member_id": ACTOR["_id"],
+                "plan_date": f"2026-08-{20 - index:02d}",
+                "created_at": datetime(2026, 8, 15, 9 - index, tzinfo=UTC),
+                "status": "active",
+                "is_cancelled": False,
+            }
+            for index in range(3)
+        ]
+        db = fake_db(plans=plans)
+
+        first = await list_my_work_plans(db, actor=ACTOR, limit=2)
+        second = await list_my_work_plans(
+            db,
+            actor=ACTOR,
+            limit=2,
+            cursor=first["next_cursor"],
+        )
+
+        self.assertEqual([item["id"] for item in first["items"]], ["plan-0", "plan-1"])
+        self.assertEqual([item["id"] for item in second["items"]], ["plan-2"])
+        self.assertEqual(first["total"], 3)
+        self.assertTrue(first["has_more"])
+        self.assertFalse(second["has_more"])
+        self.assertEqual(
+            {item["id"] for item in [*first["items"], *second["items"]]},
+            {"plan-0", "plan-1", "plan-2"},
+        )
 
     async def test_history_rejects_api_token_actor_before_query(self) -> None:
         db = fake_db()
@@ -1145,12 +1388,100 @@ class WorkPlanMutationServiceTests(unittest.IsolatedAsyncioTestCase):
 
         collection.find_one_and_update.assert_not_awaited()
 
+    async def test_cancel_retry_returns_the_stored_cancelled_plan(self) -> None:
+        cancelled_at = OBSERVED_AT - timedelta(minutes=5)
+        cancelled = self.existing_plan(
+            status="cancelled",
+            is_cancelled=True,
+            cancelled_at=cancelled_at,
+            cancelled_by=ACTOR["_id"],
+            updated_at=cancelled_at,
+            updated_by=ACTOR["_id"],
+        )
+        collection = SimpleNamespace(
+            find_one=AsyncMock(return_value=cancelled),
+            find_one_and_update=AsyncMock(),
+        )
+        db = SimpleNamespace(work_plans=collection)
+
+        result = await cancel_work_plan(
+            db,
+            plan_id="plan-1",
+            actor={**ACTOR, "actor_type": "user"},
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertTrue(result["is_cancelled"])
+        self.assertEqual(result["cancelled_at"], cancelled_at.isoformat())
+        collection.find_one_and_update.assert_not_awaited()
+
+    async def test_cancel_race_returns_the_concurrently_cancelled_plan(self) -> None:
+        existing = self.existing_plan()
+        cancelled = self.existing_plan(
+            status="cancelled",
+            is_cancelled=True,
+            cancelled_at=OBSERVED_AT,
+            cancelled_by=ACTOR["_id"],
+            updated_at=OBSERVED_AT,
+            updated_by=ACTOR["_id"],
+        )
+        collection = SimpleNamespace(
+            find_one=AsyncMock(side_effect=[existing, cancelled]),
+            find_one_and_update=AsyncMock(return_value=None),
+        )
+        db = SimpleNamespace(work_plans=collection)
+
+        result = await cancel_work_plan(
+            db,
+            plan_id="plan-1",
+            actor={**ACTOR, "actor_type": "user"},
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertTrue(result["is_cancelled"])
+        self.assertEqual(collection.find_one.await_count, 2)
+
+    async def test_cancel_retry_still_distinguishes_forbidden_and_missing_plans(self) -> None:
+        cancelled = self.existing_plan(
+            member_id="other@example.com",
+            status="cancelled",
+            is_cancelled=True,
+        )
+        forbidden_db = SimpleNamespace(
+            work_plans=SimpleNamespace(
+                find_one=AsyncMock(return_value=cancelled),
+                find_one_and_update=AsyncMock(),
+            )
+        )
+        missing_db = SimpleNamespace(
+            work_plans=SimpleNamespace(
+                find_one=AsyncMock(return_value=None),
+                find_one_and_update=AsyncMock(),
+            )
+        )
+
+        with self.assertRaises(WorkPlanPermissionError):
+            await cancel_work_plan(
+                forbidden_db,
+                plan_id="plan-1",
+                actor={**ACTOR, "actor_type": "user"},
+                observed_at=OBSERVED_AT,
+            )
+        with self.assertRaises(WorkPlanNotFoundError):
+            await cancel_work_plan(
+                missing_db,
+                plan_id="missing",
+                actor={**ACTOR, "actor_type": "user"},
+                observed_at=OBSERVED_AT,
+            )
+
     async def test_admin_can_update_another_members_plan_and_audits_snapshots(self) -> None:
         existing = self.existing_plan(member_id="other@example.com", member_name="Other")
         updated = {**existing, "note": "Updated", "updated_by": "admin@example.com", "updated_at": OBSERVED_AT}
         collection = SimpleNamespace(
             find_one=AsyncMock(return_value=existing),
             find_one_and_update=AsyncMock(return_value=updated),
+            update_one=AsyncMock(),
         )
         db = SimpleNamespace(work_plans=collection)
         payload = WorkPlanUpdate(note=" Updated ", expected_updated_at=existing["updated_at"])
@@ -1172,6 +1503,45 @@ class WorkPlanMutationServiceTests(unittest.IsolatedAsyncioTestCase):
         audit.assert_awaited_once()
         self.assertEqual(audit.await_args.kwargs["before"], existing)
         self.assertEqual(audit.await_args.kwargs["after"], updated)
+
+    async def test_update_audit_outage_returns_update_and_replay_repairs_snapshots(self) -> None:
+        existing = self.existing_plan()
+        db = fake_db(plans=[existing])
+        dedupe_key = f"work_plan.update:plan-1:{OBSERVED_AT.isoformat()}"
+        db.audit_logs.insert_error = RuntimeError("audit unavailable")
+        db.audit_logs.fail_before_write[dedupe_key] = 1
+
+        try:
+            result = await update_work_plan(
+                db,
+                plan_id="plan-1",
+                actor={**ACTOR, "actor_type": "user"},
+                payload=WorkPlanUpdate(
+                    note="durable update",
+                    expected_updated_at=existing["updated_at"],
+                ),
+                observed_at=OBSERVED_AT,
+            )
+        except RuntimeError as exc:
+            self.fail(f"audit outage escaped after durable update: {type(exc).__name__}")
+
+        stored = db.work_plans.documents["plan-1"]
+        self.assertEqual(result["note"], "durable update")
+        self.assertNotIn("_audit_intents", result)
+        self.assertIn("_audit_intents", stored)
+        self.assertEqual(len(stored["_audit_intents"]), 1)
+        self.assertEqual(stored["_audit_intents"][0]["dedupe_key"], dedupe_key)
+        self.assertTrue(hasattr(work_plan_service, "reconcile_work_plan_audit_intents"))
+
+        repaired = await work_plan_service.reconcile_work_plan_audit_intents(db)
+
+        self.assertEqual(repaired, 1)
+        self.assertEqual(stored["_audit_intents"], [])
+        audit = next(iter(db.audit_logs.documents.values()))
+        self.assertIsNone(audit["before"]["note"])
+        self.assertEqual(audit["after"]["note"], "durable update")
+        self.assertNotIn("_audit_intents", audit["before"])
+        self.assertNotIn("_audit_intents", audit["after"])
 
     async def test_member_update_uses_owner_filter_and_rejects_stale_timestamp(self) -> None:
         existing = self.existing_plan()
@@ -1210,6 +1580,7 @@ class WorkPlanMutationServiceTests(unittest.IsolatedAsyncioTestCase):
         collection = SimpleNamespace(
             find_one=AsyncMock(return_value=existing),
             find_one_and_update=AsyncMock(return_value=cancelled),
+            update_one=AsyncMock(),
         )
         db = SimpleNamespace(work_plans=collection)
 
@@ -1228,6 +1599,39 @@ class WorkPlanMutationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(update["$set"]["cancelled_by"], ACTOR["_id"])
         self.assertEqual(update["$set"]["cancelled_at"], OBSERVED_AT)
         audit.assert_awaited_once()
+
+    async def test_cancel_audit_outage_returns_cancelled_and_replay_repairs_snapshots(self) -> None:
+        existing = self.existing_plan()
+        db = fake_db(plans=[existing])
+        dedupe_key = f"work_plan.cancel:plan-1:{OBSERVED_AT.isoformat()}"
+        db.audit_logs.insert_error = RuntimeError("audit unavailable")
+        db.audit_logs.fail_before_write[dedupe_key] = 1
+
+        try:
+            result = await cancel_work_plan(
+                db,
+                plan_id="plan-1",
+                actor={**ACTOR, "actor_type": "user"},
+                observed_at=OBSERVED_AT,
+            )
+        except RuntimeError as exc:
+            self.fail(f"audit outage escaped after durable cancel: {type(exc).__name__}")
+
+        stored = db.work_plans.documents["plan-1"]
+        self.assertTrue(result["is_cancelled"])
+        self.assertNotIn("_audit_intents", result)
+        self.assertIn("_audit_intents", stored)
+        self.assertEqual(len(stored["_audit_intents"]), 1)
+        self.assertEqual(stored["_audit_intents"][0]["dedupe_key"], dedupe_key)
+
+        repaired = await work_plan_service.reconcile_work_plan_audit_intents(db)
+
+        self.assertEqual(repaired, 1)
+        self.assertEqual(stored["_audit_intents"], [])
+        audit = next(iter(db.audit_logs.documents.values()))
+        self.assertFalse(audit["before"]["is_cancelled"])
+        self.assertTrue(audit["after"]["is_cancelled"])
+        self.assertEqual(audit["after"]["cancelled_by"], ACTOR["_id"])
 
     async def test_creation_delegates_to_domain_before_the_first_write(self) -> None:
         db = fake_db()

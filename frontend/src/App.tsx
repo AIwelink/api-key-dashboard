@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import logoUrl from "../AIwelink_logo_bule_A.png";
 import { AccountPoolsPage } from "./pages/AccountPoolsPage";
 import { AccountsPage } from "./pages/AccountsPage";
@@ -41,6 +41,27 @@ type ToastState = {
   isError: boolean;
 } | null;
 
+export function useStableToast(setToast: Dispatch<SetStateAction<ToastState>>) {
+  const timerRef = useRef<number | null>(null);
+  const showToast = useCallback((message: string, isError = false) => {
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    setToast({ message, isError });
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null;
+      setToast(null);
+    }, 3_200);
+  }, [setToast]);
+
+  useEffect(() => () => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  return showToast;
+}
+
 function isMobileMenuLayout() {
   return window.matchMedia("(max-width: 720px), (max-width: 900px) and (orientation: portrait), (max-aspect-ratio: 3 / 4)").matches;
 }
@@ -54,12 +75,8 @@ function App() {
   const [view, setView] = useState<ViewName>(() => viewFromPath(window.location.pathname));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "true");
   const [toast, setToast] = useState<ToastState>(null);
+  const showToast = useStableToast(setToast);
   useForegroundPresence(token, view);
-
-  const showToast = (message: string, isError = false) => {
-    setToast({ message, isError });
-    window.setTimeout(() => setToast(null), 3200);
-  };
 
   const logout = () => {
     setToken("");

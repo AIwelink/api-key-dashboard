@@ -10,6 +10,7 @@ const HALF_HOUR_OPTIONS: readonly TimeOption[] = Array.from({ length: 48 }, (_, 
   const value = `${String(hour).padStart(2, "0")}:${minute}`;
   return { value, label: value };
 });
+const END_OF_DAY_OPTION: TimeOption = { value: "24:00", label: "24:00" };
 
 function parseIsoDate(value: string): number {
   const match = ISO_DATE_PATTERN.exec(value);
@@ -40,28 +41,50 @@ function formatIsoDate(timestamp: number): string {
   ].join("-");
 }
 
-export function isoDateRange(startDate: string, endDate: string): string[] {
+export function isoDateRange(startDate: string, endDate: string, limit = Number.POSITIVE_INFINITY): string[] {
+  if (!startDate || !endDate) return [];
   const start = parseIsoDate(startDate);
   const end = parseIsoDate(endDate);
   if (end < start) {
     return [];
   }
+  const normalizedLimit = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : Number.POSITIVE_INFINITY;
+  if (normalizedLimit === 0) return [];
   const values: string[] = [];
   for (let cursor = start; cursor <= end; cursor += DAY_MS) {
     values.push(formatIsoDate(cursor));
+    if (values.length >= normalizedLimit) break;
   }
   return values;
 }
 
-export function resolveWeekdays(startDate: string, endDate: string, weekdays: number[]): string[] {
+export function resolveWeekdays(
+  startDate: string,
+  endDate: string,
+  weekdays: number[],
+  limit = Number.POSITIVE_INFINITY,
+): string[] {
+  if (!startDate || !endDate) return [];
   const selectedWeekdays = new Set(weekdays.filter((value) => value >= 0 && value <= 6));
-  return isoDateRange(startDate, endDate).filter((value) =>
-    selectedWeekdays.has(new Date(parseIsoDate(value)).getUTCDay()),
-  );
+  const start = parseIsoDate(startDate);
+  const end = parseIsoDate(endDate);
+  if (end < start || !selectedWeekdays.size) return [];
+  const normalizedLimit = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : Number.POSITIVE_INFINITY;
+  if (normalizedLimit === 0) return [];
+  const values: string[] = [];
+  for (let cursor = start; cursor <= end; cursor += DAY_MS) {
+    if (selectedWeekdays.has(new Date(cursor).getUTCDay())) values.push(formatIsoDate(cursor));
+    if (values.length >= normalizedLimit) break;
+  }
+  return values;
 }
 
 export function normalizeSelectedDates(values: string[]): string[] {
-  return [...new Set(values.map((value) => formatIsoDate(parseIsoDate(value))))].sort();
+  return [...new Set(
+    values
+      .filter((value) => value.trim().length > 0)
+      .map((value) => formatIsoDate(parseIsoDate(value))),
+  )].sort();
 }
 
 export function validateSelectedDates(values: string[]): string | null {
@@ -74,6 +97,6 @@ export function validateSelectedDates(values: string[]): string | null {
   return null;
 }
 
-export function thirtyMinuteOptions(): readonly TimeOption[] {
-  return HALF_HOUR_OPTIONS;
+export function thirtyMinuteOptions(options: { includeEndOfDay?: boolean } = {}): readonly TimeOption[] {
+  return options.includeEndOfDay ? [...HALF_HOUR_OPTIONS, END_OF_DAY_OPTION] : HALF_HOUR_OPTIONS;
 }

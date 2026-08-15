@@ -1,6 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+
+import { useModalFocus } from "../hooks/useModalFocus";
 
 export type ConfirmDialogTone = "default" | "danger";
+
+export function dismissConfirmDialog(confirming: boolean, onCancel: () => void): void {
+  if (!confirming) onCancel();
+}
 
 type ConfirmDialogProps = {
   cancelText?: string;
@@ -27,6 +33,9 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const confirmingRef = useRef(false);
   const [confirming, setConfirming] = useState(false);
+  const titleId = useId();
+  const dismissIfIdle = () => dismissConfirmDialog(confirmingRef.current, onCancel);
+  const dialogRef = useModalFocus<HTMLElement>(open, dismissIfIdle);
 
   useEffect(() => {
     confirmingRef.current = false;
@@ -48,16 +57,19 @@ export function ConfirmDialog({
   };
 
   return (
-    <div className="confirm-backdrop" role="presentation" onMouseDown={onCancel}>
+    <div className="confirm-backdrop" role="presentation" onMouseDown={dismissIfIdle}>
       <section
+        aria-labelledby={titleId}
         aria-modal="true"
         className={`confirm-dialog ${tone}`}
+        ref={dialogRef}
         role="dialog"
+        tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="confirm-header">
-          <h3>{title}</h3>
-          <button aria-label="关闭" className="ghost icon-button" onClick={onCancel} type="button">
+          <h3 id={titleId}>{title}</h3>
+          <button aria-label="关闭" className="ghost icon-button" disabled={confirming} onClick={dismissIfIdle} type="button">
             ×
           </button>
         </div>
@@ -73,7 +85,7 @@ export function ConfirmDialog({
           </dl>
         )}
         <div className="confirm-actions">
-          <button className="ghost" disabled={confirming} onClick={onCancel} type="button">
+          <button className="ghost" disabled={confirming} onClick={dismissIfIdle} type="button">
             {cancelText}
           </button>
           <button className={tone === "danger" ? "danger-button" : ""} disabled={confirming} onClick={confirmOnce} type="button">

@@ -19,7 +19,11 @@ class WorkPlanConflictError(WorkPlanRuleError):
     """Raised when an existing plan can no longer be changed as requested."""
 
 
-def time_to_minute(value: time) -> int:
+def time_to_minute(value: time | str) -> int:
+    if value == "24:00":
+        return 1_440
+    if not isinstance(value, time):
+        raise WorkPlanRuleError("时间格式无效")
     if value.tzinfo is not None:
         raise WorkPlanRuleError("时间不能包含时区，请使用 Asia/Shanghai 当地时间")
     if value.second != 0 or value.microsecond != 0 or value.minute not in {0, 30}:
@@ -56,6 +60,8 @@ def collaboration_status(
 ) -> str:
     if active_plan and active_plan.get("plan_type") == "temporary_unavailable":
         return "temporary_unavailable"
+    if active_plan is not None and is_online:
+        return "in_plan"
     if is_online:
         return "online"
     if active_plan is not None:

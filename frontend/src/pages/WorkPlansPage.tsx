@@ -1,5 +1,5 @@
-import { CalendarPlus, History, RefreshCw, UsersRound } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { CalendarPlus, History, RefreshCw, TriangleAlert, UsersRound } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -36,9 +36,129 @@ export const initialRequestState: CreateRequestState = {
   idempotencyKey: null,
 };
 
+export function drawerExitDelay(reducedMotion: boolean): number {
+  return reducedMotion ? 0 : 280;
+}
+
 export function beginCreate(state: CreateRequestState, idempotencyKey: string): CreateRequestState {
   if (state.busy) return state;
   return { busy: true, idempotencyKey };
+}
+
+export type LatestRequestGuard = {
+  begin: () => number;
+  isCurrent: (requestId: number) => boolean;
+};
+
+export function createLatestRequestGuard(): LatestRequestGuard {
+  let currentRequestId = 0;
+  return {
+    begin: () => {
+      currentRequestId += 1;
+      return currentRequestId;
+    },
+    isCurrent: (requestId) => requestId === currentRequestId,
+  };
+}
+
+export function mutationErrorMessage(result: WorkPlanMutationResult): string | null {
+  const unsuccessful = result.results.filter(
+    (item) => item.outcome === "failed" || item.outcome === "uncertain",
+  );
+  if (!unsuccessful.length) return null;
+  return unsuccessful
+    .map((item) => `${item.plan_date}：${item.error || "保存失败，请保留当前内容后重试"}`)
+    .join("；");
+}
+
+type ScheduleStaleNoticeProps = {
+  message: string;
+  refreshing: boolean;
+  onRetry: () => void;
+};
+
+export function ScheduleStaleNotice({ message, refreshing, onRetry }: ScheduleStaleNoticeProps) {
+  return (
+    <div className="work-plan-stale-notice" role="alert">
+      <TriangleAlert aria-hidden="true" size={18} />
+      <div>
+        <strong>团队排班暂未更新</strong>
+        <span>{message}。当前显示的数据可能不是最新。</span>
+      </div>
+      <button className="ghost" disabled={refreshing} onClick={onRetry} type="button">
+        <RefreshCw className={refreshing ? "spinning" : ""} size={15} />
+        {refreshing ? "加载中" : "重新加载"}
+      </button>
+    </div>
+  );
+}
+
+function compareHistoryPlans(left: WorkPlan, right: WorkPlan): number {
+  return right.plan_date.localeCompare(left.plan_date)
+    || right.created_at.localeCompare(left.created_at)
+    || right.id.localeCompare(left.id);
+}
+
+export function mergeWorkPlans(existing: WorkPlan[], changed: WorkPlan[]): WorkPlan[] {
+  const byId = new Map(existing.map((plan) => [plan.id, plan]));
+  changed.forEach((plan) => byId.set(plan.id, plan));
+  return Array.from(byId.values()).sort(compareHistoryPlans);
+}
+
+export function mergeHistoryPage(
+  current: WorkPlanHistoryResponse,
+  next: WorkPlanHistoryResponse,
+): WorkPlanHistoryResponse {
+  return {
+    items: mergeWorkPlans(current.items, next.items),
+    total: next.total,
+    has_more: next.has_more,
+    next_cursor: next.next_cursor,
+  };
+}
+
+export function mergeSchedulePage(
+  current: WorkPlanScheduleResponse,
+  next: WorkPlanScheduleResponse,
+): WorkPlanScheduleResponse {
+  const members = new Map(current.members.map((member) => [member.member_id, member]));
+  next.members.forEach((member) => members.set(member.member_id, member));
+  const plans = new Map(current.plans.map((plan) => [plan.id, plan]));
+  next.plans.forEach((plan) => plans.set(plan.id, plan));
+  return {
+    ...next,
+    members: Array.from(members.values()),
+    plans: Array.from(plans.values()).sort((left, right) => left.plan_date.localeCompare(right.plan_date)
+      || left.start_minute - right.start_minute
+      || left.id.localeCompare(right.id)),
+    start_date: current.start_date < next.start_date ? current.start_date : next.start_date,
+    end_date: current.end_date > next.end_date ? current.end_date : next.end_date,
+  };
+}
+
+export function reconcileSchedulePlans(
+  schedule: WorkPlanScheduleResponse,
+  changed: WorkPlan[],
+  options: { includeCancelled: boolean; memberId: string },
+): WorkPlanScheduleResponse {
+  const changedById = new Map(changed.map((plan) => [plan.id, plan]));
+  const existingIds = new Set(schedule.plans.map((plan) => plan.id));
+  const next = schedule.plans.flatMap((plan) => {
+    const replacement = changedById.get(plan.id);
+    if (!replacement) return [plan];
+    if (replacement.is_cancelled && !options.includeCancelled) return [];
+    return [replacement];
+  });
+  changed.forEach((plan) => {
+    if (existingIds.has(plan.id) || (plan.is_cancelled && !options.includeCancelled)) return;
+    const inDateRange = plan.plan_date >= schedule.start_date && plan.plan_date <= schedule.end_date;
+    const memberMatches = !options.memberId || options.memberId === plan.member_id;
+    if (inDateRange && memberMatches) next.push(plan);
+  });
+  next.sort((left, right) => left.plan_date.localeCompare(right.plan_date)
+    || left.start_minute - right.start_minute
+    || left.id.localeCompare(right.id));
+  return { ...schedule, plans: next };
 }
 
 function todayInShanghai(): string {
@@ -74,22 +194,33 @@ function emptySchedule(): WorkPlanScheduleResponse {
     end_date: today,
     observed_at: new Date().toISOString(),
     timezone: "Asia/Shanghai",
+    total: 0,
+    has_more: false,
+    next_cursor: null,
   };
+}
+
+function emptyHistory(): WorkPlanHistoryResponse {
+  return { items: [], total: 0, has_more: false, next_cursor: null };
 }
 
 export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPageProps) {
   const [schedule, setSchedule] = useState<WorkPlanScheduleResponse>(() => emptySchedule());
-  const [history, setHistory] = useState<WorkPlan[]>([]);
+  const [history, setHistory] = useState<WorkPlanHistoryResponse>(() => emptyHistory());
   const [range, setRange] = useState<WorkPlanRange>("7d");
   const [memberId, setMemberId] = useState("");
   const [includeCancelled, setIncludeCancelled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [scheduleError, setScheduleError] = useState("");
   const [mutationBusy, setMutationBusy] = useState(false);
+  const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [editingPlan, setEditingPlan] = useState<WorkPlan | null>(null);
   const [cancelPlan, setCancelPlan] = useState<WorkPlan | null>(null);
+  const [scheduleRequestGuard] = useState(createLatestRequestGuard);
+  const drawerHandoffTimer = useRef<number | null>(null);
   const canManageAll = currentUser.role === "owner" || currentUser.role === "admin";
 
   const schedulePath = useMemo(() => {
@@ -100,23 +231,32 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
   }, [canManageAll, includeCancelled, memberId, range]);
 
   const loadSchedule = useCallback(async (notify = false) => {
+    const requestId = scheduleRequestGuard.begin();
     setRefreshing(true);
     try {
       const next = await api<WorkPlanScheduleResponse>(schedulePath, token);
+      if (!scheduleRequestGuard.isCurrent(requestId)) return;
       setSchedule(next);
+      setScheduleError("");
     } catch (error) {
+      if (!scheduleRequestGuard.isCurrent(requestId)) return;
+      setScheduleError(errorMessage(error));
       if (notify) showToast(errorMessage(error), true);
       throw error;
     } finally {
-      setRefreshing(false);
-      setLoading(false);
+      if (scheduleRequestGuard.isCurrent(requestId)) {
+        setRefreshing(false);
+        setLoading(false);
+      }
     }
-  }, [schedulePath, showToast, token]);
+  }, [schedulePath, scheduleRequestGuard, showToast, token]);
 
-  const loadHistory = useCallback(async (notify = false) => {
+  const loadHistory = useCallback(async (notify = false, pageCursor: string | null = null) => {
     try {
-      const next = await api<WorkPlanHistoryResponse>("/work-plans/mine?limit=4000", token);
-      setHistory(next.items);
+      const params = new URLSearchParams({ limit: "100" });
+      if (pageCursor) params.set("cursor", pageCursor);
+      const next = await api<WorkPlanHistoryResponse>(`/work-plans/mine?${params.toString()}`, token);
+      setHistory((current) => pageCursor ? mergeHistoryPage(current, next) : next);
     } catch (error) {
       if (notify) showToast(errorMessage(error), true);
       throw error;
@@ -130,6 +270,25 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
     }
   }, [loadHistory, loadSchedule]);
 
+  const applyLocalMutation = useCallback((changed: WorkPlan[]) => {
+    const actorIds = new Set([currentUser.id, currentUser.email].filter(Boolean));
+    const personalChanges = changed.filter((plan) => actorIds.has(plan.member_id));
+    if (personalChanges.length) {
+      setHistory((current) => {
+        const items = mergeWorkPlans(current.items, personalChanges);
+        return { ...current, items, total: Math.max(current.total, items.length) };
+      });
+    }
+    setSchedule((current) => reconcileSchedulePlans(current, changed, { includeCancelled, memberId }));
+  }, [currentUser.email, currentUser.id, includeCancelled, memberId]);
+
+  const refreshAfterMutation = useCallback((successMessage: string) => {
+    showToast(successMessage);
+    void refreshAll(false).catch(() => {
+      showToast(`${successMessage}，但列表刷新失败，请手动刷新`, true);
+    });
+  }, [refreshAll, showToast]);
+
   useEffect(() => {
     loadSchedule(true).catch(() => undefined);
   }, [loadSchedule]);
@@ -142,50 +301,101 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
     if (range !== "all" && includeCancelled) setIncludeCancelled(false);
   }, [includeCancelled, range]);
 
+  useEffect(() => () => {
+    if (drawerHandoffTimer.current !== null) window.clearTimeout(drawerHandoffTimer.current);
+  }, []);
+
   usePageAutoRefresh(() => refreshAll(false), {
     paused: formOpen || historyOpen || mutationBusy,
     onError: () => undefined,
   });
 
+  const loadMoreHistory = useCallback(async () => {
+    if (!history.next_cursor || historyLoadingMore) return;
+    setHistoryLoadingMore(true);
+    try {
+      await loadHistory(false, history.next_cursor);
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setHistoryLoadingMore(false);
+    }
+  }, [history.next_cursor, historyLoadingMore, loadHistory, showToast]);
+
+  const loadOlderSchedule = useCallback(async () => {
+    if (!schedule.next_cursor || refreshing) return;
+    const requestId = scheduleRequestGuard.begin();
+    setRefreshing(true);
+    try {
+      const separator = schedulePath.includes("?") ? "&" : "?";
+      const next = await api<WorkPlanScheduleResponse>(
+        `${schedulePath}${separator}cursor=${encodeURIComponent(schedule.next_cursor)}`,
+        token,
+      );
+      if (!scheduleRequestGuard.isCurrent(requestId)) return;
+      setSchedule((current) => mergeSchedulePage(current, next));
+      setScheduleError("");
+    } catch (error) {
+      if (!scheduleRequestGuard.isCurrent(requestId)) return;
+      setScheduleError(errorMessage(error));
+      showToast(errorMessage(error), true);
+    } finally {
+      if (scheduleRequestGuard.isCurrent(requestId)) setRefreshing(false);
+    }
+  }, [refreshing, schedule.next_cursor, schedulePath, scheduleRequestGuard, showToast, token]);
+
   const openCreate = () => {
+    if (drawerHandoffTimer.current !== null) window.clearTimeout(drawerHandoffTimer.current);
+    drawerHandoffTimer.current = null;
     setEditingPlan(null);
     setFormOpen(true);
   };
 
   const openEdit = (plan: WorkPlan) => {
+    if (drawerHandoffTimer.current !== null) window.clearTimeout(drawerHandoffTimer.current);
     setHistoryOpen(false);
-    setEditingPlan(plan);
-    setFormOpen(true);
+    const openForm = () => {
+      drawerHandoffTimer.current = null;
+      setEditingPlan(plan);
+      setFormOpen(true);
+    };
+    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    const delay = historyOpen ? drawerExitDelay(reducedMotion) : 0;
+    if (delay === 0) openForm();
+    else drawerHandoffTimer.current = window.setTimeout(openForm, delay);
   };
 
   const submitPlan = async (payload: WorkPlanCreatePayload | WorkPlanUpdatePayload) => {
     setMutationBusy(true);
     try {
       if (editingPlan) {
-        await api<WorkPlan>(`/work-plans/${editingPlan.id}`, token, {
+        const updated = await api<WorkPlan>(`/work-plans/${editingPlan.id}`, token, {
           method: "PATCH",
           body: JSON.stringify(payload),
         });
-        await refreshAll(false);
+        applyLocalMutation([updated]);
         setFormOpen(false);
         setEditingPlan(null);
-        showToast("计划已更新");
-        return;
+        refreshAfterMutation("计划已更新");
+        return true;
       }
       const result = await api<WorkPlanMutationResult>("/work-plans", token, {
         method: "POST",
         body: JSON.stringify(payload),
       });
-      await refreshAll(false);
-      const failed = result.results.filter((item) => item.outcome === "failed");
-      if (failed.length) {
-        throw new Error(failed.map((item) => `${item.plan_date}：${item.error || "保存失败"}`).join("；"));
+      const mutationError = mutationErrorMessage(result);
+      const savedPlans = result.results.flatMap((item) => item.plan ? [item.plan] : []);
+      if (savedPlans.length) applyLocalMutation(savedPlans);
+      if (mutationError) {
+        void refreshAll(false).catch(() => undefined);
+        throw new Error(mutationError);
       }
       setFormOpen(false);
-      showToast(result.duplicate_submission ? "计划已提交，无需重复添加" : `已添加 ${result.total} 天计划`);
+      refreshAfterMutation(result.duplicate_submission ? "计划已提交，无需重复添加" : `已添加 ${result.total} 天计划`);
+      return true;
     } catch (error) {
       showToast(errorMessage(error), true);
-      throw error;
+      return false;
     } finally {
       setMutationBusy(false);
     }
@@ -195,13 +405,12 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
     if (!cancelPlan) return;
     setMutationBusy(true);
     try {
-      await api<WorkPlan>(`/work-plans/${cancelPlan.id}/cancel`, token, { method: "POST" });
-      await refreshAll(false);
+      const cancelled = await api<WorkPlan>(`/work-plans/${cancelPlan.id}/cancel`, token, { method: "POST" });
+      applyLocalMutation([cancelled]);
       setCancelPlan(null);
-      showToast("计划已取消，历史记录仍会保留");
+      refreshAfterMutation("计划已取消，历史记录仍会保留");
     } catch (error) {
       showToast(errorMessage(error), true);
-      throw error;
     } finally {
       setMutationBusy(false);
     }
@@ -240,12 +449,21 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
         </div>
       </div>
 
+      {scheduleError ? (
+        <ScheduleStaleNotice
+          message={scheduleError}
+          onRetry={() => loadSchedule(true).catch(() => undefined)}
+          refreshing={refreshing}
+        />
+      ) : null}
+
       <div className={`work-plan-schedule-frame ${loading ? "loading" : ""}`}>
         {loading && !schedule.plans.length ? <div className="work-plan-loading">加载中...</div> : <WorkPlanSchedule currentUser={currentUser} onCancelPlan={setCancelPlan} onEditPlan={openEdit} range={range} response={schedule} />}
       </div>
+      {schedule.has_more ? <div className="work-plan-pagination"><span>已显示 {schedule.plans.length} / {schedule.total} 条计划</span><button className="ghost" disabled={refreshing} onClick={loadOlderSchedule} type="button">{refreshing ? "加载中..." : "加载更早记录"}</button></div> : null}
 
       <WorkPlanFormDrawer busy={mutationBusy} initialPlan={editingPlan} onClose={() => { if (!mutationBusy) { setFormOpen(false); setEditingPlan(null); } }} onSubmit={submitPlan} open={formOpen} serverToday={serverToday} />
-      <MyPlansDrawer busy={mutationBusy} items={history} onCancel={setCancelPlan} onClose={() => setHistoryOpen(false)} onEdit={openEdit} open={historyOpen} />
+      <MyPlansDrawer blocked={Boolean(cancelPlan)} busy={mutationBusy} hasMore={history.has_more} items={history.items} loadingMore={historyLoadingMore} onCancel={setCancelPlan} onClose={() => setHistoryOpen(false)} onEdit={openEdit} onLoadMore={loadMoreHistory} open={historyOpen} total={history.total} />
       <ConfirmDialog cancelText="返回" confirmText="取消计划" details={cancelPlan ? [["成员", cancelPlan.member_name], ["日期", cancelPlan.plan_date]] : []} message="取消后记录仍会保留。" onCancel={() => setCancelPlan(null)} onConfirm={confirmCancel} open={Boolean(cancelPlan)} title="确认取消这条计划？" tone="danger" />
     </section>
   );

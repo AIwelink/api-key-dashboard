@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -22,10 +25,13 @@ from app.modules.work_plans.schemas import WorkPlanCreate, WorkPlanUpdate
 from app.utils import now_utc, serialize_doc
 
 
-DEFAULT_HISTORY_LIMIT = 1_000
-MAX_HISTORY_LIMIT = 4_000
+DEFAULT_HISTORY_LIMIT = 100
+MAX_HISTORY_LIMIT = 200
 MAX_READBACK_FALLBACKS = 5
 MAX_SCHEDULE_PLANS = 4_000
+MAX_AUDIT_REPAIR_INTENTS = 100
+DEFAULT_AUDIT_RECONCILIATION_INTERVAL_SECONDS = 60
+AUDIT_INTENTS_FIELD = "_audit_intents"
 
 
 logger = logging.getLogger(__name__)
@@ -64,12 +70,182 @@ def _log_create_failure(
     )
 
 
+def _log_audit_reconciliation_failure(
+    failure_code: str,
+    error: Exception,
+    *,
+    action: str,
+    plan_id: str,
+) -> None:
+    if action == "work_plan.create":
+        _log_create_failure(f"audit_{failure_code}", error, plan_id=plan_id)
+        return
+    logger.error(
+        "work_plan_audit_reconciliation_failure code=%s action=%s "
+        "plan_id=%s exception_type=%s",
+        failure_code,
+        action,
+        plan_id,
+        type(error).__name__,
+    )
+
+
 def require_browser_actor(actor: dict[str, Any]) -> None:
     """Personal work-plan history is available only to browser-authenticated users."""
     actor_type = actor.get("actor_type")
     actor_id = str(actor.get("_id") or "").strip()
     if ("actor_type" in actor and actor_type != "user") or not actor_id:
         raise WorkPlanAccessError("个人工作计划仅限已登录的浏览器用户访问")
+
+
+def _plan_snapshot(document: dict[str, Any] | None) -> dict[str, Any] | None:
+    if document is None:
+        return None
+    return {
+        key: value
+        for key, value in document.items()
+        if key != AUDIT_INTENTS_FIELD
+    }
+
+
+def _serialize_plan(document: dict[str, Any]) -> dict[str, Any]:
+    snapshot = _plan_snapshot(document)
+    assert snapshot is not None
+    return serialize_doc(snapshot)
+
+
+def _build_audit_intent(
+    *,
+    actor: dict[str, Any],
+    action: str,
+    plan_id: str,
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+    dedupe_key: str,
+) -> dict[str, Any]:
+    return {
+        "dedupe_key": dedupe_key,
+        "actor": {
+            "_id": actor.get("_id"),
+            "name": actor.get("name"),
+            "actor_type": actor.get("actor_type") or "user",
+        },
+        "action": action,
+        "resource_type": "work_plan",
+        "resource_id": plan_id,
+        "before": _plan_snapshot(before),
+        "after": _plan_snapshot(after),
+    }
+
+
+def _mutation_audit_dedupe_key(
+    *,
+    action: str,
+    plan_id: str,
+    updated_at: datetime,
+) -> str:
+    return f"{action}:{plan_id}:{updated_at.isoformat()}"
+
+
+async def _reconcile_document_audit_intents(
+    db: AsyncIOMotorDatabase,
+    *,
+    plan_id: str,
+    document: dict[str, Any] | None,
+    fallback_intent: dict[str, Any] | None = None,
+) -> int:
+    intents = list((document or {}).get(AUDIT_INTENTS_FIELD) or [])
+    if fallback_intent is not None and not any(
+        intent.get("dedupe_key") == fallback_intent["dedupe_key"]
+        for intent in intents
+        if isinstance(intent, dict)
+    ):
+        intents.append(fallback_intent)
+
+    repaired = 0
+    for intent in intents:
+        if not isinstance(intent, dict):
+            continue
+        dedupe_key = str(intent.get("dedupe_key") or "").strip()
+        action = str(intent.get("action") or "").strip()
+        if not dedupe_key or not action:
+            continue
+        try:
+            await write_audit_log(
+                db,
+                actor=intent.get("actor") if isinstance(intent.get("actor"), dict) else None,
+                action=action,
+                resource_type=str(intent.get("resource_type") or "work_plan"),
+                resource_id=str(intent.get("resource_id") or plan_id),
+                before=intent.get("before") if isinstance(intent.get("before"), dict) else None,
+                after=intent.get("after") if isinstance(intent.get("after"), dict) else None,
+                dedupe_key=dedupe_key,
+            )
+        except Exception as exc:  # noqa: BLE001 - the durable intent remains queued.
+            _log_audit_reconciliation_failure(
+                "write",
+                exc,
+                action=action,
+                plan_id=plan_id,
+            )
+            continue
+        try:
+            await db.work_plans.update_one(
+                {"_id": plan_id},
+                {"$pull": {AUDIT_INTENTS_FIELD: {"dedupe_key": dedupe_key}}},
+            )
+        except Exception as exc:  # noqa: BLE001 - dedupe makes cleanup safely replayable.
+            _log_audit_reconciliation_failure(
+                "cleanup",
+                exc,
+                action=action,
+                plan_id=plan_id,
+            )
+            continue
+        repaired += 1
+    return repaired
+
+
+async def reconcile_work_plan_audit_intents(
+    db: AsyncIOMotorDatabase,
+    *,
+    limit: int = MAX_AUDIT_REPAIR_INTENTS,
+) -> int:
+    normalized_limit = max(1, min(int(limit), MAX_AUDIT_REPAIR_INTENTS))
+    cursor = db.work_plans.find(
+        {f"{AUDIT_INTENTS_FIELD}.0": {"$exists": True}}
+    ).limit(normalized_limit)
+    repaired = 0
+    async for document in cursor:
+        plan_id = str(document.get("_id") or "").strip()
+        if not plan_id:
+            continue
+        repaired += await _reconcile_document_audit_intents(
+            db,
+            plan_id=plan_id,
+            document=document,
+        )
+    return repaired
+
+
+async def work_plan_audit_reconciliation_loop(
+    db: AsyncIOMotorDatabase,
+    *,
+    interval_seconds: float = DEFAULT_AUDIT_RECONCILIATION_INTERVAL_SECONDS,
+) -> None:
+    interval = max(0.0, float(interval_seconds))
+    while True:
+        repaired = 0
+        try:
+            repaired = await reconcile_work_plan_audit_intents(db)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - reconciliation must survive transient outages.
+            logger.error(
+                "work_plan_audit_reconciliation_loop_failure exception_type=%s",
+                type(exc).__name__,
+            )
+        await asyncio.sleep(0 if repaired >= MAX_AUDIT_REPAIR_INTENTS else interval)
 
 
 async def create_work_plans(
@@ -83,6 +259,18 @@ async def create_work_plans(
     observed = observed_at or now_utc()
     # Draft construction performs all validation and must precede every write.
     drafts = build_plan_drafts(actor, payload, observed)
+    for draft in drafts:
+        plan_id = str(draft["_id"])
+        draft[AUDIT_INTENTS_FIELD] = [
+            _build_audit_intent(
+                actor=actor,
+                action="work_plan.create",
+                plan_id=plan_id,
+                before=None,
+                after=draft,
+                dedupe_key=f"work_plan.create:{plan_id}",
+            )
+        ]
     ids = [draft["_id"] for draft in drafts]
     write_states: dict[str, str] = {}
     write_errors: dict[str, Exception] = {}
@@ -107,6 +295,7 @@ async def create_work_plans(
 
     documents_by_id: dict[str, dict[str, Any]] = {}
     bulk_read_failed = False
+    unavailable_readbacks: set[str] = set()
     try:
         cursor = db.work_plans.find({"_id": {"$in": ids}})
         async for document in cursor:
@@ -125,6 +314,7 @@ async def create_work_plans(
                 document = await db.work_plans.find_one({"_id": plan_id})
             except Exception as exc:  # noqa: BLE001 - one failed read must not hide other dates.
                 _log_create_failure("point_readback", exc, plan_id=plan_id_text)
+                unavailable_readbacks.add(plan_id_text)
                 continue
             if document is not None:
                 documents_by_id[plan_id_text] = document
@@ -141,7 +331,7 @@ async def create_work_plans(
             result = {
                 "plan_date": draft["plan_date"],
                 "outcome": "created",
-                "plan": serialize_doc(durable_document),
+                "plan": _serialize_plan(durable_document),
             }
             audit_documents.append((plan_id, durable_document))
         elif write_state == "duplicate":
@@ -150,8 +340,14 @@ async def create_work_plans(
                 "outcome": "duplicate",
             }
             if document is not None:
-                result["plan"] = serialize_doc(document)
+                result["plan"] = _serialize_plan(document)
             audit_documents.append((plan_id, document))
+        elif document is None and plan_id in unavailable_readbacks:
+            result = {
+                "plan_date": draft["plan_date"],
+                "outcome": "uncertain",
+                "error": _uncertain_write_message(),
+            }
         elif document is None:
             result: dict[str, Any] = {
                 "plan_date": draft["plan_date"],
@@ -162,24 +358,26 @@ async def create_work_plans(
             result = {
                 "plan_date": draft["plan_date"],
                 "outcome": "duplicate",
-                "plan": serialize_doc(document),
+                "plan": _serialize_plan(document),
             }
             audit_documents.append((plan_id, document))
         results.append(result)
 
     for plan_id, document in audit_documents:
-        try:
-            await write_audit_log(
-                db,
-                actor=actor,
-                action="work_plan.create",
-                resource_type="work_plan",
-                resource_id=plan_id,
-                after=document,
-                dedupe_key=f"work_plan.create:{plan_id}",
-            )
-        except Exception as exc:  # noqa: BLE001 - an audit outage must not hide a durable create.
-            _log_create_failure("audit", exc, plan_id=plan_id)
+        fallback_intent = _build_audit_intent(
+            actor=actor,
+            action="work_plan.create",
+            plan_id=plan_id,
+            before=None,
+            after=document,
+            dedupe_key=f"work_plan.create:{plan_id}",
+        )
+        await _reconcile_document_audit_intents(
+            db,
+            plan_id=plan_id,
+            document=document,
+            fallback_intent=fallback_intent,
+        )
 
     return {
         "duplicate_submission": bool(results) and all(
@@ -195,16 +393,39 @@ async def list_my_work_plans(
     *,
     actor: dict[str, Any],
     limit: int = DEFAULT_HISTORY_LIMIT,
+    cursor: str | None = None,
 ) -> dict[str, Any]:
     require_browser_actor(actor)
     member_id = str(actor["_id"]).strip()
     normalized_limit = max(1, min(int(limit), MAX_HISTORY_LIMIT))
-    query = {"member_id": member_id}
+    base_query = {"member_id": member_id}
+    query: dict[str, Any] = dict(base_query)
+    if cursor:
+        cursor_date, cursor_created_at, cursor_id = _decode_history_cursor(cursor)
+        query["$or"] = [
+            {"plan_date": {"$lt": cursor_date}},
+            {"plan_date": cursor_date, "created_at": {"$lt": cursor_created_at}},
+            {
+                "plan_date": cursor_date,
+                "created_at": cursor_created_at,
+                "_id": {"$lt": cursor_id},
+            },
+        ]
     cursor = db.work_plans.find(query).sort(
-        [("plan_date", -1), ("created_at", -1)]
-    ).limit(normalized_limit)
-    items = [serialize_doc(document) async for document in cursor]
-    return {"items": items, "total": len(items)}
+        [("plan_date", -1), ("created_at", -1), ("_id", -1)]
+    ).limit(normalized_limit + 1)
+    documents, total = await asyncio.gather(
+        _collect_documents(cursor),
+        db.work_plans.count_documents(base_query),
+    )
+    has_more = len(documents) > normalized_limit
+    page = documents[:normalized_limit]
+    return {
+        "items": [_serialize_plan(document) for document in page],
+        "total": int(total),
+        "has_more": has_more,
+        "next_cursor": _encode_history_cursor(page[-1]) if has_more and page else None,
+    }
 
 
 async def update_work_plan(
@@ -221,6 +442,19 @@ async def update_work_plan(
     updates = validate_update(existing, payload, observed)
     actor_id = str(actor["_id"]).strip()
     updates["updated_by"] = actor_id
+    after_snapshot = {**_plan_snapshot(existing), **updates}
+    audit_intent = _build_audit_intent(
+        actor=actor,
+        action="work_plan.update",
+        plan_id=plan_id,
+        before=existing,
+        after=after_snapshot,
+        dedupe_key=_mutation_audit_dedupe_key(
+            action="work_plan.update",
+            plan_id=plan_id,
+            updated_at=updates["updated_at"],
+        ),
+    )
 
     query: dict[str, Any] = {"_id": plan_id, "is_cancelled": False}
     if not is_plan_manager(actor):
@@ -230,7 +464,7 @@ async def update_work_plan(
 
     updated = await db.work_plans.find_one_and_update(
         query,
-        {"$set": updates},
+        {"$set": updates, "$push": {AUDIT_INTENTS_FIELD: audit_intent}},
         return_document=ReturnDocument.AFTER,
     )
     if updated is None:
@@ -241,16 +475,17 @@ async def update_work_plan(
             expected_updated_at=payload.expected_updated_at,
         )
 
-    await write_audit_log(
-        db,
-        actor=actor,
-        action="work_plan.update",
-        resource_type="work_plan",
-        resource_id=plan_id,
-        before=existing,
-        after=updated,
+    audit_document = dict(updated)
+    audit_document.setdefault(
+        AUDIT_INTENTS_FIELD,
+        [*existing.get(AUDIT_INTENTS_FIELD, []), audit_intent],
     )
-    return serialize_doc(updated)
+    await _reconcile_document_audit_intents(
+        db,
+        plan_id=plan_id,
+        document=audit_document,
+    )
+    return _serialize_plan(updated)
 
 
 async def cancel_work_plan(
@@ -264,7 +499,12 @@ async def cancel_work_plan(
     observed = observed_at or now_utc()
     existing = await _get_mutable_plan(db, plan_id=plan_id, actor=actor)
     if existing.get("is_cancelled") is True or existing.get("status") == "cancelled":
-        raise WorkPlanConflictError("计划已经取消")
+        await _reconcile_document_audit_intents(
+            db,
+            plan_id=plan_id,
+            document=existing,
+        )
+        return _serialize_plan(existing)
 
     actor_id = str(actor["_id"]).strip()
     query: dict[str, Any] = {"_id": plan_id, "is_cancelled": False}
@@ -278,24 +518,45 @@ async def cancel_work_plan(
         "updated_at": observed,
         "updated_by": actor_id,
     }
+    audit_intent = _build_audit_intent(
+        actor=actor,
+        action="work_plan.cancel",
+        plan_id=plan_id,
+        before=existing,
+        after={**_plan_snapshot(existing), **updates},
+        dedupe_key=_mutation_audit_dedupe_key(
+            action="work_plan.cancel",
+            plan_id=plan_id,
+            updated_at=updates["updated_at"],
+        ),
+    )
     cancelled = await db.work_plans.find_one_and_update(
         query,
-        {"$set": updates},
+        {"$set": updates, "$push": {AUDIT_INTENTS_FIELD: audit_intent}},
         return_document=ReturnDocument.AFTER,
     )
     if cancelled is None:
-        await _raise_mutation_failure(db, plan_id=plan_id, actor=actor)
+        current = await _get_mutable_plan(db, plan_id=plan_id, actor=actor)
+        if current.get("is_cancelled") is True or current.get("status") == "cancelled":
+            await _reconcile_document_audit_intents(
+                db,
+                plan_id=plan_id,
+                document=current,
+            )
+            return _serialize_plan(current)
+        raise WorkPlanConflictError("计划状态已变化，请刷新后重试")
 
-    await write_audit_log(
-        db,
-        actor=actor,
-        action="work_plan.cancel",
-        resource_type="work_plan",
-        resource_id=plan_id,
-        before=existing,
-        after=cancelled,
+    audit_document = dict(cancelled)
+    audit_document.setdefault(
+        AUDIT_INTENTS_FIELD,
+        [*existing.get(AUDIT_INTENTS_FIELD, []), audit_intent],
     )
-    return serialize_doc(cancelled)
+    await _reconcile_document_audit_intents(
+        db,
+        plan_id=plan_id,
+        document=audit_document,
+    )
+    return _serialize_plan(cancelled)
 
 
 async def list_work_plan_schedule(
@@ -304,6 +565,7 @@ async def list_work_plan_schedule(
     range_name: str,
     member_ids: list[str] | None,
     include_cancelled: bool,
+    cursor: str | None = None,
     observed_at: datetime | None = None,
 ) -> dict[str, Any]:
     if range_name not in {"7d", "30d", "all"}:
@@ -338,9 +600,33 @@ async def list_work_plan_schedule(
     if not include_cancelled:
         query["is_cancelled"] = {"$ne": True}
         query["status"] = {"$ne": "cancelled"}
+    base_query = dict(query)
+    if cursor:
+        cursor_date, cursor_start, cursor_id = _decode_schedule_cursor(cursor)
+        query["$or"] = [
+            {"plan_date": {"$lt": cursor_date}},
+            {"plan_date": cursor_date, "start_minute": {"$lt": cursor_start}},
+            {
+                "plan_date": cursor_date,
+                "start_minute": cursor_start,
+                "_id": {"$lt": cursor_id},
+            },
+        ]
 
-    metadata_cursor = db.work_plans.find(
-        query,
+    plan_cursor = db.work_plans.find(query).sort(
+        [("plan_date", -1), ("start_minute", -1), ("_id", -1)]
+    ).limit(MAX_SCHEDULE_PLANS + 1)
+    active_query: dict[str, Any] = {
+        "plan_date": local_today.isoformat(),
+        "start_minute": {"$lte": observed_local.hour * 60 + observed_local.minute},
+        "end_minute": {"$gt": observed_local.hour * 60 + observed_local.minute},
+        "is_cancelled": {"$ne": True},
+        "status": {"$ne": "cancelled"},
+    }
+    if selected_member_ids:
+        active_query["member_id"] = {"$in": selected_member_ids}
+    active_cursor = db.work_plans.find(
+        active_query,
         {
             "member_id": 1,
             "member_name": 1,
@@ -351,34 +637,30 @@ async def list_work_plan_schedule(
             "is_cancelled": 1,
             "status": 1,
         },
-    ).sort([("plan_date", 1), ("start_minute", 1)])
-    plan_cursor = db.work_plans.find(query).sort(
-        [("plan_date", 1), ("start_minute", 1)]
     ).limit(MAX_SCHEDULE_PLANS)
-    latest_plan_cursor = (
-        db.work_plans.find(query).sort([("plan_date", -1)]).limit(1)
-        if range_name == "all"
-        else None
-    )
     user_cursor = db.users.find({})
     plan_results = await asyncio.gather(
         _collect_documents(plan_cursor),
-        _collect_documents(metadata_cursor),
+        _collect_documents(active_cursor),
         _collect_documents(user_cursor),
         list_member_presence_summaries(db, observed_at=observed),
-        *(
-            [_collect_documents(latest_plan_cursor)]
-            if latest_plan_cursor is not None
-            else []
-        ),
+        db.work_plans.count_documents(base_query),
     )
-    plans, matching_plan_metadata, users, presence_by_user = plan_results[:4]
+    plan_documents, active_plan_documents, users, presence_by_user, total = plan_results
+    has_more = len(plan_documents) > MAX_SCHEDULE_PLANS
+    page_documents = plan_documents[:MAX_SCHEDULE_PLANS]
+    next_cursor = (
+        _encode_schedule_cursor(page_documents[-1])
+        if has_more and page_documents
+        else None
+    )
+    page_documents.reverse()
+    plans = [_plan_snapshot(plan) for plan in page_documents]
 
     if range_name == "all":
-        latest_plans = plan_results[4]
-        if plans and latest_plans:
+        if plans:
             start_date_text = str(plans[0]["plan_date"])
-            end_date_text = str(latest_plans[0]["plan_date"])
+            end_date_text = str(plans[-1]["plan_date"])
         else:
             start_date_text = end_date_text = local_today.isoformat()
     else:
@@ -400,7 +682,7 @@ async def list_work_plan_schedule(
             "account_status": user.get("status"),
         }
 
-    for plan in matching_plan_metadata:
+    for plan in [*page_documents, *active_plan_documents]:
         member_id = str(plan.get("member_id") or "").strip()
         if not member_id:
             continue
@@ -414,22 +696,8 @@ async def list_work_plan_schedule(
                 "account_status": None,
             },
         )
-    current_minute = observed_local.hour * 60 + observed_local.minute
-    current_date_text = local_today.isoformat()
     active_plans: dict[str, dict[str, Any]] = {}
-    for plan in matching_plan_metadata:
-        if (
-            plan.get("plan_date") != current_date_text
-            or plan.get("is_cancelled") is True
-            or plan.get("status") == "cancelled"
-        ):
-            continue
-        start_minute = plan.get("start_minute")
-        end_minute = plan.get("end_minute")
-        if not isinstance(start_minute, int) or not isinstance(end_minute, int):
-            continue
-        if not (start_minute <= current_minute < end_minute):
-            continue
+    for plan in active_plan_documents:
         member_id = str(plan.get("member_id") or "").strip()
         current = active_plans.get(member_id)
         if current is None or (
@@ -471,8 +739,85 @@ async def list_work_plan_schedule(
             "end_date": end_date_text,
             "observed_at": observed,
             "timezone": str(SHANGHAI_TIMEZONE),
+            "total": int(total),
+            "has_more": has_more,
+            "next_cursor": next_cursor,
         }
     )
+
+
+def _encode_history_cursor(document: dict[str, Any]) -> str:
+    created_at = document.get("created_at")
+    if not isinstance(created_at, datetime):
+        raise ValueError("工作计划历史缺少创建时间")
+    return _encode_cursor(
+        [str(document.get("plan_date") or ""), created_at.isoformat(), str(document.get("_id") or "")]
+    )
+
+
+def _decode_history_cursor(value: str) -> tuple[str, datetime, str]:
+    payload = _decode_cursor(value, expected_size=3)
+    plan_date = str(payload[0])
+    if not _is_iso_date(plan_date):
+        raise ValueError("分页位置已失效，请刷新后重试")
+    try:
+        created_at = datetime.fromisoformat(str(payload[1]))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("分页位置已失效，请刷新后重试") from exc
+    if created_at.tzinfo is None or created_at.utcoffset() is None:
+        raise ValueError("分页位置已失效，请刷新后重试")
+    created_at = created_at.astimezone(UTC)
+    cursor_id = str(payload[2]).strip()
+    if not cursor_id:
+        raise ValueError("分页位置已失效，请刷新后重试")
+    return plan_date, created_at, cursor_id
+
+
+def _encode_schedule_cursor(document: dict[str, Any]) -> str:
+    return _encode_cursor(
+        [
+            str(document.get("plan_date") or ""),
+            int(document.get("start_minute") or 0),
+            str(document.get("_id") or ""),
+        ]
+    )
+
+
+def _decode_schedule_cursor(value: str) -> tuple[str, int, str]:
+    payload = _decode_cursor(value, expected_size=3)
+    plan_date = str(payload[0])
+    cursor_id = str(payload[2]).strip()
+    try:
+        start_minute = int(payload[1])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("分页位置已失效，请刷新后重试") from exc
+    if not _is_iso_date(plan_date) or not 0 <= start_minute <= 1_440 or not cursor_id:
+        raise ValueError("分页位置已失效，请刷新后重试")
+    return plan_date, start_minute, cursor_id
+
+
+def _encode_cursor(values: list[Any]) -> str:
+    raw = json.dumps(values, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(value: str, *, expected_size: int) -> list[Any]:
+    try:
+        padding = "=" * (-len(value) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(f"{value}{padding}").decode("utf-8"))
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("分页位置已失效，请刷新后重试") from exc
+    if not isinstance(payload, list) or len(payload) != expected_size:
+        raise ValueError("分页位置已失效，请刷新后重试")
+    return payload
+
+
+def _is_iso_date(value: str) -> bool:
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
 
 
 async def _collect_documents(cursor: Any) -> list[dict[str, Any]]:
@@ -515,6 +860,10 @@ def _write_error_message(error: Exception | None) -> str:
     return "保存工作计划失败，请稍后重试"
 
 
+def _uncertain_write_message() -> str:
+    return "保存结果暂时无法确认，请保留当前表单并使用相同提交标识重试"
+
+
 __all__ = [
     "WorkPlanAccessError",
     "WorkPlanNotFoundError",
@@ -523,6 +872,8 @@ __all__ = [
     "create_work_plans",
     "list_my_work_plans",
     "list_work_plan_schedule",
+    "reconcile_work_plan_audit_intents",
     "require_browser_actor",
     "update_work_plan",
+    "work_plan_audit_reconciliation_loop",
 ]

@@ -2,9 +2,10 @@ import type { CollaborationStatus, WorkPlan } from "./types";
 
 const MINUTES_PER_DAY = 1_440;
 const COLLABORATION_LABELS: Record<CollaborationStatus, string> = {
+  in_plan: "计划工作中",
   online: "当前在线",
   offline: "当前离线",
-  planned_offline: "计划时段内，当前离线",
+  planned_offline: "计划时段内，暂未在线",
   temporary_unavailable: "临时有事",
 };
 

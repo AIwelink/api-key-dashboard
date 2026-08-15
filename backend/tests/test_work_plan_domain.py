@@ -99,8 +99,29 @@ class WorkPlanTimeRuleTests(unittest.TestCase):
                         OBSERVED_AT,
                     )
 
+    def test_end_time_accepts_midnight_boundary_without_allowing_it_as_a_start(self) -> None:
+        draft = build_plan_drafts(
+            ACTOR,
+            create_payload(start_time="23:30", end_time="24:00"),
+            OBSERVED_AT,
+        )[0]
+
+        self.assertEqual(draft["start_minute"], 1_410)
+        self.assertEqual(draft["end_minute"], 1_440)
+        with self.assertRaises(ValidationError):
+            create_payload(start_time="24:00", end_time="24:00")
+
 
 class WorkPlanCollaborationStatusTests(unittest.TestCase):
+    def test_online_member_in_current_work_plan_keeps_plan_context(self) -> None:
+        self.assertEqual(
+            collaboration_status(
+                is_online=True,
+                active_plan={"plan_type": "work"},
+            ),
+            "in_plan",
+        )
+
     def test_temporary_unavailable_has_priority_while_offline(self) -> None:
         self.assertEqual(
             collaboration_status(

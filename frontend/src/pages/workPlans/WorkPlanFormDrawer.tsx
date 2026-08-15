@@ -1,6 +1,7 @@
 import { Ban, CalendarDays, Check, Clock3, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useReducer, useState, type FormEvent } from "react";
 
+import { useModalFocus } from "../../hooks/useModalFocus";
 import {
   isoDateRange,
   normalizeSelectedDates,
@@ -32,7 +33,7 @@ export type WorkPlanDraftState = {
 
 export type WorkPlanDraftAction =
   | { type: "replace"; value: WorkPlanDraftState }
-  | { type: "set-plan-type"; value: WorkPlanType }
+  | { type: "set-plan-type"; value: WorkPlanType; fallbackDate?: string }
   | { type: "set-dates"; value: string[] }
   | { type: "set-more-date-mode"; value: MoreDateMode }
   | { type: "set-range-start"; value: string }
@@ -48,7 +49,7 @@ type WorkPlanFormDrawerProps = {
   initialPlan?: WorkPlan | null;
   busy: boolean;
   onClose: () => void;
-  onSubmit: (payload: WorkPlanCreatePayload | WorkPlanUpdatePayload) => Promise<void>;
+  onSubmit: (payload: WorkPlanCreatePayload | WorkPlanUpdatePayload) => Promise<boolean>;
 };
 
 const WEEKDAYS = [
@@ -62,7 +63,19 @@ const WEEKDAYS = [
 ] as const;
 
 function createIdempotencyKey(): string {
-  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const value = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
 }
 
 function minuteToTime(value: number): string {
@@ -115,14 +128,19 @@ export function workPlanDraftReducer(
   switch (action.type) {
     case "replace":
       return action.value;
-    case "set-plan-type":
+    case "set-plan-type": {
+      const unavailableDate = state.selectedDates[0]
+        || action.fallbackDate
+        || state.rangeStart
+        || state.rangeEnd;
       return {
         ...state,
         planType: action.value,
         selectedDates:
-          action.value === "temporary_unavailable" ? state.selectedDates.slice(0, 1) : state.selectedDates,
+          action.value === "temporary_unavailable" && unavailableDate ? [unavailableDate] : state.selectedDates,
         moreDateMode: action.value === "temporary_unavailable" ? "single" : state.moreDateMode,
       };
+    }
     case "set-dates":
       return { ...state, selectedDates: normalizeSelectedDates(action.value) };
     case "set-more-date-mode":
@@ -142,6 +160,15 @@ export function workPlanDraftReducer(
   }
 }
 
+export async function resetDraftAfterSuccessfulSubmit(
+  submit: () => Promise<boolean>,
+  reset: () => void,
+): Promise<boolean> {
+  const submitted = await submit();
+  if (submitted) reset();
+  return submitted;
+}
+
 export function WorkPlanFormDrawer({
   open,
   serverToday,
@@ -150,6 +177,7 @@ export function WorkPlanFormDrawer({
   onClose,
   onSubmit,
 }: WorkPlanFormDrawerProps) {
+  const dialogRef = useModalFocus<HTMLElement>(open, onClose);
   const [draft, dispatch] = useReducer(
     workPlanDraftReducer,
     undefined,
@@ -175,13 +203,13 @@ export function WorkPlanFormDrawer({
       return;
     }
     if (draft.moreDateMode === "range") {
-      dispatch({ type: "set-dates", value: isoDateRange(draft.rangeStart, draft.rangeEnd) });
+      dispatch({ type: "set-dates", value: isoDateRange(draft.rangeStart, draft.rangeEnd, 6) });
       return;
     }
     if (draft.moreDateMode === "weekday") {
       dispatch({
         type: "set-dates",
-        value: resolveWeekdays(draft.rangeStart, draft.rangeEnd, draft.weekdays),
+        value: resolveWeekdays(draft.rangeStart, draft.rangeEnd, draft.weekdays, 6),
       });
     }
   };
@@ -212,15 +240,17 @@ export function WorkPlanFormDrawer({
       });
       return;
     }
-    await onSubmit({
-      plan_type: draft.planType,
-      dates: draft.selectedDates,
-      start_time: draft.startTime,
-      end_time: draft.endTime,
-      note: draft.note.trim() || null,
-      idempotency_key: draft.idempotencyKey,
-    });
-    dispatch({ type: "replace", value: createInitialWorkPlanDraft(serverToday) });
+    await resetDraftAfterSuccessfulSubmit(
+      () => onSubmit({
+        plan_type: draft.planType,
+        dates: draft.selectedDates,
+        start_time: draft.startTime,
+        end_time: draft.endTime,
+        note: draft.note.trim() || null,
+        idempotency_key: draft.idempotencyKey,
+      }),
+      () => dispatch({ type: "replace", value: createInitialWorkPlanDraft(serverToday) }),
+    );
   };
 
   const toggleQuickDate = (value: string) => {
@@ -241,7 +271,9 @@ export function WorkPlanFormDrawer({
         aria-labelledby="work-plan-form-title"
         aria-modal="true"
         className={`work-plan-drawer ${open ? "open" : ""}`}
+        ref={dialogRef}
         role="dialog"
+        tabIndex={-1}
       >
         <header className="work-plan-drawer-header">
           <div>
@@ -257,7 +289,7 @@ export function WorkPlanFormDrawer({
               <legend>计划类型</legend>
               <div className="work-plan-segmented">
                 <button className={draft.planType === "work" ? "active" : ""} onClick={() => dispatch({ type: "set-plan-type", value: "work" })} type="button"><Clock3 size={16} />工作时间</button>
-                <button className={draft.planType === "temporary_unavailable" ? "active unavailable" : ""} onClick={() => dispatch({ type: "set-plan-type", value: "temporary_unavailable" })} type="button"><Ban size={16} />临时有事</button>
+                <button className={draft.planType === "temporary_unavailable" ? "active unavailable" : ""} onClick={() => dispatch({ type: "set-plan-type", value: "temporary_unavailable", fallbackDate: serverToday })} type="button"><Ban size={16} />临时有事</button>
               </div>
             </fieldset>
 
@@ -292,7 +324,7 @@ export function WorkPlanFormDrawer({
               <div className="work-plan-time-fields">
                 <label>开始时间<select onChange={(event) => dispatch({ type: "set-start-time", value: event.target.value })} value={draft.startTime}>{thirtyMinuteOptions().map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
                 <span>至</span>
-                <label>结束时间<select onChange={(event) => dispatch({ type: "set-end-time", value: event.target.value })} value={draft.endTime}>{thirtyMinuteOptions().map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+                <label>结束时间<select onChange={(event) => dispatch({ type: "set-end-time", value: event.target.value })} value={draft.endTime}>{thirtyMinuteOptions({ includeEndOfDay: true }).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
               </div>
             </fieldset>
 
