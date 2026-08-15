@@ -48,3 +48,8 @@ async def write_audit_log(
         {"$setOnInsert": document},
         upsert=True,
     )
+    if after is not None:
+        await db.audit_logs.update_one(
+            {"dedupe_key": dedupe_key, "after": None},
+            {"$set": {"after": document["after"]}},
+        )

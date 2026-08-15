@@ -24,6 +24,27 @@ class WorkPlanAccessError(ValueError):
     """Raised when an actor cannot use a personal work-plan operation."""
 
 
+def _log_create_failure(
+    failure_code: str,
+    error: Exception,
+    *,
+    plan_id: str | None = None,
+) -> None:
+    if plan_id is None:
+        logger.error(
+            "work_plan_create_failure code=%s exception_type=%s",
+            failure_code,
+            type(error).__name__,
+        )
+        return
+    logger.error(
+        "work_plan_create_failure code=%s plan_id=%s exception_type=%s",
+        failure_code,
+        plan_id,
+        type(error).__name__,
+    )
+
+
 def require_browser_actor(actor: dict[str, Any]) -> None:
     """Personal work-plan history is available only to browser-authenticated users."""
     actor_type = actor.get("actor_type")
@@ -56,12 +77,7 @@ async def create_work_plans(
                 upsert=True,
             )
         except Exception as exc:  # noqa: BLE001 - one date must not stop other dates.
-            logger.exception(
-                "work_plan_create_write_failed plan_id=%s exception_type=%s",
-                plan_id,
-                type(exc).__name__,
-                exc_info=True,
-            )
+            _log_create_failure("write", exc, plan_id=plan_id)
             write_states[plan_id] = "uncertain"
             write_errors[plan_id] = exc
             continue
@@ -78,12 +94,7 @@ async def create_work_plans(
             documents_by_id[str(document.get("_id"))] = document
     except Exception as exc:  # noqa: BLE001 - bounded point reads reconcile partial results.
         bulk_read_failed = True
-        logger.exception(
-            "work_plan_create_bulk_readback_failed plan_ids=%s exception_type=%s",
-            [str(plan_id) for plan_id in ids],
-            type(exc).__name__,
-            exc_info=True,
-        )
+        _log_create_failure("bulk_readback", exc)
 
     if bulk_read_failed:
         unresolved_ids = [
@@ -94,12 +105,7 @@ async def create_work_plans(
             try:
                 document = await db.work_plans.find_one({"_id": plan_id})
             except Exception as exc:  # noqa: BLE001 - one failed read must not hide other dates.
-                logger.exception(
-                    "work_plan_create_readback_failed plan_id=%s exception_type=%s",
-                    plan_id_text,
-                    type(exc).__name__,
-                    exc_info=True,
-                )
+                _log_create_failure("point_readback", exc, plan_id=plan_id_text)
                 continue
             if document is not None:
                 documents_by_id[plan_id_text] = document
@@ -154,12 +160,7 @@ async def create_work_plans(
                 dedupe_key=f"work_plan.create:{plan_id}",
             )
         except Exception as exc:  # noqa: BLE001 - an audit outage must not hide a durable create.
-            logger.exception(
-                "work_plan_create_audit_failed plan_id=%s exception_type=%s",
-                plan_id,
-                type(exc).__name__,
-                exc_info=True,
-            )
+            _log_create_failure("audit", exc, plan_id=plan_id)
 
     return {
         "duplicate_submission": bool(results) and all(

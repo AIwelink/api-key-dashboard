@@ -103,7 +103,9 @@ class FakeCollection:
         self.last_cursor: FakeCursor | None = None
         self.fail_before_write: dict[object, int] = {}
         self.fail_after_write: dict[object, int] = {}
+        self.fail_before_write_exceptions: dict[object, Exception] = {}
         self.find_one_errors: dict[object, int] = {}
+        self.find_one_exceptions: dict[object, Exception] = {}
         self.find_one_calls: list[dict] = []
         self.find_iteration_error_after: int | None = None
         self.find_error: Exception | None = None
@@ -115,6 +117,8 @@ class FakeCollection:
         query_key = self._query_key(query)
         await asyncio.sleep(0)
         async with self._update_lock:
+            if query_key in self.fail_before_write_exceptions:
+                raise self.fail_before_write_exceptions.pop(query_key)
             if self.fail_before_write.get(query_key, 0) > 0:
                 self.fail_before_write[query_key] -= 1
                 raise RuntimeError("database unavailable")
@@ -127,7 +131,10 @@ class FakeCollection:
                 ),
                 None,
             )
-            if existing is not None or not upsert:
+            if existing is not None:
+                existing.update(deepcopy(update.get("$set", {})))
+                return FakeUpdateResult()
+            if not upsert:
                 return FakeUpdateResult()
 
             draft = deepcopy(update["$setOnInsert"])
@@ -156,6 +163,8 @@ class FakeCollection:
     async def find_one(self, query: dict) -> dict | None:
         self.find_one_calls.append(deepcopy(query))
         query_key = self._query_key(query)
+        if query_key in self.find_one_exceptions:
+            raise self.find_one_exceptions.pop(query_key)
         if self.find_one_errors.get(query_key, 0) > 0:
             self.find_one_errors[query_key] -= 1
             raise RuntimeError("find one disconnected")
@@ -389,7 +398,7 @@ class WorkPlanCreateServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["outcome"] for item in created["results"]], ["created", "created"])
         self.assertTrue(replay["duplicate_submission"])
         self.assertEqual(len(db.audit_logs.documents), 2)
-        self.assertEqual(len(db.audit_logs.update_calls), 4)
+        self.assertEqual(len(db.audit_logs.update_calls), 8)
         for audit in db.audit_logs.documents.values():
             self.assertEqual(audit["action"], "work_plan.create")
             self.assertEqual(audit["resource_type"], "work_plan")
@@ -406,7 +415,7 @@ class WorkPlanCreateServiceTests(unittest.IsolatedAsyncioTestCase):
         dedupe_key = f"work_plan.create:{plan_id}"
         db.audit_logs.fail_before_write[dedupe_key] = 1
 
-        with patch("app.modules.work_plans.service.logger.exception") as logged:
+        with patch("app.modules.work_plans.service.logger.error") as logged:
             response = await create_work_plans(
                 db,
                 actor=ACTOR,
@@ -425,7 +434,7 @@ class WorkPlanCreateServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("plan", response["results"][0])
         self.assertEqual(len(db.work_plans.documents), 1)
         self.assertEqual(len(db.audit_logs.documents), 1)
-        self.assertEqual(len(db.audit_logs.update_calls), 2)
+        self.assertEqual(len(db.audit_logs.update_calls), 3)
         logged.assert_called_once()
         logged_text = str(logged.call_args)
         self.assertIn(plan_id, logged_text)
@@ -439,7 +448,7 @@ class WorkPlanCreateServiceTests(unittest.IsolatedAsyncioTestCase):
         plan_id = deterministic_plan_id(ACTOR["_id"], IDEMPOTENCY_KEY, plan_date)
         db.work_plans.find_error = RuntimeError("query disconnected")
 
-        with patch("app.modules.work_plans.service.logger.exception") as logged:
+        with patch("app.modules.work_plans.service.logger.error") as logged:
             response = await create_work_plans(
                 db,
                 actor=ACTOR,
@@ -487,6 +496,81 @@ class WorkPlanCreateServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(db.audit_logs.documents), 1)
         audit = next(iter(db.audit_logs.documents.values()))
         self.assertEqual(audit["after"]["_id"], plan_id)
+
+    async def test_successful_replay_repairs_a_null_duplicate_audit_snapshot(self) -> None:
+        plan_date = date(2026, 8, 18)
+        plan_id = deterministic_plan_id(ACTOR["_id"], IDEMPOTENCY_KEY, plan_date)
+        durable_plan = {
+            "_id": plan_id,
+            "member_id": ACTOR["_id"],
+            "member_name": ACTOR["name"],
+            "plan_date": plan_date.isoformat(),
+            "note": "durable original",
+            "created_at": OBSERVED_AT,
+        }
+        db = fake_db(plans=[durable_plan])
+        db.work_plans.find_error = RuntimeError("query disconnected")
+        db.work_plans.find_one_errors[plan_id] = 1
+
+        first = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=create_payload(note="replayed content"),
+            observed_at=OBSERVED_AT,
+        )
+        dedupe_key = f"work_plan.create:{plan_id}"
+        audit = next(
+            document
+            for document in db.audit_logs.documents.values()
+            if document["dedupe_key"] == dedupe_key
+        )
+        self.assertEqual(first["results"][0]["outcome"], "duplicate")
+        self.assertIsNone(audit["after"])
+
+        db.work_plans.find_error = None
+        replay = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=create_payload(note="replayed content"),
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertEqual(replay["results"][0]["outcome"], "duplicate")
+        self.assertEqual(audit["after"]["note"], "durable original")
+
+    async def test_failure_logs_never_attach_secret_exception_details(self) -> None:
+        secret = "SENTINEL_DATABASE_DOCUMENT_SECRET"
+        plan_date = date(2026, 8, 18)
+        plan_id = deterministic_plan_id(ACTOR["_id"], IDEMPOTENCY_KEY, plan_date)
+        dedupe_key = f"work_plan.create:{plan_id}"
+        read_db = fake_db()
+        read_db.work_plans.find_error = RuntimeError(secret)
+        read_db.work_plans.find_one_exceptions[plan_id] = RuntimeError(secret)
+        read_db.audit_logs.fail_before_write_exceptions[dedupe_key] = RuntimeError(secret)
+        write_db = fake_db()
+        write_db.work_plans.fail_before_write_exceptions[plan_id] = RuntimeError(secret)
+
+        with self.assertLogs("app.modules.work_plans.service", level="ERROR") as captured:
+            await create_work_plans(
+                read_db,
+                actor=ACTOR,
+                payload=create_payload(dates=[plan_date]),
+                observed_at=OBSERVED_AT,
+            )
+            await create_work_plans(
+                write_db,
+                actor=ACTOR,
+                payload=create_payload(dates=[plan_date]),
+                observed_at=OBSERVED_AT,
+            )
+
+        self.assertEqual(len(captured.records), 4)
+        for record in captured.records:
+            message = record.getMessage()
+            self.assertNotIn(secret, message)
+            self.assertIsNone(record.exc_info)
+            self.assertTrue(message.startswith("work_plan_create_failure code="))
+            self.assertIn("exception_type=RuntimeError", message)
 
     async def test_readback_fallback_is_bounded_to_five_ids(self) -> None:
         dates = [date(2026, 8, 18 + offset) for offset in range(5)]
