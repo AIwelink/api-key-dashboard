@@ -146,7 +146,7 @@ class FakeCollection:
                 raise RuntimeError("write acknowledgement lost")
             return FakeUpdateResult(upserted_id=document_id)
 
-    def find(self, query: dict) -> FakeCursor:
+    def find(self, query: dict, projection: dict | None = None) -> FakeCursor:
         self.find_calls.append(deepcopy(query))
         if self.find_error is not None:
             raise self.find_error
@@ -958,6 +958,69 @@ class WorkPlanScheduleServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(response["plans"]), 4_000)
         self.assertEqual(response["start_date"], plans[0]["plan_date"])
         self.assertEqual(response["end_date"], plans[-1]["plan_date"])
+
+    async def test_schedule_metadata_includes_active_deleted_member_beyond_plan_limit(self) -> None:
+        first_date = date(2010, 1, 1)
+        plans = [
+            {
+                "_id": f"old-plan-{index:04d}",
+                "member_id": "known",
+                "member_name": "Known",
+                "plan_date": (first_date + timedelta(days=index)).isoformat(),
+                "plan_type": "work",
+                "start_minute": 540,
+                "end_minute": 1080,
+            }
+            for index in range(4_000)
+        ]
+        plans.append(
+            {
+                "_id": "active-after-cap",
+                "member_id": "deleted-active",
+                "member_name": "Deleted Active Member",
+                "plan_date": "2026-08-15",
+                "plan_type": "work",
+                "start_minute": 0,
+                "end_minute": 1_440,
+            }
+        )
+        db = fake_db(users=[{"_id": "known", "name": "Known"}], plans=plans)
+
+        with patch(
+            "app.modules.work_plans.service.list_member_presence_summaries",
+            new=AsyncMock(return_value={}),
+        ):
+            response = await list_work_plan_schedule(
+                db,
+                range_name="all",
+                member_ids=None,
+                include_cancelled=False,
+                observed_at=OBSERVED_AT,
+            )
+
+        self.assertEqual(len(response["plans"]), 4_000)
+        members = {member["member_id"]: member for member in response["members"]}
+        self.assertEqual(members["deleted-active"]["member_name"], "Deleted Active Member")
+        self.assertEqual(members["deleted-active"]["active_plan"]["id"], "active-after-cap")
+        self.assertEqual(members["deleted-active"]["collaboration_status"], "planned_offline")
+
+    async def test_member_filter_does_not_synthesize_unknown_members_without_plans(self) -> None:
+        db = fake_db(users=[{"_id": "known", "name": "Known"}])
+
+        with patch(
+            "app.modules.work_plans.service.list_member_presence_summaries",
+            new=AsyncMock(return_value={}),
+        ):
+            response = await list_work_plan_schedule(
+                db,
+                range_name="7d",
+                member_ids=["missing"],
+                include_cancelled=False,
+                observed_at=OBSERVED_AT,
+            )
+
+        self.assertEqual(response["members"], [])
+        self.assertEqual(response["plans"], [])
 
 
 class WorkPlanHistoryServiceTests(unittest.IsolatedAsyncioTestCase):

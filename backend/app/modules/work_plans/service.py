@@ -236,6 +236,19 @@ async def list_work_plan_schedule(
         query["is_cancelled"] = {"$ne": True}
         query["status"] = {"$ne": "cancelled"}
 
+    metadata_cursor = db.work_plans.find(
+        query,
+        {
+            "member_id": 1,
+            "member_name": 1,
+            "plan_date": 1,
+            "plan_type": 1,
+            "start_minute": 1,
+            "end_minute": 1,
+            "is_cancelled": 1,
+            "status": 1,
+        },
+    ).sort([("plan_date", 1), ("start_minute", 1)])
     plan_cursor = db.work_plans.find(query).sort(
         [("plan_date", 1), ("start_minute", 1)]
     ).limit(MAX_SCHEDULE_PLANS)
@@ -247,6 +260,7 @@ async def list_work_plan_schedule(
     user_cursor = db.users.find({})
     plan_results = await asyncio.gather(
         _collect_documents(plan_cursor),
+        _collect_documents(metadata_cursor),
         _collect_documents(user_cursor),
         list_member_presence_summaries(db, observed_at=observed),
         *(
@@ -255,10 +269,10 @@ async def list_work_plan_schedule(
             else []
         ),
     )
-    plans, users, presence_by_user = plan_results[:3]
+    plans, matching_plan_metadata, users, presence_by_user = plan_results[:4]
 
     if range_name == "all":
-        latest_plans = plan_results[3]
+        latest_plans = plan_results[4]
         if plans and latest_plans:
             start_date_text = str(plans[0]["plan_date"])
             end_date_text = str(latest_plans[0]["plan_date"])
@@ -283,7 +297,7 @@ async def list_work_plan_schedule(
             "account_status": user.get("status"),
         }
 
-    for plan in plans:
+    for plan in matching_plan_metadata:
         member_id = str(plan.get("member_id") or "").strip()
         if not member_id:
             continue
@@ -297,22 +311,10 @@ async def list_work_plan_schedule(
                 "account_status": None,
             },
         )
-    for member_id in selected_member_ids:
-        profiles.setdefault(
-            member_id,
-            {
-                "member_id": member_id,
-                "member_name": member_id,
-                "member_email": None,
-                "role": None,
-                "account_status": None,
-            },
-        )
-
     current_minute = observed_local.hour * 60 + observed_local.minute
     current_date_text = local_today.isoformat()
     active_plans: dict[str, dict[str, Any]] = {}
-    for plan in plans:
+    for plan in matching_plan_metadata:
         if (
             plan.get("plan_date") != current_date_text
             or plan.get("is_cancelled") is True
