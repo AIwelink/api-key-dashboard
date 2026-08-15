@@ -165,4 +165,3 @@ Commit shared primitives/tests, traffic redesign, operations redesign, and final
 - [ ] **Step 3: Push and open the PR**
 
 Push `codex/operations-workspace-redesign` and create a PR with base `achernar/dev`. The PR body must summarize the two page redesigns, metric definition behavior, preserved business logic, and exact verification commands/results.
-
