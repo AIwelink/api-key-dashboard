@@ -1,5 +1,6 @@
 import type { UserPermissions, ViewName } from "./types";
 
+const workPlanNavItems: Array<[ViewName, string]> = [["work-plans", "工作计划"]];
 
 const navItems: Array<[ViewName, string]> = [
   ["upload", "上传账号"],
@@ -42,6 +43,7 @@ const adminNavItems: Array<[ViewName, string]> = [
 ];
 
 const navigationGroups = [
+  workPlanNavItems,
   navItems,
   accountNavItems,
   poolNavItems,
@@ -64,6 +66,7 @@ export const allNavigationItems: Array<[ViewName, string]> = Array.from(
 );
 
 export const navShortLabels: Record<ViewName, string> = {
+  "work-plans": "时",
   upload: "传",
   todos: "办",
   "push-error-todos": "疑",
@@ -90,6 +93,7 @@ export const navShortLabels: Record<ViewName, string> = {
 };
 
 export const viewPaths: Record<ViewName, string> = {
+  "work-plans": "/work-plans",
   upload: "/upload-accounts",
   todos: "/todo-and-error-accounts",
   "push-error-todos": "/question-account-assignment",
@@ -160,6 +164,7 @@ export function viewFromPath(pathname: string): ViewName {
 
 export function navigationGroupClass(group: Array<[ViewName, string]>) {
   const firstKey = group[0]?.[0];
+  if (firstKey === "work-plans") return "nav-group work-plan-nav-group";
   if (firstKey === "api-pools") return "nav-group pool-status-nav-group";
   if (firstKey === "traffic-analysis") return "nav-group operations-management-nav-group";
   if (firstKey === "event-records") return "nav-group pool-operations-nav-group";

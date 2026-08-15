@@ -9,6 +9,7 @@ Role = Literal["owner", "admin", "maintainer", "operator", "viewer"]
 UserRoleId = Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[a-z][a-z0-9-]{0,31}$")]
 UploadSourceTemplate = Literal["sub2api", "purchased_jinyao"]
 ViewName = Literal[
+    "work-plans",
     "upload",
     "todos",
     "push-error-todos",
@@ -337,6 +338,7 @@ class SmartSchedulingAccountRule(BaseModel):
     extreme_entry_percent: float = Field(ge=0, le=100)
     recovery_percent: float = Field(ge=0, le=100)
     extreme_concurrency: int = Field(ge=1, le=10_000)
+    extreme_load_factor: int = Field(ge=1, le=100_000)
 
 
 class SmartSchedulingAccountTypes(BaseModel):

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import logoUrl from "../AIwelink_logo_bule_A.png";
 import { AccountPoolsPage } from "./pages/AccountPoolsPage";
 import { AccountsPage } from "./pages/AccountsPage";
@@ -21,6 +21,7 @@ import { TrafficAnalysisPage } from "./pages/TrafficAnalysisPage";
 import { TrafficAnalysisConfigPage } from "./pages/TrafficAnalysisConfigPage";
 import { UploadPage } from "./pages/UploadPage";
 import { UsersPage } from "./pages/UsersPage";
+import { WorkPlansPage } from "./pages/WorkPlansPage";
 import { useForegroundPresence } from "./hooks/useForegroundPresence";
 import {
   canAccessView,
@@ -40,6 +41,27 @@ type ToastState = {
   isError: boolean;
 } | null;
 
+export function useStableToast(setToast: Dispatch<SetStateAction<ToastState>>) {
+  const timerRef = useRef<number | null>(null);
+  const showToast = useCallback((message: string, isError = false) => {
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    setToast({ message, isError });
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null;
+      setToast(null);
+    }, 3_200);
+  }, [setToast]);
+
+  useEffect(() => () => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  return showToast;
+}
+
 function isMobileMenuLayout() {
   return window.matchMedia("(max-width: 720px), (max-width: 900px) and (orientation: portrait), (max-aspect-ratio: 3 / 4)").matches;
 }
@@ -53,12 +75,8 @@ function App() {
   const [view, setView] = useState<ViewName>(() => viewFromPath(window.location.pathname));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "true");
   const [toast, setToast] = useState<ToastState>(null);
+  const showToast = useStableToast(setToast);
   useForegroundPresence(token, view);
-
-  const showToast = (message: string, isError = false) => {
-    setToast({ message, isError });
-    window.setTimeout(() => setToast(null), 3200);
-  };
 
   const logout = () => {
     setToken("");
@@ -194,6 +212,7 @@ function App() {
           />
         ) : canRenderCurrentView ? (
           <>
+            {view === "work-plans" && user && <WorkPlansPage currentUser={user} token={token} showToast={showToast} />}
             {view === "upload" && <UploadPage token={token} showToast={showToast} />}
             {view === "todos" && <TodoPage token={token} showToast={showToast} />}
             {view === "push-error-todos" && <PushErrorTodoPage token={token} showToast={showToast} />}

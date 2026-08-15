@@ -26,7 +26,34 @@ describe("smart scheduling form", () => {
     expect(form.pro.extreme_entry_percent).toBe("95");
     expect(form.plus.normal_concurrency).toBe("30");
     expect(form.plus.extreme_concurrency).toBe("100");
+    for (const accountType of ["pro", "plus", "k12", "team"] as const) {
+      expect(form[accountType].extreme_load_factor).toBe("10000");
+    }
     expect(form.extreme.priority).toBe("10");
+  });
+
+  it("serializes a custom extreme load factor for each account type", () => {
+    const form = smartSchedulingRulesToForm(defaultSmartSchedulingRules);
+    form.pro.extreme_load_factor = "11000";
+    form.plus.extreme_load_factor = "12000";
+    form.k12.extreme_load_factor = "13000";
+    form.team.extreme_load_factor = "14000";
+
+    const result = buildSmartSchedulingPayload(form);
+
+    expect(result).toMatchObject({
+      ok: true,
+      payload: {
+        rules: {
+          account_types: {
+            pro: { extreme_load_factor: 11000 },
+            plus: { extreme_load_factor: 12000 },
+            k12: { extreme_load_factor: 13000 },
+            team: { extreme_load_factor: 14000 },
+          },
+        },
+      },
+    });
   });
 
   it("builds a complete numeric payload", () => {
@@ -92,6 +119,8 @@ describe("smart scheduling operator controls", () => {
     expect(schedulingSection).toContain("smartSchedulingMeta.lastRun?.changed");
     expect(schedulingSection).toContain("smartSchedulingMeta.lastRun?.skipped");
     expect(schedulingSection).toContain("smartSchedulingMeta.lastRun?.failed");
+    expect(schedulingSection).toContain("extreme_load_factor");
+    expect(schedulingSection).toMatch(/max=\{100_000\}[\s\S]*?value=\{rule\.extreme_load_factor\}/);
     expect(schedulingSection).not.toMatch(/api-pools\/accounts|sub2api-sites\/[^`]*accounts/);
   });
 

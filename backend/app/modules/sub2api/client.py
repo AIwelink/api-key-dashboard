@@ -316,9 +316,20 @@ class Sub2ApiClient:
         account_ids: list[int | str],
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        if set(payload) != {"priority", "concurrency", "group_ids"}:
+        required_fields = {"priority", "concurrency", "group_ids"}
+        optional_fields = {"load_factor"}
+        payload_fields = set(payload)
+        missing_fields = required_fields - payload_fields
+        unsupported_fields = payload_fields - required_fields - optional_fields
+        if missing_fields:
             raise ValueError(
-                "bulk runtime account updates require priority, concurrency, and group_ids"
+                "bulk runtime account updates are missing required fields: "
+                + ", ".join(sorted(missing_fields))
+            )
+        if unsupported_fields:
+            raise ValueError(
+                "bulk runtime account updates contain unsupported fields: "
+                + ", ".join(sorted(unsupported_fields))
             )
         if not account_ids:
             return {
@@ -330,15 +341,18 @@ class Sub2ApiClient:
             }
         if not isinstance(payload["group_ids"], list):
             raise ValueError("bulk runtime account group_ids must be a list")
+        request_payload: dict[str, Any] = {
+            "account_ids": account_ids,
+            "concurrency": payload["concurrency"],
+            "priority": payload["priority"],
+            "group_ids": payload["group_ids"],
+        }
+        if "load_factor" in payload:
+            request_payload["load_factor"] = payload["load_factor"]
         response = await self._request_admin_response_with_retries(
             "POST",
             "/accounts/bulk-update",
-            json={
-                "account_ids": account_ids,
-                "concurrency": payload["concurrency"],
-                "priority": payload["priority"],
-                "group_ids": payload["group_ids"],
-            },
+            json=request_payload,
             timeout=15,
         )
         return self._admin_response_payload(response, operation="bulk update runtime fields")

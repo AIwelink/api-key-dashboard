@@ -7424,7 +7424,7 @@ button.ghost.success-button:hover {
 .confirm-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: 80;
   display: grid;
   place-items: center;
   background: rgba(17, 24, 39, 0.42);
@@ -8091,6 +8091,12 @@ code {
 
   .nav .pool-status-nav-group {
     order: -3;
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .nav .work-plan-nav-group {
+    order: -4;
     padding-left: 0;
     border-left: 0;
   }

@@ -136,6 +136,64 @@ class FrontendPresenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cursor.limit_value, 500)
         self.assertEqual(result["total"], 1)
 
+    async def test_member_summaries_keep_retained_last_seen_for_offline_users(self) -> None:
+        observed_at = datetime(2026, 7, 18, 9, 0, tzinfo=UTC)
+        online_seen_at = observed_at - timedelta(seconds=10)
+        offline_seen_at = observed_at - timedelta(hours=2)
+        active_cursor = PresenceCursor(
+            [
+                {
+                    "user_id": "online-user",
+                    "client_id": "client-a",
+                    "session_id": "tab-a",
+                    "last_seen_at": online_seen_at,
+                },
+                {
+                    "user_id": "online-user",
+                    "client_id": "client-a",
+                    "session_id": "tab-b",
+                    "last_seen_at": online_seen_at,
+                },
+            ]
+        )
+        retained_cursor = PresenceCursor(
+            [
+                {"_id": "online-user", "last_seen_at": online_seen_at},
+                {"_id": "offline-user", "last_seen_at": offline_seen_at},
+            ]
+        )
+        current = SimpleNamespace(find=unittest.mock.MagicMock(return_value=active_cursor))
+        minutes = SimpleNamespace(aggregate=unittest.mock.MagicMock(return_value=retained_cursor))
+        db = SimpleNamespace(
+            frontend_presence=current,
+            frontend_presence_minutes=minutes,
+        )
+
+        result = await presence.list_member_presence_summaries(
+            db,
+            observed_at=observed_at,
+        )
+
+        self.assertEqual(
+            current.find.call_args.args[0],
+            {"last_seen_at": {"$gte": observed_at - timedelta(seconds=presence.ACTIVE_PRESENCE_SECONDS)}},
+        )
+        self.assertEqual(
+            result,
+            {
+                "online-user": {
+                    "is_online": True,
+                    "active_clients": 1,
+                    "last_seen_at": online_seen_at,
+                },
+                "offline-user": {
+                    "is_online": False,
+                    "active_clients": 0,
+                    "last_seen_at": offline_seen_at,
+                },
+            },
+        )
+
     async def test_heartbeats_share_one_five_minute_history_bucket_across_clients(self) -> None:
         current = SimpleNamespace(update_one=AsyncMock())
         minutes = SimpleNamespace(update_one=AsyncMock())

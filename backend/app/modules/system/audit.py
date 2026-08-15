@@ -25,17 +25,31 @@ async def write_audit_log(
     resource_id: str | None = None,
     before: dict[str, Any] | None = None,
     after: dict[str, Any] | None = None,
+    dedupe_key: str | None = None,
 ) -> None:
-    await db.audit_logs.insert_one(
-        {
-            "actor_type": actor.get("actor_type") if actor and actor.get("actor_type") else ("user" if actor else "system"),
-            "actor_id": actor.get("_id") if actor else None,
-            "actor_name": actor.get("name") if actor else None,
-            "action": action,
-            "resource_type": resource_type,
-            "resource_id": resource_id,
-            "before": _bson_safe_audit_value(before),
-            "after": _bson_safe_audit_value(after),
-            "created_at": now_utc(),
-        }
+    document = {
+        "actor_type": actor.get("actor_type") if actor and actor.get("actor_type") else ("user" if actor else "system"),
+        "actor_id": actor.get("_id") if actor else None,
+        "actor_name": actor.get("name") if actor else None,
+        "action": action,
+        "resource_type": resource_type,
+        "resource_id": resource_id,
+        "before": _bson_safe_audit_value(before),
+        "after": _bson_safe_audit_value(after),
+        "created_at": now_utc(),
+    }
+    if dedupe_key is None:
+        await db.audit_logs.insert_one(document)
+        return
+
+    document["dedupe_key"] = dedupe_key
+    await db.audit_logs.update_one(
+        {"dedupe_key": dedupe_key},
+        {"$setOnInsert": document},
+        upsert=True,
     )
+    if after is not None:
+        await db.audit_logs.update_one(
+            {"dedupe_key": dedupe_key, "after": None},
+            {"$set": {"after": document["after"]}},
+        )

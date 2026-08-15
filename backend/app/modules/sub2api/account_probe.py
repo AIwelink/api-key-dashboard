@@ -771,6 +771,7 @@ def _normalize_probe_account(account: dict[str, Any]) -> dict[str, Any]:
         "group_ids": group_ids,
         "plan_type": "bug_team" if is_bug_team_account(account) else inferred_plan_type or remote_plan_type,
         "plan_type_source": inferred_source,
+        "created_at": account.get("created_at"),
         "last_used_at": _first_present(account, extra, "last_used_at"),
         "updated_at": _first_present(account, extra, "updated_at"),
         "usage_snapshot": _usage_snapshot(account, extra),

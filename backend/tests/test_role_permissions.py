@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from typing import get_args
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import HTTPException
@@ -16,7 +17,7 @@ from app.routers import auth as auth_router
 from app.routers import settings as settings_router
 from app.routers import sub2api_sites as sub2api_sites_router
 from app.routers import todo_items as todo_items_router
-from app.schemas import RolePermissionEntry, RolePermissionsUpdate, UserRoleCreate
+from app.schemas import RolePermissionEntry, RolePermissionsUpdate, UserRoleCreate, ViewName
 
 
 def fake_db(document: dict | None):
@@ -37,12 +38,82 @@ def fake_permissions_db(document: dict | None, *, user: dict | None = None, modi
 
 
 class RolePermissionSettingsTests(unittest.IsolatedAsyncioTestCase):
+    def test_work_plans_is_a_valid_permission_view(self) -> None:
+        self.assertIn("work-plans", get_args(ViewName))
+
+    async def test_work_plans_is_mandatory_for_builtin_and_stored_custom_roles(self) -> None:
+        roles = {
+            role: {
+                "allowed_views": ["todos"],
+                "default_view": "todos",
+            }
+            for role in permissions.ROLE_ORDER
+        }
+        roles["support"] = {
+            "label": "Support",
+            "builtin": False,
+            "allowed_views": ["todos"],
+            "default_view": "todos",
+        }
+        db, _ = fake_db(
+            {
+                "_id": "role_permissions",
+                "roles": roles,
+                "role_order": [*permissions.ROLE_ORDER, "support"],
+            }
+        )
+
+        result = await permissions.get_role_permissions_settings(db)
+
+        self.assertEqual(result["available_views"][0], "work-plans")
+        for role in (*permissions.ROLE_ORDER, "support"):
+            with self.subTest(role=role):
+                self.assertIn("work-plans", result["roles"][role]["allowed_views"])
+                self.assertEqual(result["roles"][role]["default_view"], "todos")
+
+    async def test_permission_update_cannot_remove_work_plans(self) -> None:
+        stored = {
+            "_id": "role_permissions",
+            "roles": {
+                "support": {
+                    "label": "Support",
+                    "builtin": False,
+                    "allowed_views": ["todos"],
+                    "default_view": "todos",
+                }
+            },
+            "role_order": [*permissions.ROLE_ORDER, "support"],
+        }
+        db, collection, _ = fake_permissions_db(stored)
+        collection.find_one.side_effect = [stored, stored]
+        collection.update_one.return_value = SimpleNamespace(matched_count=1, modified_count=1)
+
+        result = await permissions.update_role_permissions_settings(
+            db,
+            payload=RolePermissionsUpdate(
+                roles={
+                    "support": RolePermissionEntry(
+                        allowed_views=["todos"],
+                        default_view="todos",
+                    )
+                }
+            ),
+            actor={"_id": "admin@example.com"},
+        )
+
+        stored_update = collection.update_one.await_args.args[1]["$set"]["roles.support"]
+        self.assertIn("work-plans", stored_update["allowed_views"])
+        self.assertIn("work-plans", result["roles"]["support"]["allowed_views"])
+
     async def test_unconfigured_permissions_return_database_backed_defaults(self) -> None:
         db, _ = fake_db(None)
 
         result = await permissions.get_role_permissions_settings(db)
 
-        self.assertEqual(result["roles"]["operator"]["allowed_views"], ["traffic-analysis", "operations-management"])
+        self.assertEqual(
+            result["roles"]["operator"]["allowed_views"],
+            ["work-plans", "traffic-analysis", "operations-management"],
+        )
         self.assertEqual(result["roles"]["operator"]["default_view"], "traffic-analysis")
         self.assertIn("system-management", result["roles"]["admin"]["allowed_views"])
         self.assertNotIn("api-tokens", result["roles"]["admin"]["allowed_views"])
@@ -75,7 +146,7 @@ class RolePermissionSettingsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             result["roles"]["support"]["allowed_views"],
-            ["pool-lifecycle", "auto-replenishment"],
+            ["work-plans", "pool-lifecycle", "auto-replenishment"],
         )
 
     async def test_user_role_catalog_excludes_permissions_and_deleting_roles(self) -> None:
@@ -140,10 +211,16 @@ class RolePermissionSettingsTests(unittest.IsolatedAsyncioTestCase):
         )
 
         updates = collection.update_one.await_args.args[1]["$set"]
-        self.assertEqual(updates["roles.operator"]["allowed_views"], ["operations-management", "traffic-analysis"])
+        self.assertEqual(
+            updates["roles.operator"]["allowed_views"],
+            ["work-plans", "traffic-analysis", "operations-management"],
+        )
         self.assertEqual(updates["roles.operator"]["default_view"], "operations-management")
         self.assertEqual(updates["updated_by"], "admin@example.com")
-        self.assertEqual(result["roles"]["operator"]["allowed_views"], ["operations-management", "traffic-analysis"])
+        self.assertEqual(
+            result["roles"]["operator"]["allowed_views"],
+            ["work-plans", "traffic-analysis", "operations-management"],
+        )
 
     async def test_permission_update_rejects_role_deleted_after_read(self) -> None:
         db, collection, _ = fake_permissions_db(
@@ -204,7 +281,7 @@ class RolePermissionSettingsTests(unittest.IsolatedAsyncioTestCase):
 
         result = await permissions.permissions_for_user(db, {"role": "operator"})
 
-        self.assertEqual(result["allowed_views"], ["operations-management"])
+        self.assertEqual(result["allowed_views"], ["work-plans", "operations-management"])
         self.assertEqual(result["default_view"], "operations-management")
 
     async def test_default_permissions_can_be_ensured_in_app_settings(self) -> None:
@@ -214,7 +291,10 @@ class RolePermissionSettingsTests(unittest.IsolatedAsyncioTestCase):
 
         updates = collection.update_one.await_args.args[1]["$setOnInsert"]
         self.assertEqual(collection.update_one.await_args.args[0], {"_id": "role_permissions"})
-        self.assertEqual(updates["roles"]["operator"]["allowed_views"], ["traffic-analysis", "operations-management"])
+        self.assertEqual(
+            updates["roles"]["operator"]["allowed_views"],
+            ["work-plans", "traffic-analysis", "operations-management"],
+        )
         self.assertEqual(updates["updated_by"], "system")
         self.assertEqual(result["roles"]["operator"]["default_view"], "traffic-analysis")
 
@@ -331,8 +411,8 @@ class RolePermissionSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(update["$set"]["roles.support"]["builtin"])
         self.assertEqual(update["$push"]["role_order"], "support")
         self.assertEqual(result["role_order"][-1], "support")
-        self.assertEqual(result["roles"]["support"]["allowed_views"], [])
-        self.assertIsNone(result["roles"]["support"]["default_view"])
+        self.assertEqual(result["roles"]["support"]["allowed_views"], ["work-plans"])
+        self.assertEqual(result["roles"]["support"]["default_view"], "work-plans")
 
     async def test_create_role_returns_fresh_database_state(self) -> None:
         db, collection, _ = fake_permissions_db(None)

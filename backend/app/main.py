@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import PROJECT_ROOT, get_settings
 from app.database import close_mongo_connection, connect_to_mongo, get_db
 from app.logging_config import RequestLoggingMiddleware, cleanup_old_logs, log_cleanup_loop, setup_logging
-from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, auto_replenishment, client_metrics, client_sites, event_records, growth, import_batches, imports, notifications, operations, plus_self_produced, presence, settings, sub2api_sites, sync, todo_items, users
+from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, auto_replenishment, client_metrics, client_sites, event_records, growth, import_batches, imports, notifications, operations, plus_self_produced, presence, settings, sub2api_sites, sync, todo_items, users, work_plans
 from app.modules.client_metrics.sampler import client_metric_sampler_loop
 from app.modules.operations.sync import operations_sync_loop
 from app.modules.system.bootstrap import ensure_bootstrap_data, ensure_indexes
@@ -22,6 +22,7 @@ from app.modules.sub2api.capacity_sampler import capacity_sampler_loop
 from app.modules.sub2api.hourly_forecast_evaluation_service import forecast_accuracy_evaluator_loop
 from app.modules.sub2api.plus_self_produced import scheduler_loop as plus_self_produced_scheduler_loop
 from app.modules.sub2api.tpm_sampler import tpm_sampler_loop
+from app.modules.work_plans.service import work_plan_audit_reconciliation_loop
 
 
 settings_obj = get_settings()
@@ -50,6 +51,10 @@ async def lifespan(app_instance: FastAPI):
     forecast_accuracy_task = asyncio.create_task(forecast_accuracy_evaluator_loop(db))
     client_metric_sampler_task = asyncio.create_task(client_metric_sampler_loop(db))
     operations_sync_task = asyncio.create_task(operations_sync_loop(db))
+    work_plan_audit_task = asyncio.create_task(
+        work_plan_audit_reconciliation_loop(db),
+        name="work-plan-audit-reconciliation",
+    )
     cleanup_task = asyncio.create_task(log_cleanup_loop(settings_obj))
     await start_agent_scheduler(app_instance)
     try:
@@ -69,6 +74,7 @@ async def lifespan(app_instance: FastAPI):
             forecast_accuracy_task,
             client_metric_sampler_task,
             operations_sync_task,
+            work_plan_audit_task,
             cleanup_task,
         )
         for task in background_tasks:
@@ -114,6 +120,7 @@ app.include_router(operations.router, prefix="/api")
 app.include_router(sub2api_sites.router, prefix="/api")
 app.include_router(todo_items.router, prefix="/api")
 app.include_router(audit.router, prefix="/api")
+app.include_router(work_plans.router, prefix="/api")
 
 
 @app.get("/health")

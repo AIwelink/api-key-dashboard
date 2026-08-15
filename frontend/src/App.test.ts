@@ -1,6 +1,94 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const toastHookHarness = vi.hoisted(() => {
+  let callback: ((message: string, isError?: boolean) => void) | null = null;
+  const timerRef: { current: number | null } = { current: null };
+  let cleanup: (() => void) | null = null;
+
+  return {
+    reset() {
+      callback = null;
+      timerRef.current = null;
+      cleanup = null;
+    },
+    runCleanup() {
+      cleanup?.();
+    },
+    useCallback(next: (message: string, isError?: boolean) => void) {
+      callback ??= next;
+      return callback;
+    },
+    useEffect(effect: () => void | (() => void)) {
+      if (cleanup === null) cleanup = effect() ?? null;
+    },
+    useRef() {
+      return timerRef;
+    },
+  };
+});
+
+vi.mock("react", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react")>()),
+  useCallback: toastHookHarness.useCallback,
+  useEffect: toastHookHarness.useEffect,
+  useRef: toastHookHarness.useRef,
+}));
+
+import { useStableToast } from "./App";
 import { canAccessView, defaultViewForPermissions, getVisibleNavigationGroups, viewFromPath } from "./navigation";
 import type { UserPermissions, ViewName } from "./types";
+
+describe("app toast", () => {
+  const scheduled = new Map<number, () => void>();
+  let nextTimerId = 1;
+  const clearTimeout = vi.fn((timerId: number) => {
+    scheduled.delete(timerId);
+  });
+  const setTimeout = vi.fn((callback: () => void) => {
+    const timerId = nextTimerId;
+    nextTimerId += 1;
+    scheduled.set(timerId, callback);
+    return timerId;
+  });
+  const runTimer = (timerId: number) => {
+    const callback = scheduled.get(timerId);
+    scheduled.delete(timerId);
+    callback?.();
+  };
+
+  beforeEach(() => {
+    toastHookHarness.reset();
+    scheduled.clear();
+    nextTimerId = 1;
+    clearTimeout.mockClear();
+    setTimeout.mockClear();
+    vi.stubGlobal("window", { clearTimeout, setTimeout });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the callback stable across renders and replaces the pending dismissal", () => {
+    const setToast = vi.fn();
+
+    const first = useStableToast(setToast);
+    first("第一次通知");
+    const second = useStableToast(setToast);
+    second("第二次通知", true);
+
+    expect(second).toBe(first);
+    expect(clearTimeout).toHaveBeenCalledWith(1);
+    expect([...scheduled]).toHaveLength(1);
+    runTimer(2);
+    expect(setToast.mock.calls.filter(([value]) => value === null)).toHaveLength(1);
+
+    second("等待卸载");
+    toastHookHarness.runCleanup();
+    expect(clearTimeout).toHaveBeenLastCalledWith(3);
+    expect([...scheduled]).toHaveLength(0);
+  });
+});
 
 describe("app navigation", () => {
   const hiddenViews = [
@@ -18,6 +106,7 @@ describe("app navigation", () => {
   });
 
   const ownerPermissions = permissions([
+    "work-plans",
     "upload",
     "todos",
     "push-error-todos",
@@ -56,6 +145,7 @@ describe("app navigation", () => {
 
     expect(groups.every((group) => group.length > 0)).toBe(true);
     expect(groups.map((group) => group.map(([key]) => key))).toEqual([
+      ["work-plans"],
       ["api-pools", "plus-self-produced"],
       ["traffic-analysis", "operations-management"],
       ["event-records", "alert-center", "pool-lifecycle", "auto-replenishment", "client-sites", "traffic-analysis-config"],
@@ -71,6 +161,7 @@ describe("app navigation", () => {
 
     expect(groups.every((group) => group.length > 0)).toBe(true);
     expect(groups.map((group) => group.map(([key]) => key))).toEqual([
+      ["work-plans"],
       ["api-pools", "plus-self-produced"],
       ["traffic-analysis", "operations-management"],
       ["event-records", "alert-center", "pool-lifecycle", "auto-replenishment", "client-sites", "traffic-analysis-config"],
@@ -133,6 +224,7 @@ describe("app navigation", () => {
   });
 
   it("uses the API pools page for root and unknown paths", () => {
+    expect(viewFromPath("/work-plans")).toBe("work-plans");
     expect(viewFromPath("/traffic-analysis")).toBe("traffic-analysis");
     expect(viewFromPath("/traffic-analysis-config")).toBe("traffic-analysis-config");
     expect(viewFromPath("/operations-management")).toBe("operations-management");
@@ -140,5 +232,10 @@ describe("app navigation", () => {
     expect(viewFromPath("/auto-replenishment")).toBe("auto-replenishment");
     expect(viewFromPath("/")).toBe("api-pools");
     expect(viewFromPath("/unknown-page")).toBe("api-pools");
+  });
+
+  it("places work plans in the first visible navigation group", () => {
+    const result = getVisibleNavigationGroups(permissions(["api-pools", "work-plans"]));
+    expect(result[0]).toEqual([["work-plans", "工作计划"]]);
   });
 });
