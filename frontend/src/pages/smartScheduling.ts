@@ -12,6 +12,7 @@ export type SmartSchedulingAccountRule = {
   extreme_entry_percent: number;
   recovery_percent: number;
   extreme_concurrency: number;
+  extreme_load_factor: number;
 };
 
 export type SmartSchedulingRules = {
@@ -60,6 +61,7 @@ export const defaultSmartSchedulingRules: SmartSchedulingRules = {
       extreme_entry_percent: 95,
       recovery_percent: 80,
       extreme_concurrency: 100,
+      extreme_load_factor: 10000,
     },
     plus: {
       manual_priority_min: 200,
@@ -71,6 +73,7 @@ export const defaultSmartSchedulingRules: SmartSchedulingRules = {
       extreme_entry_percent: 90,
       recovery_percent: 80,
       extreme_concurrency: 100,
+      extreme_load_factor: 10000,
     },
     k12: {
       manual_priority_min: 100,
@@ -82,6 +85,7 @@ export const defaultSmartSchedulingRules: SmartSchedulingRules = {
       extreme_entry_percent: 90,
       recovery_percent: 80,
       extreme_concurrency: 100,
+      extreme_load_factor: 10000,
     },
     team: {
       manual_priority_min: 50,
@@ -93,6 +97,7 @@ export const defaultSmartSchedulingRules: SmartSchedulingRules = {
       extreme_entry_percent: 90,
       recovery_percent: 80,
       extreme_concurrency: 100,
+      extreme_load_factor: 10000,
     },
   },
   extreme: {
@@ -112,6 +117,7 @@ const accountRuleFields = [
   "extreme_entry_percent",
   "recovery_percent",
   "extreme_concurrency",
+  "extreme_load_factor",
 ] as const;
 
 const integerFieldLabels: Partial<Record<keyof SmartSchedulingAccountRule, string>> = {
@@ -122,6 +128,7 @@ const integerFieldLabels: Partial<Record<keyof SmartSchedulingAccountRule, strin
   automatic_priority: "自动优先级",
   normal_concurrency: "普通并发",
   extreme_concurrency: "极限并发",
+  extreme_load_factor: "极限权重",
 };
 
 export function smartSchedulingRulesToForm(rules: SmartSchedulingRules): SmartSchedulingForm {

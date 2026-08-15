@@ -1147,6 +1147,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                 <th>7d 极限阈值</th>
                 <th>恢复阈值</th>
                 <th>极限并发</th>
+                <th>极限权重</th>
               </tr>
             </thead>
             <tbody>
@@ -1254,6 +1255,17 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                         type="number"
                         value={rule.extreme_concurrency}
                         onChange={(event) => updateSmartSchedulingRule(accountType, "extreme_concurrency", event.target.value)}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`${smartSchedulingTypeLabels[accountType]} 极限权重`}
+                        disabled={disabled}
+                        max={100_000}
+                        min={1}
+                        type="number"
+                        value={rule.extreme_load_factor}
+                        onChange={(event) => updateSmartSchedulingRule(accountType, "extreme_load_factor", event.target.value)}
                       />
                     </td>
                   </tr>

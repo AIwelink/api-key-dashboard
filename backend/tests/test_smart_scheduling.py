@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.modules.sub2api.smart_scheduling import (
     adapted_scheduling_type,
+    build_type_priority_queue,
     default_smart_scheduling_rules,
     evaluate_account,
     normalize_smart_scheduling_rules,
@@ -23,6 +24,12 @@ class SmartSchedulingDefaultsTests(unittest.TestCase):
         self.assertEqual(rules["account_types"]["pro"]["extreme_entry_percent"], 95.0)
         self.assertEqual(rules["account_types"]["pro"]["normal_concurrency"], 30)
         self.assertEqual(rules["account_types"]["pro"]["extreme_concurrency"], 100)
+        for account_type in ("pro", "plus", "k12", "team"):
+            with self.subTest(account_type=account_type):
+                self.assertEqual(
+                    rules["account_types"][account_type]["extreme_load_factor"],
+                    10000,
+                )
         self.assertEqual(
             rules["extreme"],
             {"priority_min": 1, "priority_max": 20, "priority": 10},
@@ -44,6 +51,9 @@ class SmartSchedulingDefaultsTests(unittest.TestCase):
         self.assertEqual(rules["account_types"]["plus"]["normal_concurrency"], 40)
         self.assertEqual(rules["account_types"]["plus"]["automatic_priority"], 191)
         self.assertEqual(rules["account_types"]["pro"]["automatic_priority"], 991)
+        self.assertEqual(
+            rules["account_types"]["plus"]["extreme_load_factor"], 10000
+        )
 
     def test_rejects_overlapping_priority_bands(self) -> None:
         rules = default_smart_scheduling_rules()
@@ -97,6 +107,7 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
         reset_at: datetime | None = None,
         status: str = "active",
         error_message: str | None = None,
+        load_factor: int | None = 10,
     ) -> dict[str, object]:
         usage: dict[str, object] = {}
         if used is not None:
@@ -112,6 +123,7 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
             "account_type": account_type,
             "priority": priority,
             "concurrency": concurrency,
+            "load_factor": load_factor,
             "group_ids": [3],
             "status": status,
             "error_message": error_message,
@@ -133,6 +145,257 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
             quota_acceleration_enabled=quota_enabled,
             state=state,
             now=self.now,
+        )
+
+    def queue_entry(
+        self,
+        remote_id: int,
+        *,
+        account_type: str = "team",
+        created_at: str | None = None,
+        priority: int = 50,
+        status: str = "active",
+        schedulable: bool | None = True,
+        error_message: str | None = None,
+        mode: str | None = None,
+        used: float | None = 20,
+        type_enabled: bool = True,
+        quota_enabled: bool = False,
+    ) -> dict[str, object]:
+        account = self.account(
+            account_type,
+            priority=priority,
+            used=used,
+            status=status,
+            error_message=error_message,
+        )
+        account["remote_account_id"] = remote_id
+        account["created_at"] = created_at
+        account["schedulable"] = schedulable
+        return {
+            "remote_account_id": remote_id,
+            "account": account,
+            "state": {"mode": mode} if mode else None,
+            "type_priority_enabled": type_enabled,
+            "quota_acceleration_enabled": quota_enabled,
+        }
+
+    def test_oldest_usable_accounts_receive_contiguous_type_priorities(self) -> None:
+        plan = build_type_priority_queue(
+            [
+                self.queue_entry(3, created_at="2026-01-03T00:00:00+00:00"),
+                self.queue_entry(1, created_at="2026-01-01T00:00:00+00:00"),
+                self.queue_entry(2, created_at="2026-01-02T00:00:00+00:00"),
+            ],
+            rules=self.rules,
+            now=self.now,
+        )
+
+        self.assertEqual(
+            {account_id: data["priority"] for account_id, data in plan.items()},
+            {"1": 50, "2": 51, "3": 52},
+        )
+        self.assertEqual(plan["1"]["queue_partition"], "usable")
+        self.assertEqual(plan["2"]["queue_index"], 1)
+
+    def test_unusable_oldest_moves_after_usable_and_recovery_returns_head(self) -> None:
+        entries = [
+            self.queue_entry(1, created_at="2026-01-01T00:00:00+00:00"),
+            self.queue_entry(2, created_at="2026-01-02T00:00:00+00:00"),
+            self.queue_entry(3, created_at="2026-01-03T00:00:00+00:00"),
+        ]
+        entries[0]["account"]["error_message"] = "API returned 429"
+
+        unavailable = build_type_priority_queue(entries, rules=self.rules, now=self.now)
+
+        self.assertEqual(
+            {account_id: data["priority"] for account_id, data in unavailable.items()},
+            {"2": 50, "3": 51, "1": 52},
+        )
+        self.assertEqual(
+            unavailable["1"]["queue_partition"], "temporarily_unusable"
+        )
+
+        entries[0]["account"]["error_message"] = None
+        recovered = build_type_priority_queue(entries, rules=self.rules, now=self.now)
+
+        self.assertEqual(recovered["1"]["priority"], 50)
+        self.assertEqual(recovered["1"]["queue_partition"], "usable")
+
+    def test_queue_tie_breaks_by_remote_id_and_missing_created_at_is_last(self) -> None:
+        plan = build_type_priority_queue(
+            [
+                self.queue_entry(8, created_at=None),
+                self.queue_entry(2, created_at="2026-01-01T00:00:00+00:00"),
+                self.queue_entry(1, created_at="2026-01-01T00:00:00+00:00"),
+            ],
+            rules=self.rules,
+            now=self.now,
+        )
+
+        self.assertEqual(plan["1"]["priority"], 50)
+        self.assertEqual(plan["2"]["priority"], 51)
+        self.assertEqual(plan["8"]["priority"], 52)
+        self.assertIsNone(plan["8"]["queue_created_at"])
+
+    def test_each_type_uses_its_configured_manual_priority_minimum(self) -> None:
+        plan = build_type_priority_queue(
+            [
+                self.queue_entry(1, account_type="team"),
+                self.queue_entry(2, account_type="k12", priority=100),
+                self.queue_entry(3, account_type="plus", priority=200),
+                self.queue_entry(4, account_type="pro", priority=1000),
+            ],
+            rules=self.rules,
+            now=self.now,
+        )
+
+        self.assertEqual(
+            {account_id: data["priority"] for account_id, data in plan.items()},
+            {"1": 50, "2": 100, "3": 200, "4": 1000},
+        )
+
+    def test_queue_clamps_overflow_to_manual_band_maximum(self) -> None:
+        plan = build_type_priority_queue(
+            [self.queue_entry(remote_id) for remote_id in range(1, 45)],
+            rules=self.rules,
+            now=self.now,
+        )
+
+        self.assertEqual(plan["1"]["priority"], 50)
+        self.assertEqual(plan["41"]["priority"], 90)
+        self.assertEqual(plan["44"]["priority"], 90)
+
+    def test_extreme_and_pending_accounts_do_not_consume_normal_slots(self) -> None:
+        plan = build_type_priority_queue(
+            [
+                self.queue_entry(
+                    1,
+                    created_at="2026-01-01T00:00:00+00:00",
+                    mode="extreme",
+                    used=90,
+                    quota_enabled=True,
+                ),
+                self.queue_entry(
+                    2,
+                    created_at="2026-01-02T00:00:00+00:00",
+                    mode="rate_limit_pending",
+                    used=90,
+                    quota_enabled=True,
+                ),
+                self.queue_entry(3, created_at="2026-01-03T00:00:00+00:00"),
+            ],
+            rules=self.rules,
+            now=self.now,
+        )
+
+        self.assertNotIn("1", plan)
+        self.assertNotIn("2", plan)
+        self.assertEqual(plan["3"]["priority"], 50)
+
+    def test_owned_extreme_state_never_consumes_a_normal_slot(self) -> None:
+        plan = build_type_priority_queue(
+            [
+                self.queue_entry(
+                    1,
+                    created_at="2026-01-01T00:00:00+00:00",
+                    mode="extreme",
+                    quota_enabled=False,
+                ),
+                self.queue_entry(2, created_at="2026-01-02T00:00:00+00:00"),
+            ],
+            rules=self.rules,
+            now=self.now,
+        )
+
+        self.assertNotIn("1", plan)
+        self.assertEqual(plan["2"]["priority"], 50)
+
+    def test_recovered_extreme_state_rejoins_the_normal_queue(self) -> None:
+        entry = self.queue_entry(
+            1,
+            created_at="2026-01-01T00:00:00+00:00",
+            mode="extreme",
+            used=79.9,
+            quota_enabled=True,
+        )
+
+        plan = build_type_priority_queue([entry], rules=self.rules, now=self.now)
+
+        self.assertEqual(plan["1"]["priority"], 50)
+        self.assertEqual(plan["1"]["queue_partition"], "usable")
+
+    def test_elapsed_rate_limit_pending_rejoins_the_unusable_tail(self) -> None:
+        entry = self.queue_entry(
+            1,
+            created_at="2026-01-01T00:00:00+00:00",
+            mode="rate_limit_pending",
+            used=90,
+            quota_enabled=True,
+        )
+        entry["state"]["rate_limit_detected_at"] = (
+            self.now - timedelta(minutes=31)
+        ).isoformat()
+
+        plan = build_type_priority_queue([entry], rules=self.rules, now=self.now)
+
+        self.assertEqual(plan["1"]["priority"], 50)
+        self.assertEqual(
+            plan["1"]["queue_partition"], "temporarily_unusable"
+        )
+
+    def test_recovered_cooldown_state_returns_to_the_usable_head(self) -> None:
+        entry = self.queue_entry(
+            1,
+            created_at="2026-01-01T00:00:00+00:00",
+            mode="rate_limited_cooldown",
+            used=79.9,
+            quota_enabled=True,
+        )
+
+        plan = build_type_priority_queue([entry], rules=self.rules, now=self.now)
+
+        self.assertEqual(plan["1"]["priority"], 50)
+        self.assertEqual(plan["1"]["queue_partition"], "usable")
+
+    def test_type_aliases_share_team_queue_and_disabled_entries_are_ignored(self) -> None:
+        plan = build_type_priority_queue(
+            [
+                self.queue_entry(
+                    1,
+                    account_type="bug_team",
+                    created_at="2026-01-01T00:00:00+00:00",
+                ),
+                self.queue_entry(
+                    2,
+                    account_type="special_team",
+                    created_at="2026-01-02T00:00:00+00:00",
+                ),
+                self.queue_entry(3, type_enabled=False),
+            ],
+            rules=self.rules,
+            now=self.now,
+        )
+
+        self.assertEqual(plan["1"]["priority"], 50)
+        self.assertEqual(plan["2"]["priority"], 51)
+        self.assertNotIn("3", plan)
+
+    def test_unusable_conditions_share_the_tail_partition(self) -> None:
+        entries = [
+            self.queue_entry(1, schedulable=False),
+            self.queue_entry(2, status="error"),
+            self.queue_entry(3, error_message="API returned 403"),
+            self.queue_entry(4, mode="rate_limited_cooldown"),
+            self.queue_entry(5, status="", schedulable=True),
+            self.queue_entry(6, status="active", schedulable=None),
+        ]
+
+        plan = build_type_priority_queue(entries, rules=self.rules, now=self.now)
+
+        self.assertEqual(
+            {data["queue_partition"] for data in plan.values()},
+            {"temporarily_unusable"},
         )
 
     def test_adapted_types_use_the_supported_scheduling_tiers(self) -> None:
@@ -190,13 +453,37 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
                     decision["target"], {"priority": priority, "concurrency": 30}
                 )
 
+    def test_planned_normal_priority_uses_queue_specific_reason(self) -> None:
+        decision = evaluate_account(
+            account=self.account("plus", priority=250),
+            rules=self.rules,
+            type_priority_enabled=True,
+            quota_acceleration_enabled=False,
+            state=None,
+            now=self.now,
+            normal_priority=200,
+        )
+
+        self.assertEqual(decision["reason"], "type_queue_positioned")
+        self.assertEqual(decision["target"], {"priority": 200, "concurrency": 30})
+
     def test_extreme_precedes_type_normalization_at_exact_threshold(self) -> None:
         decision = self.evaluate(self.account("plus", priority=250, used=90))
 
         self.assertEqual(decision["status"], "change")
         self.assertEqual(decision["strategy"], "quota_acceleration")
         self.assertEqual(decision["mode"], "extreme")
-        self.assertEqual(decision["target"], {"priority": 10, "concurrency": 100})
+        self.assertEqual(
+            decision["target"],
+            {"priority": 10, "concurrency": 100, "load_factor": 10000},
+        )
+
+    def test_extreme_load_factor_can_be_configured_per_account_type(self) -> None:
+        self.rules["account_types"]["plus"]["extreme_load_factor"] = 12345
+
+        decision = self.evaluate(self.account("plus", priority=250, used=90))
+
+        self.assertEqual(decision["target"]["load_factor"], 12345)
 
     def test_k12_and_team_enter_extreme_at_ninety_percent(self) -> None:
         for account_type in ("k12", "team", "bug_team", "special_team"):
@@ -206,7 +493,8 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
                 )
                 self.assertEqual(decision["mode"], "extreme")
                 self.assertEqual(
-                    decision["target"], {"priority": 10, "concurrency": 100}
+                    decision["target"],
+                    {"priority": 10, "concurrency": 100, "load_factor": 10000},
                 )
 
     def test_pro_enters_extreme_at_ninety_five_not_ninety(self) -> None:
@@ -216,7 +504,10 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
         self.assertEqual(normal["mode"], "normal")
         self.assertEqual(normal["target"], {"priority": 1000, "concurrency": 30})
         self.assertEqual(extreme["mode"], "extreme")
-        self.assertEqual(extreme["target"], {"priority": 10, "concurrency": 100})
+        self.assertEqual(
+            extreme["target"],
+            {"priority": 10, "concurrency": 100, "load_factor": 10000},
+        )
 
     def test_quota_strategy_alone_does_nothing_below_threshold(self) -> None:
         decision = self.evaluate(
@@ -304,7 +595,10 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
 
         self.assertEqual(decision["strategy"], "quota_recovery")
         self.assertEqual(decision["mode"], "normal")
-        self.assertEqual(decision["target"], {"priority": 191, "concurrency": 30})
+        self.assertEqual(
+            decision["target"],
+            {"priority": 191, "concurrency": 30, "load_factor": 10},
+        )
 
     def test_extreme_state_does_not_recover_at_exactly_eighty_percent(self) -> None:
         reset_at = self.now + timedelta(days=3)
@@ -323,7 +617,10 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
         )
 
         self.assertEqual(decision["mode"], "extreme")
-        self.assertEqual(decision["target"], {"priority": 10, "concurrency": 100})
+        self.assertEqual(
+            decision["target"],
+            {"priority": 10, "concurrency": 100, "load_factor": 10000},
+        )
 
     def test_extreme_state_recovers_when_reset_identity_changes(self) -> None:
         old_reset = self.now + timedelta(hours=1)
@@ -343,7 +640,10 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
         )
 
         self.assertEqual(decision["strategy"], "quota_recovery")
-        self.assertEqual(decision["target"], {"priority": 991, "concurrency": 30})
+        self.assertEqual(
+            decision["target"],
+            {"priority": 991, "concurrency": 30, "load_factor": 10},
+        )
         self.assertEqual(decision["seven_day_reset_at"], new_reset.isoformat())
 
     def test_extreme_429_starts_pending_delay_without_runtime_change(self) -> None:
@@ -360,10 +660,13 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
             state={"mode": "extreme", "seven_day_reset_at": reset_at.isoformat()},
         )
 
-        self.assertEqual(decision["status"], "unchanged")
+        self.assertEqual(decision["status"], "change")
         self.assertEqual(decision["mode"], "rate_limit_pending")
         self.assertEqual(decision["rate_limit_detected_at"], self.now.isoformat())
-        self.assertEqual(decision["target"], {"priority": 10, "concurrency": 100})
+        self.assertEqual(
+            decision["target"],
+            {"priority": 10, "concurrency": 100, "load_factor": 10000},
+        )
 
     def test_pending_429_uses_first_detection_time(self) -> None:
         detected_at = self.now - timedelta(minutes=10)
@@ -399,11 +702,48 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
                 )
                 self.assertEqual(decision["mode"], expected_mode)
                 expected_target = (
-                    {"priority": 10, "concurrency": 100}
+                    {"priority": 10, "concurrency": 100, "load_factor": 10000}
                     if expected_mode == "rate_limit_pending"
-                    else {"priority": 191, "concurrency": 30}
+                    else {"priority": 191, "concurrency": 30, "load_factor": 10}
                 )
                 self.assertEqual(decision["target"], expected_target)
+
+    def test_recovery_restores_state_original_load_factor(self) -> None:
+        decision = self.evaluate(
+            self.account("plus", priority=10, concurrency=100, load_factor=10000, used=79.9),
+            state={
+                "mode": "extreme",
+                "original_load_factor": 37,
+                "seven_day_reset_at": (self.now + timedelta(days=3)).isoformat(),
+            },
+        )
+
+        self.assertEqual(
+            decision["target"],
+            {"priority": 191, "concurrency": 30, "load_factor": 37},
+        )
+
+    def test_recovery_falls_back_to_current_account_load_factor(self) -> None:
+        decision = self.evaluate(
+            self.account("plus", priority=10, concurrency=100, load_factor=23, used=79.9),
+            state={
+                "mode": "extreme",
+                "seven_day_reset_at": (self.now + timedelta(days=3)).isoformat(),
+            },
+        )
+
+        self.assertEqual(
+            decision["target"],
+            {"priority": 191, "concurrency": 30, "load_factor": 23},
+        )
+
+    def test_normal_mode_does_not_change_load_factor(self) -> None:
+        decision = self.evaluate(
+            self.account("plus", priority=250, concurrency=20, load_factor=777),
+            quota_enabled=False,
+        )
+
+        self.assertEqual(decision["target"], {"priority": 250, "concurrency": 30})
 
     def test_cooldown_blocks_extreme_until_quota_recovers(self) -> None:
         decision = self.evaluate(
@@ -415,7 +755,10 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
         )
 
         self.assertEqual(decision["mode"], "rate_limited_cooldown")
-        self.assertEqual(decision["target"], {"priority": 191, "concurrency": 30})
+        self.assertEqual(
+            decision["target"],
+            {"priority": 191, "concurrency": 30, "load_factor": 10},
+        )
 
     def test_cooldown_releases_below_recovery_threshold(self) -> None:
         decision = self.evaluate(
@@ -489,7 +832,10 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
         )
 
         self.assertEqual(decision["mode"], "rate_limited_cooldown")
-        self.assertEqual(decision["target"], {"priority": 191, "concurrency": 30})
+        self.assertEqual(
+            decision["target"],
+            {"priority": 191, "concurrency": 30, "load_factor": 10},
+        )
 
     def test_missing_quota_holds_cooldown_at_normal_values(self) -> None:
         decision = self.evaluate(
@@ -506,7 +852,10 @@ class SmartSchedulingDecisionTests(unittest.TestCase):
         )
 
         self.assertEqual(decision["mode"], "rate_limited_cooldown")
-        self.assertEqual(decision["target"], {"priority": 191, "concurrency": 30})
+        self.assertEqual(
+            decision["target"],
+            {"priority": 191, "concurrency": 30, "load_factor": 10},
+        )
 
     def test_rate_limited_status_starts_pending(self) -> None:
         decision = self.evaluate(

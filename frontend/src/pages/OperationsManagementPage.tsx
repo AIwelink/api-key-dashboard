@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { GrowthCreateModal } from "../components/GrowthCreateModal";
+import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import type { OperationsSiteId } from "../types";
 import { errorMessage } from "../utils/format";
 import {
@@ -19,6 +20,29 @@ type Purpose = "sale" | "promotion" | "internal" | "compensation" | "other";
 type Toast = (message: string, isError?: boolean) => void;
 
 export const DEFAULT_OPERATIONS_SEGMENT: UserSegment = "ordinary";
+
+export function shouldAutoRefreshOperationsOverview({
+  tab,
+  hasSiteAccess,
+  queryIsValid,
+  busy,
+}: {
+  tab: OperationsTab;
+  hasSiteAccess: boolean;
+  queryIsValid: boolean;
+  busy: boolean;
+}) {
+  return tab === "overview" && hasSiteAccess && queryIsValid && !busy;
+}
+
+export function shouldApplyOperationsOverviewResponse(
+  requestId: number,
+  latestRequestId: number,
+  requestQuery: string,
+  currentQuery: string,
+) {
+  return requestId === latestRequestId && requestQuery === currentQuery;
+}
 
 type OperationsManagementProps = {
   token: string;
@@ -338,6 +362,12 @@ export function orderOperationsSites<T extends { value: string }>(sites: T[]) {
   ));
 }
 
+export function sortNewestFirst<T>(items: T[], timestamp: (item: T) => string) {
+  return [...items].sort((left, right) => (
+    Date.parse(timestamp(right)) - Date.parse(timestamp(left))
+  ));
+}
+
 export function preferredOperationsSiteId<T extends { value: string }>(sites: T[]) {
   return sites.find((site) => site.value === "aiwelink")?.value || sites[0]?.value || "";
 }
@@ -646,6 +676,8 @@ export function OperationsManagementPage(
   const [redemptionPage, setRedemptionPage] = useState(1);
   const [revealedRedemption, setRevealedRedemption] = useState<RevealedRedemptionCode | null>(null);
   const [redemptionLoading, setRedemptionLoading] = useState(false);
+  const overviewRequestId = useRef(0);
+  const operationsQueryRef = useRef("");
   const redemptionRequestId = useRef(0);
   const redemptionRevealRequestId = useRef(0);
   const redemptionSiteId = useRef(defaultSiteFilter);
@@ -689,6 +721,7 @@ export function OperationsManagementPage(
     () => queryIsValid ? buildOperationsQuery(effectiveQuery) : "",
     [effectiveQuery, queryIsValid],
   );
+  operationsQueryRef.current = operationsQuery;
 
   useEffect(() => {
     setQuery({ siteId: defaultSiteFilter, segment: DEFAULT_OPERATIONS_SEGMENT, range: "7d" });
@@ -727,6 +760,14 @@ export function OperationsManagementPage(
 
   async function loadOverview(background = false) {
     if (!hasSiteAccess || !operationsQuery) return;
+    const requestQuery = operationsQuery;
+    const requestId = ++overviewRequestId.current;
+    const isCurrentRequest = () => shouldApplyOperationsOverviewResponse(
+      requestId,
+      overviewRequestId.current,
+      requestQuery,
+      operationsQueryRef.current,
+    );
     if (!background) setLoading(true);
     setLoadError("");
     try {
@@ -736,16 +777,18 @@ export function OperationsManagementPage(
         api<LifecycleResponse>(`/operations/lifecycle${operationsQuery}`, token),
         api<ListResponse<SyncStatus>>("/operations/sync-status", token),
       ]);
+      if (!isCurrentRequest()) return;
       setOverview(summary);
       setTrends(trendData.items);
       setLifecycle(lifecycleData);
       setSyncStatuses(syncData.items);
     } catch (error) {
+      if (!isCurrentRequest()) return;
       const message = errorMessage(error);
       setLoadError(message);
       if (background) showToast(message, true);
     } finally {
-      if (!background) setLoading(false);
+      if (!background && requestId === overviewRequestId.current) setLoading(false);
     }
   }
 
@@ -842,6 +885,26 @@ export function OperationsManagementPage(
       if (!background) setLoading(false);
     }
   }
+
+  const autoRefreshBusy = loading
+    || refreshing
+    || saving
+    || modal !== null
+    || internalDeleteTarget !== null
+    || redemptionCodes !== null
+    || revealedRedemption !== null;
+
+  usePageAutoRefresh(
+    () => loadOverview(true),
+    {
+      enabled: shouldAutoRefreshOperationsOverview({
+        tab,
+        hasSiteAccess,
+        queryIsValid,
+        busy: autoRefreshBusy,
+      }),
+    },
+  );
 
   useEffect(() => {
     if (!hasSiteAccess) return;
@@ -1088,9 +1151,12 @@ export function OperationsManagementPage(
   const summary = overview?.summary || {};
   const previous = overview?.previous_summary || {};
   const lifecycleSummary = lifecycle?.summary || {};
-  const visibleRetention = (lifecycle?.retention || []).filter((item) => (
-    allowedSiteSet.has(item.site_id as OperationsSiteId)
-  ));
+  const visibleRetention = sortNewestFirst(
+    (lifecycle?.retention || []).filter((item) => (
+      allowedSiteSet.has(item.site_id as OperationsSiteId)
+    )),
+    (item) => item.cohort_date,
+  );
   const visibleLifecycleSites = (lifecycle?.site_breakdown || []).filter((item) => (
     item.site_id && allowedSiteSet.has(item.site_id as OperationsSiteId)
   ));
@@ -1103,7 +1169,10 @@ export function OperationsManagementPage(
     allowedSiteSet.has(item.site_id as OperationsSiteId)
     && (!effectiveQuery.siteId || item.site_id === effectiveQuery.siteId)
   ));
-  const visibleTrends = trends.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
+  const visibleTrends = sortNewestFirst(
+    trends.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId)),
+    (item) => item.bucket,
+  );
   const visibleSiteBreakdown = (overview?.site_breakdown || []).filter((item) => (
     allowedSiteSet.has(item.site_id as OperationsSiteId)
   ));

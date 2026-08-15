@@ -11,6 +11,7 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from app.modules.sub2api.smart_scheduling import (
+    build_type_priority_queue,
     default_smart_scheduling_rules,
     evaluate_account,
     normalize_smart_scheduling_rules,
@@ -24,7 +25,7 @@ SMART_SCHEDULING_SETTING_PREFIX = "smart_scheduling"
 SMART_SCHEDULING_LEASE_SECONDS = 300
 SMART_SCHEDULING_LEASE_RENEWAL_SECONDS = SMART_SCHEDULING_LEASE_SECONDS // 2
 RUN_RETENTION = timedelta(days=90)
-OUTCOME_RETENTION = timedelta(days=30)
+OUTCOME_RETENTION = timedelta(days=7)
 logger = logging.getLogger("app.sub2api_smart_scheduling")
 
 
@@ -274,6 +275,17 @@ async def _run_smart_scheduling_locked(
             item["remote_account_id"] for item in eligible.values()
         ],
     )
+    queue_plan = build_type_priority_queue(
+        [
+            {
+                **item,
+                "state": states.get(str(item["remote_account_id"])),
+            }
+            for item in eligible.values()
+        ],
+        rules=effective_rules,
+        now=now,
+    )
     effective_client = client
     pending_updates: list[dict[str, Any]] = []
 
@@ -302,13 +314,19 @@ async def _run_smart_scheduling_locked(
         account = item["account"]
         remote_account_id = item["remote_account_id"]
         state = states.get(str(remote_account_id))
-        decision = evaluate_account(
-            account=account,
-            rules=effective_rules,
-            type_priority_enabled=item["type_priority_enabled"],
-            quota_acceleration_enabled=item["quota_acceleration_enabled"],
-            state=state,
-            now=now,
+        previous_state = dict(state) if state else None
+        queue_entry = queue_plan.get(str(remote_account_id))
+        decision = _with_queue_metadata(
+            evaluate_account(
+                account=account,
+                rules=effective_rules,
+                type_priority_enabled=item["type_priority_enabled"],
+                quota_acceleration_enabled=item["quota_acceleration_enabled"],
+                state=state,
+                now=now,
+                normal_priority=(queue_entry or {}).get("priority"),
+            ),
+            queue_entry,
         )
         before = _runtime_values(account)
         outcome_status = decision["status"]
@@ -317,6 +335,9 @@ async def _run_smart_scheduling_locked(
         stop_remote_updates = False
         client_configuration_failed = False
         latest: dict[str, Any] | None = None
+        event_type: str | None = None
+        previous_event_state: dict[str, Any] | None = None
+        applied_event_state: dict[str, Any] | None = None
 
         try:
             if decision["status"] == "change":
@@ -331,24 +352,66 @@ async def _run_smart_scheduling_locked(
                 latest = await effective_client.get_account(remote_account_id)
                 latest_account = {
                     **account,
-                    "priority": latest.get("priority"),
-                    "concurrency": latest.get("concurrency"),
+                    **{
+                        field: latest[field]
+                        for field in ("priority", "concurrency", "load_factor")
+                        if field in latest
+                    },
                 }
                 before = _runtime_values(latest_account)
-                decision = evaluate_account(
-                    account=latest_account,
-                    rules=effective_rules,
-                    type_priority_enabled=item["type_priority_enabled"],
-                    quota_acceleration_enabled=item["quota_acceleration_enabled"],
-                    state=state,
-                    now=now,
+                decision = _with_queue_metadata(
+                    evaluate_account(
+                        account=latest_account,
+                        rules=effective_rules,
+                        type_priority_enabled=item["type_priority_enabled"],
+                        quota_acceleration_enabled=item["quota_acceleration_enabled"],
+                        state=state,
+                        now=now,
+                        normal_priority=(queue_entry or {}).get("priority"),
+                    ),
+                    queue_entry,
                 )
+            if _needs_managed_load_factor_state_prewrite(decision, state):
+                saved_original_load_factor = _optional_int(
+                    (state or {}).get("original_load_factor")
+                )
+                original_load_factor = (
+                    saved_original_load_factor
+                    if saved_original_load_factor is not None
+                    else before.get("load_factor")
+                )
+                if original_load_factor is None:
+                    raise ValueError(
+                        "Cannot enter extreme scheduling without a valid load_factor"
+                    )
+                await _capture_original_load_factor(
+                    db,
+                    site_id=site_id,
+                    remote_account_id=remote_account_id,
+                    original_load_factor=original_load_factor,
+                    decision=decision,
+                    captured_at=now,
+                )
+                state = {
+                    **(state or {}),
+                    **_managed_load_factor_state(decision),
+                    "original_load_factor": original_load_factor,
+                    "original_load_factor_captured_at": (
+                        (state or {}).get("original_load_factor_captured_at")
+                        or now
+                    ),
+                }
+                states[str(remote_account_id)] = state
             if decision["status"] == "change":
                 pending_updates.append(
                     {
                         "item": item,
                         "decision": decision,
                         "before": before,
+                        "state_transition": _state_transition(
+                            previous_state,
+                            decision,
+                        ),
                         "group_ids": _account_group_ids(
                             latest,
                             fallback=item["group_ids"],
@@ -368,7 +431,14 @@ async def _run_smart_scheduling_locked(
                     run_id=run_id,
                     evaluated_at=now,
                     changed=False,
+                    clear_original_load_factor=(
+                        _should_clear_original_load_factor(decision, state)
+                    ),
                 )
+                transition = _state_transition(previous_state, decision)
+                if transition is not None:
+                    event_type = "state_transition"
+                    previous_event_state, applied_event_state = transition
             else:
                 summary["skipped"] += 1
                 outcome_status = decision["status"]
@@ -389,6 +459,7 @@ async def _run_smart_scheduling_locked(
             else:
                 error_code = "remote_update_failed"
             error_type = type(exc).__name__
+            event_type = "remote_update_failed"
             logger.warning(
                 "smart_scheduling_account_failed site_id=%s remote_account_id=%s error_type=%s",
                 site_id,
@@ -396,34 +467,47 @@ async def _run_smart_scheduling_locked(
                 error_type,
             )
 
-        await _persist_outcome(
-            db,
-            site_id=site_id,
-            run_id=run_id,
-            probe_run_id=probe_run_id,
-            item=item,
-            decision=decision,
-            before=before,
-            status=outcome_status,
-            error_code=error_code,
-            error_type=error_type,
-            evaluated_at=now,
-        )
+        if event_type is not None:
+            await _persist_outcome(
+                db,
+                site_id=site_id,
+                run_id=run_id,
+                probe_run_id=probe_run_id,
+                item=item,
+                decision=decision,
+                before=before,
+                status=outcome_status,
+                error_code=error_code,
+                error_type=error_type,
+                event_type=event_type,
+                previous_state=previous_event_state,
+                applied_state=applied_event_state,
+                evaluated_at=now,
+            )
         if stop_remote_updates:
             break
 
-    batches: dict[tuple[int, int, tuple[int, ...]], list[dict[str, Any]]] = {}
+    batches: dict[
+        tuple[int, int, int | None, tuple[int, ...]],
+        list[dict[str, Any]],
+    ] = {}
     for pending in pending_updates:
         target = pending["decision"]["target"]
+        load_factor = (
+            int(target["load_factor"])
+            if target.get("load_factor") is not None
+            else None
+        )
         key = (
             int(target["priority"]),
             int(target["concurrency"]),
+            load_factor,
             tuple(pending["group_ids"]),
         )
         batches.setdefault(key, []).append(pending)
 
     stopped_error: tuple[str, str] | None = None
-    for (priority, concurrency, group_ids), batch in batches.items():
+    for (priority, concurrency, load_factor, group_ids), batch in batches.items():
         account_ids = [pending["item"]["remote_account_id"] for pending in batch]
         successful_ids: set[str] = set()
         batch_error_code: str | None = None
@@ -434,13 +518,16 @@ async def _run_smart_scheduling_locked(
             else:
                 if not await ensure_live_lease():
                     raise _SmartSchedulingLeaseLostError
+                payload: dict[str, Any] = {
+                    "priority": priority,
+                    "concurrency": concurrency,
+                    "group_ids": list(group_ids),
+                }
+                if load_factor is not None:
+                    payload["load_factor"] = load_factor
                 response = await effective_client.bulk_update_accounts_runtime(
                     account_ids,
-                    {
-                        "priority": priority,
-                        "concurrency": concurrency,
-                        "group_ids": list(group_ids),
-                    },
+                    payload,
                 )
                 successful_ids = _successful_bulk_account_ids(
                     response,
@@ -485,25 +572,51 @@ async def _run_smart_scheduling_locked(
                     run_id=run_id,
                     evaluated_at=now,
                     changed=True,
+                    clear_original_load_factor=(
+                        _should_clear_original_load_factor(
+                            decision,
+                            states.get(str(remote_account_id)),
+                        )
+                    ),
                 )
+                transition = pending["state_transition"]
+                if transition is not None:
+                    previous_event_state, applied_event_state = transition
+                    await _persist_outcome(
+                        db,
+                        site_id=site_id,
+                        run_id=run_id,
+                        probe_run_id=probe_run_id,
+                        item=item,
+                        decision=decision,
+                        before=pending["before"],
+                        status=outcome_status,
+                        error_code=None,
+                        error_type=None,
+                        event_type="state_transition",
+                        previous_state=previous_event_state,
+                        applied_state=applied_event_state,
+                        evaluated_at=now,
+                    )
             else:
                 summary["failed"] += 1
                 outcome_status = "failed"
                 error_code = batch_error_code or "remote_update_failed"
                 error_type = batch_error_type or "BulkUpdateAccountFailed"
-            await _persist_outcome(
-                db,
-                site_id=site_id,
-                run_id=run_id,
-                probe_run_id=probe_run_id,
-                item=item,
-                decision=decision,
-                before=pending["before"],
-                status=outcome_status,
-                error_code=error_code,
-                error_type=error_type,
-                evaluated_at=now,
-            )
+                await _persist_outcome(
+                    db,
+                    site_id=site_id,
+                    run_id=run_id,
+                    probe_run_id=probe_run_id,
+                    item=item,
+                    decision=decision,
+                    before=pending["before"],
+                    status=outcome_status,
+                    error_code=error_code,
+                    error_type=error_type,
+                    event_type="remote_update_failed",
+                    evaluated_at=now,
+                )
 
     finished_at = _as_utc(now_utc()) if now_utc is not None else now
     summary["status"] = "partial" if summary["failed"] else "completed"
@@ -582,8 +695,14 @@ async def _states_for_accounts(
         {
             "remote_account_id": 1,
             "mode": 1,
+            "adapted_type": 1,
+            "last_strategy": 1,
+            "last_reason": 1,
+            "last_target": 1,
             "seven_day_reset_at": 1,
             "rate_limit_detected_at": 1,
+            "original_load_factor": 1,
+            "original_load_factor_captured_at": 1,
         },
     )
     async for document in cursor:
@@ -601,6 +720,7 @@ async def _persist_scheduler_state(
     run_id: str,
     evaluated_at: datetime,
     changed: bool,
+    clear_original_load_factor: bool = False,
 ) -> None:
     updates = {
         "site_id": site_id,
@@ -613,6 +733,10 @@ async def _persist_scheduler_state(
         "seven_day_used_percent": decision.get("seven_day_used_percent"),
         "seven_day_reset_at": decision.get("seven_day_reset_at"),
         "rate_limit_detected_at": decision.get("rate_limit_detected_at"),
+        "queue_partition": decision.get("queue_partition"),
+        "queue_index": decision.get("queue_index"),
+        "queue_priority": decision.get("queue_priority"),
+        "queue_created_at": decision.get("queue_created_at"),
         "last_probe_run_id": probe_run_id,
         "last_run_id": run_id,
         "last_evaluated_at": evaluated_at,
@@ -620,13 +744,60 @@ async def _persist_scheduler_state(
     }
     if changed:
         updates["last_successful_update_at"] = evaluated_at
+    update: dict[str, Any] = {
+        "$set": updates,
+        "$setOnInsert": {"created_at": evaluated_at},
+    }
+    if clear_original_load_factor:
+        update["$unset"] = {
+            "original_load_factor": "",
+            "original_load_factor_captured_at": "",
+        }
     await db.sub2api_smart_scheduling_states.update_one(
         {"_id": f"{site_id}:{remote_account_id}"},
+        update,
+        upsert=True,
+    )
+
+
+async def _capture_original_load_factor(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    remote_account_id: Any,
+    original_load_factor: int,
+    decision: dict[str, Any],
+    captured_at: datetime,
+) -> None:
+    state_id = f"{site_id}:{remote_account_id}"
+    capture = {
+        "original_load_factor": original_load_factor,
+        "original_load_factor_captured_at": captured_at,
+    }
+    managed_state = _managed_load_factor_state(decision)
+    await db.sub2api_smart_scheduling_states.update_one(
+        {"_id": state_id},
         {
-            "$set": updates,
-            "$setOnInsert": {"created_at": evaluated_at},
+            "$set": {**managed_state, "updated_at": captured_at},
+            "$setOnInsert": {
+                "site_id": site_id,
+                "remote_account_id": remote_account_id,
+                **capture,
+                "created_at": captured_at,
+            },
         },
         upsert=True,
+    )
+    await db.sub2api_smart_scheduling_states.update_one(
+        {
+            "_id": state_id,
+            "$or": [
+                {"original_load_factor": {"$exists": False}},
+                {"original_load_factor": None},
+            ],
+        },
+        {"$set": {**capture, "updated_at": captured_at}},
+        upsert=False,
     )
 
 
@@ -642,40 +813,66 @@ async def _persist_outcome(
     status: str,
     error_code: str | None,
     error_type: str | None,
+    event_type: str,
     evaluated_at: datetime,
+    previous_state: dict[str, Any] | None = None,
+    applied_state: dict[str, Any] | None = None,
 ) -> None:
     remote_account_id = item["remote_account_id"]
+    outcome_fields: dict[str, Any] = {
+        "site_id": site_id,
+        "run_id": run_id,
+        "probe_run_id": probe_run_id,
+        "remote_account_id": remote_account_id,
+        "group_ids": item["group_ids"],
+        "adapted_type": decision.get("adapted_type"),
+        "strategy": decision.get("strategy"),
+        "mode": decision.get("mode"),
+        "reason": decision.get("reason"),
+        "seven_day_used_percent": decision.get(
+            "seven_day_used_percent"
+        ),
+        "seven_day_reset_at": decision.get("seven_day_reset_at"),
+        "quota_fresh": decision.get("quota_fresh"),
+        "queue_partition": decision.get("queue_partition"),
+        "queue_index": decision.get("queue_index"),
+        "queue_priority": decision.get("queue_priority"),
+        "queue_created_at": decision.get("queue_created_at"),
+        "before": before,
+        "target": decision.get("target"),
+        "status": status,
+        "event_type": event_type,
+        "error_code": error_code,
+        "error_type": error_type,
+        "evaluated_at": evaluated_at,
+        "expires_at": evaluated_at + OUTCOME_RETENTION,
+        "updated_at": evaluated_at,
+    }
+    if event_type == "state_transition":
+        outcome_fields["previous_state"] = previous_state
+        outcome_fields["applied_state"] = applied_state
     await db.sub2api_smart_scheduling_outcomes.update_one(
         {"_id": f"{run_id}:{remote_account_id}"},
         {
-            "$set": {
-                "site_id": site_id,
-                "run_id": run_id,
-                "probe_run_id": probe_run_id,
-                "remote_account_id": remote_account_id,
-                "group_ids": item["group_ids"],
-                "adapted_type": decision.get("adapted_type"),
-                "strategy": decision.get("strategy"),
-                "mode": decision.get("mode"),
-                "reason": decision.get("reason"),
-                "seven_day_used_percent": decision.get(
-                    "seven_day_used_percent"
-                ),
-                "seven_day_reset_at": decision.get("seven_day_reset_at"),
-                "quota_fresh": decision.get("quota_fresh"),
-                "before": before,
-                "target": decision.get("target"),
-                "status": status,
-                "error_code": error_code,
-                "error_type": error_type,
-                "evaluated_at": evaluated_at,
-                "expires_at": evaluated_at + OUTCOME_RETENTION,
-                "updated_at": evaluated_at,
-            },
+            "$set": outcome_fields,
             "$setOnInsert": {"created_at": evaluated_at},
         },
         upsert=True,
     )
+
+
+def _with_queue_metadata(
+    decision: dict[str, Any],
+    queue_entry: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not queue_entry:
+        return decision
+    return decision | {
+        "queue_partition": queue_entry["queue_partition"],
+        "queue_index": queue_entry["queue_index"],
+        "queue_priority": queue_entry["priority"],
+        "queue_created_at": queue_entry["queue_created_at"],
+    }
 
 
 async def _build_site_client(site: dict[str, Any]) -> Sub2ApiClient:
@@ -696,7 +893,85 @@ def _runtime_values(account: dict[str, Any]) -> dict[str, int | None]:
     return {
         "priority": _optional_int(account.get("priority")),
         "concurrency": _optional_int(account.get("concurrency")),
+        "load_factor": _optional_int(account.get("load_factor")),
     }
+
+
+def _managed_state_projection(
+    *,
+    mode: Any,
+    target: Any,
+) -> dict[str, Any]:
+    source = target if isinstance(target, dict) else {}
+    normalized_mode = str(mode).strip() if mode is not None else None
+    normalized_target = {
+        field: value
+        for field in ("priority", "concurrency", "load_factor")
+        if (value := _optional_int(source.get(field))) is not None
+    }
+    return {
+        "mode": normalized_mode or None,
+        "target": normalized_target or None,
+    }
+
+
+def _state_transition(
+    state: dict[str, Any] | None,
+    decision: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    if not state:
+        return None
+    previous = _managed_state_projection(
+        mode=state.get("mode"),
+        target=state.get("last_target"),
+    )
+    applied = _managed_state_projection(
+        mode=decision.get("mode"),
+        target=decision.get("target"),
+    )
+    return None if previous == applied else (previous, applied)
+
+
+def _needs_managed_load_factor_state_prewrite(
+    decision: dict[str, Any],
+    state: dict[str, Any] | None,
+) -> bool:
+    target = decision.get("target")
+    desired_mode = decision.get("mode")
+    return bool(
+        isinstance(target, dict)
+        and target.get("load_factor") is not None
+        and desired_mode in {"extreme", "rate_limit_pending"}
+        and (
+            _optional_int((state or {}).get("original_load_factor")) is None
+            or (state or {}).get("mode") != desired_mode
+        )
+    )
+
+
+def _managed_load_factor_state(decision: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "mode": decision.get("mode"),
+        "adapted_type": decision.get("adapted_type"),
+        "seven_day_used_percent": decision.get("seven_day_used_percent"),
+        "seven_day_reset_at": decision.get("seven_day_reset_at"),
+        "rate_limit_detected_at": decision.get("rate_limit_detected_at"),
+    }
+
+
+def _should_clear_original_load_factor(
+    decision: dict[str, Any],
+    state: dict[str, Any] | None,
+) -> bool:
+    target = decision.get("target")
+    return bool(
+        isinstance(target, dict)
+        and target.get("load_factor") is not None
+        and decision.get("strategy")
+        in {"quota_recovery", "rate_limit_recovery"}
+        and decision.get("mode") in {"normal", "rate_limited_cooldown"}
+        and _optional_int((state or {}).get("original_load_factor")) is not None
+    )
 
 
 def _account_group_ids(

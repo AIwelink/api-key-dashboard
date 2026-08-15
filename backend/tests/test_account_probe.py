@@ -111,6 +111,7 @@ class AccountProbeSchedulingTests(unittest.IsolatedAsyncioTestCase):
                 "group_ids": [3, 4],
                 "priority": 250,
                 "concurrency": 20,
+                "created_at": "2026-01-02T03:04:05+00:00",
                 "credentials": {},
                 "extra": {},
             }
@@ -183,6 +184,10 @@ class AccountProbeSchedulingTests(unittest.IsolatedAsyncioTestCase):
         scheduled_account = schedule.await_args.kwargs["accounts"][0]
         self.assertEqual(scheduled_account["plan_type"], "k12")
         self.assertEqual(scheduled_account["account_type"], "k12")
+        self.assertEqual(
+            scheduled_account["created_at"],
+            "2026-01-02T03:04:05+00:00",
+        )
         self.assertEqual(schedule.await_args.kwargs["group_settings"], settings)
         self.assertEqual(result["smart_scheduling_unchanged"], 1)
         self.assertEqual(result["accounts_seen"], 0)
@@ -281,6 +286,18 @@ class AccountProbePlanTypeTests(unittest.TestCase):
 
         self.assertEqual(account["priority"], 250)
         self.assertEqual(account["concurrency"], 20)
+
+    def test_normalized_account_keeps_remote_creation_time_for_scheduling(self) -> None:
+        account = account_probe._normalize_probe_account(
+            {
+                "id": 7,
+                "created_at": "2026-01-02T03:04:05+00:00",
+                "credentials": {"plan_type": "plus"},
+                "extra": {},
+            }
+        )
+
+        self.assertEqual(account["created_at"], "2026-01-02T03:04:05+00:00")
 
     def test_normalized_account_keeps_special_quota_classification(self) -> None:
         account = account_probe._normalize_probe_account(
