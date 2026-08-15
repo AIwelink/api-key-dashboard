@@ -1,0 +1,196 @@
+.metric-definition {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.metric-definition-label {
+  min-width: 0;
+}
+
+.metric-definition-trigger {
+  display: inline-grid;
+  flex: 0 0 15px;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: 1px solid #aeb9b4;
+  border-radius: 50%;
+  background: #fff;
+  color: #6f7b76;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.metric-definition-trigger:hover,
+.metric-definition-trigger:focus-visible {
+  border-color: #0b776b;
+  color: #0b776b;
+  outline: none;
+}
+
+.metric-definition-trigger:focus-visible {
+  box-shadow: 0 0 0 3px rgba(11, 119, 107, 0.15);
+}
+
+.metric-definition-tooltip {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 9px);
+  left: 0;
+  display: none;
+  width: min(290px, calc(100vw - 40px));
+  padding: 13px;
+  border: 1px solid #cbd6d1;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 14px 36px rgba(23, 32, 29, 0.16);
+  color: #17201d;
+  text-align: left;
+  white-space: normal;
+}
+
+.metric-definition.align-end .metric-definition-tooltip {
+  right: 0;
+  left: auto;
+}
+
+.metric-definition:hover .metric-definition-tooltip,
+.metric-definition:focus-within .metric-definition-tooltip {
+  display: block;
+}
+
+.metric-definition-tooltip > strong,
+.metric-definition-summary,
+.metric-definition-tooltip code,
+.metric-definition-grid {
+  display: block;
+}
+
+.metric-definition-tooltip > strong {
+  margin-bottom: 5px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.metric-definition-summary {
+  margin-bottom: 8px;
+  color: #66716d;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+.metric-definition-tooltip code {
+  margin-bottom: 9px;
+  padding: 7px 8px;
+  border-radius: 3px;
+  background: #f2f5f3;
+  color: #30433d;
+  font: 9px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.metric-definition-grid {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 4px 7px;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.metric-definition-grid b {
+  color: #87918d;
+  font-weight: 600;
+}
+
+.metric-definition-grid em {
+  color: #46524d;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.workspace-rail {
+  min-width: 0;
+}
+
+.workspace-rail-title {
+  display: block;
+  margin: 0 8px 12px;
+  color: #8a9490;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.workspace-rail-links {
+  display: grid;
+  gap: 2px;
+}
+
+.workspace-rail-links a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 36px;
+  padding: 0 9px;
+  border-left: 2px solid transparent;
+  color: #68746f;
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.workspace-rail-links a:hover,
+.workspace-rail-links a:focus-visible,
+.workspace-rail-links a.active {
+  border-color: #0b776b;
+  background: #e2f1ed;
+  color: #17201d;
+  outline: none;
+}
+
+.workspace-rail-links a.active {
+  font-weight: 650;
+}
+
+.workspace-rail-links small {
+  color: #8a9490;
+  font-size: 9px;
+}
+
+.workspace-rail-status {
+  display: grid;
+  gap: 4px;
+  margin: 28px 8px 0;
+  padding-top: 13px;
+  border-top: 1px solid #dce3df;
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.workspace-rail-status strong {
+  color: #66716d;
+  font-size: 10px;
+}
+
+.workspace-rail-status span {
+  color: #7d8883;
+}
+
+.workspace-rail-status.healthy strong {
+  color: #0b776b;
+}
+
+.workspace-rail-status.warning strong {
+  color: #ad6800;
+}
+
+@media (max-width: 760px) {
+  .metric-definition-tooltip,
+  .metric-definition.align-end .metric-definition-tooltip {
+    right: auto;
+    left: -8px;
+  }
+}
