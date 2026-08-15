@@ -14,6 +14,7 @@ import type {
   WorkPlanCreatePayload,
   WorkPlanHistoryItem,
   WorkPlanOperationCreatePayload,
+  WorkPlanOperationUpdatePayload,
   WorkPlanHistoryResponse,
   WorkPlanMutationResult,
   WorkPlanOperation,
@@ -274,7 +275,7 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
   const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [editingPlan, setEditingPlan] = useState<WorkPlan | null>(null);
+  const [editingPlan, setEditingPlan] = useState<WorkPlanHistoryItem | null>(null);
   const [cancelPlan, setCancelPlan] = useState<WorkPlan | null>(null);
   const [scheduleRequestGuard] = useState(createLatestRequestGuard);
   const drawerHandoffTimer = useRef<number | null>(null);
@@ -419,7 +420,7 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
     setFormOpen(true);
   };
 
-  const openEdit = (plan: WorkPlan) => {
+  const openEdit = (plan: WorkPlanHistoryItem) => {
     if (drawerHandoffTimer.current !== null) window.clearTimeout(drawerHandoffTimer.current);
     setHistoryOpen(false);
     const openForm = () => {
@@ -434,11 +435,24 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
   };
 
   const submitPlan = async (
-    payload: WorkPlanCreatePayload | WorkPlanOperationCreatePayload | WorkPlanUpdatePayload,
+    payload: WorkPlanCreatePayload | WorkPlanOperationCreatePayload | WorkPlanOperationUpdatePayload | WorkPlanUpdatePayload,
   ) => {
     setMutationBusy(true);
     try {
       if (editingPlan) {
+        if ("record_kind" in editingPlan) {
+          const result = await api<WorkPlanMutationResult>(`/work-plans/${editingPlan.id}`, token, {
+            method: "PATCH",
+            body: JSON.stringify(payload),
+          });
+          const mutationError = mutationErrorMessage(result);
+          applyOperationHistory(operationHistoryFromMutation(result));
+          if (mutationError) throw new Error(mutationError);
+          setFormOpen(false);
+          setEditingPlan(null);
+          refreshAfterMutation(result.duplicate_submission ? "编辑操作已提交" : "工作计划已更新");
+          return true;
+        }
         const updated = await api<WorkPlan>(`/work-plans/${editingPlan.id}`, token, {
           method: "PATCH",
           body: JSON.stringify(payload),
@@ -525,6 +539,14 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
     : schedule.plans.filter((plan) => plan.is_cancelled || plan.plan_type === "temporary_unavailable").length;
   const onlineCount = schedule.members.filter((member) => member.is_online).length;
   const serverToday = shanghaiDateFromTimestamp(schedule.observed_at);
+  const editingExpectedSequence = editingPlan && "record_kind" in editingPlan
+    ? history.items.reduce(
+      (latest, item) => "record_kind" in item && item.member_id === editingPlan.member_id
+        ? Math.max(latest, item.member_sequence)
+        : latest,
+      editingPlan.member_sequence,
+    )
+    : undefined;
 
   return (
     <section className="view work-plan-page">
@@ -567,7 +589,7 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
       </div>
       {schedule.has_more ? <div className="work-plan-pagination"><span>已显示 {schedule.total_operations ?? schedule.plans.length} / {schedule.total} 条记录</span><button className="ghost" disabled={refreshing} onClick={loadOlderSchedule} type="button">{refreshing ? "加载中..." : "加载更早记录"}</button></div> : null}
 
-      <WorkPlanFormDrawer busy={mutationBusy} initialPlan={editingPlan} onClose={() => { if (!mutationBusy) { setFormOpen(false); setEditingPlan(null); } }} onSubmit={submitPlan} open={formOpen} serverToday={serverToday} />
+      <WorkPlanFormDrawer busy={mutationBusy} expectedMemberSequence={editingExpectedSequence} initialPlan={editingPlan} onClose={() => { if (!mutationBusy) { setFormOpen(false); setEditingPlan(null); } }} onSubmit={submitPlan} open={formOpen} serverToday={serverToday} />
       <MyPlansDrawer blocked={Boolean(cancelPlan)} busy={mutationBusy} hasMore={history.has_more} items={history.items} loadingMore={historyLoadingMore} onCancel={setCancelPlan} onClose={() => setHistoryOpen(false)} onEdit={openEdit} onLoadMore={loadMoreHistory} open={historyOpen} total={history.total} />
       <ConfirmDialog cancelText="返回" confirmText="取消计划" details={cancelPlan ? [["成员", cancelPlan.member_name], ["日期", cancelPlan.plan_date]] : []} message="取消后记录仍会保留。" onCancel={() => setCancelPlan(null)} onConfirm={confirmCancel} open={Boolean(cancelPlan)} title="确认取消这条计划？" tone="danger" />
     </section>

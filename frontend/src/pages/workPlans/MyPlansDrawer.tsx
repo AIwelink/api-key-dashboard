@@ -12,7 +12,7 @@ type MyPlansDrawerProps = {
   hasMore: boolean;
   loadingMore: boolean;
   onClose: () => void;
-  onEdit: (plan: WorkPlan) => void;
+  onEdit: (item: WorkPlanHistoryItem) => void;
   onCancel: (plan: WorkPlan) => void;
   onLoadMore: () => void;
 };
@@ -48,6 +48,10 @@ function operationInterval(item: WorkPlanOperation, requested = false): string {
 
 export function MyPlansDrawer({ open, blocked = false, items, total, hasMore, loadingMore, busy, onClose, onEdit, onCancel, onLoadMore }: MyPlansDrawerProps) {
   const dialogRef = useModalFocus<HTMLElement>(open && !blocked, onClose);
+  const latestOperationSequence = items.reduce(
+    (latest, item) => isOperation(item) ? Math.max(latest, item.member_sequence) : latest,
+    0,
+  );
   return (
     <div className={`work-plan-drawer-layer ${open ? "open" : ""}`} inert={!open || blocked}>
       <button aria-label="关闭我的安排" className="work-plan-drawer-backdrop" onClick={onClose} type="button" />
@@ -55,7 +59,7 @@ export function MyPlansDrawer({ open, blocked = false, items, total, hasMore, lo
         <header className="work-plan-drawer-header"><div><span className="work-plan-header-icon"><CalendarClock size={18} /></span><div><h3 id="my-plans-title">我的安排</h3><p>已加载 {items.length} / {total} 条记录</p></div></div><button aria-label="关闭" className="work-plan-icon-button" onClick={onClose} type="button"><X size={19} /></button></header>
         <div className="work-plan-history-list">
           {items.map((item) => isOperation(item) ? (
-            <OperationHistoryItem item={item} key={item.id} />
+            <OperationHistoryItem busy={busy} editable={item.member_sequence === latestOperationSequence && operationState(item) !== "replaced"} item={item} key={item.id} onEdit={onEdit} />
           ) : (
             <LegacyHistoryItem busy={busy} item={item} key={item.id} onCancel={onCancel} onEdit={onEdit} />
           ))}
@@ -67,7 +71,7 @@ export function MyPlansDrawer({ open, blocked = false, items, total, hasMore, lo
   );
 }
 
-function OperationHistoryItem({ item }: { item: WorkPlanOperation }) {
+function OperationHistoryItem({ busy, editable, item, onEdit }: { busy: boolean; editable: boolean; item: WorkPlanOperation; onEdit: (item: WorkPlanOperation) => void }) {
   const state = operationState(item);
   const muted = state !== "active";
   return (
@@ -88,6 +92,7 @@ function OperationHistoryItem({ item }: { item: WorkPlanOperation }) {
         <div><dt>顺序</dt><dd>第 {item.member_sequence} 次变更</dd></div>
         {muted ? <div><dt>当前显示</dt><dd>历史保留，不覆盖后续生效区间</dd></div> : null}
       </dl>
+      {editable ? <footer><button className="ghost" disabled={busy} onClick={() => onEdit(item)} type="button"><Pencil size={15} />编辑操作</button></footer> : null}
     </article>
   );
 }

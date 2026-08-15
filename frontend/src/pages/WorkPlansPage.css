@@ -799,6 +799,14 @@
   color: #176b48;
 }
 
+.work-plan-edit-date {
+  align-items: center;
+  display: grid;
+  font-size: 12px;
+  gap: 8px;
+  grid-template-columns: auto minmax(0, 190px);
+}
+
 .work-plan-more-date-toggle {
   align-self: start;
   background: transparent;

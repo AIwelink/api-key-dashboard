@@ -125,6 +125,16 @@ export type WorkPlanOperationCreatePayload = {
   idempotency_key: string;
 };
 
+export type WorkPlanOperationUpdatePayload = {
+  operation_type: WorkPlanOperationType;
+  anchor_date: string;
+  start_offset_minute: number;
+  end_offset_minute: number;
+  note: string | null;
+  idempotency_key: string;
+  expected_member_sequence: number;
+};
+
 export type WorkPlanPriorityUpdatePayload = {
   priority: number | null;
 };

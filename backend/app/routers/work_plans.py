@@ -15,6 +15,7 @@ from app.modules.work_plans.domain import (
 from app.modules.work_plans.schemas import (
     WorkPlanCreate,
     WorkPlanOperationCreate,
+    WorkPlanOperationUpdate,
     WorkPlanPriorityUpdate,
     WorkPlanUpdate,
 )
@@ -117,7 +118,7 @@ async def patch_member_work_plan_priority(
 @router.patch("/{plan_id}")
 async def patch_work_plan(
     plan_id: str,
-    payload: WorkPlanUpdate,
+    payload: WorkPlanOperationUpdate | WorkPlanUpdate,
     actor: dict = Depends(WORK_PLAN_PERMISSION),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:

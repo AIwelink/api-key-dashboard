@@ -12,7 +12,10 @@ import {
 } from "./dateSelection";
 import type {
   WorkPlan,
+  WorkPlanHistoryItem,
+  WorkPlanOperation,
   WorkPlanOperationCreatePayload,
+  WorkPlanOperationUpdatePayload,
   WorkPlanOperationType,
   WorkPlanUpdatePayload,
 } from "./types";
@@ -47,10 +50,11 @@ export type WorkPlanDraftAction =
 type WorkPlanFormDrawerProps = {
   open: boolean;
   serverToday: string;
-  initialPlan?: WorkPlan | null;
+  initialPlan?: WorkPlanHistoryItem | null;
+  expectedMemberSequence?: number;
   busy: boolean;
   onClose: () => void;
-  onSubmit: (payload: WorkPlanOperationCreatePayload | WorkPlanUpdatePayload) => Promise<boolean>;
+  onSubmit: (payload: WorkPlanOperationCreatePayload | WorkPlanOperationUpdatePayload | WorkPlanUpdatePayload) => Promise<boolean>;
 };
 
 const WEEKDAYS = [
@@ -94,17 +98,22 @@ function addIsoDays(value: string, days: number): string {
     .join("-");
 }
 
-export function createInitialWorkPlanDraft(serverToday: string, initialPlan?: WorkPlan | null): WorkPlanDraftState {
+function isOperation(item: WorkPlanHistoryItem): item is WorkPlanOperation {
+  return "record_kind" in item && item.record_kind === "operation";
+}
+
+export function createInitialWorkPlanDraft(serverToday: string, initialPlan?: WorkPlanHistoryItem | null): WorkPlanDraftState {
   if (initialPlan) {
+    const operation = isOperation(initialPlan);
     return {
-      operationType: initialPlan.plan_type === "work" ? "activate" : "cancel",
+      operationType: operation ? initialPlan.operation_type : initialPlan.plan_type === "work" ? "activate" : "cancel",
       selectedDates: [initialPlan.plan_date],
       moreDateMode: "single",
       rangeStart: initialPlan.plan_date,
       rangeEnd: initialPlan.plan_date,
       weekdays: [],
-      startOffsetMinute: initialPlan.start_minute,
-      endOffsetMinute: initialPlan.end_minute,
+      startOffsetMinute: operation ? initialPlan.requested_start_offset_minute : initialPlan.start_minute,
+      endOffsetMinute: operation ? initialPlan.requested_end_offset_minute : initialPlan.end_minute,
       note: initialPlan.note ?? "",
       idempotencyKey: createIdempotencyKey(),
     };
@@ -133,6 +142,21 @@ export function buildWorkPlanCreatePayload(
     end_offset_minute: draft.endOffsetMinute,
     note: draft.note.trim() || null,
     idempotency_key: draft.idempotencyKey,
+  };
+}
+
+export function buildWorkPlanOperationUpdatePayload(
+  draft: WorkPlanDraftState,
+  expectedMemberSequence: number,
+): WorkPlanOperationUpdatePayload {
+  return {
+    operation_type: draft.operationType,
+    anchor_date: draft.selectedDates[0],
+    start_offset_minute: draft.startOffsetMinute,
+    end_offset_minute: draft.endOffsetMinute,
+    note: draft.note.trim() || null,
+    idempotency_key: draft.idempotencyKey,
+    expected_member_sequence: expectedMemberSequence,
   };
 }
 
@@ -188,6 +212,7 @@ export function WorkPlanFormDrawer({
   open,
   serverToday,
   initialPlan = null,
+  expectedMemberSequence,
   busy,
   onClose,
   onSubmit,
@@ -246,6 +271,16 @@ export function WorkPlanFormDrawer({
       return;
     }
     setError("");
+    if (initialPlan && isOperation(initialPlan)) {
+      await resetDraftAfterSuccessfulSubmit(
+        () => onSubmit(buildWorkPlanOperationUpdatePayload(
+          draft,
+          expectedMemberSequence ?? initialPlan.member_sequence,
+        )),
+        () => dispatch({ type: "replace", value: createInitialWorkPlanDraft(serverToday) }),
+      );
+      return;
+    }
     if (initialPlan) {
       await onSubmit({
         plan_type: draft.operationType === "activate" ? "work" : "temporary_unavailable",
@@ -297,12 +332,12 @@ export function WorkPlanFormDrawer({
             <fieldset className="work-plan-fieldset">
               <legend>操作类型</legend>
               <div className="work-plan-segmented">
-                <button className={draft.operationType === "activate" ? "active" : ""} onClick={() => dispatch({ type: "set-operation-type", value: "activate" })} type="button"><Clock3 size={16} />创建工作计划</button>
-                <button className={draft.operationType === "cancel" ? "active unavailable" : ""} onClick={() => dispatch({ type: "set-operation-type", value: "cancel", fallbackDate: serverToday })} type="button"><Ban size={16} />取消计划</button>
+                <button className={draft.operationType === "activate" ? "active" : ""} disabled={Boolean(initialPlan && isOperation(initialPlan))} onClick={() => dispatch({ type: "set-operation-type", value: "activate" })} type="button"><Clock3 size={16} />创建工作计划</button>
+                <button className={draft.operationType === "cancel" ? "active unavailable" : ""} disabled={Boolean(initialPlan && isOperation(initialPlan))} onClick={() => dispatch({ type: "set-operation-type", value: "cancel", fallbackDate: serverToday })} type="button"><Ban size={16} />取消计划</button>
               </div>
             </fieldset>
 
-            {!editing && (
+            {(!editing || (initialPlan && isOperation(initialPlan))) && (
               <fieldset className="work-plan-fieldset">
                 <legend>日期</legend>
                 <div className="work-plan-quick-dates">
@@ -311,6 +346,7 @@ export function WorkPlanFormDrawer({
                     return <button aria-pressed={selected} className={selected ? "selected" : ""} key={value} onClick={() => toggleQuickDate(value)} type="button"><span>{formatWeekday(value)}</span><strong>{value.slice(5).replace("-", "/")}</strong>{selected ? <Check size={14} /> : null}</button>;
                   })}
                 </div>
+                {initialPlan && isOperation(initialPlan) ? <label className="work-plan-edit-date">编辑日期<input aria-label="编辑日期" onChange={(event) => dispatch({ type: "set-dates", value: [event.target.value] })} type="date" value={draft.selectedDates[0] || ""} /></label> : null}
                 {draft.operationType === "activate" ? <button className="work-plan-more-date-toggle" onClick={() => setShowMoreDates((value) => !value)} type="button"><Plus size={15} />{showMoreDates ? "收起更多日期" : "更多日期"}</button> : null}
                 {showMoreDates && draft.operationType === "activate" ? (
                   <div className="work-plan-more-dates">

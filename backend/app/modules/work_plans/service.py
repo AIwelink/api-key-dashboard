@@ -20,6 +20,7 @@ from app.modules.work_plans.domain import (
     SHANGHAI_TIMEZONE,
     WorkPlanConflictError,
     WorkPlanRuleError,
+    build_compensation_operation_payloads,
     build_operation_drafts,
     build_plan_drafts,
     collaboration_status,
@@ -37,6 +38,7 @@ from app.modules.work_plans.projection import (
 from app.modules.work_plans.schemas import (
     WorkPlanCreate,
     WorkPlanOperationCreate,
+    WorkPlanOperationUpdate,
     WorkPlanUpdate,
 )
 from app.utils import now_utc, serialize_doc
@@ -601,6 +603,91 @@ async def _find_operation_replay(
     return await _collect_documents(cursor)
 
 
+async def _find_compensation_replay(
+    db: AsyncIOMotorDatabase,
+    *,
+    member_id: str,
+    target_operation_id: str,
+    compensation_group_id: str,
+) -> list[dict[str, Any]]:
+    cursor = db.work_plans.find(
+        {
+            "member_id": member_id,
+            "schema_version": 2,
+            "compensates_operation_id": target_operation_id,
+            "compensation_group_id": compensation_group_id,
+        }
+    ).sort([("member_sequence", 1)])
+    return await _collect_documents(cursor)
+
+
+def _decorate_compensation_drafts(
+    drafts: list[dict[str, Any]],
+    *,
+    actor_id: str,
+    target_operation_id: str,
+    compensation_group_id: str,
+    phase: str,
+) -> list[dict[str, Any]]:
+    for draft in drafts:
+        draft["created_by"] = actor_id
+        draft["compensates_operation_id"] = target_operation_id
+        draft["compensation_group_id"] = compensation_group_id
+        draft["compensation_phase"] = phase
+    return drafts
+
+
+async def _persist_compensation_drafts(
+    db: AsyncIOMotorDatabase,
+    *,
+    actor: dict[str, Any],
+    member_id: str,
+    drafts: list[dict[str, Any]],
+    sequence: int,
+) -> tuple[list[dict[str, Any]], int]:
+    persisted: list[dict[str, Any]] = []
+    for draft in drafts:
+        sequence += 1
+        draft["member_sequence"] = sequence
+        plan_id = str(draft["_id"])
+        draft[AUDIT_INTENTS_FIELD] = [
+            _build_audit_intent(
+                actor=actor,
+                action="work_plan.update",
+                plan_id=plan_id,
+                before=None,
+                after=draft,
+                dedupe_key=f"work_plan.update:{plan_id}",
+            )
+        ]
+        try:
+            await db.work_plans.update_one(
+                {"_id": draft["_id"]},
+                {"$setOnInsert": draft},
+                upsert=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - point read resolves lost acknowledgements.
+            _log_create_failure("compensation_write", exc, plan_id=plan_id)
+            stored_after_error = await db.work_plans.find_one({"_id": draft["_id"]})
+            if stored_after_error is None:
+                raise WorkPlanConflictError("工作计划编辑失败，请使用相同提交标识重试") from exc
+
+        stored = await db.work_plans.find_one({"_id": draft["_id"]})
+        if stored is None:
+            raise WorkPlanConflictError("工作计划编辑结果不确定，请稍后刷新")
+        persisted.append(stored)
+        await db.work_plan_member_heads.update_one(
+            {"_id": member_id},
+            {"$max": {"last_sequence": int(stored["member_sequence"])}},
+        )
+        await _reconcile_document_audit_intents(
+            db,
+            plan_id=plan_id,
+            document=stored,
+        )
+    return persisted, sequence
+
+
 async def _expand_operation_drafts(
     db: AsyncIOMotorDatabase,
     drafts: list[dict[str, Any]],
@@ -738,16 +825,128 @@ async def list_my_work_plans(
     }
 
 
+async def _update_work_plan_operation(
+    db: AsyncIOMotorDatabase,
+    *,
+    plan_id: str,
+    actor: dict[str, Any],
+    payload: WorkPlanOperationUpdate,
+    observed_at: datetime,
+) -> dict[str, Any]:
+    existing = await _get_mutable_plan(db, plan_id=plan_id, actor=actor)
+    if existing.get("schema_version") != 2 or existing.get("record_kind") != "operation":
+        raise WorkPlanConflictError("该记录不是可补偿编辑的工作计划操作")
+
+    member_id = str(existing.get("member_id") or "").strip()
+    if not member_id:
+        raise WorkPlanConflictError("原工作计划缺少成员信息，无法编辑")
+    actor_id = str(actor["_id"]).strip()
+    compensation_group_id = str(payload.idempotency_key)
+    target_actor = {
+        "_id": member_id,
+        "name": existing.get("member_name") or member_id,
+        "role": existing.get("member_role"),
+    }
+
+    async with _member_operation_lease(
+        db,
+        member_id=member_id,
+        observed_at=observed_at,
+    ) as head:
+        replay = await _find_compensation_replay(
+            db,
+            member_id=member_id,
+            target_operation_id=plan_id,
+            compensation_group_id=compensation_group_id,
+        )
+        replay_phases = {
+            str(operation.get("compensation_phase") or "") for operation in replay
+        }
+        if {"undo", "replacement"}.issubset(replay_phases):
+            return _operation_command_response(replay, outcome="duplicate")
+
+        sequence = await _repair_operation_sequence(
+            db,
+            member_id=member_id,
+            head=head,
+        )
+        if not replay and sequence != payload.expected_member_sequence:
+            raise WorkPlanConflictError("计划已被更新，请刷新后重试")
+
+        other_compensation_cursor = db.work_plans.find(
+            {
+                "schema_version": 2,
+                "compensates_operation_id": plan_id,
+                "compensation_group_id": {"$ne": compensation_group_id},
+            }
+        ).limit(1)
+        other_compensations = await _collect_documents(other_compensation_cursor)
+        if other_compensations:
+            raise WorkPlanConflictError("该计划已经编辑，请刷新后重试")
+
+        undo_payload, replacement_payload = build_compensation_operation_payloads(
+            existing,
+            payload,
+        )
+        persisted = list(replay)
+        if "undo" not in replay_phases:
+            undo_drafts = _decorate_compensation_drafts(
+                build_operation_drafts(target_actor, undo_payload, observed_at),
+                actor_id=actor_id,
+                target_operation_id=plan_id,
+                compensation_group_id=compensation_group_id,
+                phase="undo",
+            )
+            undo_drafts = await _expand_operation_drafts(db, undo_drafts)
+            stored, sequence = await _persist_compensation_drafts(
+                db,
+                actor=actor,
+                member_id=member_id,
+                drafts=undo_drafts,
+                sequence=sequence,
+            )
+            persisted.extend(stored)
+
+        if "replacement" not in replay_phases:
+            replacement_drafts = _decorate_compensation_drafts(
+                build_operation_drafts(target_actor, replacement_payload, observed_at),
+                actor_id=actor_id,
+                target_operation_id=plan_id,
+                compensation_group_id=compensation_group_id,
+                phase="replacement",
+            )
+            replacement_drafts = await _expand_operation_drafts(db, replacement_drafts)
+            stored, sequence = await _persist_compensation_drafts(
+                db,
+                actor=actor,
+                member_id=member_id,
+                drafts=replacement_drafts,
+                sequence=sequence,
+            )
+            persisted.extend(stored)
+
+        persisted.sort(key=lambda operation: int(operation.get("member_sequence") or 0))
+        return _operation_command_response(persisted, outcome="created")
+
+
 async def update_work_plan(
     db: AsyncIOMotorDatabase,
     *,
     plan_id: str,
     actor: dict[str, Any],
-    payload: WorkPlanUpdate,
+    payload: WorkPlanOperationUpdate | WorkPlanUpdate,
     observed_at: datetime | None = None,
 ) -> dict[str, Any]:
     require_browser_actor(actor)
     observed = observed_at or now_utc()
+    if isinstance(payload, WorkPlanOperationUpdate):
+        return await _update_work_plan_operation(
+            db,
+            plan_id=plan_id,
+            actor=actor,
+            payload=payload,
+            observed_at=observed,
+        )
     existing = await _get_mutable_plan(db, plan_id=plan_id, actor=actor)
     updates = validate_update(existing, payload, observed)
     actor_id = str(actor["_id"]).strip()

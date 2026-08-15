@@ -69,6 +69,31 @@ class WorkPlanOperationCreate(BaseModel):
         return self
 
 
+class WorkPlanOperationUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation_type: OperationType
+    anchor_date: date
+    start_offset_minute: int = Field(ge=0, le=2_850)
+    end_offset_minute: int = Field(ge=30, le=2_880)
+    note: str | None = Field(default=None, max_length=500)
+    idempotency_key: UUID
+    expected_member_sequence: int = Field(ge=1, le=MAX_MONGO_INT64)
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def trim_note(cls, value: object) -> object:
+        return _trim_note(value)
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> "WorkPlanOperationUpdate":
+        if self.start_offset_minute % 30 or self.end_offset_minute % 30:
+            raise ValueError("时间必须以 30 分钟为间隔")
+        if self.end_offset_minute <= self.start_offset_minute:
+            raise ValueError("结束时间必须晚于开始时间")
+        return self
+
+
 class WorkPlanPriorityUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

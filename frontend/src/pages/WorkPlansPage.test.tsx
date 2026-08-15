@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MyPlansDrawer } from "./workPlans/MyPlansDrawer";
 import {
   buildWorkPlanCreatePayload,
+  buildWorkPlanOperationUpdatePayload,
   createInitialWorkPlanDraft,
   resetDraftAfterSuccessfulSubmit,
   WorkPlanFormDrawer,
@@ -258,6 +259,26 @@ describe("work plan components", () => {
     expect(buildWorkPlanCreatePayload(draft)).not.toHaveProperty("member_id");
   });
 
+  it("builds a compensating v2 edit command with the current member revision", () => {
+    const draft = {
+      ...createInitialWorkPlanDraft("2026-08-16", OPERATION),
+      selectedDates: ["2026-08-17"],
+      startOffsetMinute: 13 * 60,
+      endOffsetMinute: 16 * 60,
+      note: "调整取消区间",
+    };
+
+    expect(buildWorkPlanOperationUpdatePayload(draft, 4)).toEqual({
+      operation_type: "cancel",
+      anchor_date: "2026-08-17",
+      start_offset_minute: 13 * 60,
+      end_offset_minute: 16 * 60,
+      note: "调整取消区间",
+      idempotency_key: draft.idempotencyKey,
+      expected_member_sequence: 4,
+    });
+  });
+
   it("collects immutable operation results without duplicates", () => {
     expect(operationHistoryFromMutation({
       duplicate_submission: false,
@@ -483,6 +504,7 @@ describe("work plan components", () => {
     expect(html).toContain("work-plan-history-item cancelled");
     expect(html).toContain("取消计划");
     expect(html).toContain("灰色保留");
+    expect(html).toContain("编辑操作");
   });
 
   it("exposes explicit history progress and a load-more action", () => {
@@ -522,6 +544,23 @@ describe("work plan components", () => {
     expect(html).not.toContain("临时有事");
     expect(html).toContain("当天 09:00 - 当天 18:00");
     expect(html).toContain("work-plan-drawer-footer");
+  });
+
+  it("keeps an arbitrary date reachable while editing an immutable operation", () => {
+    const html = renderToStaticMarkup(
+      <WorkPlanFormDrawer
+        busy={false}
+        expectedMemberSequence={OPERATION.member_sequence}
+        initialPlan={OPERATION}
+        onClose={() => undefined}
+        onSubmit={async () => true}
+        open
+        serverToday="2026-08-15"
+      />,
+    );
+
+    expect(html).toContain('aria-label="编辑日期"');
+    expect(html).toContain('value="2026-08-16"');
   });
 
   it("makes closed drawers inert without hiding a retained focused descendant", () => {

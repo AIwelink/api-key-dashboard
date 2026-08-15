@@ -7,6 +7,7 @@ from uuid import UUID, uuid5
 from app.modules.work_plans.schemas import (
     WorkPlanCreate,
     WorkPlanOperationCreate,
+    WorkPlanOperationUpdate,
     WorkPlanUpdate,
 )
 
@@ -188,6 +189,39 @@ def build_operation_drafts(
             }
         )
     return drafts
+
+
+def build_compensation_operation_payloads(
+    existing: dict,
+    payload: WorkPlanOperationUpdate,
+) -> tuple[WorkPlanOperationCreate, WorkPlanOperationCreate]:
+    try:
+        old_anchor_date = date.fromisoformat(str(existing["anchor_date"]))
+        old_operation_type = str(existing["operation_type"])
+        old_start = int(existing["effective_start_offset_minute"])
+        old_end = int(existing["effective_end_offset_minute"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise WorkPlanConflictError("原工作计划数据不完整，无法编辑") from exc
+    if old_operation_type not in {"activate", "cancel"}:
+        raise WorkPlanConflictError("原工作计划类型无效，无法编辑")
+
+    undo = WorkPlanOperationCreate(
+        operation_type="cancel" if old_operation_type == "activate" else "activate",
+        anchor_dates=[old_anchor_date],
+        start_offset_minute=old_start,
+        end_offset_minute=old_end,
+        note=None,
+        idempotency_key=uuid5(payload.idempotency_key, "undo"),
+    )
+    replacement = WorkPlanOperationCreate(
+        operation_type=payload.operation_type,
+        anchor_dates=[payload.anchor_date],
+        start_offset_minute=payload.start_offset_minute,
+        end_offset_minute=payload.end_offset_minute,
+        note=payload.note,
+        idempotency_key=uuid5(payload.idempotency_key, "replacement"),
+    )
+    return undo, replacement
 
 
 def validate_update(

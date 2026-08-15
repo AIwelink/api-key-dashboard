@@ -14,6 +14,7 @@ from app.modules.work_plans.domain import WorkPlanConflictError, WorkPlanRuleErr
 from app.modules.work_plans.schemas import (
     WorkPlanCreate,
     WorkPlanOperationCreate,
+    WorkPlanOperationUpdate,
     WorkPlanUpdate,
 )
 from app.modules.work_plans import service as work_plan_service
@@ -1718,6 +1719,142 @@ class WorkPlanHistoryServiceTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(WorkPlanAccessError, "浏览器"):
                     await list_my_work_plans(db, actor=actor)
                 self.assertEqual(db.work_plans.find_calls, [])
+
+
+class WorkPlanOperationEditServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def _create_target(self, db: SimpleNamespace, actor: dict | None = None) -> dict:
+        result = await create_work_plans(
+            db,
+            actor={**(actor or ACTOR), "actor_type": "user"},
+            payload=operation_payload(),
+            observed_at=OBSERVED_AT,
+        )
+        return result["results"][0]["operation"]
+
+    async def test_edit_appends_compensation_and_replacement_without_mutating_target(self) -> None:
+        db = fake_db()
+        target = await self._create_target(db)
+        target_before = deepcopy(db.work_plans.documents[target["id"]])
+        payload = WorkPlanOperationUpdate(
+            operation_type="activate",
+            anchor_date=date(2026, 8, 18),
+            start_offset_minute=10 * 60,
+            end_offset_minute=19 * 60,
+            note="replacement",
+            idempotency_key=UUID("6d64155e-f997-49e9-80f0-132874447b72"),
+            expected_member_sequence=1,
+        )
+
+        result = await update_work_plan(
+            db,
+            plan_id=target["id"],
+            actor={**ACTOR, "actor_type": "user"},
+            payload=payload,
+            observed_at=OBSERVED_AT,
+        )
+
+        operations = [
+            operation
+            for item in result["results"]
+            for operation in item["operations"]
+        ]
+        self.assertEqual([item["operation_type"] for item in operations], ["cancel", "activate"])
+        self.assertEqual([item["member_sequence"] for item in operations], [2, 3])
+        self.assertEqual(
+            {item["compensates_operation_id"] for item in operations},
+            {target["id"]},
+        )
+        self.assertEqual(
+            {item["compensation_group_id"] for item in operations},
+            {str(payload.idempotency_key)},
+        )
+        self.assertEqual(db.work_plans.documents[target["id"]], target_before)
+
+    async def test_edit_replay_is_idempotent_and_stale_revision_writes_nothing(self) -> None:
+        db = fake_db()
+        target = await self._create_target(db)
+        payload = WorkPlanOperationUpdate(
+            operation_type="activate",
+            anchor_date=date(2026, 8, 18),
+            start_offset_minute=10 * 60,
+            end_offset_minute=19 * 60,
+            idempotency_key=UUID("a5749dd5-c332-4c5e-9b03-d3c83eab77af"),
+            expected_member_sequence=1,
+        )
+        first = await update_work_plan(
+            db,
+            plan_id=target["id"],
+            actor={**ACTOR, "actor_type": "user"},
+            payload=payload,
+            observed_at=OBSERVED_AT,
+        )
+        replay = await update_work_plan(
+            db,
+            plan_id=target["id"],
+            actor={**ACTOR, "actor_type": "user"},
+            payload=payload,
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertFalse(first["duplicate_submission"])
+        self.assertTrue(replay["duplicate_submission"])
+        self.assertEqual(len(db.work_plans.documents), 3)
+
+        stale = WorkPlanOperationUpdate(
+            operation_type="activate",
+            anchor_date=date(2026, 8, 18),
+            start_offset_minute=11 * 60,
+            end_offset_minute=20 * 60,
+            idempotency_key=UUID("204d482d-f4e6-4767-a394-12854384e08c"),
+            expected_member_sequence=1,
+        )
+        with self.assertRaisesRegex(WorkPlanConflictError, "刷新后重试"):
+            await update_work_plan(
+                db,
+                plan_id=target["id"],
+                actor={**ACTOR, "actor_type": "user"},
+                payload=stale,
+                observed_at=OBSERVED_AT,
+            )
+        self.assertEqual(len(db.work_plans.documents), 3)
+
+    async def test_edit_cancellation_restores_old_interval_before_new_cancellation(self) -> None:
+        db = fake_db()
+        await self._create_target(db)
+        cancelled = await create_work_plans(
+            db,
+            actor={**ACTOR, "actor_type": "user"},
+            payload=operation_payload(
+                operation_type="cancel",
+                start_offset_minute=12 * 60,
+                end_offset_minute=14 * 60,
+                idempotency_key=UUID("99366685-edcb-41fc-a370-06a170249d4e"),
+            ),
+            observed_at=OBSERVED_AT,
+        )
+        target = cancelled["results"][0]["operation"]
+
+        result = await update_work_plan(
+            db,
+            plan_id=target["id"],
+            actor={**ACTOR, "actor_type": "user"},
+            payload=WorkPlanOperationUpdate(
+                operation_type="cancel",
+                anchor_date=date(2026, 8, 18),
+                start_offset_minute=13 * 60,
+                end_offset_minute=15 * 60,
+                idempotency_key=UUID("46ee88d9-5c73-46ec-aeee-58356a5a42ac"),
+                expected_member_sequence=2,
+            ),
+            observed_at=OBSERVED_AT,
+        )
+
+        operations = [operation for item in result["results"] for operation in item["operations"]]
+        self.assertEqual([item["operation_type"] for item in operations], ["activate", "cancel"])
+        self.assertEqual(
+            (operations[1]["effective_start_offset_minute"], operations[1]["effective_end_offset_minute"]),
+            (13 * 60, 15 * 60),
+        )
 
 
 class WorkPlanMutationServiceTests(unittest.IsolatedAsyncioTestCase):

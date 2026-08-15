@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from app.modules.work_plans.domain import WorkPlanConflictError
 from app.modules.work_plans.schemas import (
     WorkPlanOperationCreate,
+    WorkPlanOperationUpdate,
     WorkPlanPriorityUpdate,
     WorkPlanUpdate,
 )
@@ -132,6 +133,31 @@ class WorkPlanRouterTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIs(create.await_args.kwargs["payload"], payload)
+
+    async def test_update_route_accepts_v2_compensation_payload(self) -> None:
+        payload = WorkPlanOperationUpdate.model_validate(
+            {
+                "operation_type": "activate",
+                "anchor_date": "2026-08-18",
+                "start_offset_minute": 600,
+                "end_offset_minute": 1_140,
+                "idempotency_key": "00000000-0000-0000-0000-000000000002",
+                "expected_member_sequence": 4,
+            }
+        )
+        with patch.object(
+            work_plans_router,
+            "update_work_plan",
+            new=AsyncMock(return_value={"results": [], "total": 0}),
+        ) as update:
+            await work_plans_router.patch_work_plan(
+                plan_id="operation-1",
+                payload=payload,
+                actor={"_id": "member", "actor_type": "user"},
+                db=SimpleNamespace(),
+            )
+
+        self.assertIs(update.await_args.kwargs["payload"], payload)
 
     async def test_priority_route_forwards_validated_value(self) -> None:
         payload = WorkPlanPriorityUpdate(priority=12)
