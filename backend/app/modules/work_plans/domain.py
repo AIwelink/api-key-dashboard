@@ -101,6 +101,7 @@ def build_plan_drafts(
     return [
         {
             "_id": deterministic_plan_id(actor_id, payload.idempotency_key, plan_date),
+            "schema_version": 1,
             "member_id": actor_id,
             "member_name": actor_name,
             "plan_date": plan_date.isoformat(),

@@ -164,6 +164,11 @@ class WorkPlanCollaborationStatusTests(unittest.TestCase):
 
 
 class WorkPlanCreateRuleTests(unittest.TestCase):
+    def test_legacy_plan_drafts_are_explicitly_versioned(self) -> None:
+        draft = build_plan_drafts(ACTOR, create_payload(), OBSERVED_AT)[0]
+
+        self.assertEqual(draft["schema_version"], 1)
+
     def test_dates_are_normalized_chronologically(self) -> None:
         payload = create_payload(
             dates=[date(2026, 8, 20), date(2026, 8, 18), date(2026, 8, 19)]

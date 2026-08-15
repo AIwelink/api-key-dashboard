@@ -175,12 +175,20 @@ async def ensure_work_plan_indexes(db: AsyncIOMotorDatabase) -> None:
             raise
         indexes = {}
     legacy_index = indexes.get(legacy_index_name, {})
-    if legacy_index and "partialFilterExpression" not in legacy_index:
+    legacy_partial_filter = {"schema_version": 1}
+    if (
+        legacy_index
+        and legacy_index.get("partialFilterExpression") != legacy_partial_filter
+    ):
         await db.work_plans.drop_index(legacy_index_name)
+    await db.work_plans.update_many(
+        {"schema_version": {"$exists": False}},
+        {"$set": {"schema_version": 1}},
+    )
     await db.work_plans.create_index(
         [("member_id", 1), ("idempotency_key", 1), ("plan_date", 1)],
         unique=True,
-        partialFilterExpression={"schema_version": {"$exists": False}},
+        partialFilterExpression=legacy_partial_filter,
     )
     await db.work_plans.create_index([("plan_date", 1), ("member_id", 1), ("created_at", -1)])
     await db.work_plans.create_index([("member_id", 1), ("plan_date", -1), ("created_at", -1)])

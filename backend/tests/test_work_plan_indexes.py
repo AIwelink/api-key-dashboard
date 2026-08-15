@@ -13,6 +13,7 @@ class WorkPlanIndexTests(unittest.IsolatedAsyncioTestCase):
             create_index=AsyncMock(),
             index_information=AsyncMock(return_value={}),
             drop_index=AsyncMock(),
+            update_many=AsyncMock(),
         )
         head_collection = SimpleNamespace(create_index=AsyncMock())
         db = SimpleNamespace(
@@ -29,7 +30,7 @@ class WorkPlanIndexTests(unittest.IsolatedAsyncioTestCase):
                 call(
                     [("member_id", 1), ("idempotency_key", 1), ("plan_date", 1)],
                     unique=True,
-                    partialFilterExpression={"schema_version": {"$exists": False}},
+                    partialFilterExpression={"schema_version": 1},
                 ),
                 call([("plan_date", 1), ("member_id", 1), ("created_at", -1)]),
                 call([("member_id", 1), ("plan_date", -1), ("created_at", -1)]),
@@ -66,6 +67,57 @@ class WorkPlanIndexTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         head_collection.create_index.assert_awaited_once_with("lease_until")
+
+    async def test_legacy_idempotency_index_migrates_missing_versions(self) -> None:
+        collection = SimpleNamespace(
+            create_index=AsyncMock(),
+            index_information=AsyncMock(return_value={
+                "member_id_1_idempotency_key_1_plan_date_1": {
+                    "partialFilterExpression": {"schema_version": {"$exists": False}},
+                }
+            }),
+            drop_index=AsyncMock(),
+            update_many=AsyncMock(),
+        )
+        db = SimpleNamespace(
+            work_plans=collection,
+            work_plan_member_heads=SimpleNamespace(create_index=AsyncMock()),
+        )
+
+        await bootstrap.ensure_work_plan_indexes(db)
+
+        collection.drop_index.assert_awaited_once_with(
+            "member_id_1_idempotency_key_1_plan_date_1"
+        )
+        collection.update_many.assert_awaited_once_with(
+            {"schema_version": {"$exists": False}},
+            {"$set": {"schema_version": 1}},
+        )
+        first_call = collection.create_index.await_args_list[0]
+        self.assertEqual(
+            first_call.kwargs["partialFilterExpression"],
+            {"schema_version": 1},
+        )
+
+    async def test_legacy_idempotency_index_replaces_unfiltered_deployment_index(self) -> None:
+        collection = SimpleNamespace(
+            create_index=AsyncMock(),
+            index_information=AsyncMock(return_value={
+                "member_id_1_idempotency_key_1_plan_date_1": {"unique": True}
+            }),
+            drop_index=AsyncMock(),
+            update_many=AsyncMock(),
+        )
+        db = SimpleNamespace(
+            work_plans=collection,
+            work_plan_member_heads=SimpleNamespace(create_index=AsyncMock()),
+        )
+
+        await bootstrap.ensure_work_plan_indexes(db)
+
+        collection.drop_index.assert_awaited_once_with(
+            "member_id_1_idempotency_key_1_plan_date_1"
+        )
 
     async def test_bootstrap_sets_unique_zhang_owner_only_when_priority_is_missing(self) -> None:
         owner = {
