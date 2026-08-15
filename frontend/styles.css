@@ -1439,6 +1439,7 @@
 }
 
 .traffic-overview-metric {
+  position: relative;
   display: grid;
   align-content: center;
   gap: 4px;
@@ -10292,6 +10293,22 @@ code {
   border-right: 1px solid #dce3df;
 }
 
+.traffic-overview-metric .metric-definition {
+  position: static;
+}
+
+.traffic-overview-metric .metric-definition-tooltip,
+.traffic-overview-metric .metric-definition.align-end .metric-definition-tooltip {
+  top: 24px;
+  right: auto;
+  left: 0;
+}
+
+.traffic-overview-metric:nth-child(6n) .metric-definition-tooltip {
+  right: 0;
+  left: auto;
+}
+
 .traffic-overview-metric:first-child {
   padding-left: 0;
 }
@@ -10513,6 +10530,11 @@ code {
     border-right: 0;
   }
 
+  .traffic-overview-metric:nth-child(3n) .metric-definition-tooltip {
+    right: 0;
+    left: auto;
+  }
+
   .traffic-overview-metric:nth-child(n + 4) {
     border-bottom: 0;
   }
@@ -10547,6 +10569,11 @@ code {
 
   .traffic-overview-metric:nth-child(2n) {
     border-right: 0;
+  }
+
+  .traffic-overview-metric:nth-child(2n) .metric-definition-tooltip {
+    right: 0;
+    left: auto;
   }
 
   .traffic-overview-metric:nth-child(n + 5) {

@@ -15,14 +15,15 @@ type Props = {
   label: string;
   details: MetricDefinitionDetails;
   align?: "start" | "end";
+  showLabel?: boolean;
 };
 
-export function MetricDefinition({ label, details, align = "start" }: Props) {
+export function MetricDefinition({ label, details, align = "start", showLabel = true }: Props) {
   const tooltipId = useId();
 
   return (
     <span className={`metric-definition align-${align}`}>
-      <span className="metric-definition-label">{label}</span>
+      {showLabel ? <span className="metric-definition-label">{label}</span> : null}
       <button
         type="button"
         className="metric-definition-trigger"

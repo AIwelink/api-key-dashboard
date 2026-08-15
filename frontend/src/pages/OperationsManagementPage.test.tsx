@@ -29,6 +29,7 @@ import {
   internalUserDeleteDetails,
   preferredOperationsSiteId,
   recognitionStatusLabel,
+  retentionHeatTone,
   refreshFailureMessage,
   redemptionSubmitDisabled,
 } from "./OperationsManagementPage";
@@ -303,6 +304,18 @@ describe("operations management workspace", () => {
     expect(html).not.toContain("净收入");
   });
 
+  it("renders the approved indexed workspace with complete business definitions", () => {
+    const html = renderToStaticMarkup(<OperationsManagementPage {...props} />);
+
+    expect(html).toContain('class="operations-overview-workspace"');
+    expect(html).toContain('aria-label="运营概览页面索引"');
+    expect(html).toContain("数据截至");
+    expect(html).toContain("付费 / 计费用户");
+    expect(html).toContain("AIWeLink 可核验付款用户 ∪ AIGCLink 有标价调用客户");
+    expect(html).toContain("orders + balance_adjustments + usage_records");
+    expect(html).toContain("注册后第 7 个上海自然日仍有成功调用的用户比例");
+  });
+
   it("calculates site comparison metrics with zero-denominator guards", () => {
     expect(averageConsumption({ consumed_balance_units: 20, active_user_count: 4 })).toBe(5);
     expect(paymentRate({ payer_count: 1, active_user_count: 4 })).toBe(25);
@@ -315,6 +328,15 @@ describe("operations management workspace", () => {
     expect(formatLifecycleRate(null)).toBe("--");
     expect(formatRetentionRate({ numerator: 3, denominator: 4, rate: 0.75 })).toBe("75.0%");
     expect(formatRetentionRate({ numerator: null, denominator: null, rate: null })).toBe("--");
+  });
+
+  it("keeps immature cohorts neutral and grades mature retention cells", () => {
+    expect(retentionHeatTone(null)).toBe("pending");
+    expect(retentionHeatTone(0.2)).toBe("low");
+    expect(retentionHeatTone(0.35)).toBe("medium-low");
+    expect(retentionHeatTone(0.5)).toBe("medium");
+    expect(retentionHeatTone(0.65)).toBe("high");
+    expect(retentionHeatTone(0.8)).toBe("very-high");
   });
 
   it("uses site-specific income wording", () => {
