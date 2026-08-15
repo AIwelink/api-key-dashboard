@@ -537,6 +537,10 @@
   width: 100%;
 }
 
+.work-plan-drawer-backdrop:hover {
+  background: rgb(31 36 39 / 32%);
+}
+
 .work-plan-drawer-layer.open .work-plan-drawer-backdrop {
   opacity: 1;
 }
@@ -638,6 +642,8 @@
   border: 0;
   color: #667078;
   min-height: 38px;
+  line-height: 1.25;
+  padding-inline: 10px;
 }
 
 .work-plan-segmented button.active {
@@ -697,6 +703,11 @@
   color: var(--accent-strong);
   min-height: 30px;
   padding: 0;
+}
+
+.work-plan-more-date-toggle:hover {
+  background: #edf3f0;
+  color: var(--work-plan-green);
 }
 
 .work-plan-more-dates {
@@ -812,6 +823,39 @@
 .work-plan-time-fields > span {
   color: var(--muted);
   padding-bottom: 10px;
+}
+
+.work-plan-time-preview {
+  align-items: center;
+  background: #f2f7f4;
+  border-left: 3px solid var(--work-plan-green);
+  color: #4e5b54;
+  display: grid;
+  font-size: 11px;
+  gap: 8px;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  min-height: 38px;
+  padding: 8px 10px;
+}
+
+.work-plan-time-preview strong {
+  color: #176b48;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.work-plan-time-preview.cancel {
+  background: #f2f3f4;
+  border-left-color: #8b949a;
+}
+
+.work-plan-time-preview.cancel strong {
+  color: #555f65;
+}
+
+.work-plan-submit-cancel {
+  background: #606b71;
+  border-color: #606b71;
 }
 
 .work-plan-note-field {

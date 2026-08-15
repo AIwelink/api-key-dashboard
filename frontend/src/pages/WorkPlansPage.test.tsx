@@ -153,7 +153,7 @@ describe("work plan components", () => {
     expect(mergedSchedule.start_date).toBe("2026-08-15");
   });
 
-  it("temporary unavailable keeps one date and disables bulk modes", () => {
+  it("cancel plan keeps one date and disables bulk modes", () => {
     const draft = {
       ...createInitialWorkPlanDraft("2026-08-15"),
       selectedDates: ["2026-08-15", "2026-08-16"],
@@ -161,23 +161,24 @@ describe("work plan components", () => {
     };
 
     const next = workPlanDraftReducer(draft, {
-      type: "set-plan-type",
-      value: "temporary_unavailable",
+      type: "set-operation-type",
+      value: "cancel",
     });
 
     expect(next.selectedDates).toEqual(["2026-08-15"]);
     expect(next.moreDateMode).toBe("single");
+    expect(next.operationType).toBe("cancel");
   });
 
-  it("restores a date when temporary unavailable is selected from an empty draft", () => {
+  it("restores a date when cancel plan is selected from an empty draft", () => {
     const draft = {
       ...createInitialWorkPlanDraft("2026-08-15"),
       selectedDates: [],
     };
 
     const next = workPlanDraftReducer(draft, {
-      type: "set-plan-type",
-      value: "temporary_unavailable",
+      type: "set-operation-type",
+      value: "cancel",
     });
 
     expect(next.selectedDates).toEqual(["2026-08-15"]);
@@ -328,7 +329,10 @@ describe("work plan components", () => {
     );
 
     expect(html).toContain('role="dialog"');
-    expect(html).toContain("提交计划");
+    expect(html).toContain("创建工作计划");
+    expect(html).toContain("取消计划");
+    expect(html).not.toContain("临时有事");
+    expect(html).toContain("当天 09:00 - 当天 18:00");
     expect(html).toContain("work-plan-drawer-footer");
   });
 

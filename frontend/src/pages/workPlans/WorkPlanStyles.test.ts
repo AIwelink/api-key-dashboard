@@ -34,4 +34,9 @@ describe("work plan overlay styles", () => {
       /@media \(prefers-reduced-motion: reduce\) \{\s*\.work-plan-drawer-layer,/,
     );
   });
+
+  it("scopes neutral hover backgrounds for the backdrop and advanced dates", () => {
+    expect(styleRule(workPlanStyles, ".work-plan-drawer-backdrop:hover")).toMatch(/background:/);
+    expect(styleRule(workPlanStyles, ".work-plan-more-date-toggle:hover")).toMatch(/background:/);
+  });
 });

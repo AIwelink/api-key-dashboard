@@ -12,6 +12,7 @@ import { WorkPlanSchedule } from "./workPlans/WorkPlanSchedule";
 import type {
   WorkPlan,
   WorkPlanCreatePayload,
+  WorkPlanOperationCreatePayload,
   WorkPlanHistoryResponse,
   WorkPlanMutationResult,
   WorkPlanRange,
@@ -365,7 +366,9 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
     else drawerHandoffTimer.current = window.setTimeout(openForm, delay);
   };
 
-  const submitPlan = async (payload: WorkPlanCreatePayload | WorkPlanUpdatePayload) => {
+  const submitPlan = async (
+    payload: WorkPlanCreatePayload | WorkPlanOperationCreatePayload | WorkPlanUpdatePayload,
+  ) => {
     setMutationBusy(true);
     try {
       if (editingPlan) {

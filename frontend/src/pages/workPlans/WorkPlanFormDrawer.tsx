@@ -3,44 +3,45 @@ import { useEffect, useMemo, useReducer, useState, type FormEvent } from "react"
 
 import { useModalFocus } from "../../hooks/useModalFocus";
 import {
+  fortyEightHourOptions,
+  formatOffsetInterval,
   isoDateRange,
   normalizeSelectedDates,
   resolveWeekdays,
-  thirtyMinuteOptions,
   validateSelectedDates,
 } from "./dateSelection";
 import type {
   WorkPlan,
-  WorkPlanCreatePayload,
-  WorkPlanType,
+  WorkPlanOperationCreatePayload,
+  WorkPlanOperationType,
   WorkPlanUpdatePayload,
 } from "./types";
 
 export type MoreDateMode = "single" | "range" | "multiple" | "weekday";
 
 export type WorkPlanDraftState = {
-  planType: WorkPlanType;
+  operationType: WorkPlanOperationType;
   selectedDates: string[];
   moreDateMode: MoreDateMode;
   rangeStart: string;
   rangeEnd: string;
   weekdays: number[];
-  startTime: string;
-  endTime: string;
+  startOffsetMinute: number;
+  endOffsetMinute: number;
   note: string;
   idempotencyKey: string;
 };
 
 export type WorkPlanDraftAction =
   | { type: "replace"; value: WorkPlanDraftState }
-  | { type: "set-plan-type"; value: WorkPlanType; fallbackDate?: string }
+  | { type: "set-operation-type"; value: WorkPlanOperationType; fallbackDate?: string }
   | { type: "set-dates"; value: string[] }
   | { type: "set-more-date-mode"; value: MoreDateMode }
   | { type: "set-range-start"; value: string }
   | { type: "set-range-end"; value: string }
   | { type: "set-weekdays"; value: number[] }
-  | { type: "set-start-time"; value: string }
-  | { type: "set-end-time"; value: string }
+  | { type: "set-start-offset"; value: number }
+  | { type: "set-end-offset"; value: number }
   | { type: "set-note"; value: string };
 
 type WorkPlanFormDrawerProps = {
@@ -49,7 +50,7 @@ type WorkPlanFormDrawerProps = {
   initialPlan?: WorkPlan | null;
   busy: boolean;
   onClose: () => void;
-  onSubmit: (payload: WorkPlanCreatePayload | WorkPlanUpdatePayload) => Promise<boolean>;
+  onSubmit: (payload: WorkPlanOperationCreatePayload | WorkPlanUpdatePayload) => Promise<boolean>;
 };
 
 const WEEKDAYS = [
@@ -79,6 +80,7 @@ function createIdempotencyKey(): string {
 }
 
 function minuteToTime(value: number): string {
+  if (value === 1_440) return "24:00";
   const hour = Math.floor(value / 60);
   const minute = value % 60;
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
@@ -95,27 +97,27 @@ function addIsoDays(value: string, days: number): string {
 export function createInitialWorkPlanDraft(serverToday: string, initialPlan?: WorkPlan | null): WorkPlanDraftState {
   if (initialPlan) {
     return {
-      planType: initialPlan.plan_type,
+      operationType: initialPlan.plan_type === "work" ? "activate" : "cancel",
       selectedDates: [initialPlan.plan_date],
       moreDateMode: "single",
       rangeStart: initialPlan.plan_date,
       rangeEnd: initialPlan.plan_date,
       weekdays: [],
-      startTime: minuteToTime(initialPlan.start_minute),
-      endTime: minuteToTime(initialPlan.end_minute),
+      startOffsetMinute: initialPlan.start_minute,
+      endOffsetMinute: initialPlan.end_minute,
       note: initialPlan.note ?? "",
       idempotencyKey: createIdempotencyKey(),
     };
   }
   return {
-    planType: "work",
+    operationType: "activate",
     selectedDates: [serverToday],
     moreDateMode: "single",
     rangeStart: serverToday,
     rangeEnd: serverToday,
     weekdays: [],
-    startTime: "09:00",
-    endTime: "18:00",
+    startOffsetMinute: 9 * 60,
+    endOffsetMinute: 18 * 60,
     note: "",
     idempotencyKey: createIdempotencyKey(),
   };
@@ -128,17 +130,17 @@ export function workPlanDraftReducer(
   switch (action.type) {
     case "replace":
       return action.value;
-    case "set-plan-type": {
-      const unavailableDate = state.selectedDates[0]
+    case "set-operation-type": {
+      const cancellationDate = state.selectedDates[0]
         || action.fallbackDate
         || state.rangeStart
         || state.rangeEnd;
       return {
         ...state,
-        planType: action.value,
+        operationType: action.value,
         selectedDates:
-          action.value === "temporary_unavailable" && unavailableDate ? [unavailableDate] : state.selectedDates,
-        moreDateMode: action.value === "temporary_unavailable" ? "single" : state.moreDateMode,
+          action.value === "cancel" && cancellationDate ? [cancellationDate] : state.selectedDates,
+        moreDateMode: action.value === "cancel" ? "single" : state.moreDateMode,
       };
     }
     case "set-dates":
@@ -151,10 +153,10 @@ export function workPlanDraftReducer(
       return { ...state, rangeEnd: action.value };
     case "set-weekdays":
       return { ...state, weekdays: action.value };
-    case "set-start-time":
-      return { ...state, startTime: action.value };
-    case "set-end-time":
-      return { ...state, endTime: action.value };
+    case "set-start-offset":
+      return { ...state, startOffsetMinute: action.value };
+    case "set-end-offset":
+      return { ...state, endOffsetMinute: action.value };
     case "set-note":
       return { ...state, note: action.value };
   }
@@ -187,6 +189,7 @@ export function WorkPlanFormDrawer({
   const [manualDate, setManualDate] = useState(serverToday);
   const [error, setError] = useState("");
   const quickDates = useMemo(() => isoDateRange(serverToday, addIsoDays(serverToday, 6)), [serverToday]);
+  const offsetOptions = useMemo(() => fortyEightHourOptions(), []);
   const editing = Boolean(initialPlan);
 
   useEffect(() => {
@@ -221,20 +224,20 @@ export function WorkPlanFormDrawer({
       setError(dateError);
       return;
     }
-    if (draft.endTime <= draft.startTime) {
+    if (draft.endOffsetMinute <= draft.startOffsetMinute) {
       setError("结束时间必须晚于开始时间");
       return;
     }
-    if (draft.planType === "temporary_unavailable" && draft.selectedDates.length !== 1) {
-      setError("临时有事只能选择 1 个日期");
+    if (draft.operationType === "cancel" && draft.selectedDates.length !== 1) {
+      setError("取消计划只能选择 1 个日期");
       return;
     }
     setError("");
     if (initialPlan) {
       await onSubmit({
-        plan_type: draft.planType,
-        start_time: draft.startTime,
-        end_time: draft.endTime,
+        plan_type: draft.operationType === "activate" ? "work" : "temporary_unavailable",
+        start_time: minuteToTime(draft.startOffsetMinute),
+        end_time: minuteToTime(draft.endOffsetMinute),
         note: draft.note.trim() || null,
         expected_updated_at: initialPlan.updated_at,
       });
@@ -242,10 +245,10 @@ export function WorkPlanFormDrawer({
     }
     await resetDraftAfterSuccessfulSubmit(
       () => onSubmit({
-        plan_type: draft.planType,
-        dates: draft.selectedDates,
-        start_time: draft.startTime,
-        end_time: draft.endTime,
+        operation_type: draft.operationType,
+        anchor_dates: draft.selectedDates,
+        start_offset_minute: draft.startOffsetMinute,
+        end_offset_minute: draft.endOffsetMinute,
         note: draft.note.trim() || null,
         idempotency_key: draft.idempotencyKey,
       }),
@@ -260,7 +263,7 @@ export function WorkPlanFormDrawer({
       : [...draft.selectedDates, value];
     dispatch({
       type: "set-dates",
-      value: draft.planType === "temporary_unavailable" ? [value] : next,
+      value: draft.operationType === "cancel" ? [value] : next,
     });
   };
 
@@ -278,7 +281,7 @@ export function WorkPlanFormDrawer({
         <header className="work-plan-drawer-header">
           <div>
             <span className="work-plan-header-icon"><CalendarDays size={18} /></span>
-            <div><h3 id="work-plan-form-title">{editing ? "编辑计划" : "填写我的计划"}</h3><p>Asia/Shanghai</p></div>
+            <div><h3 id="work-plan-form-title">{editing ? "编辑计划" : "工作计划"}</h3><p>Asia/Shanghai · 最长 48 小时</p></div>
           </div>
           <button aria-label="关闭" className="work-plan-icon-button" onClick={onClose} title="关闭" type="button"><X size={19} /></button>
         </header>
@@ -286,10 +289,10 @@ export function WorkPlanFormDrawer({
         <form className="work-plan-form" onSubmit={submit}>
           <div className="work-plan-form-body">
             <fieldset className="work-plan-fieldset">
-              <legend>计划类型</legend>
+              <legend>操作类型</legend>
               <div className="work-plan-segmented">
-                <button className={draft.planType === "work" ? "active" : ""} onClick={() => dispatch({ type: "set-plan-type", value: "work" })} type="button"><Clock3 size={16} />工作时间</button>
-                <button className={draft.planType === "temporary_unavailable" ? "active unavailable" : ""} onClick={() => dispatch({ type: "set-plan-type", value: "temporary_unavailable", fallbackDate: serverToday })} type="button"><Ban size={16} />临时有事</button>
+                <button className={draft.operationType === "activate" ? "active" : ""} onClick={() => dispatch({ type: "set-operation-type", value: "activate" })} type="button"><Clock3 size={16} />创建工作计划</button>
+                <button className={draft.operationType === "cancel" ? "active unavailable" : ""} onClick={() => dispatch({ type: "set-operation-type", value: "cancel", fallbackDate: serverToday })} type="button"><Ban size={16} />取消计划</button>
               </div>
             </fieldset>
 
@@ -302,8 +305,8 @@ export function WorkPlanFormDrawer({
                     return <button aria-pressed={selected} className={selected ? "selected" : ""} key={value} onClick={() => toggleQuickDate(value)} type="button"><span>{formatWeekday(value)}</span><strong>{value.slice(5).replace("-", "/")}</strong>{selected ? <Check size={14} /> : null}</button>;
                   })}
                 </div>
-                {draft.planType === "work" ? <button className="work-plan-more-date-toggle" onClick={() => setShowMoreDates((value) => !value)} type="button"><Plus size={15} />{showMoreDates ? "收起更多日期" : "更多日期"}</button> : null}
-                {showMoreDates && draft.planType === "work" ? (
+                {draft.operationType === "activate" ? <button className="work-plan-more-date-toggle" onClick={() => setShowMoreDates((value) => !value)} type="button"><Plus size={15} />{showMoreDates ? "收起更多日期" : "更多日期"}</button> : null}
+                {showMoreDates && draft.operationType === "activate" ? (
                   <div className="work-plan-more-dates">
                     <div className="work-plan-mode-tabs" role="tablist">
                       {(["single", "range", "multiple", "weekday"] as const).map((mode) => <button aria-selected={draft.moreDateMode === mode} className={draft.moreDateMode === mode ? "active" : ""} key={mode} onClick={() => dispatch({ type: "set-more-date-mode", value: mode })} role="tab" type="button">{{ single: "单日", range: "范围", multiple: "多日", weekday: "星期" }[mode]}</button>)}
@@ -322,16 +325,17 @@ export function WorkPlanFormDrawer({
             <fieldset className="work-plan-fieldset">
               <legend>时间</legend>
               <div className="work-plan-time-fields">
-                <label>开始时间<select onChange={(event) => dispatch({ type: "set-start-time", value: event.target.value })} value={draft.startTime}>{thirtyMinuteOptions().map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+                <label>开始时间<select onChange={(event) => dispatch({ type: "set-start-offset", value: Number(event.target.value) })} value={draft.startOffsetMinute}>{offsetOptions.slice(0, -1).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
                 <span>至</span>
-                <label>结束时间<select onChange={(event) => dispatch({ type: "set-end-time", value: event.target.value })} value={draft.endTime}>{thirtyMinuteOptions({ includeEndOfDay: true }).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+                <label>结束时间<select onChange={(event) => dispatch({ type: "set-end-offset", value: Number(event.target.value) })} value={draft.endOffsetMinute}>{offsetOptions.slice(1).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
               </div>
+              <div className={`work-plan-time-preview ${draft.operationType}`}><Clock3 size={14} /><span>{draft.selectedDates[0] || serverToday}</span><strong>{formatOffsetInterval(draft.startOffsetMinute, draft.endOffsetMinute)}</strong></div>
             </fieldset>
 
             <label className="work-plan-note-field">备注<textarea maxLength={500} onChange={(event) => dispatch({ type: "set-note", value: event.target.value })} placeholder="可选" rows={4} value={draft.note} /><span>{draft.note.length}/500</span></label>
             {error ? <div className="work-plan-form-error" role="alert">{error}</div> : null}
           </div>
-          <footer className="work-plan-drawer-footer"><button className="ghost" disabled={busy} onClick={onClose} type="button">取消</button><button disabled={busy} type="submit">{busy ? "提交中..." : editing ? "保存修改" : "提交计划"}</button></footer>
+          <footer className="work-plan-drawer-footer"><button className="ghost" disabled={busy} onClick={onClose} type="button">关闭</button><button className={draft.operationType === "cancel" ? "work-plan-submit-cancel" : ""} disabled={busy} type="submit">{busy ? "提交中..." : editing ? "保存修改" : draft.operationType === "activate" ? "创建工作计划" : "提交取消"}</button></footer>
         </form>
       </aside>
     </div>
