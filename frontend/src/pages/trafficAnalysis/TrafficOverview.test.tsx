@@ -7,6 +7,9 @@ import {
   TrafficOverviewView,
   buildTrafficAnalyticsQuery,
   buildTrafficTrendPoints,
+  confirmedRegistrationCount,
+  registrationConversionRate,
+  trafficMetricDefinition,
   type TrafficOverviewResponse,
   type TrafficUsersResponse,
 } from "./TrafficOverview";
@@ -235,7 +238,8 @@ describe("traffic analytics overview", () => {
     expect(html).toContain('aria-label="访问流量页面索引"');
     expect(html).toContain('class="traffic-overview-kpi-strip"');
     expect(html).toContain("注册转化率");
-    expect(html).toContain(">12.5%<");
+    expect(html).toContain(">10.0%<");
+    expect(html).toContain(">8<");
     expect(html).toContain("归因注册账号 ÷ 有效 Session UV × 100%");
     expect(html).toContain("traffic_homepage_events");
     expect(html).toContain('class="traffic-overview-trend-chart"');
@@ -244,7 +248,48 @@ describe("traffic analytics overview", () => {
   it("builds stable SVG trend points with zero-range protection", () => {
     expect(buildTrafficTrendPoints([10, 20, 30], 100, 40)).toBe("0,40 50,20 100,0");
     expect(buildTrafficTrendPoints([5, 5], 100, 40)).toBe("0,20 100,20");
+    expect(buildTrafficTrendPoints([0, 0], 100, 40, { minimum: 0, maximum: 0 }))
+      .toBe("0,40 100,40");
     expect(buildTrafficTrendPoints([], 100, 40)).toBe("");
+  });
+
+  it("describes registration metrics for the active account segment", () => {
+    expect(trafficMetricDefinition("归因注册", "ordinary").definition).toContain("普通账号");
+    expect(trafficMetricDefinition("归因注册", "internal").definition).toContain("内部账号");
+    expect(trafficMetricDefinition("注册转化率", "all").included).toContain("全部账号");
+    expect(trafficMetricDefinition("注册转化率", "internal").excluded).not.toContain("内部账号");
+  });
+
+  it("uses confirmed registrations and protects the conversion denominator", () => {
+    expect(confirmedRegistrationCount(overview.registration_summary)).toBe(8);
+    expect(registrationConversionRate(overview)).toBe(0.1);
+    expect(registrationConversionRate({
+      ...overview,
+      homepage_summary: { ...overview.homepage_summary, session_uv: 0 },
+    })).toBeNull();
+    expect(confirmedRegistrationCount({
+      attributed_accounts: 1,
+      excluded_accounts: 0,
+      facts_pending_accounts: 3,
+    })).toBe(0);
+  });
+
+  it("plots all traffic series against one shared count domain", () => {
+    const html = renderToStaticMarkup(view({
+      overview: {
+        ...overview,
+        traffic_trends: [
+          { bucket_at: "2026-07-26T00:00:00Z", homepage_pv: 1000, homepage_uv: 10, link_pv: 100, link_uv: 50 },
+          { bucket_at: "2026-07-27T00:00:00Z", homepage_pv: 1100, homepage_uv: 11, link_pv: 200, link_uv: 60 },
+        ],
+      },
+    }));
+    const series = [...html.matchAll(/<polyline[^>]+points="([^"]+)"/g)].map((match) => match[1]);
+
+    expect(series).toHaveLength(3);
+    expect(new Set(series).size).toBe(3);
+    expect(buildTrafficTrendPoints([10, 11], 100, 40, { minimum: 0, maximum: 1100 }))
+      .not.toBe(buildTrafficTrendPoints([1000, 1100], 100, 40, { minimum: 0, maximum: 1100 }));
   });
 
   it("separates active attribution from natural-entry diagnostics", () => {

@@ -54,4 +54,32 @@ describe("traffic overview layout styles", () => {
     expect(section).not.toContain("border-radius");
     expect(section).not.toContain("box-shadow");
   });
+
+  it("keeps the final KPI definition tooltip aligned inside the workspace", () => {
+    expect(redesignStyles).not.toContain(
+      ".traffic-overview-metric .metric-definition.align-end .metric-definition-tooltip",
+    );
+    const finalMetricTooltip = redesignRule(
+      ".traffic-overview-metric:nth-child(6n) .metric-definition-tooltip",
+    );
+    expect(finalMetricTooltip).toContain("right: 0;");
+    expect(finalMetricTooltip).toContain("left: auto;");
+  });
+
+  it("uses the agreed tablet and mobile KPI breakpoints", () => {
+    const tabletStart = redesignStyles.indexOf("@media (max-width: 1179px)");
+    const mobileStart = redesignStyles.indexOf("@media (max-width: 759px)");
+
+    expect(tabletStart).toBeGreaterThanOrEqual(0);
+    expect(mobileStart).toBeGreaterThan(tabletStart);
+
+    const tabletStyles = redesignStyles.slice(tabletStart, mobileStart);
+    const mobileStyles = redesignStyles.slice(mobileStart);
+    expect(tabletStyles).toContain("grid-template-columns: repeat(3, minmax(0, 1fr));");
+    expect(tabletStyles).toContain(".traffic-overview-metric:nth-child(3n) .metric-definition-tooltip");
+    expect(tabletStyles).toContain(".traffic-overview-split");
+    expect(mobileStyles).toContain("grid-template-columns: repeat(2, minmax(0, 1fr));");
+    expect(mobileStyles).toContain(".traffic-overview-metric:nth-child(3n) .metric-definition-tooltip");
+    expect(mobileStyles).toContain(".traffic-overview-metric:nth-child(2n) .metric-definition-tooltip");
+  });
 });

@@ -45,6 +45,7 @@ describe("data workspace primitives", () => {
     expect(html).toContain('<nav class="workspace-rail" aria-label="运营概览页面索引">');
     expect(html).toContain('href="#summary"');
     expect(html).toContain('href="#lifecycle"');
+    expect(html).toContain('aria-current="location"');
     expect(html).toContain("数据同步正常");
     expect(html).toContain("截至 09:15");
   });

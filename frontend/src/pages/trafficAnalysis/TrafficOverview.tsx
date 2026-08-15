@@ -401,6 +401,29 @@ const trafficMetricDefinitions: Record<string, MetricDefinitionDetails> = {
   },
 };
 
+export function trafficMetricDefinition(
+  label: string,
+  segment: TrafficUserSegment,
+): MetricDefinitionDetails {
+  const details = trafficMetricDefinitions[label];
+  if (label !== "归因注册" && label !== "注册转化率") return details;
+
+  const subject = segment === "ordinary" ? "普通账号" : segment === "internal" ? "内部账号" : "全部账号";
+  const outsideSegment = segment === "ordinary" ? "内部账号、" : segment === "internal" ? "普通账号、" : "";
+  if (label === "归因注册") return {
+    ...details,
+    definition: `注册成功时已锁定有效来源的${subject}数。`,
+    included: `正式归因且事实状态正常的${subject}`,
+    excluded: `${outsideSegment}明确排除与事实待确认账号`,
+  };
+  return {
+    ...details,
+    definition: `所选周期内，由有效主页访问产生的${subject}正式归因注册比例。`,
+    included: `正式归因${subject}与有效主页 Session`,
+    excluded: `${outsideSegment}待确认事实、重复注册与无效 Session`,
+  };
+}
+
 const trafficRailItems = [
   { id: "traffic-summary", label: "总览与趋势", count: "01" },
   { id: "traffic-sources", label: "有效归因来源", count: "02" },
@@ -410,18 +433,38 @@ const trafficRailItems = [
   { id: "traffic-quality", label: "数据质量", count: "06" },
 ];
 
-export function buildTrafficTrendPoints(values: number[], width: number, height: number) {
+export function buildTrafficTrendPoints(
+  values: number[],
+  width: number,
+  height: number,
+  domain?: { minimum: number; maximum: number },
+) {
   if (!values.length) return "";
-  const minimum = Math.min(...values);
-  const maximum = Math.max(...values);
+  const minimum = domain?.minimum ?? Math.min(...values);
+  const maximum = domain?.maximum ?? Math.max(...values);
   const range = maximum - minimum;
   const denominator = Math.max(1, values.length - 1);
 
   return values.map((value, index) => {
     const x = values.length === 1 ? width / 2 : (index / denominator) * width;
-    const y = range === 0 ? height / 2 : height - ((value - minimum) / range) * height;
+    const y = range === 0
+      ? domain ? height : height / 2
+      : height - ((value - minimum) / range) * height;
     return `${formatTrendCoordinate(x)},${formatTrendCoordinate(y)}`;
   }).join(" ");
+}
+
+export function confirmedRegistrationCount(
+  summary: TrafficOverviewResponse["registration_summary"],
+) {
+  return Math.max(0, summary.attributed_accounts - summary.facts_pending_accounts);
+}
+
+export function registrationConversionRate(
+  overview: Pick<TrafficOverviewResponse, "homepage_summary" | "registration_summary">,
+) {
+  if (overview.homepage_summary.session_uv <= 0) return null;
+  return confirmedRegistrationCount(overview.registration_summary) / overview.homepage_summary.session_uv;
 }
 
 function formatTrendCoordinate(value: number) {
@@ -461,9 +504,10 @@ export function TrafficOverviewView({
     0,
   ) || 0;
   const timezone = overview?.window.timezone || "UTC";
-  const registrationConversionRate = overview && overview.homepage_summary.session_uv > 0
-    ? overview.registration_summary.attributed_accounts / overview.homepage_summary.session_uv
-    : null;
+  const confirmedRegistrations = overview
+    ? confirmedRegistrationCount(overview.registration_summary)
+    : 0;
+  const registrationConversion = overview ? registrationConversionRate(overview) : null;
   const latestTrafficAt = overview?.homepage_summary.latest_event_at || overview?.generated_at || null;
 
   const change = (values: Partial<TrafficOverviewFilters>) => {
@@ -505,38 +549,44 @@ export function TrafficOverviewView({
                 label="有效主页 PV"
                 value={formatCount(overview.homepage_summary.counted_pv)}
                 detail={`记录访问 ${formatCount(overview.homepage_summary.recorded_visits)} · 排除 ${formatCount(overview.homepage_summary.excluded_visits)}`}
+                segment={filters.segment}
               />
               <TrafficMetric
                 label="有效 Session UV"
                 value={formatCount(overview.homepage_summary.session_uv)}
                 detail="匿名浏览器 Session"
+                segment={filters.segment}
               />
               <TrafficMetric
                 label="有效率"
                 value={formatRate(overview.homepage_summary.valid_rate)}
                 detail="主页记录通过有效性校验"
+                segment={filters.segment}
               />
               <TrafficMetric
                 label="推广链接"
                 value={formatCount(overview.link_summary.counted_pv)}
                 detail={`${formatCount(overview.link_summary.session_uv)} Session UV`}
+                segment={filters.segment}
               />
               <TrafficMetric
                 label="归因注册"
-                value={formatCount(overview.registration_summary.attributed_accounts)}
+                value={formatCount(confirmedRegistrations)}
                 detail="来源在注册时锁定"
+                segment={filters.segment}
               />
               <TrafficMetric
                 label="注册转化率"
-                value={formatRate(registrationConversionRate)}
+                value={formatRate(registrationConversion)}
                 detail={`较窗口内 ${formatCount(overview.homepage_summary.session_uv)} Session UV`}
                 align="end"
+                segment={filters.segment}
               />
             </div>
             <dl className="traffic-overview-context traffic-overview-audit-context" aria-label="流量审计摘要">
               <div><dt>有效率</dt><dd>{formatRate(overview.homepage_summary.valid_rate)}</dd></div>
               <div><dt>推广链接</dt><dd>{formatCount(overview.link_summary.counted_pv)} PV / {formatCount(overview.link_summary.session_uv)} UV</dd></div>
-              <div><dt>归因注册</dt><dd>{formatCount(overview.registration_summary.attributed_accounts)}</dd></div>
+              <div><dt>归因注册</dt><dd>{formatCount(confirmedRegistrations)}</dd></div>
               <div><dt>数据最新</dt><dd>{formatDateTime(overview.homepage_summary.latest_event_at, timezone)}</dd></div>
             </dl>
           </section>
@@ -570,9 +620,9 @@ export function TrafficOverviewView({
           </section>
 
           <section id="traffic-registration" className="traffic-overview-section">
-            <SectionHeader title="注册归因" detail="来源在注册成功时锁定，后续访问不会改写" aside={`正式归因 ${formatCount(overview.registration_summary.attributed_accounts)} 个`} />
+            <SectionHeader title="注册归因" detail="来源在注册成功时锁定，后续访问不会改写" aside={`正式归因 ${formatCount(confirmedRegistrations)} 个`} />
             <div className="traffic-overview-registration-summary">
-              <SummaryDatum label="归因注册" value={overview.registration_summary.attributed_accounts} />
+              <SummaryDatum label="归因注册" value={confirmedRegistrations} />
               <SummaryDatum label="明确排除" value={overview.registration_summary.excluded_accounts} tone="muted" />
               <SummaryDatum label="同步待确认" value={overview.registration_summary.facts_pending_accounts} tone="warning" />
             </div>
@@ -607,10 +657,22 @@ export function TrafficOverviewView({
   );
 }
 
-function TrafficMetric({ label, value, detail, align = "start" }: { label: string; value: string; detail: string; align?: "start" | "end" }) {
+function TrafficMetric({
+  label,
+  value,
+  detail,
+  align = "start",
+  segment,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  align?: "start" | "end";
+  segment: TrafficUserSegment;
+}) {
   return (
     <article className="traffic-overview-metric">
-      <span><MetricDefinition label={label} details={trafficMetricDefinitions[label]} align={align} /></span>
+      <span><MetricDefinition label={label} details={trafficMetricDefinition(label, segment)} align={align} /></span>
       <strong>{value}</strong>
       <small>{detail}</small>
     </article>
@@ -621,6 +683,13 @@ function TrafficTrendChart({ trends }: { trends: TrafficOverviewResponse["traffi
   const homepagePv = trends.map((item) => item.homepage_pv);
   const homepageUv = trends.map((item) => item.homepage_uv);
   const linkPv = trends.map((item) => item.link_pv);
+  const domain = {
+    minimum: 0,
+    maximum: trends.reduce(
+      (maximum, item) => Math.max(maximum, item.homepage_pv, item.homepage_uv, item.link_pv),
+      0,
+    ),
+  };
 
   return (
     <div className="traffic-overview-trend-chart" role="img" aria-label="主页 PV、主页 UV 和链接 PV 趋势图">
@@ -629,9 +698,9 @@ function TrafficTrendChart({ trends }: { trends: TrafficOverviewResponse["traffi
         <span className="traffic-overview-trend-legend"><i className="homepage-pv" />主页 PV <i className="homepage-uv" />主页 UV <i className="link-pv" />链接 PV</span>
       </div>
       <svg viewBox="0 0 100 44" preserveAspectRatio="none" aria-hidden="true">
-        <polyline className="homepage-pv" points={buildTrafficTrendPoints(homepagePv, 100, 40)} />
-        <polyline className="homepage-uv" points={buildTrafficTrendPoints(homepageUv, 100, 40)} />
-        <polyline className="link-pv" points={buildTrafficTrendPoints(linkPv, 100, 40)} />
+        <polyline className="homepage-pv" points={buildTrafficTrendPoints(homepagePv, 100, 40, domain)} />
+        <polyline className="homepage-uv" points={buildTrafficTrendPoints(homepageUv, 100, 40, domain)} />
+        <polyline className="link-pv" points={buildTrafficTrendPoints(linkPv, 100, 40, domain)} />
       </svg>
     </div>
   );

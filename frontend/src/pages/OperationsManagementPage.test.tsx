@@ -18,6 +18,8 @@ import {
   formatLifecycleRate,
   formatRetentionRate,
   operationsIncomeLabel,
+  operationsDataWatermark,
+  operationsMetricDefinition,
   orderOperationsSites,
   paymentRate,
   shouldAutoRefreshOperationsOverview,
@@ -311,9 +313,35 @@ describe("operations management workspace", () => {
     expect(html).toContain('aria-label="运营概览页面索引"');
     expect(html).toContain("数据截至");
     expect(html).toContain("付费 / 计费用户");
-    expect(html).toContain("AIWeLink 可核验付款用户 ∪ AIGCLink 有标价调用客户");
-    expect(html).toContain("orders + balance_adjustments + usage_records");
+    expect(html).toContain("AIWeLink 可核验付款用户。");
+    expect(html).not.toContain("AIWeLink 可核验付款用户 ∪ AIGCLink 有标价调用客户");
     expect(html).toContain("注册后第 7 个上海自然日仍有成功调用的用户比例");
+  });
+
+  it("uses source synchronization watermarks instead of query generation time", () => {
+    expect(operationsDataWatermark([
+      { site_id: "aiwelink", last_success_at: "2026-08-15T08:00:00Z" },
+      { site_id: "aigclink", last_success_at: "2026-08-15T10:00:00Z" },
+    ])).toBe("2026-08-15T08:00:00Z");
+    expect(operationsDataWatermark([
+      { site_id: "aigclink", last_success_at: "2026-08-15T10:00:00Z" },
+    ])).toBe("2026-08-15T10:00:00Z");
+    expect(operationsDataWatermark([
+      { site_id: "aiwelink", last_success_at: "2026-08-15T08:00:00Z" },
+      { site_id: "aigclink" },
+    ])).toBeUndefined();
+    expect(operationsDataWatermark([
+      { site_id: "aiwelink", last_success_at: "2026-08-15T08:00:00Z" },
+    ], ["aiwelink", "aigclink"])).toBeUndefined();
+  });
+
+  it("switches payment definitions with the active site filter", () => {
+    expect(operationsMetricDefinition("付费 / 计费用户", "aiwelink").definition)
+      .toBe("AIWeLink 可核验付款用户。");
+    expect(operationsMetricDefinition("付费 / 计费用户", "aigclink").definition)
+      .toBe("AIGCLink 有标价成功调用客户。");
+    expect(operationsMetricDefinition("付费 / 计费用户", "").definition)
+      .toContain("AIWeLink 可核验付款用户 ∪ AIGCLink 有标价调用客户");
   });
 
   it("calculates site comparison metrics with zero-denominator guards", () => {

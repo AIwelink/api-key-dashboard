@@ -24,4 +24,20 @@ describe("operations management open workspace styles", () => {
     expect(section).not.toContain("border-radius");
     expect(section).not.toContain("box-shadow");
   });
+
+  it("uses the agreed tablet and mobile KPI breakpoints", () => {
+    const tabletStart = redesignStyles.indexOf("@media (max-width: 1179px)");
+    const mobileStart = redesignStyles.indexOf("@media (max-width: 759px)");
+
+    expect(tabletStart).toBeGreaterThanOrEqual(0);
+    expect(mobileStart).toBeGreaterThan(tabletStart);
+
+    const tabletStyles = redesignStyles.slice(tabletStart, mobileStart);
+    const mobileStyles = redesignStyles.slice(mobileStart);
+    expect(tabletStyles).toContain("grid-template-columns: repeat(3, minmax(0, 1fr));");
+    expect(tabletStyles).toContain(".operations-workspace-page .operations-metric:nth-child(3n) .metric-definition-tooltip");
+    expect(mobileStyles).toContain("grid-template-columns: repeat(2, minmax(0, 1fr));");
+    expect(mobileStyles).toContain(".operations-workspace-page .operations-metric:nth-child(3n) .metric-definition-tooltip");
+    expect(mobileStyles).toContain(".operations-workspace-page .operations-metric:nth-child(2n) .metric-definition-tooltip");
+  });
 });

@@ -535,17 +535,27 @@ function formatDateTime(value?: string | null) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
 }
 
-function latestTimestamp(values: Array<string | null | undefined>) {
-  let latestValue: string | undefined;
-  let latestTime = Number.NEGATIVE_INFINITY;
-  for (const value of values) {
-    if (!value) continue;
+export function operationsDataWatermark(
+  statuses: Array<Pick<SyncStatus, "site_id" | "last_success_at">>,
+  expectedSiteIds?: readonly string[],
+) {
+  const selectedStatuses = expectedSiteIds
+    ? expectedSiteIds.map((siteId) => statuses.find((item) => item.site_id === siteId))
+    : statuses;
+  if (!selectedStatuses.length) return undefined;
+
+  let earliestValue: string | undefined;
+  let earliestTime = Number.POSITIVE_INFINITY;
+  for (const status of selectedStatuses) {
+    const value = status?.last_success_at;
+    if (!value) return undefined;
     const time = new Date(value).getTime();
-    if (Number.isNaN(time) || time <= latestTime) continue;
-    latestTime = time;
-    latestValue = value;
+    if (Number.isNaN(time)) return undefined;
+    if (time >= earliestTime) continue;
+    earliestTime = time;
+    earliestValue = value;
   }
-  return latestValue;
+  return earliestValue;
 }
 
 function formatBucket(value: string) {
@@ -775,7 +785,7 @@ const operationsMetricDefinitions: Record<string, MetricDefinitionDetails> = {
   },
 };
 
-function operationsMetricDefinition(label: string, siteId: string): MetricDefinitionDetails {
+export function operationsMetricDefinition(label: string, siteId: string): MetricDefinitionDetails {
   if (siteId === "aiwelink") {
     if (label === "付费 / 计费用户") return {
       definition: "AIWeLink 可核验付款用户。",
@@ -1398,11 +1408,13 @@ export function OperationsManagementPage(
     allowedSiteSet.has(item.site_id as OperationsSiteId)
     && (!effectiveQuery.siteId || item.site_id === effectiveQuery.siteId)
   ));
-  const latestOperationsAt = latestTimestamp([
-    overview?.generated_at,
-    lifecycle?.generated_at,
-    ...visibleSyncStatuses.map((item) => item.last_success_at),
-  ]);
+  const selectedSyncSiteIds = effectiveQuery.siteId
+    ? [effectiveQuery.siteId]
+    : allowedSites.map((item) => item.value);
+  const latestOperationsAt = operationsDataWatermark(visibleSyncStatuses, selectedSyncSiteIds);
+  const operationsWatermarkLabel = latestOperationsAt
+    ? formatDateTime(latestOperationsAt)
+    : "等待源数据同步";
   const visibleTrends = sortNewestFirst(
     trends.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId)),
     (item) => item.bucket,
@@ -1413,7 +1425,11 @@ export function OperationsManagementPage(
   const visibleInternalUsers = internalUsers.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
   const visibleRates = rates.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
   const visibleClassificationTasks = classificationTasks.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
-  const syncHealth = visibleSyncStatuses.some((item) => item.health === "delayed" || item.health === "never") ? "delayed" : visibleSyncStatuses.some((item) => item.health === "running") ? "running" : "healthy";
+  const syncHealth = visibleSyncStatuses.some((item) => item.health === "delayed" || item.health === "never")
+    ? "delayed"
+    : !latestOperationsAt || visibleSyncStatuses.some((item) => item.health === "running")
+      ? "running"
+      : "healthy";
   const syncErrorDetails = visibleSyncStatuses.filter((item) => item.error_message).map((item) => `${siteLabel(item.site_id)}：${item.error_message}`).join(" · ");
   const pageDescription = allowedSites.length === 1
     ? `查看 ${allowedSites[0].label} 的收入、消耗和用户构成`
@@ -1424,7 +1440,7 @@ export function OperationsManagementPage(
       ? "按数据库调用标价确认计费客户与收入"
       : "按可核验现金确认付费身份，订阅收入单独摊销";
   const showValueRankings = hasAigclinkAccess && effectiveQuery.siteId !== "aiwelink";
-  const metricDefinitionSiteId = allowedSites.length === 1 ? effectiveQuery.siteId : "";
+  const metricDefinitionSiteId = effectiveQuery.siteId;
 
   return (
     <section className="view operations-workspace-page">
@@ -1432,7 +1448,7 @@ export function OperationsManagementPage(
         <div>
           <h2>运营管理</h2>
           <p>{pageDescription}</p>
-          {tab === "overview" && <small className="operations-page-freshness">数据截至 {formatDateTime(latestOperationsAt)}</small>}
+          {tab === "overview" && <small className="operations-page-freshness">数据截至 {operationsWatermarkLabel}</small>}
         </div>
         {tab === "overview" && <button className="ghost" type="button" disabled={refreshing} onClick={refreshSources}>{refreshing ? "提交中..." : "刷新源数据"}</button>}
       </div>
@@ -1463,7 +1479,7 @@ export function OperationsManagementPage(
             ]}
             status={{
               title: syncHealth === "healthy" ? "数据同步正常" : syncHealth === "running" ? "正在同步" : "数据同步延迟",
-              detail: `数据截至 ${formatDateTime(latestOperationsAt)}`,
+              detail: `数据截至 ${operationsWatermarkLabel}`,
               tone: syncHealth === "healthy" ? "healthy" : syncHealth === "running" ? "muted" : "warning",
             }}
           />
@@ -1478,7 +1494,7 @@ export function OperationsManagementPage(
 
           <div className={`operations-freshness-banner ${syncHealth}`}>
             <div><span className="operations-freshness-dot" /><strong>{syncHealth === "healthy" ? "数据同步正常" : syncHealth === "running" ? "正在同步" : "数据同步延迟"}</strong></div>
-            <span>{syncErrorDetails || (visibleSyncStatuses.length ? visibleSyncStatuses.map((item) => `${siteLabel(item.site_id)} ${formatDateTime(item.last_success_at)}`).join(" · ") : "等待首次同步记录")}</span>
+            <span>{syncErrorDetails || (!latestOperationsAt ? "等待所选站点完成源数据同步" : visibleSyncStatuses.map((item) => `${siteLabel(item.site_id)} ${formatDateTime(item.last_success_at)}`).join(" · "))}</span>
             <small>页面查询缓存 60 秒，源数据每 15 分钟同步</small>
           </div>
 

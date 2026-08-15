@@ -623,7 +623,7 @@
   background: #d9eee8;
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1179px) {
   .operations-overview-workspace {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -650,12 +650,17 @@
     border-right: 0;
   }
 
+  .operations-workspace-page .operations-metric:nth-child(3n) .metric-definition-tooltip {
+    right: 0;
+    left: auto;
+  }
+
   .operations-workspace-page .operations-metric:nth-child(n + 4) {
     border-bottom: 0;
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 759px) {
   .operations-query-bar {
     position: static;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -693,7 +698,7 @@
   }
 }
 
-@media (max-width: 620px) {
+@media (max-width: 759px) {
   .operations-workspace-page .operations-metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -707,6 +712,11 @@
 
   .operations-workspace-page .operations-metric:nth-child(2n) {
     border-right: 0;
+  }
+
+  .operations-workspace-page .operations-metric:nth-child(3n) .metric-definition-tooltip {
+    right: auto;
+    left: 0;
   }
 
   .operations-workspace-page .operations-metric:nth-child(2n) .metric-definition-tooltip {
