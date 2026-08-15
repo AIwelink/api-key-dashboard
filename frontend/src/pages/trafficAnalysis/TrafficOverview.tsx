@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 
 import { api } from "../../api/client";
+import {
+  MetricDefinition,
+  type MetricDefinitionDetails,
+} from "../../components/dataWorkspace/MetricDefinition";
+import { WorkspaceRail } from "../../components/dataWorkspace/WorkspaceRail";
 import { errorMessage } from "../../utils/format";
 
 
@@ -345,6 +350,84 @@ const linkStatusLabels: Record<TrafficLinkPerformance["status"], string> = {
   archived: "归档",
 };
 
+const trafficMetricDefinitions: Record<string, MetricDefinitionDetails> = {
+  "有效主页 PV": {
+    definition: "所选窗口内通过有效性校验的主页浏览事件总数。",
+    formula: "主页访问事件 - 机器人 - 内部测试 - 无效事件",
+    included: "普通账号与匿名 Session 的有效主页事件",
+    excluded: "机器人、内部测试、重复或无效上报",
+    source: "traffic_homepage_events",
+    freshness: "源数据 15 分钟同步，页面缓存 60 秒",
+  },
+  "有效 Session UV": {
+    definition: "至少产生一次有效主页访问的匿名浏览器 Session 数。",
+    formula: "COUNT(DISTINCT valid_session_id)",
+    included: "有效主页访问对应的浏览器 Session",
+    excluded: "无 Session、机器人与已排除事件",
+    source: "traffic_homepage_events",
+    freshness: "源数据 15 分钟同步，页面缓存 60 秒",
+  },
+  "有效率": {
+    definition: "主页记录中通过有效性校验的事件比例。",
+    formula: "有效主页 PV ÷ 主页记录访问 × 100%",
+    included: "所选窗口内全部主页访问记录",
+    excluded: "无；排除结果体现在分子",
+    source: "traffic_homepage_events",
+    freshness: "源数据 15 分钟同步，页面缓存 60 秒",
+  },
+  "推广链接": {
+    definition: "推广跳转链接产生的有效访问量和去重 Session 数。",
+    formula: "有效链接事件 PV；UV = COUNT(DISTINCT session_id)",
+    included: "状态与有效期允许的推广链接访问",
+    excluded: "机器人、无效跳转与明确排除事件",
+    source: "traffic_link_events",
+    freshness: "源数据 15 分钟同步，页面缓存 60 秒",
+  },
+  "归因注册": {
+    definition: "注册成功时已锁定有效来源的普通账号数。",
+    formula: "COUNT(DISTINCT account_id WHERE fact_state = normal)",
+    included: "正式归因且事实状态正常的注册账号",
+    excluded: "内部账号、明确排除与事实待确认账号",
+    source: "traffic_registration_attribution",
+    freshness: "源数据 15 分钟同步，页面缓存 60 秒",
+  },
+  "注册转化率": {
+    definition: "所选周期内，由有效主页访问产生的正式归因注册比例。",
+    formula: "归因注册账号 ÷ 有效 Session UV × 100%",
+    included: "正式归因普通账号与有效主页 Session",
+    excluded: "内部账号、待确认事实、重复注册与无效 Session",
+    source: "traffic_homepage_events + traffic_registration_attribution",
+    freshness: "源数据 15 分钟同步，页面缓存 60 秒",
+  },
+};
+
+const trafficRailItems = [
+  { id: "traffic-summary", label: "总览与趋势", count: "01" },
+  { id: "traffic-sources", label: "有效归因来源", count: "02" },
+  { id: "traffic-diagnostic", label: "自然入口诊断", count: "03" },
+  { id: "traffic-links", label: "推广链接表现", count: "04" },
+  { id: "traffic-registration", label: "注册归因", count: "05" },
+  { id: "traffic-quality", label: "数据质量", count: "06" },
+];
+
+export function buildTrafficTrendPoints(values: number[], width: number, height: number) {
+  if (!values.length) return "";
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  const range = maximum - minimum;
+  const denominator = Math.max(1, values.length - 1);
+
+  return values.map((value, index) => {
+    const x = values.length === 1 ? width / 2 : (index / denominator) * width;
+    const y = range === 0 ? height / 2 : height - ((value - minimum) / range) * height;
+    return `${formatTrendCoordinate(x)},${formatTrendCoordinate(y)}`;
+  }).join(" ");
+}
+
+function formatTrendCoordinate(value: number) {
+  return String(Math.round(value * 100) / 100);
+}
+
 export function TrafficOverviewView({
   overview,
   users,
@@ -378,6 +461,10 @@ export function TrafficOverviewView({
     0,
   ) || 0;
   const timezone = overview?.window.timezone || "UTC";
+  const registrationConversionRate = overview && overview.homepage_summary.session_uv > 0
+    ? overview.registration_summary.attributed_accounts / overview.homepage_summary.session_uv
+    : null;
+  const latestTrafficAt = overview?.homepage_summary.latest_event_at || overview?.generated_at || null;
 
   const change = (values: Partial<TrafficOverviewFilters>) => {
     onFiltersChange({ ...filters, ...values });
@@ -385,6 +472,17 @@ export function TrafficOverviewView({
 
   return (
     <div className="traffic-overview" aria-busy={loading}>
+      <div className="traffic-overview-workspace">
+        <WorkspaceRail
+          label="访问流量页面索引"
+          items={trafficRailItems}
+          status={overview ? {
+            title: "数据正常",
+            detail: `截至 ${formatDateTime(latestTrafficAt, timezone)} · ${timezone}`,
+            tone: "healthy",
+          } : undefined}
+        />
+        <div className="traffic-overview-main">
       <div className="traffic-overview-query" aria-label="流量概览查询">
         <label><span>时间范围</span><select value={filters.range} onChange={(event) => change({ range: event.target.value as TrafficRange })}><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option><option value="90d">最近 90 天</option></select></label>
         <label><span>注册账号范围</span><select value={filters.segment} onChange={(event) => change({ segment: event.target.value as TrafficUserSegment })}><option value="ordinary">普通账号</option><option value="internal">内部账号</option><option value="all">全部账号</option></select></label>
@@ -401,20 +499,41 @@ export function TrafficOverviewView({
 
       {!error && overview ? (
         <>
-          <section className="traffic-overview-hero" aria-label="有效主页流量">
-            <div className="traffic-overview-primary-metrics">
-              <PrimaryMetric
+          <section id="traffic-summary" className="traffic-overview-summary" aria-label="有效主页流量">
+            <div className="traffic-overview-kpi-strip">
+              <TrafficMetric
                 label="有效主页 PV"
-                value={overview.homepage_summary.counted_pv}
+                value={formatCount(overview.homepage_summary.counted_pv)}
                 detail={`记录访问 ${formatCount(overview.homepage_summary.recorded_visits)} · 排除 ${formatCount(overview.homepage_summary.excluded_visits)}`}
               />
-              <PrimaryMetric
+              <TrafficMetric
                 label="有效 Session UV"
-                value={overview.homepage_summary.session_uv}
+                value={formatCount(overview.homepage_summary.session_uv)}
                 detail="匿名浏览器 Session"
               />
+              <TrafficMetric
+                label="有效率"
+                value={formatRate(overview.homepage_summary.valid_rate)}
+                detail="主页记录通过有效性校验"
+              />
+              <TrafficMetric
+                label="推广链接"
+                value={formatCount(overview.link_summary.counted_pv)}
+                detail={`${formatCount(overview.link_summary.session_uv)} Session UV`}
+              />
+              <TrafficMetric
+                label="归因注册"
+                value={formatCount(overview.registration_summary.attributed_accounts)}
+                detail="来源在注册时锁定"
+              />
+              <TrafficMetric
+                label="注册转化率"
+                value={formatRate(registrationConversionRate)}
+                detail={`较窗口内 ${formatCount(overview.homepage_summary.session_uv)} Session UV`}
+                align="end"
+              />
             </div>
-            <dl className="traffic-overview-context">
+            <dl className="traffic-overview-context traffic-overview-audit-context" aria-label="流量审计摘要">
               <div><dt>有效率</dt><dd>{formatRate(overview.homepage_summary.valid_rate)}</dd></div>
               <div><dt>推广链接</dt><dd>{formatCount(overview.link_summary.counted_pv)} PV / {formatCount(overview.link_summary.session_uv)} UV</dd></div>
               <div><dt>归因注册</dt><dd>{formatCount(overview.registration_summary.attributed_accounts)}</dd></div>
@@ -427,27 +546,30 @@ export function TrafficOverviewView({
             <b>{capabilityLabel(overview.capabilities.downstream_facts)}</b>
           </div>
 
-          <section className="traffic-overview-section">
+          <section id="traffic-trend" className="traffic-overview-section">
             <SectionHeader title="有效流量趋势" detail={`${overview.window.bucket === "hour" ? "按小时" : "按天"}汇总 · ${timezone}`} aside={`生成于 ${formatDateTime(overview.generated_at, timezone)}`} />
+            <TrafficTrendChart trends={overview.traffic_trends} />
             <TableScroll variant="trends" label="有效流量趋势表"><table><thead><tr><th>时间</th><th>主页 PV</th><th>主页 UV</th><th>链接 PV</th><th>链接 UV</th></tr></thead><tbody>{overview.traffic_trends.length ? overview.traffic_trends.map((item) => <tr key={item.bucket_at}><td>{formatBucket(item.bucket_at, overview.window.bucket, timezone)}</td><td><TrendValue value={item.homepage_pv} max={trendMax} tone="strong" /></td><td><TrendValue value={item.homepage_uv} max={trendMax} tone="quiet" /></td><td>{formatCount(item.link_pv)}</td><td>{formatCount(item.link_uv)}</td></tr>) : <EmptyRow columns={5} text="当前范围暂无有效流量" />}</tbody></table></TableScroll>
           </section>
 
-          <section className="traffic-overview-section">
+          <div className="traffic-overview-split">
+          <section id="traffic-sources" className="traffic-overview-section">
             <SectionHeader title="有效归因来源" detail="按窗口内最后一次有效主页事件互斥归类" aside={`合计 ${formatCount(activeUvTotal)} Session UV`} />
             <TableScroll variant="active-sources" label="有效归因来源表"><table><thead><tr><th>来源</th><th>有效主页 PV</th><th>互斥 Session UV</th><th>UV 构成</th></tr></thead><tbody>{overview.active_source_breakdown.length ? overview.active_source_breakdown.map((item) => <tr key={item.source_kind}><td><strong>{sourceLabels[item.source_kind]}</strong></td><td>{formatCount(item.counted_pv)}</td><td>{formatCount(item.session_uv)}</td><td><ShareValue value={item.session_uv} total={activeUvTotal} /></td></tr>) : <EmptyRow columns={4} text="当前筛选下暂无有效来源" />}</tbody></table></TableScroll>
           </section>
 
-          <section className="traffic-overview-section traffic-overview-diagnostic-section">
+          <section id="traffic-diagnostic" className="traffic-overview-section traffic-overview-diagnostic-section">
             <SectionHeader title="自然入口诊断" detail="本次主页如何进入；Session 可能触达多个入口" aside="来源间不可相加" />
             <TableScroll variant="classified-sources" label="自然入口诊断表"><table><thead><tr><th>自然入口</th><th>有效主页 PV</th><th>触达 Session UV</th></tr></thead><tbody>{overview.classified_source_breakdown.length ? overview.classified_source_breakdown.map((item) => <tr key={item.source_kind}><td><strong>{sourceLabels[item.source_kind]}</strong></td><td>{formatCount(item.counted_pv)}</td><td>{formatCount(item.session_uv)}</td></tr>) : <EmptyRow columns={3} text="当前筛选下暂无自然入口数据" />}</tbody></table></TableScroll>
           </section>
+          </div>
 
-          <section className="traffic-overview-section">
+          <section id="traffic-links" className="traffic-overview-section">
             <SectionHeader title="推广链接表现" detail="有效访问、归因更新和注册分别按权威事实统计" aside={`有效链接 ${formatCount(overview.link_summary.counted_pv)} PV`} />
             <TableScroll variant="links" label="推广链接表现表"><table><thead><tr><th>具体来源</th><th>渠道 / 活动</th><th>站点</th><th>链接状态 / 有效期</th><th>有效 PV</th><th>有效 UV</th><th>排除</th><th>归因更新</th><th>推广注册</th></tr></thead><tbody>{overview.link_performance.length ? overview.link_performance.map((item) => <tr key={item.tracking_link_id}><td><strong>{item.source_name}</strong><small className="traffic-overview-cell-subtext">/r/{item.code}</small></td><td>{item.channel_name}<small className="traffic-overview-cell-subtext">{item.campaign_name}</small></td><td>{siteName(sites, item.site_id)}</td><td><span className={`traffic-overview-status ${item.status}`}>{linkStatusLabels[item.status]}</span><small className="traffic-overview-cell-subtext">{formatLinkValidity(item.valid_from, item.valid_until, timezone)}</small></td><td>{formatCount(item.counted_pv)}</td><td>{formatCount(item.session_uv)}</td><td>{formatCount(item.excluded_visits)}</td><td>{formatCount(item.attribution_updates)}</td><td>{formatCount(item.registered_accounts)}</td></tr>) : <EmptyRow columns={9} text="当前筛选下暂无推广链接表现" />}</tbody></table></TableScroll>
           </section>
 
-          <section className="traffic-overview-section">
+          <section id="traffic-registration" className="traffic-overview-section">
             <SectionHeader title="注册归因" detail="来源在注册成功时锁定，后续访问不会改写" aside={`正式归因 ${formatCount(overview.registration_summary.attributed_accounts)} 个`} />
             <div className="traffic-overview-registration-summary">
               <SummaryDatum label="归因注册" value={overview.registration_summary.attributed_accounts} />
@@ -459,7 +581,7 @@ export function TrafficOverviewView({
             {visibleUsers && visibleUsers.total > visibleUsers.limit ? <div className="traffic-overview-pagination"><button className="ghost" type="button" disabled={visibleUsers.offset === 0} onClick={() => onUsersPage(Math.max(0, visibleUsers.offset - visibleUsers.limit))}>上一页</button><span>{visibleUsers.offset + 1}-{Math.min(visibleUsers.total, visibleUsers.offset + visibleUsers.limit)} / {visibleUsers.total}</span><button className="ghost" type="button" disabled={visibleUsers.offset + visibleUsers.limit >= visibleUsers.total} onClick={() => onUsersPage(visibleUsers.offset + visibleUsers.limit)}>下一页</button></div> : null}
           </section>
 
-          <details className="traffic-overview-quality">
+          <details id="traffic-quality" className="traffic-overview-quality">
             <summary><span><strong>数据质量与新鲜度</strong><small>访问排除、跳转结果与事实同步诊断</small></span><b>{formatCount(overview.homepage_summary.excluded_visits + overview.link_summary.excluded_visits)} 条排除</b></summary>
             <div className="traffic-overview-quality-body">
               <dl className="traffic-overview-quality-stats">
@@ -479,12 +601,40 @@ export function TrafficOverviewView({
           </details>
         </>
       ) : null}
+        </div>
+      </div>
     </div>
   );
 }
 
-function PrimaryMetric({ label, value, detail }: { label: string; value: number; detail: string }) {
-  return <article className="traffic-overview-primary-metric"><span>{label}</span><strong>{formatCount(value)}</strong><small>{detail}</small></article>;
+function TrafficMetric({ label, value, detail, align = "start" }: { label: string; value: string; detail: string; align?: "start" | "end" }) {
+  return (
+    <article className="traffic-overview-metric">
+      <span><MetricDefinition label={label} details={trafficMetricDefinitions[label]} align={align} /></span>
+      <strong>{value}</strong>
+      <small>{detail}</small>
+    </article>
+  );
+}
+
+function TrafficTrendChart({ trends }: { trends: TrafficOverviewResponse["traffic_trends"] }) {
+  const homepagePv = trends.map((item) => item.homepage_pv);
+  const homepageUv = trends.map((item) => item.homepage_uv);
+  const linkPv = trends.map((item) => item.link_pv);
+
+  return (
+    <div className="traffic-overview-trend-chart" role="img" aria-label="主页 PV、主页 UV 和链接 PV 趋势图">
+      <div className="traffic-overview-trend-chart-head">
+        <span>趋势预览</span>
+        <span className="traffic-overview-trend-legend"><i className="homepage-pv" />主页 PV <i className="homepage-uv" />主页 UV <i className="link-pv" />链接 PV</span>
+      </div>
+      <svg viewBox="0 0 100 44" preserveAspectRatio="none" aria-hidden="true">
+        <polyline className="homepage-pv" points={buildTrafficTrendPoints(homepagePv, 100, 40)} />
+        <polyline className="homepage-uv" points={buildTrafficTrendPoints(homepageUv, 100, 40)} />
+        <polyline className="link-pv" points={buildTrafficTrendPoints(linkPv, 100, 40)} />
+      </svg>
+    </div>
+  );
 }
 
 function SummaryDatum({ label, value, tone = "default" }: { label: string; value: number; tone?: "default" | "muted" | "warning" }) {

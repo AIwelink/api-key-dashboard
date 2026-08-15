@@ -6,6 +6,7 @@ import {
   TrafficOverview,
   TrafficOverviewView,
   buildTrafficAnalyticsQuery,
+  buildTrafficTrendPoints,
   type TrafficOverviewResponse,
   type TrafficUsersResponse,
 } from "./TrafficOverview";
@@ -225,6 +226,25 @@ describe("traffic analytics overview", () => {
     expect(html).toContain("排除 12");
     expect(html).toContain("<dt>有效率</dt><dd>90.9%</dd>");
     expect(html).toContain("匿名浏览器 Session");
+  });
+
+  it("renders the approved indexed workspace with complete metric definitions", () => {
+    const html = renderToStaticMarkup(view());
+
+    expect(html).toContain('class="traffic-overview-workspace"');
+    expect(html).toContain('aria-label="访问流量页面索引"');
+    expect(html).toContain('class="traffic-overview-kpi-strip"');
+    expect(html).toContain("注册转化率");
+    expect(html).toContain(">12.5%<");
+    expect(html).toContain("归因注册账号 ÷ 有效 Session UV × 100%");
+    expect(html).toContain("traffic_homepage_events");
+    expect(html).toContain('class="traffic-overview-trend-chart"');
+  });
+
+  it("builds stable SVG trend points with zero-range protection", () => {
+    expect(buildTrafficTrendPoints([10, 20, 30], 100, 40)).toBe("0,40 50,20 100,0");
+    expect(buildTrafficTrendPoints([5, 5], 100, 40)).toBe("0,20 100,20");
+    expect(buildTrafficTrendPoints([], 100, 40)).toBe("");
   });
 
   it("separates active attribution from natural-entry diagnostics", () => {
