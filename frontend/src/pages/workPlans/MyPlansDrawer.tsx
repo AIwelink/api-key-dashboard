@@ -18,7 +18,7 @@ function minuteLabel(value: number): string {
 
 export function MyPlansDrawer({ open, items, busy, onClose, onEdit, onCancel }: MyPlansDrawerProps) {
   return (
-    <div className={`work-plan-drawer-layer ${open ? "open" : ""}`} aria-hidden={!open}>
+    <div className={`work-plan-drawer-layer ${open ? "open" : ""}`} inert={!open}>
       <button aria-label="关闭我的安排" className="work-plan-drawer-backdrop" onClick={onClose} type="button" />
       <aside aria-labelledby="my-plans-title" aria-modal="true" className={`work-plan-drawer work-plan-history-drawer ${open ? "open" : ""}`} role="dialog">
         <header className="work-plan-drawer-header"><div><span className="work-plan-header-icon"><CalendarClock size={18} /></span><div><h3 id="my-plans-title">我的安排</h3><p>{items.length} 条记录</p></div></div><button aria-label="关闭" className="work-plan-icon-button" onClick={onClose} type="button"><X size={19} /></button></header>

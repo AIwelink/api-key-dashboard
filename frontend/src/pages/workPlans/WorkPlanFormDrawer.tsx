@@ -235,7 +235,7 @@ export function WorkPlanFormDrawer({
   };
 
   return (
-    <div className={`work-plan-drawer-layer ${open ? "open" : ""}`} aria-hidden={!open}>
+    <div className={`work-plan-drawer-layer ${open ? "open" : ""}`} inert={!open}>
       <button aria-label="关闭填写计划" className="work-plan-drawer-backdrop" onClick={onClose} type="button" />
       <aside
         aria-labelledby="work-plan-form-title"

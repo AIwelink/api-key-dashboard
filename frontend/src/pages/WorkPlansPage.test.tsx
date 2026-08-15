@@ -121,4 +121,33 @@ describe("work plan components", () => {
     expect(html).toContain("提交计划");
     expect(html).toContain("work-plan-drawer-footer");
   });
+
+  it("makes closed drawers inert without hiding a retained focused descendant", () => {
+    const historyHtml = renderToStaticMarkup(
+      <MyPlansDrawer
+        busy={false}
+        items={[PLAN]}
+        onCancel={() => undefined}
+        onClose={() => undefined}
+        onEdit={() => undefined}
+        open={false}
+      />,
+    );
+    const formHtml = renderToStaticMarkup(
+      <WorkPlanFormDrawer
+        busy={false}
+        onClose={() => undefined}
+        onSubmit={async () => undefined}
+        open={false}
+        serverToday="2026-08-15"
+      />,
+    );
+
+    const historyLayer = historyHtml.slice(0, historyHtml.indexOf(">") + 1);
+    const formLayer = formHtml.slice(0, formHtml.indexOf(">") + 1);
+    expect(historyLayer).toContain("inert");
+    expect(formLayer).toContain("inert");
+    expect(historyLayer).not.toContain("aria-hidden");
+    expect(formLayer).not.toContain("aria-hidden");
+  });
 });
