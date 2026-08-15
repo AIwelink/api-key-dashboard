@@ -4,7 +4,11 @@ import json
 from datetime import UTC, date, datetime, time, timedelta, timezone
 from uuid import UUID, uuid5
 
-from app.modules.work_plans.schemas import WorkPlanCreate, WorkPlanUpdate
+from app.modules.work_plans.schemas import (
+    WorkPlanCreate,
+    WorkPlanOperationCreate,
+    WorkPlanUpdate,
+)
 
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
@@ -113,6 +117,76 @@ def build_plan_drafts(
         }
         for plan_date in dates
     ]
+
+
+def anchor_offset_to_utc(anchor_date: date, offset_minute: int) -> datetime:
+    local_midnight = datetime.combine(anchor_date, time.min, tzinfo=SHANGHAI_TIMEZONE)
+    return (local_midnight + timedelta(minutes=offset_minute)).astimezone(UTC)
+
+
+def build_operation_drafts(
+    actor: dict,
+    payload: WorkPlanOperationCreate,
+    observed_at: datetime,
+) -> list[dict]:
+    actor_id = _actor_id(actor)
+    actor_name = _actor_name(actor, actor_id)
+    observed_utc = _as_utc(observed_at, field_name="observed_at")
+    anchor_dates = _normalize_dates(payload.anchor_dates)
+    if payload.operation_type == "cancel" and len(anchor_dates) != 1:
+        raise WorkPlanRuleError("取消计划只能选择 1 个日期")
+
+    note = _normalize_note(payload.note)
+    idempotency_key = str(payload.idempotency_key)
+    drafts: list[dict] = []
+    for anchor_date in anchor_dates:
+        requested_start_at = anchor_offset_to_utc(
+            anchor_date,
+            payload.start_offset_minute,
+        )
+        requested_end_at = anchor_offset_to_utc(
+            anchor_date,
+            payload.end_offset_minute,
+        )
+        if (
+            payload.operation_type == "cancel"
+            and requested_start_at < observed_utc + timedelta(hours=1)
+        ):
+            raise WorkPlanRuleError("取消计划的开始时间至少晚于当前时间 1 小时")
+
+        drafts.append(
+            {
+                "_id": deterministic_plan_id(
+                    actor_id,
+                    payload.idempotency_key,
+                    anchor_date,
+                ),
+                "schema_version": 2,
+                "record_kind": "operation",
+                "member_id": actor_id,
+                "member_name": actor_name,
+                "operation_type": payload.operation_type,
+                "anchor_date": anchor_date.isoformat(),
+                "requested_start_at": requested_start_at,
+                "requested_end_at": requested_end_at,
+                "effective_start_at": requested_start_at,
+                "effective_end_at": requested_end_at,
+                "start_offset_minute": payload.start_offset_minute,
+                "end_offset_minute": payload.end_offset_minute,
+                "requested_start_offset_minute": payload.start_offset_minute,
+                "requested_end_offset_minute": payload.end_offset_minute,
+                "effective_start_offset_minute": payload.start_offset_minute,
+                "effective_end_offset_minute": payload.end_offset_minute,
+                "note": note,
+                "idempotency_key": idempotency_key,
+                "batch_id": idempotency_key,
+                "compensates_operation_id": None,
+                "compensation_group_id": None,
+                "created_by": actor_id,
+                "created_at": observed_utc,
+            }
+        )
+    return drafts
 
 
 def validate_update(

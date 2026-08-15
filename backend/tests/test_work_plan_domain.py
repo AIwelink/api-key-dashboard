@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from app.modules.work_plans.domain import (
     WorkPlanConflictError,
     WorkPlanRuleError,
+    build_operation_drafts,
     build_plan_drafts,
     collaboration_status,
     deterministic_plan_id,
@@ -16,7 +17,11 @@ from app.modules.work_plans.domain import (
     time_to_minute,
     validate_update,
 )
-from app.modules.work_plans.schemas import WorkPlanCreate, WorkPlanUpdate
+from app.modules.work_plans.schemas import (
+    WorkPlanCreate,
+    WorkPlanOperationCreate,
+    WorkPlanUpdate,
+)
 
 
 IDEMPOTENCY_KEY = UUID("d4426fd9-a2fd-44c0-b47e-f36ae16c9d19")
@@ -57,6 +62,19 @@ def existing_plan(**overrides: object) -> dict:
     }
     values.update(overrides)
     return values
+
+
+def operation_payload(**overrides: object) -> WorkPlanOperationCreate:
+    values = {
+        "operation_type": "activate",
+        "anchor_dates": [date(2026, 8, 18)],
+        "start_offset_minute": 9 * 60,
+        "end_offset_minute": 18 * 60,
+        "note": None,
+        "idempotency_key": IDEMPOTENCY_KEY,
+    }
+    values.update(overrides)
+    return WorkPlanOperationCreate.model_validate(values)
 
 
 class WorkPlanTimeRuleTests(unittest.TestCase):
@@ -269,6 +287,119 @@ class WorkPlanCreateRuleTests(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             create_payload(note=f"  {'x' * 501}  ")
+
+
+class WorkPlanOperationRuleTests(unittest.TestCase):
+    def test_operation_accepts_the_full_48_hour_window(self) -> None:
+        draft = build_operation_drafts(
+            ACTOR,
+            operation_payload(start_offset_minute=0, end_offset_minute=2_880),
+            OBSERVED_AT,
+        )[0]
+
+        self.assertEqual(
+            draft["effective_end_at"] - draft["effective_start_at"],
+            timedelta(hours=48),
+        )
+        self.assertEqual(draft["schema_version"], 2)
+        self.assertEqual(draft["record_kind"], "operation")
+        self.assertEqual(draft["operation_type"], "activate")
+        self.assertEqual(draft["anchor_date"], "2026-08-18")
+        self.assertEqual(draft["requested_start_at"], draft["effective_start_at"])
+        self.assertEqual(draft["requested_end_at"], draft["effective_end_at"])
+
+    def test_offsets_must_be_aligned_and_inside_48_hours(self) -> None:
+        invalid_intervals = ((1, 60), (0, 2_881), (60, 60), (90, 60))
+
+        for start, end in invalid_intervals:
+            with self.subTest(start=start, end=end):
+                with self.assertRaises(ValidationError):
+                    operation_payload(
+                        start_offset_minute=start,
+                        end_offset_minute=end,
+                    )
+
+    def test_activation_accepts_five_dates_and_rejects_six(self) -> None:
+        five_dates = [date(2026, 8, 18) + timedelta(days=index) for index in range(5)]
+        drafts = build_operation_drafts(
+            ACTOR,
+            operation_payload(anchor_dates=five_dates),
+            OBSERVED_AT,
+        )
+
+        self.assertEqual(len(drafts), 5)
+
+        six_dates = [date(2026, 8, 18) + timedelta(days=index) for index in range(6)]
+        with self.assertRaisesRegex(WorkPlanRuleError, "一次最多添加 5 天计划"):
+            build_operation_drafts(
+                ACTOR,
+                operation_payload(anchor_dates=six_dates),
+                OBSERVED_AT,
+            )
+
+    def test_duplicate_anchor_dates_are_rejected(self) -> None:
+        duplicate_dates = [date(2026, 8, 18), date(2026, 8, 18)]
+
+        with self.assertRaisesRegex(WorkPlanRuleError, "日期.*重复"):
+            build_operation_drafts(
+                ACTOR,
+                operation_payload(anchor_dates=duplicate_dates),
+                OBSERVED_AT,
+            )
+
+    def test_cancel_requires_exactly_one_anchor_date(self) -> None:
+        with self.assertRaisesRegex(WorkPlanRuleError, "取消计划只能选择 1 个日期"):
+            build_operation_drafts(
+                ACTOR,
+                operation_payload(
+                    operation_type="cancel",
+                    anchor_dates=[date(2026, 8, 18), date(2026, 8, 19)],
+                ),
+                OBSERVED_AT,
+            )
+
+    def test_cancel_requires_one_hour_notice_in_shanghai_time(self) -> None:
+        observed_at = datetime(2026, 8, 18, 0, 0, tzinfo=UTC)
+
+        with self.assertRaisesRegex(WorkPlanRuleError, "至少晚于当前时间 1 小时"):
+            build_operation_drafts(
+                ACTOR,
+                operation_payload(
+                    operation_type="cancel",
+                    start_offset_minute=8 * 60 + 30,
+                    end_offset_minute=9 * 60 + 30,
+                ),
+                observed_at,
+            )
+
+        draft = build_operation_drafts(
+            ACTOR,
+            operation_payload(
+                operation_type="cancel",
+                start_offset_minute=9 * 60,
+                end_offset_minute=9 * 60 + 30,
+            ),
+            observed_at,
+        )[0]
+        self.assertEqual(draft["effective_start_at"], observed_at + timedelta(hours=1))
+
+    def test_operation_rejects_client_member_identity_and_trims_note(self) -> None:
+        with self.assertRaises(ValidationError):
+            WorkPlanOperationCreate.model_validate(
+                {
+                    **operation_payload().model_dump(),
+                    "member_id": "forged-member",
+                }
+            )
+
+        draft = build_operation_drafts(
+            ACTOR,
+            operation_payload(note="  operation note  "),
+            OBSERVED_AT,
+        )[0]
+        self.assertEqual(draft["member_id"], ACTOR["_id"])
+        self.assertEqual(draft["member_name"], ACTOR["name"])
+        self.assertEqual(draft["note"], "operation note")
 
 
 class WorkPlanUpdateRuleTests(unittest.TestCase):

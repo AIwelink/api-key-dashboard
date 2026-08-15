@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 PlanType = Literal["work", "temporary_unavailable"]
+OperationType = Literal["activate", "cancel"]
 EndTime = time | Literal["24:00"]
 _MUTABLE_UPDATE_FIELDS = {"plan_type", "start_time", "end_time", "note"}
 
@@ -41,6 +42,30 @@ class WorkPlanCreate(BaseModel):
     @classmethod
     def reject_timezone(cls, value: time | str) -> time | str:
         return _reject_timezone(value)
+
+
+class WorkPlanOperationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation_type: OperationType
+    anchor_dates: list[date] = Field(min_length=1, max_length=366)
+    start_offset_minute: int = Field(ge=0, le=2_850)
+    end_offset_minute: int = Field(ge=30, le=2_880)
+    note: str | None = Field(default=None, max_length=500)
+    idempotency_key: UUID
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def trim_note(cls, value: object) -> object:
+        return _trim_note(value)
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> "WorkPlanOperationCreate":
+        if self.start_offset_minute % 30 or self.end_offset_minute % 30:
+            raise ValueError("时间必须以 30 分钟为间隔")
+        if self.end_offset_minute <= self.start_offset_minute:
+            raise ValueError("结束时间必须晚于开始时间")
+        return self
 
 
 class WorkPlanUpdate(BaseModel):
