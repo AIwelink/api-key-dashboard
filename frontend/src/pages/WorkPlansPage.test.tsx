@@ -9,6 +9,7 @@ import {
 } from "./workPlans/WorkPlanFormDrawer";
 import { canManagePlan, WorkPlanSchedule } from "./workPlans/WorkPlanSchedule";
 import type { WorkPlan, WorkPlanScheduleResponse } from "./workPlans/types";
+import { beginCreate, initialRequestState } from "./WorkPlansPage";
 
 const PLAN: WorkPlan = {
   id: "plan-1",
@@ -45,6 +46,11 @@ const SCHEDULE: WorkPlanScheduleResponse = {
 };
 
 describe("work plan components", () => {
+  it("reuses one idempotency key while a create request is in flight", () => {
+    const started = beginCreate(initialRequestState, "request-key");
+    expect(beginCreate(started, "different-key").idempotencyKey).toBe("request-key");
+  });
+
   it("temporary unavailable keeps one date and disables bulk modes", () => {
     const draft = {
       ...createInitialWorkPlanDraft("2026-08-15"),

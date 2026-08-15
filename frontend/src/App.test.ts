@@ -18,6 +18,7 @@ describe("app navigation", () => {
   });
 
   const ownerPermissions = permissions([
+    "work-plans",
     "upload",
     "todos",
     "push-error-todos",
@@ -56,6 +57,7 @@ describe("app navigation", () => {
 
     expect(groups.every((group) => group.length > 0)).toBe(true);
     expect(groups.map((group) => group.map(([key]) => key))).toEqual([
+      ["work-plans"],
       ["api-pools", "plus-self-produced"],
       ["traffic-analysis", "operations-management"],
       ["event-records", "alert-center", "pool-lifecycle", "auto-replenishment", "client-sites", "traffic-analysis-config"],
@@ -71,6 +73,7 @@ describe("app navigation", () => {
 
     expect(groups.every((group) => group.length > 0)).toBe(true);
     expect(groups.map((group) => group.map(([key]) => key))).toEqual([
+      ["work-plans"],
       ["api-pools", "plus-self-produced"],
       ["traffic-analysis", "operations-management"],
       ["event-records", "alert-center", "pool-lifecycle", "auto-replenishment", "client-sites", "traffic-analysis-config"],
@@ -133,6 +136,7 @@ describe("app navigation", () => {
   });
 
   it("uses the API pools page for root and unknown paths", () => {
+    expect(viewFromPath("/work-plans")).toBe("work-plans");
     expect(viewFromPath("/traffic-analysis")).toBe("traffic-analysis");
     expect(viewFromPath("/traffic-analysis-config")).toBe("traffic-analysis-config");
     expect(viewFromPath("/operations-management")).toBe("operations-management");
@@ -140,5 +144,10 @@ describe("app navigation", () => {
     expect(viewFromPath("/auto-replenishment")).toBe("auto-replenishment");
     expect(viewFromPath("/")).toBe("api-pools");
     expect(viewFromPath("/unknown-page")).toBe("api-pools");
+  });
+
+  it("places work plans in the first visible navigation group", () => {
+    const result = getVisibleNavigationGroups(permissions(["api-pools", "work-plans"]));
+    expect(result[0]).toEqual([["work-plans", "工作计划"]]);
   });
 });

@@ -21,6 +21,7 @@ import { TrafficAnalysisPage } from "./pages/TrafficAnalysisPage";
 import { TrafficAnalysisConfigPage } from "./pages/TrafficAnalysisConfigPage";
 import { UploadPage } from "./pages/UploadPage";
 import { UsersPage } from "./pages/UsersPage";
+import { WorkPlansPage } from "./pages/WorkPlansPage";
 import { useForegroundPresence } from "./hooks/useForegroundPresence";
 import {
   canAccessView,
@@ -194,6 +195,7 @@ function App() {
           />
         ) : canRenderCurrentView ? (
           <>
+            {view === "work-plans" && user && <WorkPlansPage currentUser={user} token={token} showToast={showToast} />}
             {view === "upload" && <UploadPage token={token} showToast={showToast} />}
             {view === "todos" && <TodoPage token={token} showToast={showToast} />}
             {view === "push-error-todos" && <PushErrorTodoPage token={token} showToast={showToast} />}

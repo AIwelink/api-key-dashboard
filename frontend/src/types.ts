@@ -1,4 +1,5 @@
 export type ViewName =
+  | "work-plans"
   | "upload"
   | "todos"
   | "push-error-todos"

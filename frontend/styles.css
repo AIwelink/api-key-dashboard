@@ -8095,6 +8095,12 @@ code {
     border-left: 0;
   }
 
+  .nav .work-plan-nav-group {
+    order: -4;
+    padding-left: 0;
+    border-left: 0;
+  }
+
   .nav .operations-management-nav-group {
     order: -2;
     margin-top: 0;

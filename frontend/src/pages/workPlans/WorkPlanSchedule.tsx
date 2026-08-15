@@ -1,5 +1,5 @@
 import { Ban, CalendarDays, Clock3, Pencil, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 
 import type { User } from "../../types";
 import { isoDateRange } from "./dateSelection";
@@ -57,11 +57,20 @@ export function WorkPlanSchedule({ response, range, currentUser, onEditPlan, onC
   return (
     <section className="work-plan-schedule" aria-label="团队工作计划">
       <div className="work-plan-schedule-scroll">
-        <div className="work-plan-gantt" style={{ "--work-plan-date-count": Math.max(1, dates.length) } as React.CSSProperties}>
+        <div className="work-plan-gantt" style={{ "--work-plan-date-count": Math.max(1, dates.length) } as CSSProperties}>
           <div className="work-plan-gantt-header work-plan-member-cell"><span>成员</span><small>{response.members.length} 人</small></div>
           {dates.map((date) => <div className="work-plan-gantt-header" key={date}><strong>{date.slice(5).replace("-", "/")}</strong><span>{weekday(date)}</span><div className="work-plan-time-axis"><i>00</i><i>06</i><i>12</i><i>18</i><i>24</i></div></div>)}
           {response.members.map((member) => (
-            <div className="work-plan-gantt-row" key={member.member_id}>
+            <div
+              className="work-plan-gantt-row"
+              key={member.member_id}
+              style={{
+                "--work-plan-row-height": `${Math.max(
+                  64,
+                  16 + Math.max(1, ...dates.map((date) => plansByMemberDate.get(`${member.member_id}\u0000${date}`)?.length ?? 0)) * 26,
+                )}px`,
+              } as CSSProperties}
+            >
               <div className="work-plan-member-cell">
                 <span className={`work-plan-presence-dot ${member.is_online ? "online" : "offline"}`} />
                 <div><strong>{member.member_name}</strong><small>{collaborationLabel(member.collaboration_status)}</small></div>
