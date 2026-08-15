@@ -391,12 +391,10 @@ async def load_link_performance(
                     site_id,
                     tracking_link_id,
                     COUNT(*) FILTER (
-                        WHERE fact_state <> 'excluded'
-                          AND COALESCE(fact_state = 'excluded', FALSE) = FALSE
+                        WHERE fact_state = 'normal'
                     )::BIGINT AS registered_accounts
                 FROM registration_rows
                 WHERE source_kind = 'promotion'
-                  AND COALESCE(fact_state = 'excluded', FALSE) = FALSE
                 GROUP BY site_id, tracking_link_id
             )
             SELECT
