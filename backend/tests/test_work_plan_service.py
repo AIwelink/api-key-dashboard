@@ -10,13 +10,16 @@ from uuid import UUID
 
 from bson import ObjectId
 
-from app.modules.work_plans.domain import WorkPlanRuleError, deterministic_plan_id
-from app.modules.work_plans.schemas import WorkPlanCreate
+from app.modules.work_plans.domain import WorkPlanConflictError, WorkPlanRuleError, deterministic_plan_id
+from app.modules.work_plans.schemas import WorkPlanCreate, WorkPlanUpdate
 from app.modules.work_plans.service import (
     WorkPlanAccessError,
+    WorkPlanPermissionError,
+    cancel_work_plan,
     create_work_plans,
     list_my_work_plans,
     list_work_plan_schedule,
+    update_work_plan,
 )
 
 
@@ -1104,6 +1107,127 @@ class WorkPlanHistoryServiceTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(WorkPlanAccessError, "浏览器"):
                     await list_my_work_plans(db, actor=actor)
                 self.assertEqual(db.work_plans.find_calls, [])
+
+
+class WorkPlanMutationServiceTests(unittest.IsolatedAsyncioTestCase):
+    def existing_plan(self, **overrides: object) -> dict:
+        value = {
+            "_id": "plan-1",
+            "member_id": ACTOR["_id"],
+            "member_name": ACTOR["name"],
+            "plan_date": "2026-08-18",
+            "plan_type": "work",
+            "start_minute": 540,
+            "end_minute": 1080,
+            "note": None,
+            "status": "active",
+            "is_cancelled": False,
+            "created_at": datetime(2026, 8, 1, tzinfo=UTC),
+            "updated_at": datetime(2026, 8, 10, tzinfo=UTC),
+        }
+        value.update(overrides)
+        return value
+
+    async def test_member_cannot_cancel_another_members_plan(self) -> None:
+        collection = SimpleNamespace(
+            find_one=AsyncMock(return_value=self.existing_plan(member_id="other@example.com")),
+            find_one_and_update=AsyncMock(),
+        )
+        db = SimpleNamespace(work_plans=collection)
+
+        with self.assertRaisesRegex(WorkPlanPermissionError, "不能修改其他成员"):
+            await cancel_work_plan(
+                db,
+                plan_id="plan-1",
+                actor={**ACTOR, "actor_type": "user"},
+                observed_at=OBSERVED_AT,
+            )
+
+        collection.find_one_and_update.assert_not_awaited()
+
+    async def test_admin_can_update_another_members_plan_and_audits_snapshots(self) -> None:
+        existing = self.existing_plan(member_id="other@example.com", member_name="Other")
+        updated = {**existing, "note": "Updated", "updated_by": "admin@example.com", "updated_at": OBSERVED_AT}
+        collection = SimpleNamespace(
+            find_one=AsyncMock(return_value=existing),
+            find_one_and_update=AsyncMock(return_value=updated),
+        )
+        db = SimpleNamespace(work_plans=collection)
+        payload = WorkPlanUpdate(note=" Updated ", expected_updated_at=existing["updated_at"])
+
+        with patch("app.modules.work_plans.service.write_audit_log", new=AsyncMock()) as audit:
+            result = await update_work_plan(
+                db,
+                plan_id="plan-1",
+                actor={"_id": "admin@example.com", "name": "Admin", "role": "admin", "actor_type": "user"},
+                payload=payload,
+                observed_at=OBSERVED_AT,
+            )
+
+        self.assertEqual(result["updated_by"], "admin@example.com")
+        query, update = collection.find_one_and_update.await_args.args[:2]
+        self.assertNotIn("member_id", query)
+        self.assertEqual(query["updated_at"], existing["updated_at"])
+        self.assertEqual(update["$set"]["note"], "Updated")
+        audit.assert_awaited_once()
+        self.assertEqual(audit.await_args.kwargs["before"], existing)
+        self.assertEqual(audit.await_args.kwargs["after"], updated)
+
+    async def test_member_update_uses_owner_filter_and_rejects_stale_timestamp(self) -> None:
+        existing = self.existing_plan()
+        collection = SimpleNamespace(
+            find_one=AsyncMock(return_value=existing),
+            find_one_and_update=AsyncMock(),
+        )
+        db = SimpleNamespace(work_plans=collection)
+        payload = WorkPlanUpdate(
+            note="new",
+            expected_updated_at=datetime(2026, 8, 9, tzinfo=UTC),
+        )
+
+        with self.assertRaisesRegex(WorkPlanConflictError, "刷新后重试"):
+            await update_work_plan(
+                db,
+                plan_id="plan-1",
+                actor={**ACTOR, "actor_type": "user"},
+                payload=payload,
+                observed_at=OBSERVED_AT,
+            )
+
+        collection.find_one_and_update.assert_not_awaited()
+
+    async def test_cancel_is_a_soft_cancel_with_actor_and_timestamps(self) -> None:
+        existing = self.existing_plan()
+        cancelled = {
+            **existing,
+            "status": "cancelled",
+            "is_cancelled": True,
+            "cancelled_at": OBSERVED_AT,
+            "cancelled_by": ACTOR["_id"],
+            "updated_at": OBSERVED_AT,
+            "updated_by": ACTOR["_id"],
+        }
+        collection = SimpleNamespace(
+            find_one=AsyncMock(return_value=existing),
+            find_one_and_update=AsyncMock(return_value=cancelled),
+        )
+        db = SimpleNamespace(work_plans=collection)
+
+        with patch("app.modules.work_plans.service.write_audit_log", new=AsyncMock()) as audit:
+            result = await cancel_work_plan(
+                db,
+                plan_id="plan-1",
+                actor={**ACTOR, "actor_type": "user"},
+                observed_at=OBSERVED_AT,
+            )
+
+        self.assertTrue(result["is_cancelled"])
+        query, update = collection.find_one_and_update.await_args.args[:2]
+        self.assertEqual(query["member_id"], ACTOR["_id"])
+        self.assertFalse(query["is_cancelled"])
+        self.assertEqual(update["$set"]["cancelled_by"], ACTOR["_id"])
+        self.assertEqual(update["$set"]["cancelled_at"], OBSERVED_AT)
+        audit.assert_awaited_once()
 
     async def test_creation_delegates_to_domain_before_the_first_write(self) -> None:
         db = fake_db()

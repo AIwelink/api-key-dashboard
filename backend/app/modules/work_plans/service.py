@@ -6,15 +6,19 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo import ReturnDocument
 
 from app.modules.system.audit import write_audit_log
 from app.modules.system.presence import list_member_presence_summaries
 from app.modules.work_plans.domain import (
     SHANGHAI_TIMEZONE,
+    WorkPlanConflictError,
     build_plan_drafts,
     collaboration_status,
+    is_plan_manager,
+    validate_update,
 )
-from app.modules.work_plans.schemas import WorkPlanCreate
+from app.modules.work_plans.schemas import WorkPlanCreate, WorkPlanUpdate
 from app.utils import now_utc, serialize_doc
 
 
@@ -29,6 +33,14 @@ logger = logging.getLogger(__name__)
 
 class WorkPlanAccessError(ValueError):
     """Raised when an actor cannot use a personal work-plan operation."""
+
+
+class WorkPlanNotFoundError(LookupError):
+    """Raised when the requested work plan does not exist."""
+
+
+class WorkPlanPermissionError(PermissionError):
+    """Raised when an actor attempts to mutate another member's plan."""
 
 
 def _log_create_failure(
@@ -193,6 +205,97 @@ async def list_my_work_plans(
     ).limit(normalized_limit)
     items = [serialize_doc(document) async for document in cursor]
     return {"items": items, "total": len(items)}
+
+
+async def update_work_plan(
+    db: AsyncIOMotorDatabase,
+    *,
+    plan_id: str,
+    actor: dict[str, Any],
+    payload: WorkPlanUpdate,
+    observed_at: datetime | None = None,
+) -> dict[str, Any]:
+    require_browser_actor(actor)
+    observed = observed_at or now_utc()
+    existing = await _get_mutable_plan(db, plan_id=plan_id, actor=actor)
+    updates = validate_update(existing, payload, observed)
+    actor_id = str(actor["_id"]).strip()
+    updates["updated_by"] = actor_id
+
+    query: dict[str, Any] = {"_id": plan_id, "is_cancelled": False}
+    if not is_plan_manager(actor):
+        query["member_id"] = actor_id
+    if payload.expected_updated_at is not None:
+        query["updated_at"] = existing["updated_at"]
+
+    updated = await db.work_plans.find_one_and_update(
+        query,
+        {"$set": updates},
+        return_document=ReturnDocument.AFTER,
+    )
+    if updated is None:
+        await _raise_mutation_failure(
+            db,
+            plan_id=plan_id,
+            actor=actor,
+            expected_updated_at=payload.expected_updated_at,
+        )
+
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="work_plan.update",
+        resource_type="work_plan",
+        resource_id=plan_id,
+        before=existing,
+        after=updated,
+    )
+    return serialize_doc(updated)
+
+
+async def cancel_work_plan(
+    db: AsyncIOMotorDatabase,
+    *,
+    plan_id: str,
+    actor: dict[str, Any],
+    observed_at: datetime | None = None,
+) -> dict[str, Any]:
+    require_browser_actor(actor)
+    observed = observed_at or now_utc()
+    existing = await _get_mutable_plan(db, plan_id=plan_id, actor=actor)
+    if existing.get("is_cancelled") is True or existing.get("status") == "cancelled":
+        raise WorkPlanConflictError("计划已经取消")
+
+    actor_id = str(actor["_id"]).strip()
+    query: dict[str, Any] = {"_id": plan_id, "is_cancelled": False}
+    if not is_plan_manager(actor):
+        query["member_id"] = actor_id
+    updates = {
+        "status": "cancelled",
+        "is_cancelled": True,
+        "cancelled_at": observed,
+        "cancelled_by": actor_id,
+        "updated_at": observed,
+        "updated_by": actor_id,
+    }
+    cancelled = await db.work_plans.find_one_and_update(
+        query,
+        {"$set": updates},
+        return_document=ReturnDocument.AFTER,
+    )
+    if cancelled is None:
+        await _raise_mutation_failure(db, plan_id=plan_id, actor=actor)
+
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="work_plan.cancel",
+        resource_type="work_plan",
+        resource_id=plan_id,
+        before=existing,
+        after=cancelled,
+    )
+    return serialize_doc(cancelled)
 
 
 async def list_work_plan_schedule(
@@ -376,6 +479,37 @@ async def _collect_documents(cursor: Any) -> list[dict[str, Any]]:
     return [document async for document in cursor]
 
 
+async def _get_mutable_plan(
+    db: AsyncIOMotorDatabase,
+    *,
+    plan_id: str,
+    actor: dict[str, Any],
+) -> dict[str, Any]:
+    existing = await db.work_plans.find_one({"_id": plan_id})
+    if existing is None:
+        raise WorkPlanNotFoundError("工作计划不存在")
+    if not is_plan_manager(actor) and str(existing.get("member_id") or "") != str(
+        actor["_id"]
+    ):
+        raise WorkPlanPermissionError("不能修改其他成员的工作计划")
+    return existing
+
+
+async def _raise_mutation_failure(
+    db: AsyncIOMotorDatabase,
+    *,
+    plan_id: str,
+    actor: dict[str, Any],
+    expected_updated_at: datetime | None = None,
+) -> None:
+    current = await _get_mutable_plan(db, plan_id=plan_id, actor=actor)
+    if current.get("is_cancelled") is True or current.get("status") == "cancelled":
+        raise WorkPlanConflictError("计划已经取消")
+    if expected_updated_at is not None and current.get("updated_at") != expected_updated_at:
+        raise WorkPlanConflictError("计划已被更新，请刷新后重试")
+    raise WorkPlanConflictError("计划状态已变化，请刷新后重试")
+
+
 def _write_error_message(error: Exception | None) -> str:
     del error
     return "保存工作计划失败，请稍后重试"
@@ -383,8 +517,12 @@ def _write_error_message(error: Exception | None) -> str:
 
 __all__ = [
     "WorkPlanAccessError",
+    "WorkPlanNotFoundError",
+    "WorkPlanPermissionError",
+    "cancel_work_plan",
     "create_work_plans",
     "list_my_work_plans",
     "list_work_plan_schedule",
     "require_browser_actor",
+    "update_work_plan",
 ]
