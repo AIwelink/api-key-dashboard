@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -13,6 +14,10 @@ from app.utils import now_utc, serialize_doc
 
 DEFAULT_HISTORY_LIMIT = 1_000
 MAX_HISTORY_LIMIT = 4_000
+MAX_READBACK_FALLBACKS = 5
+
+
+logger = logging.getLogger(__name__)
 
 
 class WorkPlanAccessError(ValueError):
@@ -21,8 +26,10 @@ class WorkPlanAccessError(ValueError):
 
 def require_browser_actor(actor: dict[str, Any]) -> None:
     """Personal work-plan history is available only to browser-authenticated users."""
-    if actor.get("actor_type") == "api_token":
-        raise WorkPlanAccessError("API 令牌不能访问个人工作计划，请使用浏览器登录")
+    actor_type = actor.get("actor_type")
+    actor_id = str(actor.get("_id") or "").strip()
+    if ("actor_type" in actor and actor_type != "user") or not actor_id:
+        raise WorkPlanAccessError("个人工作计划仅限已登录的浏览器用户访问")
 
 
 async def create_work_plans(
@@ -32,11 +39,12 @@ async def create_work_plans(
     payload: WorkPlanCreate,
     observed_at: datetime | None = None,
 ) -> dict[str, Any]:
+    require_browser_actor(actor)
     observed = observed_at or now_utc()
     # Draft construction performs all validation and must precede every write.
     drafts = build_plan_drafts(actor, payload, observed)
     ids = [draft["_id"] for draft in drafts]
-    created_ids: set[str] = set()
+    write_states: dict[str, str] = {}
     write_errors: dict[str, Exception] = {}
 
     for draft in drafts:
@@ -48,51 +56,110 @@ async def create_work_plans(
                 upsert=True,
             )
         except Exception as exc:  # noqa: BLE001 - one date must not stop other dates.
+            logger.exception(
+                "work_plan_create_write_failed plan_id=%s exception_type=%s",
+                plan_id,
+                type(exc).__name__,
+                exc_info=True,
+            )
+            write_states[plan_id] = "uncertain"
             write_errors[plan_id] = exc
             continue
         if getattr(update_result, "upserted_id", None) is not None:
-            created_ids.add(plan_id)
+            write_states[plan_id] = "created"
+        else:
+            write_states[plan_id] = "duplicate"
 
-    readback = [
-        document
-        async for document in db.work_plans.find({"_id": {"$in": ids}})
-    ]
-    documents_by_id = {str(document.get("_id")): document for document in readback}
+    documents_by_id: dict[str, dict[str, Any]] = {}
+    bulk_read_failed = False
+    try:
+        cursor = db.work_plans.find({"_id": {"$in": ids}})
+        async for document in cursor:
+            documents_by_id[str(document.get("_id"))] = document
+    except Exception as exc:  # noqa: BLE001 - bounded point reads reconcile partial results.
+        bulk_read_failed = True
+        logger.exception(
+            "work_plan_create_bulk_readback_failed plan_ids=%s exception_type=%s",
+            [str(plan_id) for plan_id in ids],
+            type(exc).__name__,
+            exc_info=True,
+        )
+
+    if bulk_read_failed:
+        unresolved_ids = [
+            plan_id for plan_id in ids if str(plan_id) not in documents_by_id
+        ][:MAX_READBACK_FALLBACKS]
+        for plan_id in unresolved_ids:
+            plan_id_text = str(plan_id)
+            try:
+                document = await db.work_plans.find_one({"_id": plan_id})
+            except Exception as exc:  # noqa: BLE001 - one failed read must not hide other dates.
+                logger.exception(
+                    "work_plan_create_readback_failed plan_id=%s exception_type=%s",
+                    plan_id_text,
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+                continue
+            if document is not None:
+                documents_by_id[plan_id_text] = document
+
     results: list[dict[str, Any]] = []
-    audit_documents: list[dict[str, Any]] = []
+    audit_documents: list[tuple[str, dict[str, Any] | None]] = []
 
     for draft in drafts:
         plan_id = str(draft["_id"])
         document = documents_by_id.get(plan_id)
-        if document is None:
+        write_state = write_states[plan_id]
+        if write_state == "created":
+            durable_document = document or draft
+            result = {
+                "plan_date": draft["plan_date"],
+                "outcome": "created",
+                "plan": serialize_doc(durable_document),
+            }
+            audit_documents.append((plan_id, durable_document))
+        elif write_state == "duplicate":
+            result = {
+                "plan_date": draft["plan_date"],
+                "outcome": "duplicate",
+            }
+            if document is not None:
+                result["plan"] = serialize_doc(document)
+            audit_documents.append((plan_id, document))
+        elif document is None:
             result: dict[str, Any] = {
                 "plan_date": draft["plan_date"],
                 "outcome": "failed",
                 "error": _write_error_message(write_errors.get(plan_id)),
             }
         else:
-            outcome = "created" if plan_id in created_ids else "duplicate"
             result = {
                 "plan_date": draft["plan_date"],
-                "outcome": outcome,
+                "outcome": "duplicate",
                 "plan": serialize_doc(document),
             }
-            if outcome == "created":
-                audit_documents.append(document)
+            audit_documents.append((plan_id, document))
         results.append(result)
 
-    for document in audit_documents:
+    for plan_id, document in audit_documents:
         try:
             await write_audit_log(
                 db,
                 actor=actor,
                 action="work_plan.create",
                 resource_type="work_plan",
-                resource_id=str(document.get("_id")),
+                resource_id=plan_id,
                 after=document,
+                dedupe_key=f"work_plan.create:{plan_id}",
             )
-        except Exception:  # noqa: BLE001 - an audit outage must not hide a durable create.
-            continue
+        except Exception as exc:  # noqa: BLE001 - an audit outage must not hide a durable create.
+            logger.exception(
+                "work_plan_create_audit_failed plan_id=%s exception_type=%s",
+                plan_id,
+                type(exc).__name__,
+                exc_info=True,
+            )
 
     return {
         "duplicate_submission": bool(results) and all(
@@ -110,9 +177,7 @@ async def list_my_work_plans(
     limit: int = DEFAULT_HISTORY_LIMIT,
 ) -> dict[str, Any]:
     require_browser_actor(actor)
-    member_id = str(actor.get("_id") or actor.get("id") or actor.get("email") or "").strip()
-    if not member_id:
-        raise WorkPlanAccessError("无法识别当前计划成员")
+    member_id = str(actor["_id"]).strip()
     normalized_limit = max(1, min(int(limit), MAX_HISTORY_LIMIT))
     query = {"member_id": member_id}
     cursor = db.work_plans.find(query).sort(

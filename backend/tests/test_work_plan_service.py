@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from copy import deepcopy
 from datetime import UTC, date, datetime
@@ -51,11 +52,17 @@ class FakeInsertResult:
 
 
 class FakeCursor:
-    def __init__(self, documents: list[dict]) -> None:
+    def __init__(
+        self,
+        documents: list[dict],
+        *,
+        iteration_error_after: int | None = None,
+    ) -> None:
         self._documents = [deepcopy(document) for document in documents]
         self.sort_spec: list[tuple[str, int]] | None = None
         self.limit_value: int | None = None
         self._index = 0
+        self._iteration_error_after = iteration_error_after
 
     def sort(self, spec: list[tuple[str, int]]) -> "FakeCursor":
         self.sort_spec = list(spec)
@@ -76,6 +83,8 @@ class FakeCursor:
         return self
 
     async def __anext__(self) -> dict:
+        if self._iteration_error_after == self._index:
+            raise RuntimeError("cursor disconnected")
         if self._index >= len(self._documents):
             raise StopAsyncIteration
         document = deepcopy(self._documents[self._index])
@@ -94,36 +103,70 @@ class FakeCollection:
         self.last_cursor: FakeCursor | None = None
         self.fail_before_write: dict[object, int] = {}
         self.fail_after_write: dict[object, int] = {}
+        self.find_one_errors: dict[object, int] = {}
+        self.find_one_calls: list[dict] = []
+        self.find_iteration_error_after: int | None = None
+        self.find_error: Exception | None = None
         self.insert_error: Exception | None = None
+        self._update_lock = asyncio.Lock()
 
     async def update_one(self, query: dict, update: dict, *, upsert: bool = False) -> FakeUpdateResult:
         self.update_calls.append((deepcopy(query), deepcopy(update), upsert))
-        document_id = query["_id"]
-        if self.fail_before_write.get(document_id, 0) > 0:
-            self.fail_before_write[document_id] -= 1
-            raise RuntimeError("database unavailable")
+        query_key = self._query_key(query)
+        await asyncio.sleep(0)
+        async with self._update_lock:
+            if self.fail_before_write.get(query_key, 0) > 0:
+                self.fail_before_write[query_key] -= 1
+                raise RuntimeError("database unavailable")
 
-        if document_id in self.documents:
-            return FakeUpdateResult()
+            existing = next(
+                (
+                    document
+                    for document in self.documents.values()
+                    if self._matches(document, query)
+                ),
+                None,
+            )
+            if existing is not None or not upsert:
+                return FakeUpdateResult()
 
-        if not upsert:
-            return FakeUpdateResult()
-        draft = deepcopy(update["$setOnInsert"])
-        self.documents[document_id] = draft
-        if self.fail_after_write.get(document_id, 0) > 0:
-            self.fail_after_write[document_id] -= 1
-            raise RuntimeError("write acknowledgement lost")
-        return FakeUpdateResult(upserted_id=document_id)
+            draft = deepcopy(update["$setOnInsert"])
+            document_id = draft.setdefault("_id", ObjectId())
+            self.documents[document_id] = draft
+            if self.fail_after_write.get(query_key, 0) > 0:
+                self.fail_after_write[query_key] -= 1
+                raise RuntimeError("write acknowledgement lost")
+            return FakeUpdateResult(upserted_id=document_id)
 
     def find(self, query: dict) -> FakeCursor:
         self.find_calls.append(deepcopy(query))
+        if self.find_error is not None:
+            raise self.find_error
         documents = [
             document
             for document in self.documents.values()
             if self._matches(document, query)
         ]
-        self.last_cursor = FakeCursor(documents)
+        self.last_cursor = FakeCursor(
+            documents,
+            iteration_error_after=self.find_iteration_error_after,
+        )
         return self.last_cursor
+
+    async def find_one(self, query: dict) -> dict | None:
+        self.find_one_calls.append(deepcopy(query))
+        query_key = self._query_key(query)
+        if self.find_one_errors.get(query_key, 0) > 0:
+            self.find_one_errors[query_key] -= 1
+            raise RuntimeError("find one disconnected")
+        return next(
+            (
+                deepcopy(document)
+                for document in self.documents.values()
+                if self._matches(document, query)
+            ),
+            None,
+        )
 
     async def insert_one(self, document: dict) -> FakeInsertResult:
         if self.insert_error is not None:
@@ -144,6 +187,14 @@ class FakeCollection:
             elif actual != expected:
                 return False
         return True
+
+    @staticmethod
+    def _query_key(query: dict) -> object:
+        if "_id" in query:
+            return query["_id"]
+        if "dedupe_key" in query:
+            return query["dedupe_key"]
+        return tuple(sorted(query.items()))
 
 
 def fake_db(*, plans: list[dict] | None = None) -> SimpleNamespace:
@@ -318,7 +369,7 @@ class WorkPlanCreateServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(db.work_plans.update_calls, [])
         self.assertEqual(db.audit_logs.insert_calls, [])
 
-    async def test_audit_is_written_once_per_created_record_and_not_on_replay(self) -> None:
+    async def test_audit_is_idempotently_reconciled_for_created_records_and_replay(self) -> None:
         db = fake_db()
         payload = create_payload(dates=[date(2026, 8, 18), date(2026, 8, 19)])
 
@@ -337,27 +388,197 @@ class WorkPlanCreateServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([item["outcome"] for item in created["results"]], ["created", "created"])
         self.assertTrue(replay["duplicate_submission"])
-        self.assertEqual(len(db.audit_logs.insert_calls), 2)
-        for audit in db.audit_logs.insert_calls:
+        self.assertEqual(len(db.audit_logs.documents), 2)
+        self.assertEqual(len(db.audit_logs.update_calls), 4)
+        for audit in db.audit_logs.documents.values():
             self.assertEqual(audit["action"], "work_plan.create")
             self.assertEqual(audit["resource_type"], "work_plan")
             self.assertEqual(audit["resource_id"], audit["after"]["_id"])
             self.assertEqual(audit["actor_id"], ACTOR["_id"])
+            self.assertEqual(
+                audit["dedupe_key"],
+                f"work_plan.create:{audit['resource_id']}",
+            )
 
-    async def test_audit_failure_does_not_change_created_result(self) -> None:
+    async def test_audit_failure_does_not_change_result_and_replay_repairs_it(self) -> None:
         db = fake_db()
-        db.audit_logs.insert_error = RuntimeError("audit unavailable")
+        plan_id = deterministic_plan_id(ACTOR["_id"], IDEMPOTENCY_KEY, date(2026, 8, 18))
+        dedupe_key = f"work_plan.create:{plan_id}"
+        db.audit_logs.fail_before_write[dedupe_key] = 1
+
+        with patch("app.modules.work_plans.service.logger.exception") as logged:
+            response = await create_work_plans(
+                db,
+                actor=ACTOR,
+                payload=create_payload(),
+                observed_at=OBSERVED_AT,
+            )
+            replay = await create_work_plans(
+                db,
+                actor=ACTOR,
+                payload=create_payload(),
+                observed_at=OBSERVED_AT,
+            )
+
+        self.assertEqual(response["results"][0]["outcome"], "created")
+        self.assertEqual(replay["results"][0]["outcome"], "duplicate")
+        self.assertIn("plan", response["results"][0])
+        self.assertEqual(len(db.work_plans.documents), 1)
+        self.assertEqual(len(db.audit_logs.documents), 1)
+        self.assertEqual(len(db.audit_logs.update_calls), 2)
+        logged.assert_called_once()
+        logged_text = str(logged.call_args)
+        self.assertIn(plan_id, logged_text)
+        self.assertIn("RuntimeError", logged_text)
+        self.assertNotIn("original note", logged_text)
+        self.assertNotIn(ACTOR["name"], logged_text)
+
+    async def test_bulk_query_error_falls_back_to_per_id_readback(self) -> None:
+        db = fake_db()
+        plan_date = date(2026, 8, 18)
+        plan_id = deterministic_plan_id(ACTOR["_id"], IDEMPOTENCY_KEY, plan_date)
+        db.work_plans.find_error = RuntimeError("query disconnected")
+
+        with patch("app.modules.work_plans.service.logger.exception") as logged:
+            response = await create_work_plans(
+                db,
+                actor=ACTOR,
+                payload=create_payload(dates=[plan_date]),
+                observed_at=OBSERVED_AT,
+            )
+
+        self.assertEqual(response["results"][0]["outcome"], "created")
+        self.assertEqual(db.work_plans.find_one_calls, [{"_id": plan_id}])
+        self.assertIn("RuntimeError", str(logged.call_args))
+
+    async def test_cursor_error_preserves_partial_results_and_reads_missing_ids(self) -> None:
+        dates = [date(2026, 8, 18), date(2026, 8, 19)]
+        ids = [deterministic_plan_id(ACTOR["_id"], IDEMPOTENCY_KEY, value) for value in dates]
+        db = fake_db()
+        db.work_plans.find_iteration_error_after = 1
 
         response = await create_work_plans(
             db,
             actor=ACTOR,
-            payload=create_payload(),
+            payload=create_payload(dates=dates),
             observed_at=OBSERVED_AT,
         )
 
-        self.assertEqual(response["results"][0]["outcome"], "created")
-        self.assertIn("plan", response["results"][0])
+        self.assertEqual([item["outcome"] for item in response["results"]], ["created", "created"])
+        self.assertEqual(db.work_plans.find_one_calls, [{"_id": ids[1]}])
+
+    async def test_acknowledged_create_uses_draft_when_all_readbacks_fail(self) -> None:
+        plan_date = date(2026, 8, 18)
+        plan_id = deterministic_plan_id(ACTOR["_id"], IDEMPOTENCY_KEY, plan_date)
+        db = fake_db()
+        db.work_plans.find_iteration_error_after = 0
+        db.work_plans.find_one_errors[plan_id] = 1
+
+        response = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=create_payload(dates=[plan_date]),
+            observed_at=OBSERVED_AT,
+        )
+
+        result = response["results"][0]
+        self.assertEqual(result["outcome"], "created")
+        self.assertEqual(result["plan"]["id"], plan_id)
+        self.assertEqual(len(db.audit_logs.documents), 1)
+        audit = next(iter(db.audit_logs.documents.values()))
+        self.assertEqual(audit["after"]["_id"], plan_id)
+
+    async def test_readback_fallback_is_bounded_to_five_ids(self) -> None:
+        dates = [date(2026, 8, 18 + offset) for offset in range(5)]
+        ids = [deterministic_plan_id(ACTOR["_id"], IDEMPOTENCY_KEY, value) for value in dates]
+        db = fake_db()
+        db.work_plans.find_error = RuntimeError("query disconnected")
+        db.work_plans.find_one_errors = {plan_id: 1 for plan_id in ids}
+
+        response = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=create_payload(dates=dates),
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertEqual(len(db.work_plans.find_one_calls), 5)
+        self.assertEqual([item["outcome"] for item in response["results"]], ["created"] * 5)
+
+    async def test_uncertain_write_without_durable_record_is_failed(self) -> None:
+        plan_date = date(2026, 8, 18)
+        plan_id = deterministic_plan_id(ACTOR["_id"], IDEMPOTENCY_KEY, plan_date)
+        db = fake_db()
+        db.work_plans.fail_before_write[plan_id] = 1
+
+        response = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=create_payload(dates=[plan_date]),
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertEqual(response["results"][0]["outcome"], "failed")
+        self.assertEqual(db.audit_logs.documents, {})
+
+    async def test_concurrent_identical_submissions_create_once_without_overwrite(self) -> None:
+        db = fake_db()
+
+        first, second = await asyncio.gather(
+            create_work_plans(
+                db,
+                actor=ACTOR,
+                payload=create_payload(note="first content"),
+                observed_at=OBSERVED_AT,
+            ),
+            create_work_plans(
+                db,
+                actor=ACTOR,
+                payload=create_payload(
+                    start_time="10:00",
+                    end_time="17:00",
+                    note="second content",
+                ),
+                observed_at=OBSERVED_AT.replace(hour=1),
+            ),
+        )
+
         self.assertEqual(len(db.work_plans.documents), 1)
+        self.assertCountEqual(
+            [first["results"][0]["outcome"], second["results"][0]["outcome"]],
+            ["created", "duplicate"],
+        )
+        stored = next(iter(db.work_plans.documents.values()))
+        self.assertIn(stored["note"], {"first content", "second content"})
+        if stored["note"] == "first content":
+            self.assertEqual(stored["start_minute"], 9 * 60)
+            self.assertEqual(stored["end_minute"], 18 * 60)
+            self.assertEqual(stored["updated_at"], OBSERVED_AT)
+        else:
+            self.assertEqual(stored["start_minute"], 10 * 60)
+            self.assertEqual(stored["end_minute"], 17 * 60)
+            self.assertEqual(stored["updated_at"], OBSERVED_AT.replace(hour=1))
+        self.assertEqual(len(db.audit_logs.documents), 1)
+
+    async def test_creation_rejects_synthetic_or_missing_browser_identity(self) -> None:
+        invalid_actors = [
+            {"_id": "service:1", "actor_type": "service"},
+            {"_id": "api_token:1", "actor_type": "api_token"},
+            {"_id": "member@example.com", "actor_type": None},
+            {"_id": "", "actor_type": "user"},
+            {"email": "fallback@example.com", "actor_type": "user"},
+        ]
+        for actor in invalid_actors:
+            with self.subTest(actor=actor):
+                db = fake_db()
+                with self.assertRaisesRegex(WorkPlanAccessError, "浏览器"):
+                    await create_work_plans(
+                        db,
+                        actor=actor,
+                        payload=create_payload(),
+                        observed_at=OBSERVED_AT,
+                    )
+                self.assertEqual(db.work_plans.update_calls, [])
 
 
 class WorkPlanHistoryServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -427,6 +648,20 @@ class WorkPlanHistoryServiceTests(unittest.IsolatedAsyncioTestCase):
             await list_my_work_plans(db, actor=api_actor)
 
         self.assertEqual(db.work_plans.find_calls, [])
+
+    async def test_history_rejects_other_synthetic_and_missing_id_actors(self) -> None:
+        invalid_actors = [
+            {"_id": "service:1", "actor_type": "service"},
+            {"_id": "member@example.com", "actor_type": None},
+            {"_id": "", "actor_type": "user"},
+            {"email": "fallback@example.com"},
+        ]
+        for actor in invalid_actors:
+            with self.subTest(actor=actor):
+                db = fake_db()
+                with self.assertRaisesRegex(WorkPlanAccessError, "浏览器"):
+                    await list_my_work_plans(db, actor=actor)
+                self.assertEqual(db.work_plans.find_calls, [])
 
     async def test_creation_delegates_to_domain_before_the_first_write(self) -> None:
         db = fake_db()

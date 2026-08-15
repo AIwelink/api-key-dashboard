@@ -162,6 +162,11 @@ async def ensure_work_plan_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.work_plans.create_index([("is_cancelled", 1), ("plan_date", 1)])
 
 
+async def ensure_audit_indexes(db: AsyncIOMotorDatabase) -> None:
+    await db.audit_logs.create_index("created_at")
+    await db.audit_logs.create_index("dedupe_key", unique=True, sparse=True)
+
+
 async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.users.create_index("email", unique=True)
     await db.api_tokens.create_index("token_hash", unique=True)
@@ -210,7 +215,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.accounts.create_index("metadata.upgrade_lock.locked_by_user_id")
     await db.accounts.create_index([("metadata.account_type", 1), ("metadata.pool_status", 1), ("metadata.updated_at", -1)])
     await db.accounts.create_index([("metadata.upgrade_task_type", 1), ("metadata.upgrade_status", 1), ("metadata.pool_status", 1), ("metadata.updated_at", -1)])
-    await db.audit_logs.create_index("created_at")
+    await ensure_audit_indexes(db)
     await db.import_batches.create_index("created_at")
     await db.import_batches.create_index("uploaded_by_user_id")
     await db.import_batches.create_index("status")
