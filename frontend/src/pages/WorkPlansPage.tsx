@@ -12,9 +12,12 @@ import { WorkPlanSchedule } from "./workPlans/WorkPlanSchedule";
 import type {
   WorkPlan,
   WorkPlanCreatePayload,
+  WorkPlanHistoryItem,
   WorkPlanOperationCreatePayload,
   WorkPlanHistoryResponse,
   WorkPlanMutationResult,
+  WorkPlanOperation,
+  WorkPlanPriorityResult,
   WorkPlanRange,
   WorkPlanScheduleResponse,
   WorkPlanUpdatePayload,
@@ -94,16 +97,39 @@ export function ScheduleStaleNotice({ message, refreshing, onRetry }: ScheduleSt
   );
 }
 
-function compareHistoryPlans(left: WorkPlan, right: WorkPlan): number {
-  return right.plan_date.localeCompare(left.plan_date)
+function historyDate(item: WorkPlanHistoryItem): string {
+  return "anchor_date" in item ? item.anchor_date : item.plan_date;
+}
+
+function compareHistoryItems(left: WorkPlanHistoryItem, right: WorkPlanHistoryItem): number {
+  return historyDate(right).localeCompare(historyDate(left))
     || right.created_at.localeCompare(left.created_at)
+    || Number("record_kind" in right) - Number("record_kind" in left)
     || right.id.localeCompare(left.id);
 }
 
 export function mergeWorkPlans(existing: WorkPlan[], changed: WorkPlan[]): WorkPlan[] {
   const byId = new Map(existing.map((plan) => [plan.id, plan]));
   changed.forEach((plan) => byId.set(plan.id, plan));
-  return Array.from(byId.values()).sort(compareHistoryPlans);
+  return Array.from(byId.values()).sort(compareHistoryItems);
+}
+
+export function mergeHistoryItems(
+  existing: WorkPlanHistoryItem[],
+  changed: WorkPlanHistoryItem[],
+): WorkPlanHistoryItem[] {
+  const byId = new Map(existing.map((item) => [item.id, item]));
+  changed.forEach((item) => byId.set(item.id, item));
+  return Array.from(byId.values()).sort(compareHistoryItems);
+}
+
+export function operationHistoryFromMutation(result: WorkPlanMutationResult): WorkPlanOperation[] {
+  const operations = new Map<string, WorkPlanOperation>();
+  for (const item of result.results) {
+    if (item.operation) operations.set(item.operation.id, item.operation);
+    item.operations?.forEach((operation) => operations.set(operation.id, operation));
+  }
+  return Array.from(operations.values()).sort(compareHistoryItems);
 }
 
 export function mergeHistoryPage(
@@ -111,10 +137,23 @@ export function mergeHistoryPage(
   next: WorkPlanHistoryResponse,
 ): WorkPlanHistoryResponse {
   return {
-    items: mergeWorkPlans(current.items, next.items),
+    items: mergeHistoryItems(current.items, next.items),
     total: next.total,
     has_more: next.has_more,
     next_cursor: next.next_cursor,
+  };
+}
+
+export function withUpdatedMemberPriority(
+  schedule: WorkPlanScheduleResponse,
+  memberId: string,
+  priority: number | null,
+): WorkPlanScheduleResponse {
+  return {
+    ...schedule,
+    members: schedule.members.map((member) => member.member_id === memberId
+      ? { ...member, work_plan_priority: priority }
+      : member),
   };
 }
 
@@ -122,16 +161,32 @@ export function mergeSchedulePage(
   current: WorkPlanScheduleResponse,
   next: WorkPlanScheduleResponse,
 ): WorkPlanScheduleResponse {
+  const segmentKey = (segment: NonNullable<WorkPlanScheduleResponse["segments"]>[number]) => [
+    segment.member_id,
+    segment.state,
+    segment.start_at,
+    segment.end_at,
+    segment.winning_operation_id,
+  ].join("\u0000");
   const members = new Map(current.members.map((member) => [member.member_id, member]));
   next.members.forEach((member) => members.set(member.member_id, member));
   const plans = new Map(current.plans.map((plan) => [plan.id, plan]));
   next.plans.forEach((plan) => plans.set(plan.id, plan));
+  const segments = new Map(
+    (current.segments || []).map((segment) => [segmentKey(segment), segment]),
+  );
+  (next.segments || []).forEach((segment) => segments.set(segmentKey(segment), segment));
   return {
     ...next,
     members: Array.from(members.values()),
     plans: Array.from(plans.values()).sort((left, right) => left.plan_date.localeCompare(right.plan_date)
       || left.start_minute - right.start_minute
       || left.id.localeCompare(right.id)),
+    segments: current.segments || next.segments
+      ? Array.from(segments.values()).sort((left, right) => left.start_at.localeCompare(right.start_at)
+        || left.member_id.localeCompare(right.member_id)
+        || left.winning_operation_id.localeCompare(right.winning_operation_id))
+      : undefined,
     start_date: current.start_date < next.start_date ? current.start_date : next.start_date,
     end_date: current.end_date > next.end_date ? current.end_date : next.end_date,
   };
@@ -215,6 +270,7 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
   const [refreshing, setRefreshing] = useState(false);
   const [scheduleError, setScheduleError] = useState("");
   const [mutationBusy, setMutationBusy] = useState(false);
+  const [priorityBusyMemberId, setPriorityBusyMemberId] = useState("");
   const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -276,12 +332,23 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
     const personalChanges = changed.filter((plan) => actorIds.has(plan.member_id));
     if (personalChanges.length) {
       setHistory((current) => {
-        const items = mergeWorkPlans(current.items, personalChanges);
+        const items = mergeHistoryItems(current.items, personalChanges);
         return { ...current, items, total: Math.max(current.total, items.length) };
       });
     }
     setSchedule((current) => reconcileSchedulePlans(current, changed, { includeCancelled, memberId }));
   }, [currentUser.email, currentUser.id, includeCancelled, memberId]);
+
+  const applyOperationHistory = useCallback((changed: WorkPlanOperation[]) => {
+    if (!changed.length) return;
+    const actorIds = new Set([currentUser.id, currentUser.email].filter(Boolean));
+    const personalChanges = changed.filter((operation) => actorIds.has(operation.member_id));
+    if (!personalChanges.length) return;
+    setHistory((current) => {
+      const items = mergeHistoryItems(current.items, personalChanges);
+      return { ...current, items, total: Math.max(current.total, items.length) };
+    });
+  }, [currentUser.email, currentUser.id]);
 
   const refreshAfterMutation = useCallback((successMessage: string) => {
     showToast(successMessage);
@@ -388,13 +455,15 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
       });
       const mutationError = mutationErrorMessage(result);
       const savedPlans = result.results.flatMap((item) => item.plan ? [item.plan] : []);
+      const savedOperations = operationHistoryFromMutation(result);
       if (savedPlans.length) applyLocalMutation(savedPlans);
+      applyOperationHistory(savedOperations);
       if (mutationError) {
         void refreshAll(false).catch(() => undefined);
         throw new Error(mutationError);
       }
       setFormOpen(false);
-      refreshAfterMutation(result.duplicate_submission ? "计划已提交，无需重复添加" : `已添加 ${result.total} 天计划`);
+      refreshAfterMutation(result.duplicate_submission ? "操作已提交，无需重复添加" : `已提交 ${result.total} 天计划`);
       return true;
     } catch (error) {
       showToast(errorMessage(error), true);
@@ -419,8 +488,41 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
     }
   };
 
-  const workCount = schedule.plans.filter((plan) => !plan.is_cancelled && plan.plan_type === "work").length;
-  const unavailableCount = schedule.plans.filter((plan) => !plan.is_cancelled && plan.plan_type === "temporary_unavailable").length;
+  const setMemberPriority = useCallback(async (targetMemberId: string, priority: number | null) => {
+    if (priorityBusyMemberId) return;
+    setPriorityBusyMemberId(targetMemberId);
+    try {
+      const updated = await api<WorkPlanPriorityResult>(
+        `/work-plans/members/${encodeURIComponent(targetMemberId)}/priority`,
+        token,
+        { method: "PATCH", body: JSON.stringify({ priority }) },
+      );
+      setSchedule((current) => withUpdatedMemberPriority(
+        current,
+        updated.member_id,
+        updated.work_plan_priority,
+      ));
+      showToast(priority == null ? "已恢复自动排序" : `已设置优先级 ${priority}`);
+      try {
+        await loadSchedule(false);
+      } catch {
+        showToast("优先级已保存，但排班顺序刷新失败，请手动刷新", true);
+      }
+    } catch (error) {
+      const message = errorMessage(error);
+      showToast(message, true);
+      throw new Error(message);
+    } finally {
+      setPriorityBusyMemberId("");
+    }
+  }, [loadSchedule, priorityBusyMemberId, showToast, token]);
+
+  const workCount = schedule.segments
+    ? schedule.segments.filter((segment) => segment.state === "active").length
+    : schedule.plans.filter((plan) => !plan.is_cancelled && plan.plan_type === "work").length;
+  const cancelledCount = schedule.segments
+    ? schedule.segments.filter((segment) => segment.state === "cancelled").length
+    : schedule.plans.filter((plan) => plan.is_cancelled || plan.plan_type === "temporary_unavailable").length;
   const onlineCount = schedule.members.filter((member) => member.is_online).length;
   const serverToday = shanghaiDateFromTimestamp(schedule.observed_at);
 
@@ -438,7 +540,7 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
         <div><span>团队成员</span><strong>{schedule.members.length}</strong></div>
         <div><span>当前在线</span><strong>{onlineCount}</strong></div>
         <div><span>工作计划</span><strong>{workCount}</strong></div>
-        <div><span>临时有事</span><strong>{unavailableCount}</strong></div>
+        <div><span>取消区间</span><strong>{cancelledCount}</strong></div>
       </div>
 
       <div className="work-plan-toolbar">
@@ -461,9 +563,9 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
       ) : null}
 
       <div className={`work-plan-schedule-frame ${loading ? "loading" : ""}`}>
-        {loading && !schedule.plans.length ? <div className="work-plan-loading">加载中...</div> : <WorkPlanSchedule currentUser={currentUser} onCancelPlan={setCancelPlan} onEditPlan={openEdit} range={range} response={schedule} />}
+        {loading && !schedule.plans.length && !schedule.segments?.length ? <div className="work-plan-loading">加载中...</div> : <WorkPlanSchedule currentUser={currentUser} onCancelPlan={setCancelPlan} onEditPlan={openEdit} onSetMemberPriority={setMemberPriority} priorityBusy={Boolean(priorityBusyMemberId)} range={range} response={schedule} />}
       </div>
-      {schedule.has_more ? <div className="work-plan-pagination"><span>已显示 {schedule.plans.length} / {schedule.total} 条计划</span><button className="ghost" disabled={refreshing} onClick={loadOlderSchedule} type="button">{refreshing ? "加载中..." : "加载更早记录"}</button></div> : null}
+      {schedule.has_more ? <div className="work-plan-pagination"><span>已显示 {schedule.total_operations ?? schedule.plans.length} / {schedule.total} 条记录</span><button className="ghost" disabled={refreshing} onClick={loadOlderSchedule} type="button">{refreshing ? "加载中..." : "加载更早记录"}</button></div> : null}
 
       <WorkPlanFormDrawer busy={mutationBusy} initialPlan={editingPlan} onClose={() => { if (!mutationBusy) { setFormOpen(false); setEditingPlan(null); } }} onSubmit={submitPlan} open={formOpen} serverToday={serverToday} />
       <MyPlansDrawer blocked={Boolean(cancelPlan)} busy={mutationBusy} hasMore={history.has_more} items={history.items} loadingMore={historyLoadingMore} onCancel={setCancelPlan} onClose={() => setHistoryOpen(false)} onEdit={openEdit} onLoadMore={loadMoreHistory} open={historyOpen} total={history.total} />

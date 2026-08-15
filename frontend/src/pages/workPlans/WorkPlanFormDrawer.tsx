@@ -123,6 +123,19 @@ export function createInitialWorkPlanDraft(serverToday: string, initialPlan?: Wo
   };
 }
 
+export function buildWorkPlanCreatePayload(
+  draft: WorkPlanDraftState,
+): WorkPlanOperationCreatePayload {
+  return {
+    operation_type: draft.operationType,
+    anchor_dates: draft.selectedDates,
+    start_offset_minute: draft.startOffsetMinute,
+    end_offset_minute: draft.endOffsetMinute,
+    note: draft.note.trim() || null,
+    idempotency_key: draft.idempotencyKey,
+  };
+}
+
 export function workPlanDraftReducer(
   state: WorkPlanDraftState,
   action: WorkPlanDraftAction,
@@ -244,14 +257,7 @@ export function WorkPlanFormDrawer({
       return;
     }
     await resetDraftAfterSuccessfulSubmit(
-      () => onSubmit({
-        operation_type: draft.operationType,
-        anchor_dates: draft.selectedDates,
-        start_offset_minute: draft.startOffsetMinute,
-        end_offset_minute: draft.endOffsetMinute,
-        note: draft.note.trim() || null,
-        idempotency_key: draft.idempotencyKey,
-      }),
+      () => onSubmit(buildWorkPlanCreatePayload(draft)),
       () => dispatch({ type: "replace", value: createInitialWorkPlanDraft(serverToday) }),
     );
   };

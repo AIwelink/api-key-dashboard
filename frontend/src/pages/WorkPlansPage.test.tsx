@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MyPlansDrawer } from "./workPlans/MyPlansDrawer";
 import {
+  buildWorkPlanCreatePayload,
   createInitialWorkPlanDraft,
   resetDraftAfterSuccessfulSubmit,
   WorkPlanFormDrawer,
@@ -19,12 +20,15 @@ import {
   createLatestRequestGuard,
   drawerExitDelay,
   initialRequestState,
+  mergeHistoryItems,
   mergeHistoryPage,
   mergeSchedulePage,
   mergeWorkPlans,
   mutationErrorMessage,
+  operationHistoryFromMutation,
   reconcileSchedulePlans,
   ScheduleStaleNotice,
+  withUpdatedMemberPriority,
 } from "./WorkPlansPage";
 
 const PLAN: WorkPlan = {
@@ -89,6 +93,34 @@ const LINEAR_SCHEDULE: WorkPlanScheduleResponse = {
       operation_ids: ["operation-2"],
     },
   ],
+};
+
+const OPERATION: WorkPlanOperation = {
+  id: "operation-2",
+  schema_version: 2,
+  record_kind: "operation",
+  member_id: PLAN.member_id,
+  member_name: PLAN.member_name,
+  operation_type: "cancel",
+  anchor_date: "2026-08-16",
+  plan_date: "2026-08-16",
+  requested_start_at: "2026-08-16T04:00:00+00:00",
+  requested_end_at: "2026-08-16T06:00:00+00:00",
+  effective_start_at: "2026-08-16T04:00:00+00:00",
+  effective_end_at: "2026-08-16T06:00:00+00:00",
+  start_offset_minute: 12 * 60,
+  end_offset_minute: 14 * 60,
+  requested_start_offset_minute: 12 * 60,
+  requested_end_offset_minute: 14 * 60,
+  effective_start_offset_minute: 12 * 60,
+  effective_end_offset_minute: 14 * 60,
+  member_sequence: 2,
+  idempotency_key: "key",
+  batch_id: "key",
+  note: null,
+  created_by: PLAN.member_id,
+  created_at: PLAN.created_at,
+  history_state: "cancelled",
 };
 
 describe("work plan components", () => {
@@ -182,6 +214,79 @@ describe("work plan components", () => {
     });
     expect(mergedSchedule.plans.map((plan) => plan.id)).toEqual(["plan-2", "plan-1"]);
     expect(mergedSchedule.start_date).toBe("2026-08-15");
+  });
+
+  it("preserves continuous segments while merging schedule cursor pages", () => {
+    const nextSegment = {
+      ...LINEAR_SCHEDULE.segments![0],
+      start_at: "2026-08-17T01:00:00+00:00",
+      end_at: "2026-08-17T04:00:00+00:00",
+    };
+
+    const merged = mergeSchedulePage(LINEAR_SCHEDULE, {
+      ...LINEAR_SCHEDULE,
+      segments: [nextSegment],
+      start_date: "2026-08-17",
+      has_more: false,
+      next_cursor: null,
+    });
+
+    expect(merged.segments?.map((segment) => segment.start_at)).toEqual([
+      "2026-08-16T01:00:00+00:00",
+      "2026-08-16T04:00:00+00:00",
+      "2026-08-17T01:00:00+00:00",
+    ]);
+  });
+
+  it("builds a v2 create command without client supplied member identity", () => {
+    const draft = {
+      ...createInitialWorkPlanDraft("2026-08-16"),
+      selectedDates: ["2026-08-16"],
+      startOffsetMinute: 9 * 60,
+      endOffsetMinute: 30 * 60,
+      note: "跨到次日",
+    };
+
+    expect(buildWorkPlanCreatePayload(draft)).toEqual({
+      operation_type: "activate",
+      anchor_dates: ["2026-08-16"],
+      start_offset_minute: 9 * 60,
+      end_offset_minute: 30 * 60,
+      note: "跨到次日",
+      idempotency_key: draft.idempotencyKey,
+    });
+    expect(buildWorkPlanCreatePayload(draft)).not.toHaveProperty("member_id");
+  });
+
+  it("collects immutable operation results without duplicates", () => {
+    expect(operationHistoryFromMutation({
+      duplicate_submission: false,
+      total: 1,
+      results: [{
+        plan_date: OPERATION.plan_date,
+        outcome: "created",
+        operation: OPERATION,
+        operations: [OPERATION, OPERATION],
+      }],
+    })).toEqual([OPERATION]);
+  });
+
+  it("merges legacy and immutable history pages by stable record id", () => {
+    expect(mergeHistoryItems([PLAN, OPERATION], [OPERATION])).toEqual([OPERATION, PLAN]);
+    expect(mergeHistoryPage(
+      { items: [PLAN], total: 2, has_more: true, next_cursor: "next" },
+      { items: [OPERATION], total: 2, has_more: false, next_cursor: null },
+    ).items).toEqual([OPERATION, PLAN]);
+  });
+
+  it("updates member priority without changing authoritative member order", () => {
+    const secondMember = { ...LINEAR_SCHEDULE.members[0], member_id: "member-2", member_name: "成员二" };
+    const response = { ...LINEAR_SCHEDULE, members: [secondMember, LINEAR_SCHEDULE.members[0]] };
+
+    const updated = withUpdatedMemberPriority(response, PLAN.member_id, 3);
+
+    expect(updated.members.map((member) => member.member_id)).toEqual(["member-2", PLAN.member_id]);
+    expect(updated.members[1].work_plan_priority).toBe(3);
   });
 
   it("cancel plan keeps one date and disables bulk modes", () => {
@@ -360,38 +465,11 @@ describe("work plan components", () => {
   });
 
   it("keeps immutable cancellation history grey after later coverage", () => {
-    const operation: WorkPlanOperation = {
-      id: "operation-2",
-      schema_version: 2,
-      record_kind: "operation",
-      member_id: PLAN.member_id,
-      member_name: PLAN.member_name,
-      operation_type: "cancel",
-      anchor_date: "2026-08-16",
-      plan_date: "2026-08-16",
-      requested_start_at: "2026-08-16T04:00:00+00:00",
-      requested_end_at: "2026-08-16T06:00:00+00:00",
-      effective_start_at: "2026-08-16T04:00:00+00:00",
-      effective_end_at: "2026-08-16T06:00:00+00:00",
-      start_offset_minute: 12 * 60,
-      end_offset_minute: 14 * 60,
-      requested_start_offset_minute: 12 * 60,
-      requested_end_offset_minute: 14 * 60,
-      effective_start_offset_minute: 12 * 60,
-      effective_end_offset_minute: 14 * 60,
-      member_sequence: 2,
-      idempotency_key: "key",
-      batch_id: "key",
-      note: null,
-      created_by: PLAN.member_id,
-      created_at: PLAN.created_at,
-      history_state: "cancelled",
-    };
     const html = renderToStaticMarkup(
       <MyPlansDrawer
         busy={false}
         hasMore={false}
-        items={[operation]}
+        items={[OPERATION]}
         loadingMore={false}
         onCancel={() => undefined}
         onClose={() => undefined}

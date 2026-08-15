@@ -82,6 +82,8 @@ export type WorkPlanSegment = {
   operation_ids: string[];
 };
 
+export type WorkPlanHistoryItem = WorkPlan | WorkPlanOperation;
+
 export type WorkPlanScheduleResponse = {
   members: WorkPlanMember[];
   plans: WorkPlan[];
@@ -99,7 +101,7 @@ export type WorkPlanScheduleResponse = {
 };
 
 export type WorkPlanHistoryResponse = {
-  items: WorkPlan[];
+  items: WorkPlanHistoryItem[];
   total: number;
   has_more: boolean;
   next_cursor: string | null;
@@ -142,6 +144,15 @@ export type WorkPlanMutationResult = {
     plan_date: string;
     outcome: "created" | "duplicate" | "failed" | "uncertain";
     plan?: WorkPlan;
+    operation?: WorkPlanOperation;
+    operations?: WorkPlanOperation[];
     error?: string;
   }>;
+};
+
+export type WorkPlanPriorityResult = {
+  member_id: string;
+  member_name: string;
+  role?: string | null;
+  work_plan_priority: number | null;
 };

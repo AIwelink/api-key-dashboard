@@ -1,9 +1,7 @@
 import { Ban, CalendarClock, Pencil, X } from "lucide-react";
 
 import { useModalFocus } from "../../hooks/useModalFocus";
-import type { WorkPlan, WorkPlanOperation } from "./types";
-
-export type WorkPlanHistoryItem = WorkPlan | WorkPlanOperation;
+import type { WorkPlan, WorkPlanHistoryItem, WorkPlanOperation } from "./types";
 
 type MyPlansDrawerProps = {
   open: boolean;
