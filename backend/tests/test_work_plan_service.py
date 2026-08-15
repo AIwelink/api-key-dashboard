@@ -1046,6 +1046,113 @@ class WorkPlanOperationServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WorkPlanScheduleServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_schedule_projects_cross_day_operations_into_continuous_segments(self) -> None:
+        observed_at = datetime(2026, 8, 15, 16, 0, tzinfo=UTC)
+        db = fake_db(
+            users=[
+                {
+                    "_id": "member-1",
+                    "name": "Member One",
+                    "work_plan_priority": 3,
+                }
+            ],
+            plans=[
+                {
+                    "_id": "activate-1",
+                    "schema_version": 2,
+                    "record_kind": "operation",
+                    "member_id": "member-1",
+                    "member_name": "Member One",
+                    "operation_type": "activate",
+                    "anchor_date": "2026-08-16",
+                    "effective_start_at": datetime(2026, 8, 16, 14, tzinfo=UTC),
+                    "effective_end_at": datetime(2026, 8, 17, 2, tzinfo=UTC),
+                    "member_sequence": 1,
+                    "created_at": datetime(2026, 8, 15, 10, tzinfo=UTC),
+                },
+                {
+                    "_id": "cancel-1",
+                    "schema_version": 2,
+                    "record_kind": "operation",
+                    "member_id": "member-1",
+                    "member_name": "Member One",
+                    "operation_type": "cancel",
+                    "anchor_date": "2026-08-16",
+                    "effective_start_at": datetime(2026, 8, 16, 18, tzinfo=UTC),
+                    "effective_end_at": datetime(2026, 8, 16, 20, tzinfo=UTC),
+                    "member_sequence": 2,
+                    "created_at": datetime(2026, 8, 15, 11, tzinfo=UTC),
+                },
+            ],
+        )
+
+        with patch(
+            "app.modules.work_plans.service.list_member_presence_summaries",
+            new=AsyncMock(return_value={}),
+        ):
+            response = await list_work_plan_schedule(
+                db,
+                range_name="7d",
+                member_ids=None,
+                include_cancelled=False,
+                observed_at=observed_at,
+            )
+
+        self.assertEqual(response["start_at"], "2026-08-15T16:00:00+00:00")
+        self.assertEqual(response["end_at"], "2026-08-22T16:00:00+00:00")
+        self.assertEqual(
+            [
+                (segment["state"], segment["start_at"], segment["end_at"])
+                for segment in response["segments"]
+            ],
+            [
+                ("active", "2026-08-16T14:00:00+00:00", "2026-08-16T18:00:00+00:00"),
+                ("cancelled", "2026-08-16T18:00:00+00:00", "2026-08-16T20:00:00+00:00"),
+                ("active", "2026-08-16T20:00:00+00:00", "2026-08-17T02:00:00+00:00"),
+            ],
+        )
+        self.assertEqual(response["members"][0]["work_plan_priority"], 3)
+        self.assertEqual(
+            response["members"][0]["next_green_start"],
+            "2026-08-16T14:00:00+00:00",
+        )
+
+    async def test_cancelled_legacy_work_is_retained_as_grey_projection(self) -> None:
+        db = fake_db(
+            users=[{"_id": "legacy", "name": "Legacy"}],
+            plans=[
+                {
+                    "_id": "legacy-cancelled",
+                    "member_id": "legacy",
+                    "member_name": "Legacy",
+                    "plan_date": "2026-08-16",
+                    "plan_type": "work",
+                    "start_minute": 9 * 60,
+                    "end_minute": 12 * 60,
+                    "status": "cancelled",
+                    "is_cancelled": True,
+                    "created_at": datetime(2026, 8, 15, 8, tzinfo=UTC),
+                    "cancelled_at": datetime(2026, 8, 15, 9, tzinfo=UTC),
+                }
+            ],
+        )
+
+        with patch(
+            "app.modules.work_plans.service.list_member_presence_summaries",
+            new=AsyncMock(return_value={}),
+        ):
+            response = await list_work_plan_schedule(
+                db,
+                range_name="7d",
+                member_ids=None,
+                include_cancelled=False,
+                observed_at=datetime(2026, 8, 15, 16, tzinfo=UTC),
+            )
+
+        self.assertEqual(len(response["segments"]), 1)
+        self.assertEqual(response["segments"][0]["state"], "cancelled")
+        self.assertEqual(response["segments"][0]["member_id"], "legacy")
+
     async def test_seven_day_schedule_includes_every_profile_and_current_collaboration_state(self) -> None:
         observed_at = datetime(2026, 8, 15, 16, 30, tzinfo=UTC)
         retained_seen_at = datetime(2026, 8, 15, 14, 0, tzinfo=UTC)
@@ -1417,6 +1524,34 @@ class WorkPlanScheduleServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WorkPlanHistoryServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_v2_history_uses_anchor_date_and_keeps_operation_details(self) -> None:
+        db = fake_db(
+            plans=[
+                {
+                    "_id": "operation-2",
+                    "schema_version": 2,
+                    "record_kind": "operation",
+                    "member_id": ACTOR["_id"],
+                    "member_name": ACTOR["name"],
+                    "operation_type": "cancel",
+                    "anchor_date": "2026-08-18",
+                    "requested_start_at": datetime(2026, 8, 18, tzinfo=UTC),
+                    "requested_end_at": datetime(2026, 8, 18, 4, tzinfo=UTC),
+                    "effective_start_at": datetime(2026, 8, 18, 1, tzinfo=UTC),
+                    "effective_end_at": datetime(2026, 8, 18, 4, tzinfo=UTC),
+                    "member_sequence": 2,
+                    "created_at": datetime(2026, 8, 15, 9, tzinfo=UTC),
+                }
+            ]
+        )
+
+        response = await list_my_work_plans(db, actor=ACTOR, limit=20)
+
+        self.assertEqual(response["items"][0]["plan_date"], "2026-08-18")
+        self.assertEqual(response["items"][0]["operation_type"], "cancel")
+        self.assertTrue(response["items"][0]["is_clipped"])
+        self.assertEqual(response["items"][0]["history_state"], "cancelled")
+
     async def test_history_is_strictly_personal_includes_cancelled_and_serializes(self) -> None:
         newer_id = ObjectId("66bb00000000000000000001")
         cancelled_id = ObjectId("66bb00000000000000000002")

@@ -167,6 +167,7 @@ def build_operation_drafts(
                 "member_name": actor_name,
                 "operation_type": payload.operation_type,
                 "anchor_date": anchor_date.isoformat(),
+                "plan_date": anchor_date.isoformat(),
                 "requested_start_at": requested_start_at,
                 "requested_end_at": requested_end_at,
                 "effective_start_at": requested_start_at,

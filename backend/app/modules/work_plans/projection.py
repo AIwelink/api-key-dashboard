@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Literal, Sequence
+from datetime import UTC, date, datetime, time, timedelta, timezone
+from typing import Any, Literal, Sequence
 
 
 OperationType = Literal["activate", "cancel"]
@@ -57,6 +57,10 @@ def project_operations(
         state: SegmentState = "active" if operation.operation_type == "activate" else "cancelled"
         slot_state = _SlotState(state, operation.operation_id, operation.order_key)
         for index in range(first_slot, last_slot):
+            if state == "cancelled" and (
+                slots[index] is None or slots[index].state != "active"
+            ):
+                continue
             slots[index] = slot_state
 
     return _merge_slots(slots, window_start)
@@ -81,6 +85,128 @@ def clip_cancellation(
         else:
             fragments.append((start_at, end_at))
     return fragments
+
+
+def normalize_v2_operation(document: dict[str, Any]) -> NormalizedOperation:
+    return NormalizedOperation(
+        operation_id=str(document.get("_id") or ""),
+        member_id=str(document.get("member_id") or ""),
+        operation_type=str(document.get("operation_type") or ""),
+        start_at=document["effective_start_at"],
+        end_at=document["effective_end_at"],
+        order_key=(
+            2,
+            int(document.get("member_sequence") or 0),
+            str(document.get("_id") or ""),
+        ),
+    )
+
+
+def normalize_legacy_records(
+    documents: Sequence[dict[str, Any]],
+    *,
+    local_timezone: timezone = timezone(timedelta(hours=8)),
+) -> list[NormalizedOperation]:
+    operations: list[NormalizedOperation] = []
+    fallback_order = 0
+    for document in documents:
+        if document.get("schema_version") == 2:
+            continue
+        member_id = str(document.get("member_id") or "").strip()
+        operation_id = str(document.get("_id") or "").strip()
+        plan_date_text = str(document.get("plan_date") or "").strip()
+        if not member_id or not operation_id or not plan_date_text:
+            continue
+        try:
+            plan_date = date.fromisoformat(plan_date_text)
+            start_minute = int(document.get("start_minute") or 0)
+            end_minute = int(document.get("end_minute") or 0)
+            local_midnight = datetime.combine(plan_date, time.min, tzinfo=local_timezone)
+            start_at = (local_midnight + timedelta(minutes=start_minute)).astimezone(UTC)
+            end_at = (local_midnight + timedelta(minutes=end_minute)).astimezone(UTC)
+        except (TypeError, ValueError):
+            continue
+        if end_at <= start_at:
+            continue
+
+        created_order = _datetime_order(document.get("created_at"), fallback_order)
+        fallback_order += 1
+        plan_type = document.get("plan_type")
+        cancelled = document.get("is_cancelled") is True or document.get("status") == "cancelled"
+        if plan_type == "work":
+            operations.append(
+                NormalizedOperation(
+                    operation_id=f"legacy:{operation_id}:activate",
+                    member_id=member_id,
+                    operation_type="activate",
+                    start_at=start_at,
+                    end_at=end_at,
+                    order_key=(0, created_order, operation_id),
+                )
+            )
+            if cancelled:
+                operations.append(
+                    NormalizedOperation(
+                        operation_id=f"legacy:{operation_id}:cancel",
+                        member_id=member_id,
+                        operation_type="cancel",
+                        start_at=start_at,
+                        end_at=end_at,
+                        order_key=(1, _datetime_order(document.get("cancelled_at"), fallback_order), operation_id),
+                    )
+                )
+                fallback_order += 1
+        elif plan_type == "temporary_unavailable" and not cancelled:
+            operations.append(
+                NormalizedOperation(
+                    operation_id=f"legacy:{operation_id}:cancel",
+                    member_id=member_id,
+                    operation_type="cancel",
+                    start_at=start_at,
+                    end_at=end_at,
+                    order_key=(1, created_order, operation_id),
+                )
+            )
+    return operations
+
+
+def sort_members(members: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(members, key=_member_sort_key)
+
+
+def _member_sort_key(member: dict[str, Any]) -> tuple[Any, ...]:
+    priority = member.get("work_plan_priority")
+    has_priority = isinstance(priority, int) and not isinstance(priority, bool) and priority > 0
+    is_zhang = (
+        has_priority
+        and priority == 1
+        and member.get("role") == "owner"
+        and str(member.get("member_name") or "").strip() == "张城玮"
+    )
+    if member.get("current_green") is True:
+        schedule_key = (0, 0.0)
+    elif isinstance(member.get("next_green_start"), datetime):
+        schedule_key = (1, member["next_green_start"].timestamp())
+    elif isinstance(member.get("latest_green_end"), datetime):
+        schedule_key = (2, -member["latest_green_end"].timestamp())
+    else:
+        schedule_key = (3, 0.0)
+    return (
+        0 if is_zhang else 1,
+        0 if has_priority else 1,
+        int(priority) if has_priority else 0,
+        *schedule_key,
+        str(member.get("member_name") or "").casefold(),
+        str(member.get("member_id") or ""),
+    )
+
+
+def _datetime_order(value: Any, fallback: int) -> int:
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            value = value.replace(tzinfo=UTC)
+        return int(value.astimezone(UTC).timestamp() * 1_000_000)
+    return fallback
 
 
 def _merge_slots(
@@ -149,5 +275,8 @@ __all__ = [
     "EffectiveSegment",
     "NormalizedOperation",
     "clip_cancellation",
+    "normalize_legacy_records",
+    "normalize_v2_operation",
     "project_operations",
+    "sort_members",
 ]

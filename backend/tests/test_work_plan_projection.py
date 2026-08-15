@@ -8,6 +8,7 @@ from app.modules.work_plans.projection import (
     NormalizedOperation,
     clip_cancellation,
     project_operations,
+    sort_members,
 )
 
 
@@ -127,6 +128,62 @@ class WorkPlanProjectionTests(unittest.TestCase):
                 window_start=WINDOW_START,
                 window_end=WINDOW_END,
             )
+
+    def test_member_order_uses_priority_active_future_past_and_name(self) -> None:
+        now = WINDOW_START + timedelta(hours=12)
+        members = [
+            {"member_id": "none", "member_name": "无计划"},
+            {
+                "member_id": "future-far",
+                "member_name": "未来远",
+                "next_green_start": now + timedelta(hours=4),
+            },
+            {
+                "member_id": "future-near",
+                "member_name": "未来近",
+                "next_green_start": now + timedelta(hours=1),
+            },
+            {
+                "member_id": "active",
+                "member_name": "正在工作",
+                "current_green": True,
+            },
+            {
+                "member_id": "past",
+                "member_name": "最近结束",
+                "latest_green_end": now - timedelta(minutes=30),
+            },
+            {
+                "member_id": "zhang",
+                "member_name": "张城玮",
+                "role": "owner",
+                "work_plan_priority": 1,
+            },
+            {
+                "member_id": "priority-high",
+                "member_name": "高优先",
+                "work_plan_priority": 2,
+            },
+            {
+                "member_id": "priority-low",
+                "member_name": "低优先",
+                "work_plan_priority": 20,
+            },
+        ]
+
+        self.assertEqual(
+            [member["member_name"] for member in sort_members(members)],
+            [
+                "张城玮",
+                "高优先",
+                "低优先",
+                "正在工作",
+                "未来近",
+                "未来远",
+                "最近结束",
+                "无计划",
+            ],
+        )
 
 
 if __name__ == "__main__":
