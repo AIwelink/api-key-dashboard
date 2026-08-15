@@ -55,7 +55,7 @@
 - Modify: `backend/tests/test_role_permissions.py`
 - Modify: `backend/tests/test_database_schema.py`
 
-- [ ] **Step 1: Write failing permission and index tests**
+- [x] **Step 1: Write failing permission and index tests**
 
 Add assertions that prove every built-in role and a stored custom role receive the view, and that normalization cannot remove it:
 
@@ -75,7 +75,7 @@ def test_work_plan_indexes_are_declared(self) -> None:
     self.assertIn(("plan_date", 1), WORK_PLAN_IDEMPOTENCY_INDEX)
 ```
 
-- [ ] **Step 2: Run the focused tests and verify RED**
+- [x] **Step 2: Run the focused tests and verify RED**
 
 Run:
 
@@ -85,7 +85,7 @@ Run:
 
 Expected: failure because `work-plans` and work-plan indexes do not exist.
 
-- [ ] **Step 3: Add the mandatory view and indexes**
+- [x] **Step 3: Add the mandatory view and indexes**
 
 Register `work-plans` in the `ViewName` literal and at the front of `AVAILABLE_VIEWS`. In `_normalize_entry`, append the mandatory view for every role before resolving `default_view`:
 
@@ -108,7 +108,7 @@ await db.work_plans.create_index([("member_id", 1), ("plan_date", -1), ("created
 await db.work_plans.create_index([("is_cancelled", 1), ("plan_date", 1)])
 ```
 
-- [ ] **Step 4: Re-run focused tests and commit**
+- [x] **Step 4: Re-run focused tests and commit**
 
 Expected: all focused tests pass.
 
@@ -125,7 +125,7 @@ git commit -m "feat: register universal work plan access"
 - Create: `backend/app/modules/work_plans/domain.py`
 - Create: `backend/tests/test_work_plan_domain.py`
 
-- [ ] **Step 1: Write failing domain tests**
+- [x] **Step 1: Write failing domain tests**
 
 Cover 30-minute parsing, chronological deduplication, the five-date limit, deterministic IDs, manager roles, and one-hour temporary-unavailable lead time:
 
@@ -145,11 +145,11 @@ def test_create_rejects_more_than_five_dates(self) -> None:
         build_plan_drafts(actor={"_id": "member@example.com"}, payload=payload, observed_at=datetime.now(UTC))
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run `python -m unittest tests.test_work_plan_domain -v` with the shared virtualenv. Expected: import failure for the missing module.
 
-- [ ] **Step 3: Implement schemas and pure rules**
+- [x] **Step 3: Implement schemas and pure rules**
 
 Define:
 
@@ -174,7 +174,7 @@ class WorkPlanUpdate(BaseModel):
 
 Implement `time_to_minute`, `deterministic_plan_id`, `is_plan_manager`, `build_plan_drafts`, and `validate_update`. Normalize notes with `strip()` and store empty notes as `None`.
 
-- [ ] **Step 4: Run domain tests and commit**
+- [x] **Step 4: Run domain tests and commit**
 
 Expected: all domain tests pass.
 
@@ -189,7 +189,7 @@ git commit -m "feat: define work plan domain rules"
 - Create: `backend/app/modules/work_plans/service.py`
 - Create: `backend/tests/test_work_plan_service.py`
 
-- [ ] **Step 1: Write failing creation-service tests**
+- [x] **Step 1: Write failing creation-service tests**
 
 Use small async collection fakes to prove authenticated identity, one result per date, duplicate replay, and partial write reporting:
 
@@ -207,11 +207,11 @@ async def test_retry_reports_duplicates_without_new_documents(self) -> None:
     self.assertEqual(db.work_plans.insert_count, 2)
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run `python -m unittest tests.test_work_plan_service.WorkPlanCreationTests -v`. Expected: missing service functions.
 
-- [ ] **Step 3: Implement creation and history reads**
+- [x] **Step 3: Implement creation and history reads**
 
 Implement each deterministic ID with an upsert guarded by `_id`, then read all IDs before forming the complete response:
 
@@ -226,7 +226,7 @@ outcome = "created" if result.upserted_id is not None else "duplicate"
 
 Catch per-date infrastructure errors, continue processing, then report `failed` with a Chinese message for that date. Add `list_my_work_plans` sorted by `plan_date DESC, created_at DESC`, always including cancelled entries. Write one create audit entry per newly inserted record.
 
-- [ ] **Step 4: Run focused service tests and commit**
+- [x] **Step 4: Run focused service tests and commit**
 
 ```powershell
 git add backend/app/modules/work_plans/service.py backend/tests/test_work_plan_service.py
@@ -241,7 +241,7 @@ git commit -m "feat: create idempotent work plans"
 - Modify: `backend/app/modules/work_plans/service.py`
 - Modify: `backend/tests/test_work_plan_service.py`
 
-- [ ] **Step 1: Write failing presence and schedule tests**
+- [x] **Step 1: Write failing presence and schedule tests**
 
 ```python
 async def test_member_presence_summary_keeps_last_seen_for_offline_users(self) -> None:
@@ -256,11 +256,11 @@ def test_temporary_unavailable_suppresses_offline_plan_hint(self) -> None:
 
 Add schedule assertions for `7d`, `30d`, `all`, member filters, embedded deleted-member names, cancelled exclusion, and neutral planned-offline status.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run the two focused modules. Expected: missing summary and schedule composition.
 
-- [ ] **Step 3: Implement reusable presence summaries and schedule query**
+- [x] **Step 3: Implement reusable presence summaries and schedule query**
 
 Query active presence with the existing `ACTIVE_PRESENCE_SECONDS`, aggregate latest retained minute per user, and return:
 
@@ -276,7 +276,7 @@ Query active presence with the existing `ACTIVE_PRESENCE_SECONDS`, aggregate lat
 
 Implement `list_work_plan_schedule(db, range_name, member_ids, include_cancelled, observed_at)` with Asia/Shanghai date boundaries and a maximum of 4,000 returned plans. Return `members`, `plans`, `start_date`, `end_date`, `observed_at`, and `timezone`.
 
-- [ ] **Step 4: Re-run tests and commit**
+- [x] **Step 4: Re-run tests and commit**
 
 ```powershell
 git add backend/app/modules/system/presence.py backend/app/modules/work_plans/service.py backend/tests/test_frontend_presence.py backend/tests/test_work_plan_service.py
@@ -292,7 +292,7 @@ git commit -m "feat: combine work plans with presence"
 - Modify: `backend/tests/test_work_plan_service.py`
 - Create: `backend/tests/test_work_plan_routes.py`
 
-- [ ] **Step 1: Write failing authorization and route tests**
+- [x] **Step 1: Write failing authorization and route tests**
 
 ```python
 async def test_member_cannot_cancel_another_members_plan(self) -> None:
@@ -308,11 +308,11 @@ def test_router_uses_work_plan_view_permission(self) -> None:
     self.assertTrue(all("work-plans" in dependency for dependency in dependencies))
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Expected: missing update/cancel functions and router.
 
-- [ ] **Step 3: Implement atomic writes and endpoints**
+- [x] **Step 3: Implement atomic writes and endpoints**
 
 Use ownership-or-manager filters and cancellation state:
 
@@ -326,7 +326,7 @@ if payload.expected_updated_at is not None:
 
 Expose `GET /schedule`, `GET /mine`, `POST /`, `PATCH /{plan_id}`, and `POST /{plan_id}/cancel`. Reject `actor_type == "api_token"` with `403` and Chinese detail. Map missing, stale, cancelled, rule, and permission errors to `404`, `409`, `400`, and `403`. Register the router in `main.py` and audit successful mutations.
 
-- [ ] **Step 4: Run backend work-plan tests and commit**
+- [x] **Step 4: Run backend work-plan tests and commit**
 
 ```powershell
 git add backend/app/routers/work_plans.py backend/app/main.py backend/app/modules/work_plans/service.py backend/tests/test_work_plan_service.py backend/tests/test_work_plan_routes.py
@@ -342,7 +342,7 @@ git commit -m "feat: expose work plan APIs"
 - Create: `frontend/src/pages/workPlans/workPlanViewModel.ts`
 - Create: `frontend/src/pages/workPlans/workPlanViewModel.test.ts`
 
-- [ ] **Step 1: Write failing frontend rule tests**
+- [x] **Step 1: Write failing frontend rule tests**
 
 ```typescript
 it("resolves weekday selections chronologically and rejects more than five dates", () => {
@@ -356,15 +356,15 @@ it("maps minutes to stable Gantt percentages", () => {
 });
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run `npm test -- src/pages/workPlans/dateSelection.test.ts src/pages/workPlans/workPlanViewModel.test.ts`. Expected: module import failures.
 
-- [ ] **Step 3: Implement pure frontend helpers**
+- [x] **Step 3: Implement pure frontend helpers**
 
 Export `isoDateRange`, `resolveWeekdays`, `normalizeSelectedDates`, `validateSelectedDates`, `thirtyMinuteOptions`, `ganttGeometry`, `groupPlansByDate`, and `collaborationLabel`. Avoid `new Date("YYYY-MM-DD")`; parse date components and use UTC arithmetic so the helpers are browser-timezone independent.
 
-- [ ] **Step 4: Re-run tests and commit**
+- [x] **Step 4: Re-run tests and commit**
 
 ```powershell
 git add frontend/src/pages/workPlans
@@ -381,7 +381,7 @@ git commit -m "feat: add work plan view models"
 - Create: `frontend/src/pages/workPlans/MyPlansDrawer.tsx`
 - Create: `frontend/src/pages/WorkPlansPage.test.tsx`
 
-- [ ] **Step 1: Install icons and write failing component-state tests**
+- [x] **Step 1: Install icons and write failing component-state tests**
 
 Run `npm install lucide-react`.
 
@@ -406,11 +406,11 @@ it("shows manager actions for another member without exposing them to ordinary v
 });
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Expected: missing components and reducer.
 
-- [ ] **Step 3: Implement components**
+- [x] **Step 3: Implement components**
 
 The form component receives:
 
@@ -429,7 +429,7 @@ Use `CalendarDays`, `Clock3`, `Plus`, `X`, `Pencil`, and `Ban` from `lucide-reac
 
 Selecting a Gantt bar opens a detail popover. Pass `currentUser`, `onEditPlan`, and `onCancelPlan` to the schedule; show mutation controls only when `canManagePlan(currentUser, plan)` is true. Add the manager-only `含已取消` toggle when the selected range is `all`.
 
-- [ ] **Step 4: Re-run component tests and commit**
+- [x] **Step 4: Re-run component tests and commit**
 
 ```powershell
 git add frontend/package.json frontend/package-lock.json frontend/src/pages/workPlans frontend/src/pages/WorkPlansPage.test.tsx
@@ -447,7 +447,7 @@ git commit -m "feat: build work plan components"
 - Modify: `frontend/src/App.test.ts`
 - Modify: `frontend/src/pages/WorkPlansPage.test.tsx`
 
-- [ ] **Step 1: Write failing navigation and orchestration tests**
+- [x] **Step 1: Write failing navigation and orchestration tests**
 
 ```typescript
 it("places work plans in the first visible navigation group", () => {
@@ -461,11 +461,11 @@ it("reuses one idempotency key while a create request is in flight", () => {
 });
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run App and WorkPlansPage tests. Expected: route and orchestration functions are missing.
 
-- [ ] **Step 3: Implement the page and styles**
+- [x] **Step 3: Implement the page and styles**
 
 Fetch schedule and personal history through the existing `api()` helper. Refresh both after create/update/cancel. Preserve old schedule data when a refresh fails. Register `work-plans` as the first navigation group and render `<WorkPlansPage token={token} currentUser={user} showToast={showToast} />`.
 
@@ -487,7 +487,7 @@ CSS requirements:
 }
 ```
 
-- [ ] **Step 4: Run frontend tests/build and commit**
+- [x] **Step 4: Run frontend tests/build and commit**
 
 Run `npm test` and `npm run build`. Expected: 0 failures and build exit 0.
 
@@ -501,7 +501,7 @@ git commit -m "feat: add flexible work plan workspace"
 **Files:**
 - Modify only files required by failures found during verification.
 
-- [ ] **Step 1: Run full automated gates**
+- [x] **Step 1: Run full automated gates**
 
 ```powershell
 & 'D:\Data\Codex 项目文件夹\API key 后端管理面板开发\backend\.venv\Scripts\python.exe' -m unittest discover -s tests -v
@@ -512,11 +512,11 @@ git diff --check origin/main...HEAD
 
 Expected: all backend tests pass, all frontend tests pass, production build succeeds, and no whitespace errors.
 
-- [ ] **Step 2: Start local services and inspect in browser**
+- [x] **Step 2: Start local services and inspect in browser**
 
 Start FastAPI and Vite on unused ports. Verify authenticated desktop at 1440x900 and 1024x768, then mobile at 390x844 and 360x800. Capture screenshots for the schedule, open form, history, and mobile list.
 
-- [ ] **Step 3: Verify visual and interaction invariants**
+- [x] **Step 3: Verify visual and interaction invariants**
 
 Confirm:
 
@@ -530,7 +530,7 @@ Confirm:
 - reduced-motion disables nonessential animation;
 - no copy describes the feature as attendance.
 
-- [ ] **Step 4: Fix any discovered issue using a failing test first**
+- [x] **Step 4: Fix any discovered issue using a failing test first**
 
 For each issue, add a focused regression test, observe it fail, implement the smallest fix, and rerun the relevant suite plus build.
 
@@ -539,7 +539,7 @@ For each issue, add a focused regression test, observe it fail, implement the sm
 **Files:**
 - Update: `docs/superpowers/plans/2026-08-15-flexible-work-plans.md` checkboxes only if the repository convention tracks execution.
 
-- [ ] **Step 1: Review the complete diff against the design**
+- [x] **Step 1: Review the complete diff against the design**
 
 Run:
 
@@ -551,7 +551,7 @@ git diff --check origin/main...HEAD
 
 Inspect authorization, idempotency, cancellation history, presence wording, responsive CSS, and all request/response fields.
 
-- [ ] **Step 2: Commit final verification fixes**
+- [x] **Step 2: Commit final verification fixes**
 
 ```powershell
 git add -u
@@ -560,6 +560,6 @@ git commit -m "test: verify flexible work plans"
 
 Skip this commit when no final fixes exist.
 
-- [ ] **Step 3: Push and create a draft PR**
+- [x] **Step 3: Push and create a draft PR**
 
 Push `codex/flexible-work-plans` and create a draft PR targeting `main`. The PR body must summarize the Gantt-first workflow, authenticated ownership model, universal role visibility, presence integration, validation/idempotency, responsive behavior, motion/reduced-motion support, and exact verification results.

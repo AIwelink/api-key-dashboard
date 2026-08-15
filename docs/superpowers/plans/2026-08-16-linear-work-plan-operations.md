@@ -33,7 +33,7 @@
 - Create: `backend/app/modules/work_plans/projection.py`
 - Create: `backend/tests/test_work_plan_projection.py`
 
-- [ ] **Step 1: Write failing projection tests**
+- [x] **Step 1: Write failing projection tests**
 
 Add focused tests using normalized operation dictionaries:
 
@@ -66,7 +66,7 @@ def test_cancellation_is_clipped_to_green_fragments(self) -> None:
     ])
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run from `backend`:
 
@@ -76,7 +76,7 @@ Run from `backend`:
 
 Expected: import failure for `app.modules.work_plans.projection`.
 
-- [ ] **Step 3: Implement normalized operations and projection**
+- [x] **Step 3: Implement normalized operations and projection**
 
 Implement immutable dataclasses and slot projection:
 
@@ -111,7 +111,7 @@ def project_operations(operations, window_start, window_end):
 
 Implement `clip_cancellation`, `normalize_v2_operation`, `normalize_legacy_records`, and deterministic merge behavior. Treat intervals as half-open and reject unaligned normalized input.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 Run the focused tests. Expected: all pass.
 
@@ -127,7 +127,7 @@ git commit -m "feat: project linear work plan operations"
 - Modify: `backend/app/modules/work_plans/domain.py`
 - Modify: `backend/tests/test_work_plan_domain.py`
 
-- [ ] **Step 1: Write failing 48-hour and command tests**
+- [x] **Step 1: Write failing 48-hour and command tests**
 
 ```python
 def test_operation_accepts_the_full_48_hour_window(self) -> None:
@@ -149,11 +149,11 @@ def test_offsets_must_be_aligned_and_inside_48_hours(self) -> None:
             WorkPlanCreate(operation_type="activate", anchor_dates=[TODAY], start_offset_minute=start, end_offset_minute=end, idempotency_key=UUID(int=2))
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run `python -m unittest tests.test_work_plan_domain -v`. Expected: missing version 2 fields and builder.
 
-- [ ] **Step 3: Implement schemas and domain construction**
+- [x] **Step 3: Implement schemas and domain construction**
 
 Add:
 
@@ -179,7 +179,7 @@ class WorkPlanCreate(BaseModel):
 
 Retain compatibility parsing for version 1 payloads. Implement `anchor_offset_to_utc`, `build_operation_drafts`, and compensation metadata. Never accept member identity fields.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 ```powershell
 git add backend/app/modules/work_plans/schemas.py backend/app/modules/work_plans/domain.py backend/tests/test_work_plan_domain.py
@@ -192,7 +192,7 @@ git commit -m "feat: support 48 hour work plan commands"
 - Modify: `backend/app/modules/work_plans/service.py`
 - Modify: `backend/tests/test_work_plan_service.py`
 
-- [ ] **Step 1: Write failing lease, sequence, idempotency, and clipping tests**
+- [x] **Step 1: Write failing lease, sequence, idempotency, and clipping tests**
 
 Add tests proving:
 
@@ -217,11 +217,11 @@ async def test_cancel_without_green_overlap_writes_nothing(self) -> None:
 
 Include expired lease recovery and lost-acknowledgement replay.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run the new service test classes. Expected: version 2 service behavior absent.
 
-- [ ] **Step 3: Implement member lease and immutable persistence**
+- [x] **Step 3: Implement member lease and immutable persistence**
 
 Add a recoverable lease context and sequence repair helpers:
 
@@ -270,7 +270,7 @@ async def _repair_sequence_head(db, member_id: str) -> int:
 
 Acquire once per command, compute cancellation fragments from committed green segments, assign sequences, insert idempotently, update the head, and release in `finally`. Preserve the existing uncertain-result behavior when acknowledgement and readback both fail.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 ```powershell
 git add backend/app/modules/work_plans/service.py backend/tests/test_work_plan_service.py
@@ -285,7 +285,7 @@ git commit -m "feat: persist ordered work plan operations"
 - Modify: `backend/tests/test_work_plan_projection.py`
 - Modify: `backend/tests/test_work_plan_service.py`
 
-- [ ] **Step 1: Write failing schedule and ordering tests**
+- [x] **Step 1: Write failing schedule and ordering tests**
 
 ```python
 def test_member_order_uses_pin_priority_active_future_past_and_name(self) -> None:
@@ -306,15 +306,15 @@ async def test_schedule_returns_cross_day_continuous_segments(self) -> None:
 
 Add legacy work/cancelled-work/temporary-unavailable compatibility cases and history compensation labels.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Expected: schedule still returns independent plans and current member sorting.
 
-- [ ] **Step 3: Implement schedule projection and authoritative sorting**
+- [x] **Step 3: Implement schedule projection and authoritative sorting**
 
 Return `segments`, `current_green`, `next_green_start`, `latest_green_end`, and priority per member. Project a one-slot buffer around requested boundaries, clip returned segments to the response window, and preserve deleted-member embedded names.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 ```powershell
 git add backend/app/modules/work_plans/projection.py backend/app/modules/work_plans/service.py backend/tests/test_work_plan_projection.py backend/tests/test_work_plan_service.py
@@ -332,7 +332,7 @@ git commit -m "feat: compose continuous work plan schedules"
 - Modify: `backend/tests/test_work_plan_routes.py`
 - Modify: `backend/tests/test_work_plan_service.py`
 
-- [ ] **Step 1: Write failing index, bootstrap, priority, and route tests**
+- [x] **Step 1: Write failing index, bootstrap, priority, and route tests**
 
 ```python
 async def test_priority_requires_manager_and_accepts_any_positive_integer(self) -> None:
@@ -347,15 +347,15 @@ async def test_bootstrap_sets_zhang_once_without_overwriting_clear(self) -> None
     self.assertEqual(users.docs[0]["work_plan_priority"], 1)
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run work-plan index, route, and priority service tests.
 
-- [ ] **Step 3: Implement indexes, bootstrap, and route**
+- [x] **Step 3: Implement indexes, bootstrap, and route**
 
 Add `WorkPlanPriorityUpdate(priority: int | None)` with positive validation. Expose `PATCH /api/work-plans/members/{member_id}/priority`. Audit before/after values and return the public member summary. Add version 2 and lease indexes. Bootstrap only a unique active owner named `张城玮` whose field is absent.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 ```powershell
 git add backend/app/modules/system/bootstrap.py backend/app/routers/work_plans.py backend/app/modules/work_plans/schemas.py backend/app/modules/work_plans/service.py backend/tests/test_work_plan_indexes.py backend/tests/test_work_plan_routes.py backend/tests/test_work_plan_service.py
@@ -371,7 +371,7 @@ git commit -m "feat: manage work plan member priority"
 - Modify: `frontend/src/pages/workPlans/workPlanViewModel.ts`
 - Modify: `frontend/src/pages/workPlans/workPlanViewModel.test.ts`
 
-- [ ] **Step 1: Write failing option, label, and segment geometry tests**
+- [x] **Step 1: Write failing option, label, and segment geometry tests**
 
 ```typescript
 it("builds unambiguous 48 hour half-hour options", () => {
@@ -387,15 +387,15 @@ it("maps an absolute cross-day segment onto one continuous track", () => {
 });
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run the two focused Vitest files. Expected: helpers and version 2 types are missing.
 
-- [ ] **Step 3: Implement types and pure helpers**
+- [x] **Step 3: Implement types and pure helpers**
 
 Define `WorkPlanOperation`, `WorkPlanSegment`, `WorkPlanMemberSummary`, operation payloads, `fortyEightHourOptions`, `formatOffsetInterval`, and `timelineGeometry`. Keep date arithmetic timezone-independent by parsing ISO components and using explicit UTC milliseconds for geometry only.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 ```powershell
 git add frontend/src/pages/workPlans/types.ts frontend/src/pages/workPlans/dateSelection.ts frontend/src/pages/workPlans/dateSelection.test.ts frontend/src/pages/workPlans/workPlanViewModel.ts frontend/src/pages/workPlans/workPlanViewModel.test.ts
@@ -410,7 +410,7 @@ git commit -m "feat: add 48 hour work plan view models"
 - Modify: `frontend/src/pages/WorkPlansPage.test.tsx`
 - Modify: `frontend/src/pages/workPlans/WorkPlanStyles.test.ts`
 
-- [ ] **Step 1: Write failing form and CSS contract tests**
+- [x] **Step 1: Write failing form and CSS contract tests**
 
 ```typescript
 it("uses activate and cancel product labels", () => {
@@ -426,15 +426,15 @@ it("scopes neutral hover backgrounds for the backdrop and advanced dates", () =>
 });
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Expected: old labels remain and explicit hover rules are absent.
 
-- [ ] **Step 3: Implement the form and scoped styles**
+- [x] **Step 3: Implement the form and scoped styles**
 
 Use numeric offset values, disable multi-date modes for cancellation, render full local interval preview, and validate start/end offsets. Set explicit non-red default and hover backgrounds on `.work-plan-drawer-backdrop` and `.work-plan-more-date-toggle`. Keep transform/opacity motion and reduced-motion overrides.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 ```powershell
 git add frontend/src/pages/workPlans/WorkPlanFormDrawer.tsx frontend/src/pages/WorkPlansPage.css frontend/src/pages/WorkPlansPage.test.tsx frontend/src/pages/workPlans/WorkPlanStyles.test.ts
@@ -451,7 +451,7 @@ git commit -m "fix: refine work plan form interactions"
 - Modify: `frontend/src/pages/WorkPlansPage.test.tsx`
 - Modify: `frontend/src/pages/workPlans/WorkPlanSchedule.interaction.test.tsx`
 
-- [ ] **Step 1: Write failing rendering and interaction tests**
+- [x] **Step 1: Write failing rendering and interaction tests**
 
 ```typescript
 it("renders one member track with active and cancelled segments", () => {
@@ -469,15 +469,15 @@ it("shows priority editing only to managers", () => {
 
 Retain the existing focus-entry, Tab-cycle, Escape-close, and focus-restoration assertions.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Expected: component still renders per-day independent plan bars and has no priority control.
 
-- [ ] **Step 3: Implement continuous desktop/mobile tracks and history**
+- [x] **Step 3: Implement continuous desktop/mobile tracks and history**
 
 Render one absolute track per member over the response window. Use segment geometry from absolute response boundaries. Group mobile by member with an internal scroll region. Add a `ListOrdered` priority popover for owner/admin. Render cancelled and replaced history rows with explicit text and grey styling; keep later-active current segments green.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 ```powershell
 git add frontend/src/pages/workPlans/WorkPlanPriorityPopover.tsx frontend/src/pages/workPlans/WorkPlanSchedule.tsx frontend/src/pages/workPlans/MyPlansDrawer.tsx frontend/src/pages/WorkPlansPage.css frontend/src/pages/WorkPlansPage.test.tsx frontend/src/pages/workPlans/WorkPlanSchedule.interaction.test.tsx
@@ -490,7 +490,7 @@ git commit -m "feat: render continuous work plan tracks"
 - Modify: `frontend/src/pages/WorkPlansPage.tsx`
 - Modify: `frontend/src/pages/WorkPlansPage.test.tsx`
 
-- [ ] **Step 1: Write failing orchestration tests**
+- [x] **Step 1: Write failing orchestration tests**
 
 Cover version 2 create payloads, operation-history pagination, priority update, stale schedule generation rejection, and refresh after every successful mutation.
 
@@ -504,15 +504,15 @@ it("sends offsets and operation type without member identity", () => {
 });
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Expected: page still sends version 1 `plan_type`, `dates`, and clock strings.
 
-- [ ] **Step 3: Implement API calls and state replacement**
+- [x] **Step 3: Implement API calls and state replacement**
 
 Send version 2 commands, consume `segments`, update priority through the dedicated route, and refresh schedule/history after commands. Preserve stale-data warnings and request-generation guards. Do not optimistically invent interval projection in the client.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 ```powershell
 git add frontend/src/pages/WorkPlansPage.tsx frontend/src/pages/WorkPlansPage.test.tsx
@@ -525,7 +525,7 @@ git commit -m "feat: integrate linear work plan commands"
 - Modify only files required by failures discovered during verification.
 - Update: `docs/superpowers/plans/2026-08-16-linear-work-plan-operations.md` checkbox states.
 
-- [ ] **Step 1: Run complete automated gates**
+- [x] **Step 1: Run complete automated gates**
 
 ```powershell
 & '.\backend\.venv\Scripts\python.exe' -m unittest discover -s backend\tests -v
@@ -536,7 +536,7 @@ git diff --check origin/achernar/dev...HEAD
 
 Expected: all backend and frontend tests pass, build exits zero, and no whitespace errors are reported.
 
-- [ ] **Step 2: Run browser acceptance**
+- [x] **Step 2: Run browser acceptance**
 
 Use the Browser plugin when available. Test desktop `1440x960` and mobile `390x844`:
 
@@ -551,7 +551,7 @@ Use the Browser plugin when available. Test desktop `1440x960` and mobile `390x8
 - no page-level horizontal overflow, overlap, console error, or framework overlay;
 - focus and reduced-motion behavior remain correct.
 
-- [ ] **Step 3: Fix every discovered issue with RED-GREEN tests**
+- [x] **Step 3: Fix every discovered issue with RED-GREEN tests**
 
 For each issue, write a focused failing regression test, run it to verify the expected failure, implement the smallest correction, and rerun the focused plus complete suites.
 
