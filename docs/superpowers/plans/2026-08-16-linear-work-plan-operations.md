@@ -555,7 +555,7 @@ Use the Browser plugin when available. Test desktop `1440x960` and mobile `390x8
 
 For each issue, write a focused failing regression test, run it to verify the expected failure, implement the smallest correction, and rerun the focused plus complete suites.
 
-- [ ] **Step 4: Review and update the existing PR**
+- [x] **Step 4: Review and update the existing PR**
 
 ```powershell
 git status --short
