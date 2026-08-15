@@ -3,6 +3,7 @@ const DAY_MS = 86_400_000;
 const MAX_SELECTED_DATES = 5;
 
 export type TimeOption = Readonly<{ value: string; label: string }>;
+export type OffsetTimeOption = Readonly<{ value: number; label: string }>;
 
 const HALF_HOUR_OPTIONS: readonly TimeOption[] = Array.from({ length: 48 }, (_, index) => {
   const hour = Math.floor(index / 2);
@@ -99,4 +100,30 @@ export function validateSelectedDates(values: string[]): string | null {
 
 export function thirtyMinuteOptions(options: { includeEndOfDay?: boolean } = {}): readonly TimeOption[] {
   return options.includeEndOfDay ? [...HALF_HOUR_OPTIONS, END_OF_DAY_OPTION] : HALF_HOUR_OPTIONS;
+}
+
+export function formatOffsetMinute(offsetMinute: number): string {
+  const normalized = Math.max(0, Math.min(2_880, Math.trunc(offsetMinute)));
+  const dayIndex = Math.floor(normalized / 1_440);
+  const minuteOfDay = normalized % 1_440;
+  const hour = Math.floor(minuteOfDay / 60);
+  const minute = minuteOfDay % 60;
+  const dayLabel = dayIndex === 0 ? "当天" : dayIndex === 1 ? "次日" : "两日后";
+  return `${dayLabel} ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+const FORTY_EIGHT_HOUR_OPTIONS: readonly OffsetTimeOption[] = Array.from(
+  { length: 97 },
+  (_, index) => {
+    const value = index * 30;
+    return { value, label: formatOffsetMinute(value) };
+  },
+);
+
+export function fortyEightHourOptions(): readonly OffsetTimeOption[] {
+  return FORTY_EIGHT_HOUR_OPTIONS;
+}
+
+export function formatOffsetInterval(startOffsetMinute: number, endOffsetMinute: number): string {
+  return `${formatOffsetMinute(startOffsetMinute)} - ${formatOffsetMinute(endOffsetMinute)}`;
 }

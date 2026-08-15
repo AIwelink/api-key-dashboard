@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  fortyEightHourOptions,
+  formatOffsetInterval,
   isoDateRange,
   normalizeSelectedDates,
   resolveWeekdays,
@@ -58,5 +60,19 @@ describe("work plan date selection", () => {
     const endOptions = thirtyMinuteOptions({ includeEndOfDay: true });
     expect(endOptions).toHaveLength(49);
     expect(endOptions.at(-1)).toEqual({ value: "24:00", label: "24:00" });
+  });
+
+  it("builds unambiguous 48 hour half-hour options", () => {
+    const options = fortyEightHourOptions();
+
+    expect(options).toHaveLength(97);
+    expect(options[0]).toEqual({ value: 0, label: "当天 00:00" });
+    expect(options[48]).toEqual({ value: 1_440, label: "次日 00:00" });
+    expect(options[96]).toEqual({ value: 2_880, label: "两日后 00:00" });
+  });
+
+  it("formats cross-day offset intervals without duplicate clock ambiguity", () => {
+    expect(formatOffsetInterval(22 * 60, 26 * 60)).toBe("当天 22:00 - 次日 02:00");
+    expect(formatOffsetInterval(24 * 60, 48 * 60)).toBe("次日 00:00 - 两日后 00:00");
   });
 });

@@ -32,6 +32,34 @@ export function ganttGeometry(startMinute: number, endMinute: number): GanttGeom
   };
 }
 
+export function timelineGeometry(
+  timelineStart: string,
+  timelineEnd: string,
+  segmentStart: string,
+  segmentEnd: string,
+): GanttGeometry {
+  const startAt = Date.parse(timelineStart);
+  const endAt = Date.parse(timelineEnd);
+  const itemStartAt = Date.parse(segmentStart);
+  const itemEndAt = Date.parse(segmentEnd);
+  if (
+    !Number.isFinite(startAt)
+    || !Number.isFinite(endAt)
+    || !Number.isFinite(itemStartAt)
+    || !Number.isFinite(itemEndAt)
+    || endAt <= startAt
+  ) {
+    return { leftPercent: 0, widthPercent: 0 };
+  }
+  const clippedStart = Math.max(startAt, Math.min(endAt, itemStartAt));
+  const clippedEnd = Math.max(clippedStart, Math.min(endAt, itemEndAt));
+  const duration = endAt - startAt;
+  return {
+    leftPercent: roundPercent(((clippedStart - startAt) / duration) * 100),
+    widthPercent: roundPercent(((clippedEnd - clippedStart) / duration) * 100),
+  };
+}
+
 export function groupPlansByDate(plans: WorkPlan[]): WorkPlanDateGroup[] {
   const groups = new Map<string, WorkPlan[]>();
   for (const plan of plans) {

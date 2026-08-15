@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { collaborationLabel, ganttGeometry, groupPlansByDate } from "./workPlanViewModel";
+import {
+  collaborationLabel,
+  ganttGeometry,
+  groupPlansByDate,
+  timelineGeometry,
+} from "./workPlanViewModel";
 import type { WorkPlan } from "./types";
 
 const basePlan: WorkPlan = {
@@ -48,5 +53,27 @@ describe("work plan view model", () => {
     expect(collaborationLabel("planned_offline")).toBe("计划时段内，暂未在线");
     expect(collaborationLabel("temporary_unavailable")).toBe("临时有事");
     expect(collaborationLabel("offline")).toBe("当前离线");
+  });
+
+  it("maps an absolute cross-day segment onto one continuous track", () => {
+    expect(
+      timelineGeometry(
+        "2026-08-16T00:00:00+00:00",
+        "2026-08-17T00:00:00+00:00",
+        "2026-08-16T06:00:00+00:00",
+        "2026-08-16T18:00:00+00:00",
+      ),
+    ).toEqual({ leftPercent: 25, widthPercent: 50 });
+  });
+
+  it("clips segments at the visible timeline boundaries", () => {
+    expect(
+      timelineGeometry(
+        "2026-08-16T00:00:00+00:00",
+        "2026-08-17T00:00:00+00:00",
+        "2026-08-15T20:00:00+00:00",
+        "2026-08-16T03:00:00+00:00",
+      ),
+    ).toEqual({ leftPercent: 0, widthPercent: 12.5 });
   });
 });
