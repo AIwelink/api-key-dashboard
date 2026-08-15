@@ -1439,6 +1439,7 @@
 }
 
 .traffic-overview-metric {
+  position: relative;
   display: grid;
   align-content: center;
   gap: 4px;
@@ -10202,5 +10203,397 @@ code {
 
   .capacity-meter-fill.excellent::after {
     animation: none;
+  }
+}
+
+/* Open traffic data workspace redesign */
+.traffic-overview {
+  display: block;
+  min-width: 0;
+  color: #17201d;
+}
+
+.traffic-overview-workspace {
+  display: grid;
+  grid-template-columns: 176px minmax(0, 1fr);
+  align-items: start;
+  min-width: 0;
+}
+
+.traffic-overview-workspace > .workspace-rail {
+  position: sticky;
+  top: 12px;
+  align-self: start;
+  min-height: min(680px, calc(100vh - 40px));
+  padding: 16px 14px;
+  border-right: 1px solid #dce3df;
+  background: #fafbfa;
+}
+
+.traffic-overview-main {
+  min-width: 0;
+  padding-left: 24px;
+}
+
+.traffic-overview-query {
+  position: sticky;
+  z-index: 24;
+  top: 0;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(92px, 1fr)) auto;
+  gap: 7px;
+  align-items: end;
+  min-width: 0;
+  padding: 10px 0 12px;
+  border: 0;
+  border-bottom: 1px solid #17201d;
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: none;
+}
+
+.traffic-overview-query label {
+  min-width: 0;
+}
+
+.traffic-overview-query label > span {
+  margin: 0 0 5px 2px;
+  color: #69746f;
+  font-size: 10px;
+}
+
+.traffic-overview-query select,
+.traffic-overview-query > button {
+  height: 32px;
+  min-height: 32px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.traffic-overview-summary,
+.traffic-overview-section,
+.traffic-overview-quality {
+  scroll-margin-top: 76px;
+}
+
+.traffic-overview-kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  min-width: 0;
+  padding: 18px 0 17px;
+  border-bottom: 1px solid #dce3df;
+}
+
+.traffic-overview-metric {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  min-height: 78px;
+  padding: 0 14px;
+  border-right: 1px solid #dce3df;
+}
+
+.traffic-overview-metric .metric-definition {
+  position: static;
+}
+
+.traffic-overview-metric .metric-definition-tooltip {
+  top: 24px;
+  right: auto;
+  left: 0;
+}
+
+.traffic-overview-metric:nth-child(6n) .metric-definition-tooltip {
+  right: 0;
+  left: auto;
+}
+
+.traffic-overview-metric:first-child {
+  padding-left: 0;
+}
+
+.traffic-overview-metric:last-child {
+  padding-right: 0;
+  border-right: 0;
+}
+
+.traffic-overview-metric > span,
+.traffic-overview-metric > small {
+  min-width: 0;
+  color: #69746f;
+  font-size: 10px;
+}
+
+.traffic-overview-metric > strong {
+  margin-top: 8px;
+  overflow: hidden;
+  color: #17201d;
+  font-size: clamp(20px, 1.65vw, 27px);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.traffic-overview-metric > small {
+  margin-top: 7px;
+  overflow: hidden;
+  color: #0b776b;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.traffic-overview-audit-context {
+  display: none;
+}
+
+.traffic-overview-capability {
+  min-height: 42px;
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border: 0;
+  border-left: 3px solid #ad6800;
+  border-radius: 0;
+  background: #fff9ed;
+}
+
+.traffic-overview-section {
+  margin: 0;
+  padding: 24px 0 18px;
+  border: 0;
+  border-bottom: 1px solid #dce3df;
+  background: transparent;
+}
+
+.traffic-overview-section-head {
+  min-height: 42px;
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
+}
+
+.traffic-overview-section-head h3 {
+  color: #17201d;
+  font-size: 14px;
+}
+
+.traffic-overview-section-head span,
+.traffic-overview-section-head > small {
+  color: #69746f;
+  font-size: 10px;
+}
+
+.traffic-overview-trend-chart {
+  min-width: 0;
+  margin-bottom: 14px;
+  padding: 0 0 10px;
+  border-bottom: 1px solid #dce3df;
+}
+
+.traffic-overview-trend-chart-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 28px;
+  color: #69746f;
+  font-size: 9px;
+}
+
+.traffic-overview-trend-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.traffic-overview-trend-legend i {
+  width: 10px;
+  height: 2px;
+  margin-left: 7px;
+}
+
+.traffic-overview-trend-chart svg {
+  display: block;
+  width: 100%;
+  height: 166px;
+  overflow: visible;
+  background: repeating-linear-gradient(to bottom, transparent 0 40px, #edf1ef 40px 41px);
+}
+
+.traffic-overview-trend-chart polyline {
+  fill: none;
+  vector-effect: non-scaling-stroke;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.traffic-overview-trend-chart .homepage-pv,
+.traffic-overview-trend-legend .homepage-pv {
+  stroke: #0b776b;
+  background: #0b776b;
+}
+
+.traffic-overview-trend-chart .homepage-uv,
+.traffic-overview-trend-legend .homepage-uv {
+  stroke: #315da8;
+  background: #315da8;
+}
+
+.traffic-overview-trend-chart .link-pv,
+.traffic-overview-trend-legend .link-pv {
+  stroke: #ad6800;
+  background: #ad6800;
+}
+
+.traffic-overview-split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 28px;
+  min-width: 0;
+}
+
+.traffic-overview-split > .traffic-overview-section + .traffic-overview-section {
+  padding-left: 28px;
+  border-left: 1px solid #dce3df;
+}
+
+.traffic-overview-table-scroll {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.traffic-overview-table-scroll th {
+  height: 34px;
+  border-top: 1px solid #17201d;
+  background: #fafbfa;
+}
+
+.traffic-overview-table-scroll td {
+  height: 40px;
+  background: transparent;
+}
+
+.traffic-overview-quality {
+  margin: 0;
+  padding: 7px 0;
+  border: 0;
+  border-bottom: 1px solid #dce3df;
+  border-radius: 0;
+  background: transparent;
+}
+
+.traffic-overview-quality > summary {
+  min-height: 52px;
+  padding: 0 2px;
+}
+
+.traffic-overview-quality-body {
+  padding: 0 0 18px;
+}
+
+@media (max-width: 1179px) {
+  .traffic-overview-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .traffic-overview-workspace > .workspace-rail {
+    display: none;
+  }
+
+  .traffic-overview-main {
+    padding-left: 0;
+  }
+
+  .traffic-overview-query {
+    grid-template-columns: repeat(4, minmax(120px, 1fr));
+  }
+
+  .traffic-overview-query > button {
+    width: 100%;
+  }
+}
+
+@media (max-width: 1179px) {
+  .traffic-overview-kpi-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .traffic-overview-metric {
+    padding: 13px;
+    border-bottom: 1px solid #dce3df;
+  }
+
+  .traffic-overview-metric:nth-child(3n) {
+    border-right: 0;
+  }
+
+  .traffic-overview-metric:nth-child(3n) .metric-definition-tooltip {
+    right: 0;
+    left: auto;
+  }
+
+  .traffic-overview-metric:nth-child(n + 4) {
+    border-bottom: 0;
+  }
+
+  .traffic-overview-split {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .traffic-overview-split > .traffic-overview-section + .traffic-overview-section {
+    padding-left: 0;
+    border-left: 0;
+  }
+}
+
+@media (max-width: 759px) {
+  .traffic-overview-query {
+    position: static;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .traffic-overview-kpi-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .traffic-overview-metric,
+  .traffic-overview-metric:nth-child(3n) {
+    padding: 12px 10px;
+    border-right: 1px solid #dce3df;
+    border-bottom: 1px solid #dce3df;
+  }
+
+  .traffic-overview-metric:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .traffic-overview-metric:nth-child(3n) .metric-definition-tooltip {
+    right: auto;
+    left: 0;
+  }
+
+  .traffic-overview-metric:nth-child(2n) .metric-definition-tooltip {
+    right: 0;
+    left: auto;
+  }
+
+  .traffic-overview-metric:nth-child(n + 5) {
+    border-bottom: 0;
+  }
+
+  .traffic-overview-metric > strong {
+    font-size: 21px;
+  }
+
+  .traffic-overview-trend-chart svg {
+    height: 132px;
+  }
+
+  .traffic-overview-trend-chart-head {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

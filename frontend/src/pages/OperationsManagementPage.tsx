@@ -2,6 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import {
+  MetricDefinition,
+  type MetricDefinitionDetails,
+} from "../components/dataWorkspace/MetricDefinition";
+import { WorkspaceRail } from "../components/dataWorkspace/WorkspaceRail";
 import { GrowthCreateModal } from "../components/GrowthCreateModal";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import type { OperationsSiteId } from "../types";
@@ -495,6 +500,15 @@ export function formatRetentionRate(value: RetentionValue) {
     : formatLifecycleRate(value.rate);
 }
 
+export function retentionHeatTone(rate: number | null | undefined) {
+  if (rate == null) return "pending";
+  if (rate < 0.3) return "low";
+  if (rate < 0.45) return "medium-low";
+  if (rate < 0.6) return "medium";
+  if (rate < 0.75) return "high";
+  return "very-high";
+}
+
 export function operationsIncomeLabel(siteId: string) {
   if (siteId === "aiwelink") return "现金收入";
   if (siteId === "aigclink") return "调用计费收入";
@@ -519,6 +533,29 @@ function formatDateTime(value?: string | null) {
   if (!value) return "-";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
+}
+
+export function operationsDataWatermark(
+  statuses: Array<Pick<SyncStatus, "site_id" | "last_success_at">>,
+  expectedSiteIds?: readonly string[],
+) {
+  const selectedStatuses = expectedSiteIds
+    ? expectedSiteIds.map((siteId) => statuses.find((item) => item.site_id === siteId))
+    : statuses;
+  if (!selectedStatuses.length) return undefined;
+
+  let earliestValue: string | undefined;
+  let earliestTime = Number.POSITIVE_INFINITY;
+  for (const status of selectedStatuses) {
+    const value = status?.last_success_at;
+    if (!value) return undefined;
+    const time = new Date(value).getTime();
+    if (Number.isNaN(time)) return undefined;
+    if (time >= earliestTime) continue;
+    earliestTime = time;
+    earliestValue = value;
+  }
+  return earliestValue;
 }
 
 function formatBucket(value: string) {
@@ -617,13 +654,215 @@ function EmptyRow({ columns, text = "暂无数据" }: { columns: number; text?: 
   return <tr><td className="operations-empty-cell" colSpan={columns}>{text}</td></tr>;
 }
 
-function Metric({ label, value, previous }: { label: string; value: string; previous?: string }) {
+const operationsMetricDefinitions: Record<string, MetricDefinitionDetails> = {
+  "注册用户": {
+    definition: "当前查询周期内完成注册的去重用户数。",
+    formula: "COUNT(DISTINCT user_id WHERE registered_at IN window)",
+    included: "当前站点与用户群体中，注册时间落在查询周期内的账号",
+    excluded: "不属于当前站点或用户群体的账号；重复注册事实",
+    source: "public_users + user_facts",
+    freshness: "页面缓存 60 秒；源数据每 15 分钟同步",
+  },
+  "活跃用户": {
+    definition: "当前查询周期内至少产生一次成功调用的去重用户数。",
+    formula: "COUNT(DISTINCT user_id WHERE successful_calls > 0)",
+    included: "当前站点与用户群体的成功调用用户",
+    excluded: "失败调用、取消调用，以及不属于当前用户群体的账号",
+    source: "usage_records",
+    freshness: "页面缓存 60 秒；源数据每 15 分钟同步",
+  },
+  "成功调用": {
+    definition: "当前查询周期内由上游确认成功的模型调用次数。",
+    formula: "SUM(successful_call_count)",
+    included: "当前站点与用户群体的成功调用记录",
+    excluded: "失败、取消、超时且未计费的调用",
+    source: "usage_records",
+    freshness: "页面缓存 60 秒；源数据每 15 分钟同步",
+  },
+  "付费 / 计费用户": {
+    definition: "AIWeLink 可核验付款用户 ∪ AIGCLink 有标价调用客户。",
+    formula: "COUNT(DISTINCT verified_cash_payer OR priced_usage_customer)",
+    included: "AIWeLink 已核验订单、销售型额度或销售型兑换码；AIGCLink 有标价成功调用客户",
+    excluded: "赠送、推广、内部、补偿额度；未记录历史兑换码；无标价调用",
+    source: "orders + balance_adjustments + usage_records",
+    freshness: "页面缓存 60 秒；源数据每 15 分钟同步",
+  },
+  "现金收入": {
+    definition: "AIWeLink 当前周期内可核验的实际收款金额。",
+    formula: "SUM(order_cash + sale_adjustment_cash + sale_redemption_cash)",
+    included: "已支付订单、销售型手工加款、销售型兑换码的实收金额",
+    excluded: "赠送、推广、内部、补偿额度；未记录历史兑换码；订阅摊销",
+    source: "orders + balance_adjustments + redemption_batches",
+    freshness: "页面缓存 60 秒；源数据每 15 分钟同步",
+  },
+  "调用计费收入": {
+    definition: "AIGCLink 当前周期内按数据库模型标价计算的后付费调用收入。",
+    formula: "SUM(successful_usage × effective_model_price)",
+    included: "存在有效模型标价的成功调用",
+    excluded: "失败调用、无标价调用、未进入当前周期的调用",
+    source: "usage_records + model_prices",
+    freshness: "页面缓存 60 秒；源数据每 15 分钟同步",
+  },
+  "收入": {
+    definition: "按站点商业模式合并的可核验现金收入与调用计费收入。",
+    formula: "AIWeLink cash_income + AIGCLink usage_billed_income",
+    included: "AIWeLink 可核验收款；AIGCLink 有标价成功调用",
+    excluded: "赠送额度、未记录历史兑换码、无标价调用",
+    source: "orders + balance_adjustments + usage_records",
+    freshness: "页面缓存 60 秒；源数据每 15 分钟同步",
+  },
+  "退款": {
+    definition: "当前查询周期内已确认完成的退款金额。",
+    formula: "SUM(completed_refund_amount)",
+    included: "已完成并可关联业务交易的退款",
+    excluded: "申请中、失败、取消的退款",
+    source: "orders + refunds",
+    freshness: "页面缓存 60 秒；源数据每 15 分钟同步",
+  },
+  "24 小时激活率": {
+    definition: "注册后 24 小时内产生成功调用的新用户比例。",
+    formula: "24h 内成功调用注册用户 / 已满 24h 的注册用户",
+    included: "已完成 24 小时观察窗口的注册用户",
+    excluded: "观察窗口尚未成熟的注册用户",
+    source: "public_users + usage_records",
+    freshness: "随 15 分钟源数据同步滚动重算",
+  },
+  "7 日激活率": {
+    definition: "注册后 7 天内产生成功调用的新用户比例。",
+    formula: "7d 内成功调用注册用户 / 已满 7d 的注册用户",
+    included: "已完成 7 天观察窗口的注册用户",
+    excluded: "观察窗口尚未成熟的注册用户",
+    source: "public_users + usage_records",
+    freshness: "随 15 分钟源数据同步滚动重算",
+  },
+  "D7 留存": {
+    definition: "注册后第 7 个上海自然日仍有成功调用的用户比例。",
+    formula: "Σ D7 成功调用人数 / Σ 已成熟 D7 cohort 人数",
+    included: "已经过第 7 个上海自然日的注册 cohort",
+    excluded: "未成熟 cohort；失败调用；非当前用户群体",
+    source: "public_users + usage_records（Asia/Shanghai）",
+    freshness: "随 15 分钟源数据同步按自然日补算",
+  },
+  "活跃用户付费率": {
+    definition: "当前周期活跃用户中，属于已付款或已计费客户的比例。",
+    formula: "活跃付费/计费用户 / 活跃用户",
+    included: "AIWeLink 可核验付款活跃用户；AIGCLink 有标价调用活跃客户",
+    excluded: "仅获赠额度但无可核验付款的 AIWeLink 用户",
+    source: "orders + balance_adjustments + usage_records",
+    freshness: "页面缓存 60 秒；源数据每 15 分钟同步",
+  },
+  "本期付款率": {
+    definition: "当前周期内新增实际付款用户占活跃用户的比例，仅适用于现金收款站点。",
+    formula: "本期实际付款用户 / 本期活跃用户",
+    included: "当前周期完成可核验付款的 AIWeLink 用户",
+    excluded: "历史付款但本期未付款用户；AIGCLink 后付费客户",
+    source: "orders + sale balance_adjustments + usage_records",
+    freshness: "页面缓存 60 秒；源数据每 15 分钟同步",
+  },
+  "流失预警": {
+    definition: "最近一次成功调用距今 14 至 30 天的历史活跃用户数。",
+    formula: "COUNT(DISTINCT user_id WHERE inactivity_days IN [14, 30))",
+    included: "余额与订阅用户统一按成功调用活跃度判断",
+    excluded: "从未成功调用的账号；已达到 30 天使用流失的账号",
+    source: "usage_records",
+    freshness: "随 15 分钟源数据同步滚动重算",
+  },
+  "使用流失": {
+    definition: "连续 30 天及以上没有成功调用的历史活跃用户数。",
+    formula: "COUNT(DISTINCT user_id WHERE inactivity_days >= 30)",
+    included: "余额与订阅用户统一计算，不区分付费方式",
+    excluded: "从未成功调用的账号；30 天内仍有成功调用的账号",
+    source: "usage_records",
+    freshness: "随 15 分钟源数据同步滚动重算",
+  },
+  "回流用户": {
+    definition: "曾连续 30 天未调用，之后在当前周期重新产生成功调用的用户数。",
+    formula: "COUNT(DISTINCT user_id WHERE prior_gap >= 30d AND current_success)",
+    included: "余额与订阅用户统一按成功调用回流判断",
+    excluded: "间隔不足 30 天的普通复访；失败调用",
+    source: "usage_records",
+    freshness: "随 15 分钟源数据同步滚动重算",
+  },
+};
+
+export function operationsMetricDefinition(label: string, siteId: string): MetricDefinitionDetails {
+  if (siteId === "aiwelink") {
+    if (label === "付费 / 计费用户") return {
+      definition: "AIWeLink 可核验付款用户。",
+      formula: "COUNT(DISTINCT verified_cash_payer)",
+      included: "已核验订单、销售型手工加款或销售型兑换码用户",
+      excluded: "赠送、推广、内部、补偿额度用户；未记录历史兑换码",
+      source: "orders + balance_adjustments + redemption_batches",
+      freshness: "页面缓存 60 秒；源数据每 15 分钟同步",
+    };
+    if (label === "活跃用户付费率") return {
+      definition: "当前周期活跃用户中，属于可核验付款用户的比例。",
+      formula: "活跃可核验付款用户 / 活跃用户",
+      included: "存在已核验订单、销售型手工加款或销售型兑换码的活跃用户",
+      excluded: "仅获赠额度但无可核验付款的用户",
+      source: "orders + balance_adjustments + usage_records",
+      freshness: "页面缓存 60 秒；源数据每 15 分钟同步",
+    };
+    if (label === "本期付款率") return {
+      definition: "当前周期内新增实际付款用户占活跃用户的比例。",
+      formula: "本期实际付款用户 / 本期活跃用户",
+      included: "当前周期完成可核验付款的用户",
+      excluded: "历史付款但本期未付款用户；赠送与非销售额度",
+      source: "orders + sale balance_adjustments + usage_records",
+      freshness: "页面缓存 60 秒；源数据每 15 分钟同步",
+    };
+  }
+
+  if (siteId === "aigclink") {
+    if (label === "付费 / 计费用户") return {
+      definition: "AIGCLink 有标价成功调用客户。",
+      formula: "COUNT(DISTINCT priced_usage_customer)",
+      included: "当前周期存在有效模型标价成功调用的企业客户",
+      excluded: "失败调用、无标价调用、未进入当前周期的调用",
+      source: "usage_records + model_prices",
+      freshness: "页面缓存 60 秒；源数据每 15 分钟同步",
+    };
+    if (label === "活跃用户付费率") return {
+      definition: "当前周期活跃客户中，存在有标价成功调用的客户比例。",
+      formula: "有标价调用客户 / 活跃客户",
+      included: "当前周期存在有效模型标价成功调用的活跃客户",
+      excluded: "仅有失败调用或无标价调用的客户",
+      source: "usage_records + model_prices",
+      freshness: "页面缓存 60 秒；源数据每 15 分钟同步",
+    };
+    if (label === "本期付款率") return {
+      definition: "企业后付费站点不计算本期现金付款率。",
+      formula: "N/A（按有标价调用确认计费客户）",
+      included: "无",
+      excluded: "全部后付费调用客户",
+      source: "usage_records + model_prices",
+      freshness: "页面缓存 60 秒；源数据每 15 分钟同步",
+    };
+  }
+
+  return operationsMetricDefinitions[label];
+}
+
+function Metric({ label, value, previous, siteId }: { label: string; value: string; previous?: string; siteId: string }) {
   return (
     <div className="operations-metric">
       <span>{label}</span>
+      <MetricDefinition label={label} details={operationsMetricDefinition(label, siteId)} showLabel={false} />
       <strong>{value}</strong>
       <small>{previous || "当前查询周期"}</small>
     </div>
+  );
+}
+
+function RetentionCell({ value }: { value: RetentionValue }) {
+  const matureRate = value.denominator == null || Number(value.denominator) === 0
+    ? null
+    : value.rate;
+
+  return (
+    <td className={`operations-retention-cell ${retentionHeatTone(matureRate)}`}>
+      {formatRetentionRate(value)}
+    </td>
   );
 }
 
@@ -1169,6 +1408,13 @@ export function OperationsManagementPage(
     allowedSiteSet.has(item.site_id as OperationsSiteId)
     && (!effectiveQuery.siteId || item.site_id === effectiveQuery.siteId)
   ));
+  const selectedSyncSiteIds = effectiveQuery.siteId
+    ? [effectiveQuery.siteId]
+    : allowedSites.map((item) => item.value);
+  const latestOperationsAt = operationsDataWatermark(visibleSyncStatuses, selectedSyncSiteIds);
+  const operationsWatermarkLabel = latestOperationsAt
+    ? formatDateTime(latestOperationsAt)
+    : "等待源数据同步";
   const visibleTrends = sortNewestFirst(
     trends.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId)),
     (item) => item.bucket,
@@ -1179,7 +1425,11 @@ export function OperationsManagementPage(
   const visibleInternalUsers = internalUsers.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
   const visibleRates = rates.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
   const visibleClassificationTasks = classificationTasks.filter((item) => allowedSiteSet.has(item.site_id as OperationsSiteId));
-  const syncHealth = visibleSyncStatuses.some((item) => item.health === "delayed" || item.health === "never") ? "delayed" : visibleSyncStatuses.some((item) => item.health === "running") ? "running" : "healthy";
+  const syncHealth = visibleSyncStatuses.some((item) => item.health === "delayed" || item.health === "never")
+    ? "delayed"
+    : !latestOperationsAt || visibleSyncStatuses.some((item) => item.health === "running")
+      ? "running"
+      : "healthy";
   const syncErrorDetails = visibleSyncStatuses.filter((item) => item.error_message).map((item) => `${siteLabel(item.site_id)}：${item.error_message}`).join(" · ");
   const pageDescription = allowedSites.length === 1
     ? `查看 ${allowedSites[0].label} 的收入、消耗和用户构成`
@@ -1189,11 +1439,17 @@ export function OperationsManagementPage(
     : hasAigclinkAccess
       ? "按数据库调用标价确认计费客户与收入"
       : "按可核验现金确认付费身份，订阅收入单独摊销";
+  const showValueRankings = hasAigclinkAccess && effectiveQuery.siteId !== "aiwelink";
+  const metricDefinitionSiteId = effectiveQuery.siteId;
 
   return (
     <section className="view operations-workspace-page">
       <div className="topbar operations-page-head">
-        <div><h2>运营管理</h2><p>{pageDescription}</p></div>
+        <div>
+          <h2>运营管理</h2>
+          <p>{pageDescription}</p>
+          {tab === "overview" && <small className="operations-page-freshness">数据截至 {operationsWatermarkLabel}</small>}
+        </div>
         {tab === "overview" && <button className="ghost" type="button" disabled={refreshing} onClick={refreshSources}>{refreshing ? "提交中..." : "刷新源数据"}</button>}
       </div>
 
@@ -1209,7 +1465,25 @@ export function OperationsManagementPage(
       {loadError && <div className="operations-inline-error" role="alert"><strong>数据更新失败</strong><span>{loadError}</span><small>已加载的数据不会被清空</small></div>}
 
       {tab === "overview" && (
-        <div className="operations-tab-content">
+        <div className="operations-overview-workspace">
+          <WorkspaceRail
+            label="运营概览页面索引"
+            items={[
+              { id: "operations-summary", label: "经营总览", count: "01" },
+              { id: "operations-lifecycle", label: "生命周期", count: "02" },
+              { id: "operations-billing", label: "付费分层", count: "03" },
+              { id: "operations-cohort", label: "留存 Cohort", count: "04" },
+              ...(showValueRankings ? [{ id: "operations-ranking", label: "价值排行", count: "05" }] : []),
+              { id: "operations-trend", label: "运营趋势", count: showValueRankings ? "06" : "05" },
+              { id: "operations-sites", label: "站点对比", count: showValueRankings ? "07" : "06" },
+            ]}
+            status={{
+              title: syncHealth === "healthy" ? "数据同步正常" : syncHealth === "running" ? "正在同步" : "数据同步延迟",
+              detail: `数据截至 ${operationsWatermarkLabel}`,
+              tone: syncHealth === "healthy" ? "healthy" : syncHealth === "running" ? "muted" : "warning",
+            }}
+          />
+          <div className="operations-tab-content operations-overview-main">
           <div className="operations-query-bar">
             <label><span>站点</span><SiteSelect sites={allowedSites} includeAll={showAllSites} value={effectiveQuery.siteId} onChange={(siteId) => setQuery({ ...query, siteId })} /></label>
             <label><span>用户群体</span><select value={query.segment} onChange={(event) => setQuery({ ...query, segment: event.target.value as UserSegment })}>{Object.entries(segmentLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
@@ -1220,44 +1494,44 @@ export function OperationsManagementPage(
 
           <div className={`operations-freshness-banner ${syncHealth}`}>
             <div><span className="operations-freshness-dot" /><strong>{syncHealth === "healthy" ? "数据同步正常" : syncHealth === "running" ? "正在同步" : "数据同步延迟"}</strong></div>
-            <span>{syncErrorDetails || (visibleSyncStatuses.length ? visibleSyncStatuses.map((item) => `${siteLabel(item.site_id)} ${formatDateTime(item.last_success_at)}`).join(" · ") : "等待首次同步记录")}</span>
+            <span>{syncErrorDetails || (!latestOperationsAt ? "等待所选站点完成源数据同步" : visibleSyncStatuses.map((item) => `${siteLabel(item.site_id)} ${formatDateTime(item.last_success_at)}`).join(" · "))}</span>
             <small>页面查询缓存 60 秒，源数据每 15 分钟同步</small>
           </div>
 
-          <div className="operations-metric-grid" aria-busy={loading}>
-            <Metric label="注册用户" value={formatNumber(summary.registered_user_count, 0)} previous={comparison(summary.registered_user_count, previous.registered_user_count)} />
-            <Metric label="活跃用户" value={formatNumber(summary.active_user_count, 0)} previous={comparison(summary.active_user_count, previous.active_user_count)} />
-            <Metric label="成功调用" value={formatNumber(summary.successful_call_count, 0)} previous={comparison(summary.successful_call_count, previous.successful_call_count)} />
-            <Metric label="付费用户" value={formatNumber(summary.payer_count, 0)} previous={comparison(summary.payer_count, previous.payer_count)} />
-            <Metric label={operationsIncomeLabel(effectiveQuery.siteId)} value={formatCurrency(summary.gross_income_cny)} previous={comparison(summary.gross_income_cny, previous.gross_income_cny)} />
-            <Metric label="退款" value={formatCurrency(summary.refund_cny)} previous={comparison(summary.refund_cny, previous.refund_cny)} />
+          <div id="operations-summary" className="operations-metric-grid" aria-busy={loading}>
+            <Metric label="注册用户" value={formatNumber(summary.registered_user_count, 0)} previous={comparison(summary.registered_user_count, previous.registered_user_count)} siteId={metricDefinitionSiteId} />
+            <Metric label="活跃用户" value={formatNumber(summary.active_user_count, 0)} previous={comparison(summary.active_user_count, previous.active_user_count)} siteId={metricDefinitionSiteId} />
+            <Metric label="成功调用" value={formatNumber(summary.successful_call_count, 0)} previous={comparison(summary.successful_call_count, previous.successful_call_count)} siteId={metricDefinitionSiteId} />
+            <Metric label="付费 / 计费用户" value={formatNumber(summary.payer_count, 0)} previous={comparison(summary.payer_count, previous.payer_count)} siteId={metricDefinitionSiteId} />
+            <Metric label={operationsIncomeLabel(effectiveQuery.siteId)} value={formatCurrency(summary.gross_income_cny)} previous={comparison(summary.gross_income_cny, previous.gross_income_cny)} siteId={metricDefinitionSiteId} />
+            <Metric label="退款" value={formatCurrency(summary.refund_cny)} previous={comparison(summary.refund_cny, previous.refund_cny)} siteId={metricDefinitionSiteId} />
           </div>
 
-          <section className="operations-lifecycle-band" aria-busy={loading}>
+          <section id="operations-lifecycle" className="operations-lifecycle-band" aria-busy={loading}>
             <div className="operations-section-head"><div><h3>生命周期指标</h3><span>成熟用户按完整观察窗口计算</span></div></div>
             <div className="operations-lifecycle-grid">
-              <Metric label="24 小时激活率" value={formatLifecycleRate(lifecycleSummary.activation_24h_rate)} previous={`${formatNumber(lifecycleSummary.activation_24h_numerator, 0)} / ${formatNumber(lifecycleSummary.activation_24h_denominator, 0)}`} />
-              <Metric label="7 日激活率" value={formatLifecycleRate(lifecycleSummary.activation_7d_rate)} previous={`${formatNumber(lifecycleSummary.activation_7d_numerator, 0)} / ${formatNumber(lifecycleSummary.activation_7d_denominator, 0)}`} />
-              <Metric label="D7 留存" value={formatLifecycleRate(d7RetentionRate)} previous="成熟注册 cohort" />
-              <Metric label="活跃用户付费率" value={formatLifecycleRate(lifecycleSummary.active_payer_rate)} previous={`${formatNumber(lifecycleSummary.active_payer_numerator, 0)} / ${formatNumber(lifecycleSummary.active_payer_denominator, 0)}`} />
-              <Metric label="本期付款率" value={formatLifecycleRate(lifecycleSummary.period_payer_rate)} previous={effectiveQuery.siteId === "aigclink" ? "不适用" : `${formatNumber(lifecycleSummary.period_payer_numerator, 0)} / ${formatNumber(lifecycleSummary.period_payer_denominator, 0)}`} />
-              <Metric label="流失预警" value={formatNumber(lifecycleSummary.churn_warning_user_count, 0)} previous="14 至 30 天未调用" />
-              <Metric label="使用流失" value={formatNumber(lifecycleSummary.churned_user_count, 0)} previous="30 天以上未调用" />
-              <Metric label="回流用户" value={formatNumber(lifecycleSummary.returned_user_count, 0)} previous="间隔 30 天后再次调用" />
+              <Metric label="24 小时激活率" value={formatLifecycleRate(lifecycleSummary.activation_24h_rate)} previous={`${formatNumber(lifecycleSummary.activation_24h_numerator, 0)} / ${formatNumber(lifecycleSummary.activation_24h_denominator, 0)}`} siteId={metricDefinitionSiteId} />
+              <Metric label="7 日激活率" value={formatLifecycleRate(lifecycleSummary.activation_7d_rate)} previous={`${formatNumber(lifecycleSummary.activation_7d_numerator, 0)} / ${formatNumber(lifecycleSummary.activation_7d_denominator, 0)}`} siteId={metricDefinitionSiteId} />
+              <Metric label="D7 留存" value={formatLifecycleRate(d7RetentionRate)} previous="成熟注册 cohort" siteId={metricDefinitionSiteId} />
+              <Metric label="活跃用户付费率" value={formatLifecycleRate(lifecycleSummary.active_payer_rate)} previous={`${formatNumber(lifecycleSummary.active_payer_numerator, 0)} / ${formatNumber(lifecycleSummary.active_payer_denominator, 0)}`} siteId={metricDefinitionSiteId} />
+              <Metric label="本期付款率" value={formatLifecycleRate(lifecycleSummary.period_payer_rate)} previous={effectiveQuery.siteId === "aigclink" ? "不适用" : `${formatNumber(lifecycleSummary.period_payer_numerator, 0)} / ${formatNumber(lifecycleSummary.period_payer_denominator, 0)}`} siteId={metricDefinitionSiteId} />
+              <Metric label="流失预警" value={formatNumber(lifecycleSummary.churn_warning_user_count, 0)} previous="14 至 30 天未调用" siteId={metricDefinitionSiteId} />
+              <Metric label="使用流失" value={formatNumber(lifecycleSummary.churned_user_count, 0)} previous="30 天以上未调用" siteId={metricDefinitionSiteId} />
+              <Metric label="回流用户" value={formatNumber(lifecycleSummary.returned_user_count, 0)} previous="间隔 30 天后再次调用" siteId={metricDefinitionSiteId} />
             </div>
           </section>
 
-          <section className="operations-data-section operations-billing-section">
+          <section id="operations-billing" className="operations-data-section operations-billing-section">
             <div className="operations-section-head"><div><h3>付费与计费分层</h3><span>{billingDescription}</span></div><span>{visibleLifecycleSites.length} 个站点</span></div>
             <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>商业模式</th><th>付费 / 计费客户</th><th>有效付费</th><th>活跃付费</th><th>本期付款</th><th>付费状态未知</th><th>充值次数</th><th>充值额度</th><th>现金收入</th><th>订阅现金收入</th><th>订阅摊销收入</th><th>调用计费收入</th></tr></thead><tbody>{visibleLifecycleSites.length ? visibleLifecycleSites.map((item) => <tr key={item.site_id || "unknown"}><td><strong>{siteLabel(item.site_id || "")}</strong></td><td><span className={`operations-status-tag ${item.site_id === "aigclink" ? "usage-billed" : "cash-billed"}`}>{item.site_id === "aigclink" ? "企业后付费" : "余额与订阅"}</span></td><td>{formatNumber(item.cumulative_payer_count, 0)}</td><td>{item.site_id === "aigclink" ? "--" : formatNumber(item.effective_payer_count, 0)}</td><td>{formatNumber(item.site_id === "aigclink" ? item.active_payer_numerator : item.active_cash_payer_count, 0)}</td><td>{item.site_id === "aigclink" ? "--" : formatNumber(item.period_payer_count, 0)}</td><td>{item.site_id === "aigclink" ? "--" : formatNumber(item.unknown_payer_count, 0)}</td><td>{item.site_id === "aigclink" ? "--" : formatNumber(item.recharge_event_count, 0)}</td><td>{item.site_id === "aigclink" ? "--" : formatNumber(item.recharge_balance_units, 2)}</td><td>{item.site_id === "aigclink" ? "--" : formatCurrency(item.cash_income_cny)}</td><td>{item.site_id === "aigclink" ? "--" : formatCurrency(item.subscription_cash_income_cny)}</td><td>{item.site_id === "aigclink" ? "--" : formatCurrency(item.subscription_amortized_income_cny)}</td><td>{item.site_id === "aigclink" ? formatCurrency(item.usage_billed_income_cny) : "--"}</td></tr>) : <EmptyRow columns={13} text={loading ? "正在加载付费分层..." : "当前周期暂无付费分层数据"} />}</tbody></table></div>
           </section>
 
-          <section className="operations-data-section operations-retention-section">
+          <section id="operations-cohort" className="operations-data-section operations-retention-section">
             <div className="operations-section-head"><div><h3>留存 Cohort</h3><span>按上海自然日统计，未成熟观察日显示 --</span></div><span>{visibleRetention.length} 个 cohort</span></div>
-            <div className="operations-table-scroll"><table><thead><tr><th>注册日期</th><th>站点</th><th>注册人数</th><th>D1</th><th>D3</th><th>D7</th><th>D14</th><th>D30</th></tr></thead><tbody>{visibleRetention.length ? visibleRetention.map((item) => <tr key={`${item.site_id}-${item.cohort_date}`}><td>{item.cohort_date}</td><td>{siteLabel(item.site_id)}</td><td>{formatNumber(item.cohort_size, 0)}</td><td>{formatRetentionRate({ numerator: item.d1_numerator, denominator: item.d1_denominator, rate: item.d1_rate })}</td><td>{formatRetentionRate({ numerator: item.d3_numerator, denominator: item.d3_denominator, rate: item.d3_rate })}</td><td>{formatRetentionRate({ numerator: item.d7_numerator, denominator: item.d7_denominator, rate: item.d7_rate })}</td><td>{formatRetentionRate({ numerator: item.d14_numerator, denominator: item.d14_denominator, rate: item.d14_rate })}</td><td>{formatRetentionRate({ numerator: item.d30_numerator, denominator: item.d30_denominator, rate: item.d30_rate })}</td></tr>) : <EmptyRow columns={8} text={loading ? "正在加载留存数据..." : "当前周期暂无成熟 cohort"} />}</tbody></table></div>
+            <div className="operations-table-scroll"><table><thead><tr><th>注册日期</th><th>站点</th><th>注册人数</th><th>D1</th><th>D3</th><th>D7</th><th>D14</th><th>D30</th></tr></thead><tbody>{visibleRetention.length ? visibleRetention.map((item) => <tr key={`${item.site_id}-${item.cohort_date}`}><td>{item.cohort_date}</td><td>{siteLabel(item.site_id)}</td><td>{formatNumber(item.cohort_size, 0)}</td><RetentionCell value={{ numerator: item.d1_numerator, denominator: item.d1_denominator, rate: item.d1_rate }} /><RetentionCell value={{ numerator: item.d3_numerator, denominator: item.d3_denominator, rate: item.d3_rate }} /><RetentionCell value={{ numerator: item.d7_numerator, denominator: item.d7_denominator, rate: item.d7_rate }} /><RetentionCell value={{ numerator: item.d14_numerator, denominator: item.d14_denominator, rate: item.d14_rate }} /><RetentionCell value={{ numerator: item.d30_numerator, denominator: item.d30_denominator, rate: item.d30_rate }} /></tr>) : <EmptyRow columns={8} text={loading ? "正在加载留存数据..." : "当前周期暂无成熟 cohort"} />}</tbody></table></div>
           </section>
 
-          {hasAigclinkAccess && effectiveQuery.siteId !== "aiwelink" && <div className="operations-value-grid">
+          {showValueRankings && <div id="operations-ranking" className="operations-value-grid">
             <section className="operations-data-section operations-model-ranking">
               <div className="operations-section-head"><div><h3>模型计费排行</h3><span>AIGCLink 数据库调用标价</span></div><span>前 {visibleModels.length} 项</span></div>
               <div className="operations-table-scroll"><table><thead><tr><th>模型</th><th>成功调用</th><th>Token</th><th>调用计费收入</th><th>收入占比</th></tr></thead><tbody>{visibleModels.length ? visibleModels.map((item) => <tr key={item.model_name}><td><strong>{item.model_name}</strong></td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatNumber(item.token_count, 0)}</td><td>{formatCurrency(item.billed_amount_cny)}</td><td>{formatLifecycleRate(item.revenue_share)}</td></tr>) : <EmptyRow columns={5} text={loading ? "正在加载模型排行..." : "当前周期暂无模型计费数据"} />}</tbody></table></div>
@@ -1269,16 +1543,17 @@ export function OperationsManagementPage(
           </div>}
 
           <div className="operations-overview-table-stack">
-            <section className="operations-data-section operations-trend-section">
+            <section id="operations-trend" className="operations-data-section operations-trend-section">
               <div className="operations-section-head"><div><h3>运营趋势</h3><span>48 小时内按小时，更长周期按天汇总</span></div></div>
               <div className="operations-table-scroll"><table><thead><tr><th>时间</th><th>站点</th><th>注册</th><th>活跃</th><th>成功调用</th><th>消耗额度</th><th>付费用户</th><th>{operationsIncomeLabel(effectiveQuery.siteId)}</th><th>退款</th></tr></thead><tbody>{visibleTrends.length ? visibleTrends.map((item, index) => <tr key={`${item.site_id}-${item.bucket}-${index}`}><td>{formatBucket(item.bucket)}</td><td>{siteLabel(item.site_id)}</td><td>{formatNumber(item.registered_user_count, 0)}</td><td>{formatNumber(item.active_user_count, 0)}</td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatNumber(item.consumed_balance_units, 2)}</td><td>{formatNumber(item.payer_count, 0)}</td><td>{formatCurrency(item.gross_income_cny)}<small className="operations-cell-subtext">{operationsIncomeLabel(item.site_id)}</small></td><td>{formatCurrency(item.refund_cny)}</td></tr>) : <EmptyRow columns={9} text={loading ? "正在加载趋势..." : "当前周期暂无趋势数据"} />}</tbody></table></div>
             </section>
 
-            <section className="operations-data-section operations-site-comparison">
+            <section id="operations-sites" className="operations-data-section operations-site-comparison">
               <div className="operations-section-head"><div><h3>站点运营对比</h3><span>按当前查询周期和用户群体汇总</span></div><span>{visibleSiteBreakdown.length} 个站点</span></div>
               <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>注册用户</th><th>活跃用户</th><th>成功调用</th><th>消耗额度</th><th>付费用户</th><th>{operationsIncomeLabel(effectiveQuery.siteId)}</th><th>退款</th><th>人均消耗</th><th>付费率</th></tr></thead><tbody>{visibleSiteBreakdown.length ? visibleSiteBreakdown.map((item) => <tr key={item.site_id}><td><strong>{siteLabel(item.site_id)}</strong></td><td>{formatNumber(item.registered_user_count, 0)}</td><td>{formatNumber(item.active_user_count, 0)}</td><td>{formatNumber(item.successful_call_count, 0)}</td><td>{formatNumber(item.consumed_balance_units, 2)}</td><td>{formatNumber(item.payer_count, 0)}</td><td>{formatCurrency(item.gross_income_cny)}<small className="operations-cell-subtext">{operationsIncomeLabel(item.site_id)}</small></td><td>{formatCurrency(item.refund_cny)}</td><td>{formatNumber(averageConsumption(item), 2)}</td><td>{paymentRate(item).toFixed(1)}%</td></tr>) : <EmptyRow columns={10} text={loading ? "正在加载站点对比..." : "当前周期暂无站点汇总"} />}</tbody></table></div>
             </section>
           </div>
+        </div>
         </div>
       )}
 
