@@ -238,12 +238,19 @@
 
 .work-plan-gantt {
   display: grid;
-  grid-template-columns: 220px repeat(var(--work-plan-date-count), minmax(190px, 1fr));
+  grid-template-columns: 220px minmax(calc(var(--work-plan-date-count) * 190px), 1fr);
   min-width: calc(220px + var(--work-plan-date-count) * 190px);
 }
 
 .work-plan-gantt-row {
-  display: contents;
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: 220px minmax(calc(var(--work-plan-date-count) * 190px), 1fr);
+}
+
+.work-plan-timeline-header {
+  display: grid;
+  grid-template-columns: repeat(var(--work-plan-date-count), minmax(190px, 1fr));
 }
 
 .work-plan-gantt-header {
@@ -293,7 +300,7 @@
   border-bottom: 1px solid #e8ebed;
   border-right: 1px solid #dfe3e5;
   left: 0;
-  min-height: var(--work-plan-row-height, 64px);
+  min-height: 76px;
   position: sticky;
   z-index: 3;
 }
@@ -308,7 +315,7 @@
   align-items: center;
   display: flex;
   gap: 10px;
-  padding: 10px 13px;
+  padding: 10px 44px 10px 13px;
 }
 
 .work-plan-member-cell > div {
@@ -352,18 +359,19 @@
   box-shadow: 0 0 0 1px #8dd5b8;
 }
 
-.work-plan-day-cell {
+.work-plan-member-track {
   background-color: #fff;
-  background-image: repeating-linear-gradient(90deg, transparent 0, transparent calc(25% - 1px), #edf0f1 calc(25% - 1px), #edf0f1 25%);
+  background-image:
+    linear-gradient(90deg, #dfe4e6 1px, transparent 1px),
+    linear-gradient(90deg, #eef1f2 1px, transparent 1px);
+  background-size:
+    calc(100% / var(--work-plan-date-count)) 100%,
+    calc(100% / (var(--work-plan-date-count) * 4)) 100%;
   border-bottom: 1px solid #e8ebed;
   border-right: 1px solid #e8ebed;
-  min-height: var(--work-plan-row-height, 64px);
+  min-height: 76px;
   overflow: hidden;
   position: relative;
-}
-
-.work-plan-day-cell.work-plan-current-day {
-  background-color: #f8fcfa;
 }
 
 .work-plan-now-marker {
@@ -387,46 +395,141 @@
   width: 5px;
 }
 
-.work-plan-bar {
+.work-plan-segment {
+  align-items: center;
   border: 0;
   border-radius: 4px;
   box-shadow: none;
-  display: block;
+  display: flex;
   font-size: 10px;
-  height: 21px;
+  height: 28px;
   justify-content: flex-start;
-  min-height: 21px;
+  min-height: 28px;
   min-width: 4px;
   overflow: hidden;
-  padding: 0 6px;
+  padding: 0 8px;
   position: absolute;
   text-align: left;
   text-overflow: ellipsis;
+  top: 24px;
+  transition: filter 160ms ease, transform 160ms ease;
   white-space: nowrap;
   z-index: 2;
 }
 
-.work-plan-bar.work {
-  background: #d9efe4;
+.work-plan-segment > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.work-plan-segment.active {
+  background: #d5eee1;
   border-left: 3px solid var(--work-plan-green);
   color: #176b48;
 }
 
-.work-plan-bar.unavailable {
-  background: var(--work-plan-amber-soft);
-  border-left: 3px solid #d58a25;
-  color: #8b520d;
+.work-plan-segment.cancelled {
+  background: #e3e6e8;
+  border-left: 3px solid #899299;
+  color: #59636a;
 }
 
-.work-plan-bar.cancelled {
-  filter: grayscale(0.65);
-  opacity: 0.55;
-  text-decoration: line-through;
-}
-
-.work-plan-bar:hover {
+.work-plan-segment:hover {
   filter: brightness(0.97);
   transform: translateY(-1px);
+}
+
+.work-plan-priority-value {
+  background: #edf1f2;
+  border-radius: 4px;
+  color: #5e686e;
+  font-size: 10px;
+  font-weight: 750;
+  padding: 2px 4px;
+  position: absolute;
+  right: 31px;
+  top: 11px;
+}
+
+.work-plan-priority {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 6;
+}
+
+.work-plan-priority-trigger {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: #748087;
+  display: flex;
+  height: 26px;
+  justify-content: center;
+  min-height: 26px;
+  padding: 0;
+  width: 26px;
+}
+
+.work-plan-priority-trigger:hover,
+.work-plan-priority-trigger[aria-expanded="true"] {
+  background: #edf3f0;
+  color: var(--work-plan-green);
+}
+
+.work-plan-priority-popover {
+  background: #fff;
+  border: 1px solid #d9dfe1;
+  border-radius: 7px;
+  box-shadow: 0 16px 42px rgb(31 36 39 / 18%);
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  position: absolute;
+  right: 0;
+  top: 31px;
+  width: 228px;
+  z-index: 10;
+}
+
+.work-plan-priority-popover > header,
+.work-plan-priority-popover > footer {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.work-plan-priority-popover > header > div {
+  display: grid;
+  gap: 2px;
+}
+
+.work-plan-priority-popover > header strong,
+.work-plan-priority-popover label > span {
+  font-size: 12px;
+}
+
+.work-plan-priority-popover > header span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.work-plan-priority-popover label {
+  display: grid;
+  gap: 5px;
+}
+
+.work-plan-priority-popover input {
+  min-height: 36px;
+}
+
+.work-plan-priority-popover > p {
+  color: var(--danger);
+  font-size: 11px;
+}
+
+.work-plan-priority-popover > footer button {
+  min-height: 32px;
 }
 
 .work-plan-mobile-list {
@@ -1072,95 +1175,96 @@
     display: block;
   }
 
-  .work-plan-mobile-day + .work-plan-mobile-day {
+  .work-plan-mobile-member + .work-plan-mobile-member {
     border-top: 1px solid var(--line);
   }
 
-  .work-plan-mobile-day > header {
-    align-items: center;
-    background: #f7f8f9;
-    display: flex;
-    justify-content: space-between;
-    padding: 10px 12px;
-  }
-
-  .work-plan-mobile-day > header strong {
-    font-size: 13px;
-  }
-
-  .work-plan-mobile-day > header span {
-    color: var(--muted);
-    font-size: 11px;
-  }
-
-  .work-plan-mobile-item {
+  .work-plan-mobile-member > header {
     align-items: center;
     background: #fff;
-    border: 0;
-    border-bottom: 1px solid #edf0f1;
-    border-radius: 0;
-    color: var(--text);
-    display: grid !important;
-    gap: 9px;
-    grid-template-columns: 30px minmax(0, 1fr) auto;
-    justify-content: stretch !important;
-    min-height: 72px;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    min-height: 62px;
     padding: 9px 12px;
-    text-align: left;
-    width: 100%;
+    position: relative;
   }
 
-  .work-plan-mobile-type {
-    align-items: center;
-    background: var(--work-plan-green-soft);
-    border-radius: 5px;
-    color: var(--work-plan-green);
-    display: flex;
-    height: 30px;
-    justify-content: center;
-    width: 30px;
-  }
-
-  .work-plan-mobile-item.unavailable .work-plan-mobile-type {
-    background: var(--work-plan-amber-soft);
-    color: var(--work-plan-amber);
-  }
-
-  .work-plan-mobile-item > span:nth-child(2) {
+  .work-plan-mobile-member > header > div:not(.work-plan-priority) {
     display: grid;
     gap: 3px;
     min-width: 0;
   }
 
-  .work-plan-mobile-item strong,
-  .work-plan-mobile-item small {
+  .work-plan-mobile-member > header strong {
+    font-size: 13px;
+  }
+
+  .work-plan-mobile-member > header small,
+  .work-plan-mobile-member > header em {
+    color: var(--muted);
+    font-size: 11px;
+    font-style: normal;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .work-plan-mobile-item .work-plan-mobile-presence {
+  .work-plan-mobile-member .work-plan-priority {
+    position: relative;
+    right: auto;
+    top: auto;
+  }
+
+  .work-plan-mobile-member .work-plan-priority-popover {
+    right: -4px;
+  }
+
+  .work-plan-mobile-track-scroll {
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+  }
+
+  .work-plan-mobile-track {
+    min-width: calc(var(--work-plan-date-count) * 96px);
+  }
+
+  .work-plan-mobile-axis {
+    background: #f6f8f8;
+    border-block: 1px solid #e7ebec;
+    display: grid;
+    grid-template-columns: repeat(var(--work-plan-date-count), minmax(96px, 1fr));
+    height: 28px;
+  }
+
+  .work-plan-mobile-axis span {
     align-items: center;
+    border-right: 1px solid #e2e7e9;
+    color: #778188;
     display: flex;
-    gap: 5px;
+    font-size: 10px;
+    justify-content: center;
   }
 
-  .work-plan-mobile-presence .work-plan-presence-dot {
-    border-width: 1px;
-    display: inline-block;
-    height: 7px;
-    width: 7px;
+  .work-plan-mobile-member-rail {
+    background-color: #fff;
+    background-image:
+      linear-gradient(90deg, #dfe4e6 1px, transparent 1px),
+      linear-gradient(90deg, #eef1f2 1px, transparent 1px);
+    background-size:
+      calc(100% / var(--work-plan-date-count)) 100%,
+      calc(100% / (var(--work-plan-date-count) * 4)) 100%;
+    border-bottom: 0;
+    overflow: hidden;
+    position: relative;
+    min-height: 62px;
   }
 
-  .work-plan-mobile-item small {
-    color: var(--muted);
-    font-size: 11px;
-  }
-
-  .work-plan-mobile-item em {
-    color: var(--muted);
-    font-size: 11px;
-    font-style: normal;
+  .work-plan-mobile-track .work-plan-segment {
+    height: 26px;
+    min-height: 26px;
+    top: 18px;
   }
 
   .work-plan-detail-popover {

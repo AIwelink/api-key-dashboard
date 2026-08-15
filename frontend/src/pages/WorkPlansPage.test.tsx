@@ -9,7 +9,11 @@ import {
   workPlanDraftReducer,
 } from "./workPlans/WorkPlanFormDrawer";
 import { canManagePlan, WorkPlanDetailDialog, WorkPlanSchedule } from "./workPlans/WorkPlanSchedule";
-import type { WorkPlan, WorkPlanScheduleResponse } from "./workPlans/types";
+import type {
+  WorkPlan,
+  WorkPlanOperation,
+  WorkPlanScheduleResponse,
+} from "./workPlans/types";
 import {
   beginCreate,
   createLatestRequestGuard,
@@ -58,6 +62,33 @@ const SCHEDULE: WorkPlanScheduleResponse = {
   total: 1,
   has_more: false,
   next_cursor: null,
+};
+
+const LINEAR_SCHEDULE: WorkPlanScheduleResponse = {
+  ...SCHEDULE,
+  plans: [],
+  start_at: "2026-08-15T16:00:00+00:00",
+  end_at: "2026-08-22T16:00:00+00:00",
+  segments: [
+    {
+      member_id: PLAN.member_id,
+      member_name: PLAN.member_name,
+      state: "active",
+      start_at: "2026-08-16T01:00:00+00:00",
+      end_at: "2026-08-16T04:00:00+00:00",
+      winning_operation_id: "operation-1",
+      operation_ids: ["operation-1"],
+    },
+    {
+      member_id: PLAN.member_id,
+      member_name: PLAN.member_name,
+      state: "cancelled",
+      start_at: "2026-08-16T04:00:00+00:00",
+      end_at: "2026-08-16T06:00:00+00:00",
+      winning_operation_id: "operation-2",
+      operation_ids: ["operation-2"],
+    },
+  ],
 };
 
 describe("work plan components", () => {
@@ -200,6 +231,37 @@ describe("work plan components", () => {
     expect(html).toContain("work-plan-mobile-list");
   });
 
+  it("renders one member track with active and cancelled segments", () => {
+    const html = renderToStaticMarkup(
+      <WorkPlanSchedule
+        currentUser={{ email: "viewer@example.com", role: "viewer" }}
+        onCancelPlan={() => undefined}
+        onEditPlan={() => undefined}
+        range="7d"
+        response={LINEAR_SCHEDULE}
+      />,
+    );
+
+    expect(html.match(/work-plan-member-track/g)?.length).toBe(1);
+    expect(html).toContain("work-plan-segment active");
+    expect(html).toContain("work-plan-segment cancelled");
+  });
+
+  it("shows priority editing only to managers", () => {
+    const renderSchedule = (role: "admin" | "viewer") => renderToStaticMarkup(
+      <WorkPlanSchedule
+        currentUser={{ email: `${role}@example.com`, role }}
+        onCancelPlan={() => undefined}
+        onEditPlan={() => undefined}
+        range="7d"
+        response={LINEAR_SCHEDULE}
+      />,
+    );
+
+    expect(renderSchedule("admin")).toContain("设置排班优先级");
+    expect(renderSchedule("viewer")).not.toContain("设置排班优先级");
+  });
+
   it("shows a clear empty state whenever the selected result has no plans", () => {
     const html = renderToStaticMarkup(
       <WorkPlanSchedule
@@ -295,6 +357,54 @@ describe("work plan components", () => {
     expect(html).toContain("创建于");
     expect(html).not.toContain("编辑计划");
     expect(html.slice(0, html.indexOf(">") + 1)).toContain("inert");
+  });
+
+  it("keeps immutable cancellation history grey after later coverage", () => {
+    const operation: WorkPlanOperation = {
+      id: "operation-2",
+      schema_version: 2,
+      record_kind: "operation",
+      member_id: PLAN.member_id,
+      member_name: PLAN.member_name,
+      operation_type: "cancel",
+      anchor_date: "2026-08-16",
+      plan_date: "2026-08-16",
+      requested_start_at: "2026-08-16T04:00:00+00:00",
+      requested_end_at: "2026-08-16T06:00:00+00:00",
+      effective_start_at: "2026-08-16T04:00:00+00:00",
+      effective_end_at: "2026-08-16T06:00:00+00:00",
+      start_offset_minute: 12 * 60,
+      end_offset_minute: 14 * 60,
+      requested_start_offset_minute: 12 * 60,
+      requested_end_offset_minute: 14 * 60,
+      effective_start_offset_minute: 12 * 60,
+      effective_end_offset_minute: 14 * 60,
+      member_sequence: 2,
+      idempotency_key: "key",
+      batch_id: "key",
+      note: null,
+      created_by: PLAN.member_id,
+      created_at: PLAN.created_at,
+      history_state: "cancelled",
+    };
+    const html = renderToStaticMarkup(
+      <MyPlansDrawer
+        busy={false}
+        hasMore={false}
+        items={[operation]}
+        loadingMore={false}
+        onCancel={() => undefined}
+        onClose={() => undefined}
+        onEdit={() => undefined}
+        onLoadMore={() => undefined}
+        open
+        total={1}
+      />,
+    );
+
+    expect(html).toContain("work-plan-history-item cancelled");
+    expect(html).toContain("取消计划");
+    expect(html).toContain("灰色保留");
   });
 
   it("exposes explicit history progress and a load-more action", () => {

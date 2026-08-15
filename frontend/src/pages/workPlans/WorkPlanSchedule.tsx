@@ -1,11 +1,18 @@
-import { Ban, CalendarDays, Clock3, Pencil, X } from "lucide-react";
+import { Ban, CalendarDays, Pencil, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
-import type { User } from "../../types";
 import { useModalFocus } from "../../hooks/useModalFocus";
+import type { User } from "../../types";
 import { isoDateRange } from "./dateSelection";
-import type { WorkPlan, WorkPlanMember, WorkPlanRange, WorkPlanScheduleResponse } from "./types";
-import { collaborationLabel, ganttGeometry, groupPlansByDate } from "./workPlanViewModel";
+import type {
+  WorkPlan,
+  WorkPlanMember,
+  WorkPlanRange,
+  WorkPlanScheduleResponse,
+  WorkPlanSegment,
+} from "./types";
+import { WorkPlanPriorityPopover } from "./WorkPlanPriorityPopover";
+import { collaborationLabel, timelineGeometry } from "./workPlanViewModel";
 
 type WorkPlanScheduleProps = {
   response: WorkPlanScheduleResponse;
@@ -13,6 +20,13 @@ type WorkPlanScheduleProps = {
   currentUser: Pick<User, "email" | "id" | "role">;
   onEditPlan: (plan: WorkPlan) => void;
   onCancelPlan: (plan: WorkPlan) => void;
+  onSetMemberPriority?: (memberId: string, priority: number | null) => Promise<void> | void;
+  priorityBusy?: boolean;
+};
+
+type RenderableSegment = {
+  segment: WorkPlanSegment;
+  plan?: WorkPlan;
 };
 
 export function canManagePlan(
@@ -20,6 +34,10 @@ export function canManagePlan(
   plan: WorkPlan,
 ): boolean {
   return currentUser.role === "owner" || currentUser.role === "admin" || (currentUser.id || currentUser.email) === plan.member_id;
+}
+
+function canSetPriority(currentUser: Pick<User, "role">): boolean {
+  return currentUser.role === "owner" || currentUser.role === "admin";
 }
 
 function minuteLabel(value: number): string {
@@ -34,7 +52,42 @@ function rangeLabel(plan: WorkPlan): string {
 function displayDates(response: WorkPlanScheduleResponse, range: WorkPlanRange): string[] {
   const dates = isoDateRange(response.start_date, response.end_date, range === "all" ? 63 : undefined);
   if (range !== "all" || dates.length <= 62) return dates;
-  return [...new Set(response.plans.map((plan) => plan.plan_date))].sort();
+  const recordedDates = new Set(response.plans.map((plan) => plan.plan_date));
+  const focusedDates = dates.filter((date) => recordedDates.has(date));
+  return (focusedDates.length ? focusedDates : dates).slice(0, 63);
+}
+
+function nextDate(value: string): string {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10);
+}
+
+function timelineBounds(response: WorkPlanScheduleResponse): { startAt: string; endAt: string } {
+  return {
+    startAt: response.start_at || `${response.start_date}T00:00:00+08:00`,
+    endAt: response.end_at || `${nextDate(response.end_date)}T00:00:00+08:00`,
+  };
+}
+
+function legacySegment(plan: WorkPlan): RenderableSegment {
+  const anchor = Date.parse(`${plan.plan_date}T00:00:00+08:00`);
+  return {
+    plan,
+    segment: {
+      member_id: plan.member_id,
+      member_name: plan.member_name,
+      state: plan.is_cancelled || plan.plan_type === "temporary_unavailable" ? "cancelled" : "active",
+      start_at: new Date(anchor + plan.start_minute * 60_000).toISOString(),
+      end_at: new Date(anchor + plan.end_minute * 60_000).toISOString(),
+      winning_operation_id: plan.id,
+      operation_ids: [plan.id],
+    },
+  };
+}
+
+function renderableSegments(response: WorkPlanScheduleResponse): RenderableSegment[] {
+  if (response.segments?.length) return response.segments.map((segment) => ({ segment }));
+  return response.plans.map(legacySegment);
 }
 
 function observedShanghaiTime(value: string): { date: string; minute: number } | null {
@@ -75,6 +128,18 @@ function mobilePresenceLabel(member?: WorkPlanMember): string {
   return `${presence} · ${collaborationLabel(member.collaboration_status)}`;
 }
 
+function segmentIntervalLabel(segment: WorkPlanSegment): string {
+  const formatter = new Intl.DateTimeFormat("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZone: "Asia/Shanghai",
+  });
+  return `${formatter.format(new Date(segment.start_at))} - ${formatter.format(new Date(segment.end_at))}`;
+}
+
 type WorkPlanDetailDialogProps = {
   plan: WorkPlan;
   currentUser: Pick<User, "email" | "id" | "role">;
@@ -92,22 +157,10 @@ export function WorkPlanDetailDialog({
 }: WorkPlanDetailDialogProps) {
   const dialogRef = useModalFocus<HTMLDivElement>(true, onClose);
   return (
-    <div
-      aria-label="计划详情"
-      aria-modal="true"
-      className="work-plan-detail-popover"
-      ref={dialogRef}
-      role="dialog"
-      tabIndex={-1}
-    >
+    <div aria-label="计划详情" aria-modal="true" className="work-plan-detail-popover" ref={dialogRef} role="dialog" tabIndex={-1}>
       <header>
-        <div>
-          <strong>{plan.member_name}</strong>
-          <span>{plan.plan_type === "work" ? "工作时间" : "临时有事"}</span>
-        </div>
-        <button aria-label="关闭详情" className="work-plan-icon-button" onClick={onClose} type="button">
-          <X size={17} />
-        </button>
+        <div><strong>{plan.member_name}</strong><span>{plan.plan_type === "work" ? "工作计划" : "取消计划"}</span></div>
+        <button aria-label="关闭详情" className="work-plan-icon-button" onClick={onClose} type="button"><X size={17} /></button>
       </header>
       <dl>
         <div><dt>日期</dt><dd>{plan.plan_date}</dd></div>
@@ -116,37 +169,47 @@ export function WorkPlanDetailDialog({
       </dl>
       {canManagePlan(currentUser, plan) && !plan.is_cancelled ? (
         <footer>
-          <button className="ghost" onClick={() => { onEditPlan(plan); onClose(); }} type="button">
-            <Pencil size={15} />编辑
-          </button>
-          <button className="danger-ghost" onClick={() => { onCancelPlan(plan); onClose(); }} type="button">
-            <Ban size={15} />取消计划
-          </button>
+          <button className="ghost" onClick={() => { onEditPlan(plan); onClose(); }} type="button"><Pencil size={15} />编辑</button>
+          <button className="danger-ghost" onClick={() => { onCancelPlan(plan); onClose(); }} type="button"><Ban size={15} />取消计划</button>
         </footer>
       ) : null}
     </div>
   );
 }
 
-export function WorkPlanSchedule({ response, range, currentUser, onEditPlan, onCancelPlan }: WorkPlanScheduleProps) {
+export function WorkPlanSchedule({
+  response,
+  range,
+  currentUser,
+  onEditPlan,
+  onCancelPlan,
+  onSetMemberPriority,
+  priorityBusy = false,
+}: WorkPlanScheduleProps) {
   const [selectedPlan, setSelectedPlan] = useState<WorkPlan | null>(null);
   const modalHandoffTimer = useRef<number | null>(null);
   const dates = useMemo(() => displayDates(response, range), [range, response]);
-  const grouped = useMemo(() => groupPlansByDate(response.plans), [response.plans]);
-  const membersById = useMemo(
-    () => new Map(response.members.map((member) => [member.member_id, member])),
-    [response.members],
-  );
-  const observed = useMemo(() => observedShanghaiTime(response.observed_at), [response.observed_at]);
-  const plansByMemberDate = useMemo(() => {
-    const index = new Map<string, WorkPlan[]>();
-    for (const plan of response.plans) {
-      const key = `${plan.member_id}\u0000${plan.plan_date}`;
-      const items = index.get(key);
-      if (items) items.push(plan); else index.set(key, [plan]);
+  const bounds = useMemo(() => timelineBounds(response), [response]);
+  const segments = useMemo(() => renderableSegments(response), [response]);
+  const segmentsByMember = useMemo(() => {
+    const index = new Map<string, RenderableSegment[]>();
+    for (const item of segments) {
+      const memberSegments = index.get(item.segment.member_id);
+      if (memberSegments) memberSegments.push(item); else index.set(item.segment.member_id, [item]);
     }
     return index;
-  }, [response.plans]);
+  }, [segments]);
+  const observed = useMemo(() => observedShanghaiTime(response.observed_at), [response.observed_at]);
+  const observedAt = Date.parse(response.observed_at);
+  const timelineStart = Date.parse(bounds.startAt);
+  const timelineEnd = Date.parse(bounds.endAt);
+  const showNow = Number.isFinite(observedAt) && observedAt >= timelineStart && observedAt <= timelineEnd;
+  const nowGeometry = useMemo(() => timelineGeometry(
+    bounds.startAt,
+    bounds.endAt,
+    response.observed_at,
+    new Date(Date.parse(response.observed_at) + 60_000).toISOString(),
+  ), [bounds.endAt, bounds.startAt, response.observed_at]);
 
   useEffect(() => () => {
     if (modalHandoffTimer.current !== null) window.clearTimeout(modalHandoffTimer.current);
@@ -161,49 +224,82 @@ export function WorkPlanSchedule({ response, range, currentUser, onEditPlan, onC
     }, 0);
   }, []);
 
-  if (!response.plans.length) {
+  if (!segments.length) {
     return <div className="work-plan-empty"><CalendarDays size={28} /><strong>暂无工作计划</strong></div>;
   }
+
+  const renderSegment = (item: RenderableSegment) => {
+    const geometry = timelineGeometry(bounds.startAt, bounds.endAt, item.segment.start_at, item.segment.end_at);
+    const plan = item.plan;
+    const interval = plan ? rangeLabel(plan) : segmentIntervalLabel(item.segment);
+    const className = `work-plan-segment ${item.segment.state}${plan ? " work-plan-bar" : ""}`;
+    const style = { left: `${geometry.leftPercent}%`, width: `${geometry.widthPercent}%` };
+    if (plan) {
+      return (
+        <button aria-label={`${item.segment.member_name} ${interval}`} className={className} key={item.segment.winning_operation_id} onClick={() => setSelectedPlan(plan)} style={style} title={`${interval}${plan.note ? ` · ${plan.note}` : ""}`} type="button"><span>{interval}</span></button>
+      );
+    }
+    return (
+      <span aria-label={`${item.segment.member_name} ${item.segment.state === "active" ? "工作计划" : "已取消"} ${interval}`} className={className} key={item.segment.winning_operation_id} role="img" style={style} title={`${item.segment.state === "active" ? "工作计划" : "已取消"} · ${interval}`}><span>{interval}</span></span>
+    );
+  };
+
+  const timelineStyle = { "--work-plan-date-count": Math.max(1, dates.length) } as CSSProperties;
 
   return (
     <section className="work-plan-schedule" aria-label="团队工作计划">
       <div className="work-plan-schedule-scroll">
-        <div className="work-plan-gantt" style={{ "--work-plan-date-count": Math.max(1, dates.length) } as CSSProperties}>
+        <div className="work-plan-gantt" style={timelineStyle}>
           <div className="work-plan-gantt-header work-plan-member-cell"><span>成员</span><small>{response.members.length} 人</small></div>
-          {dates.map((date) => <div className={`work-plan-gantt-header ${observed?.date === date ? "work-plan-current-day" : ""}`} key={date}><strong>{date.slice(5).replace("-", "/")}</strong><span>{weekday(date)}</span><div className="work-plan-time-axis"><i>00</i><i>06</i><i>12</i><i>18</i><i>24</i></div></div>)}
+          <div className="work-plan-timeline-header">
+            {dates.map((date) => (
+              <div className={`work-plan-gantt-header ${observed?.date === date ? "work-plan-current-day" : ""}`} key={date}>
+                <strong>{date.slice(5).replace("-", "/")}</strong><span>{weekday(date)}</span>
+                <div className="work-plan-time-axis"><i>00</i><i>06</i><i>12</i><i>18</i><i>24</i></div>
+              </div>
+            ))}
+          </div>
           {response.members.map((member) => (
-            <div
-              className="work-plan-gantt-row"
-              key={member.member_id}
-              style={{
-                "--work-plan-row-height": `${Math.max(
-                  72,
-                  16 + Math.max(1, ...dates.map((date) => plansByMemberDate.get(`${member.member_id}\u0000${date}`)?.length ?? 0)) * 26,
-                )}px`,
-              } as CSSProperties}
-            >
+            <div className="work-plan-gantt-row" key={member.member_id}>
               <div className="work-plan-member-cell">
                 <span className={`work-plan-presence-dot ${member.is_online ? "online" : "offline"}`} />
                 <div><strong>{member.member_name}</strong><small>{collaborationLabel(member.collaboration_status)}</small><small className="work-plan-last-seen">{lastSeenLabel(member.last_seen_at)}</small></div>
+                {member.work_plan_priority != null ? <span className="work-plan-priority-value">#{member.work_plan_priority}</span> : null}
+                {canSetPriority(currentUser) ? <WorkPlanPriorityPopover busy={priorityBusy} member={member} onChange={onSetMemberPriority} /> : null}
               </div>
-              {dates.map((date) => <div className={`work-plan-day-cell ${observed?.date === date ? "work-plan-current-day" : ""}`} key={date}>{observed?.date === date ? <span aria-hidden="true" className="work-plan-now-marker" style={{ left: `${(observed.minute / 1_440) * 100}%` }} /> : null}{(plansByMemberDate.get(`${member.member_id}\u0000${date}`) || []).map((plan, index) => { const geometry = ganttGeometry(plan.start_minute, plan.end_minute); return <button aria-label={`${plan.member_name} ${date} ${rangeLabel(plan)}`} className={`work-plan-bar ${plan.plan_type === "temporary_unavailable" ? "unavailable" : "work"} ${plan.is_cancelled ? "cancelled" : ""}`} key={plan.id} onClick={() => setSelectedPlan(plan)} style={{ left: `${geometry.leftPercent}%`, top: `${8 + index * 26}px`, width: `${geometry.widthPercent}%` }} title={`${rangeLabel(plan)}${plan.note ? ` · ${plan.note}` : ""}`} type="button"><span>{rangeLabel(plan)}</span></button>; })}</div>)}
+              <div className="work-plan-member-track">
+                {showNow ? <span aria-hidden="true" className="work-plan-now-marker" style={{ left: `${nowGeometry.leftPercent}%` }} /> : null}
+                {segmentsByMember.get(member.member_id)?.map(renderSegment)}
+              </div>
             </div>
           ))}
         </div>
       </div>
 
       <div className="work-plan-mobile-list">
-        {grouped.map((group) => <section className="work-plan-mobile-day" key={group.date}><header><strong>{formatDate(group.date)}</strong><span>{group.plans.length} 项</span></header><div>{group.plans.map((plan) => { const member = membersById.get(plan.member_id); return <button className={`work-plan-mobile-item ${plan.plan_type === "temporary_unavailable" ? "unavailable" : "work"}`} key={plan.id} onClick={() => setSelectedPlan(plan)} type="button"><span className="work-plan-mobile-type">{plan.plan_type === "work" ? <Clock3 size={16} /> : <Ban size={16} />}</span><span><strong>{plan.member_name}</strong><small>{rangeLabel(plan)}{plan.note ? ` · ${plan.note}` : ""}</small><small className="work-plan-mobile-presence"><i className={`work-plan-presence-dot ${member?.is_online ? "online" : "offline"}`} />{mobilePresenceLabel(member)}</small></span><em>{plan.is_cancelled ? "已取消" : plan.plan_type === "work" ? "工作" : "有事"}</em></button>; })}</div></section>)}
+        {response.members.map((member) => (
+          <section className="work-plan-mobile-member" key={member.member_id}>
+            <header>
+              <span className={`work-plan-presence-dot ${member.is_online ? "online" : "offline"}`} />
+              <div><strong>{member.member_name}</strong><small className="work-plan-mobile-presence">{mobilePresenceLabel(member)} · {lastSeenLabel(member.last_seen_at)}</small></div>
+              {member.work_plan_priority != null ? <em>#{member.work_plan_priority}</em> : null}
+              {canSetPriority(currentUser) ? <WorkPlanPriorityPopover busy={priorityBusy} member={member} onChange={onSetMemberPriority} /> : null}
+            </header>
+            <div className="work-plan-mobile-track-scroll">
+              <div className="work-plan-mobile-track" style={timelineStyle}>
+                <div className="work-plan-mobile-axis">{dates.map((date) => <span key={date}>{date.slice(5).replace("-", "/")}</span>)}</div>
+                <div className="work-plan-mobile-member-rail">
+                  {showNow ? <span aria-hidden="true" className="work-plan-now-marker" style={{ left: `${nowGeometry.leftPercent}%` }} /> : null}
+                  {segmentsByMember.get(member.member_id)?.map(renderSegment)}
+                </div>
+              </div>
+            </div>
+          </section>
+        ))}
       </div>
 
       {selectedPlan ? (
-        <WorkPlanDetailDialog
-          currentUser={currentUser}
-          onCancelPlan={(plan) => handoffModal(() => onCancelPlan(plan))}
-          onClose={() => setSelectedPlan(null)}
-          onEditPlan={(plan) => handoffModal(() => onEditPlan(plan))}
-          plan={selectedPlan}
-        />
+        <WorkPlanDetailDialog currentUser={currentUser} onCancelPlan={(plan) => handoffModal(() => onCancelPlan(plan))} onClose={() => setSelectedPlan(null)} onEditPlan={(plan) => handoffModal(() => onEditPlan(plan))} plan={selectedPlan} />
       ) : null}
     </section>
   );
@@ -212,8 +308,4 @@ export function WorkPlanSchedule({ response, range, currentUser, onEditPlan, onC
 function weekday(value: string): string {
   const [year, month, day] = value.split("-").map(Number);
   return new Intl.DateTimeFormat("zh-CN", { weekday: "short", timeZone: "UTC" }).format(new Date(Date.UTC(year, month - 1, day)));
-}
-
-function formatDate(value: string): string {
-  return `${value.slice(5).replace("-", "月")}日 ${weekday(value)}`;
 }
