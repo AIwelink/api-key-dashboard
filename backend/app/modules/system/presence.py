@@ -129,6 +129,65 @@ async def list_active_frontend_presence(
     }
 
 
+async def list_member_presence_summaries(
+    db: AsyncIOMotorDatabase,
+    *,
+    observed_at: datetime | None = None,
+) -> dict[str, dict[str, Any]]:
+    observed_at = _aware_utc(observed_at or now_utc())
+    active_after = observed_at - timedelta(seconds=ACTIVE_PRESENCE_SECONDS)
+    active_cursor = db.frontend_presence.find(
+        {"last_seen_at": {"$gte": active_after}}
+    )
+    retained_cursor = db.frontend_presence_minutes.aggregate(
+        [
+            {"$match": {"user_id": {"$nin": [None, ""]}}},
+            {
+                "$group": {
+                    "_id": "$user_id",
+                    "last_seen_at": {"$max": "$last_seen_at"},
+                }
+            },
+        ]
+    )
+    active_docs, retained_docs = await asyncio.gather(
+        _collect_cursor(active_cursor),
+        _collect_cursor(retained_cursor),
+    )
+
+    active_clients_by_user: dict[str, set[str]] = defaultdict(set)
+    latest_seen_by_user: dict[str, datetime] = {}
+    for document in retained_docs:
+        user_id = str(document.get("_id") or document.get("user_id") or "").strip()
+        last_seen_at = _datetime_or_none(document.get("last_seen_at"))
+        if user_id and last_seen_at is not None:
+            latest_seen_by_user[user_id] = last_seen_at
+
+    for document in active_docs:
+        user_id = str(document.get("user_id") or "").strip()
+        if not user_id:
+            continue
+        client_id = str(document.get("client_id") or "").strip()
+        if client_id:
+            active_clients_by_user[user_id].add(client_id)
+        last_seen_at = _datetime_or_none(document.get("last_seen_at"))
+        if last_seen_at is not None and (
+            user_id not in latest_seen_by_user
+            or last_seen_at > latest_seen_by_user[user_id]
+        ):
+            latest_seen_by_user[user_id] = last_seen_at
+
+    user_ids = set(latest_seen_by_user) | set(active_clients_by_user)
+    return {
+        user_id: {
+            "is_online": bool(active_clients_by_user.get(user_id)),
+            "active_clients": len(active_clients_by_user.get(user_id, set())),
+            "last_seen_at": latest_seen_by_user.get(user_id),
+        }
+        for user_id in user_ids
+    }
+
+
 async def get_frontend_presence_history(
     db: AsyncIOMotorDatabase,
     *,

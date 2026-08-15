@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import unittest
 from copy import deepcopy
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
 from bson import ObjectId
@@ -16,6 +16,7 @@ from app.modules.work_plans.service import (
     WorkPlanAccessError,
     create_work_plans,
     list_my_work_plans,
+    list_work_plan_schedule,
 )
 
 
@@ -190,10 +191,17 @@ class FakeCollection:
     def _matches(document: dict, query: dict) -> bool:
         for field, expected in query.items():
             actual = document.get(field)
-            if isinstance(expected, dict) and "$in" in expected:
-                if actual not in expected["$in"]:
+            if not isinstance(expected, dict):
+                if actual != expected:
                     return False
-            elif actual != expected:
+                continue
+            if "$in" in expected and actual not in expected["$in"]:
+                return False
+            if "$gte" in expected and (actual is None or actual < expected["$gte"]):
+                return False
+            if "$lte" in expected and (actual is None or actual > expected["$lte"]):
+                return False
+            if "$ne" in expected and actual == expected["$ne"]:
                 return False
         return True
 
@@ -206,9 +214,14 @@ class FakeCollection:
         return tuple(sorted(query.items()))
 
 
-def fake_db(*, plans: list[dict] | None = None) -> SimpleNamespace:
+def fake_db(
+    *,
+    plans: list[dict] | None = None,
+    users: list[dict] | None = None,
+) -> SimpleNamespace:
     return SimpleNamespace(
         work_plans=FakeCollection(plans),
+        users=FakeCollection(users),
         audit_logs=FakeCollection(),
     )
 
@@ -663,6 +676,288 @@ class WorkPlanCreateServiceTests(unittest.IsolatedAsyncioTestCase):
                         observed_at=OBSERVED_AT,
                     )
                 self.assertEqual(db.work_plans.update_calls, [])
+
+
+class WorkPlanScheduleServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_seven_day_schedule_includes_every_profile_and_current_collaboration_state(self) -> None:
+        observed_at = datetime(2026, 8, 15, 16, 30, tzinfo=UTC)
+        retained_seen_at = datetime(2026, 8, 15, 14, 0, tzinfo=UTC)
+        db = fake_db(
+            users=[
+                {
+                    "_id": "member-1",
+                    "name": "Current Member Name",
+                    "email": "member-1@example.com",
+                    "role": "operator",
+                    "status": "active",
+                },
+                {"_id": "quiet-member", "name": "Quiet Member", "status": "active"},
+            ],
+            plans=[
+                {
+                    "_id": "plan-current",
+                    "member_id": "member-1",
+                    "member_name": "Stale Embedded Name",
+                    "plan_date": "2026-08-16",
+                    "plan_type": "work",
+                    "start_minute": 0,
+                    "end_minute": 60,
+                    "status": "active",
+                    "is_cancelled": False,
+                },
+                {
+                    "_id": "plan-last-day",
+                    "member_id": "quiet-member",
+                    "member_name": "Quiet Member",
+                    "plan_date": "2026-08-22",
+                    "plan_type": "work",
+                    "start_minute": 9 * 60,
+                    "end_minute": 18 * 60,
+                    "status": "active",
+                    "is_cancelled": False,
+                },
+                {
+                    "_id": "plan-outside",
+                    "member_id": "member-1",
+                    "member_name": "Current Member Name",
+                    "plan_date": "2026-08-23",
+                    "plan_type": "work",
+                    "start_minute": 9 * 60,
+                    "end_minute": 18 * 60,
+                    "status": "active",
+                    "is_cancelled": False,
+                },
+            ],
+        )
+
+        with patch(
+            "app.modules.work_plans.service.list_member_presence_summaries",
+            new=AsyncMock(
+                return_value={
+                    "member-1": {
+                        "is_online": False,
+                        "active_clients": 0,
+                        "last_seen_at": retained_seen_at,
+                    }
+                }
+            ),
+        ):
+            response = await list_work_plan_schedule(
+                db,
+                range_name="7d",
+                member_ids=None,
+                include_cancelled=False,
+                observed_at=observed_at,
+            )
+
+        self.assertEqual(response["start_date"], "2026-08-16")
+        self.assertEqual(response["end_date"], "2026-08-22")
+        self.assertEqual(response["timezone"], "Asia/Shanghai")
+        self.assertEqual(response["observed_at"], observed_at.isoformat())
+        self.assertEqual(
+            [plan["id"] for plan in response["plans"]],
+            ["plan-current", "plan-last-day"],
+        )
+        self.assertEqual(db.work_plans.last_cursor.limit_value, 4_000)
+        self.assertEqual(len(response["members"]), 2)
+        members = {member["member_id"]: member for member in response["members"]}
+        self.assertEqual(members["member-1"]["member_name"], "Current Member Name")
+        self.assertEqual(members["member-1"]["collaboration_status"], "planned_offline")
+        self.assertEqual(members["member-1"]["last_seen_at"], retained_seen_at.isoformat())
+        self.assertEqual(members["member-1"]["active_plan"]["id"], "plan-current")
+        self.assertEqual(members["quiet-member"]["collaboration_status"], "offline")
+
+    async def test_thirty_day_schedule_applies_member_filter_and_local_boundaries(self) -> None:
+        observed_at = datetime(2026, 8, 15, 16, 0, tzinfo=UTC)
+        db = fake_db(
+            users=[
+                {"_id": "selected", "name": "Selected"},
+                {"_id": "other", "name": "Other"},
+            ],
+            plans=[
+                {
+                    "_id": "selected-last-day",
+                    "member_id": "selected",
+                    "member_name": "Selected",
+                    "plan_date": "2026-09-14",
+                    "plan_type": "work",
+                    "start_minute": 540,
+                    "end_minute": 1080,
+                },
+                {
+                    "_id": "selected-outside",
+                    "member_id": "selected",
+                    "member_name": "Selected",
+                    "plan_date": "2026-09-15",
+                    "plan_type": "work",
+                    "start_minute": 540,
+                    "end_minute": 1080,
+                },
+                {
+                    "_id": "other-plan",
+                    "member_id": "other",
+                    "member_name": "Other",
+                    "plan_date": "2026-08-20",
+                    "plan_type": "work",
+                    "start_minute": 540,
+                    "end_minute": 1080,
+                },
+            ],
+        )
+
+        with patch(
+            "app.modules.work_plans.service.list_member_presence_summaries",
+            new=AsyncMock(return_value={}),
+        ):
+            response = await list_work_plan_schedule(
+                db,
+                range_name="30d",
+                member_ids=[" selected ", "selected"],
+                include_cancelled=False,
+                observed_at=observed_at,
+            )
+
+        self.assertEqual(response["start_date"], "2026-08-16")
+        self.assertEqual(response["end_date"], "2026-09-14")
+        self.assertEqual([member["member_id"] for member in response["members"]], ["selected"])
+        self.assertEqual([plan["id"] for plan in response["plans"]], ["selected-last-day"])
+
+    async def test_all_range_uses_matching_plan_bounds_and_preserves_deleted_member_name(self) -> None:
+        observed_at = datetime(2026, 8, 15, tzinfo=UTC)
+        plans = [
+            {
+                "_id": "older",
+                "member_id": "known",
+                "member_name": "Old Profile Name",
+                "plan_date": "2026-08-01",
+                "plan_type": "work",
+                "start_minute": 540,
+                "end_minute": 1080,
+            },
+            {
+                "_id": "deleted-member-plan",
+                "member_id": "deleted",
+                "member_name": "Deleted Member Name",
+                "plan_date": "2026-09-30",
+                "plan_type": "work",
+                "start_minute": 540,
+                "end_minute": 1080,
+            },
+            {
+                "_id": "cancelled-latest",
+                "member_id": "known",
+                "member_name": "Known Profile Name",
+                "plan_date": "2026-10-01",
+                "plan_type": "work",
+                "start_minute": 540,
+                "end_minute": 1080,
+                "status": "cancelled",
+            },
+        ]
+        db = fake_db(
+            users=[{"_id": "known", "name": "Known Profile Name"}],
+            plans=plans,
+        )
+
+        with patch(
+            "app.modules.work_plans.service.list_member_presence_summaries",
+            new=AsyncMock(return_value={}),
+        ):
+            response = await list_work_plan_schedule(
+                db,
+                range_name="all",
+                member_ids=None,
+                include_cancelled=False,
+                observed_at=observed_at,
+            )
+
+        self.assertEqual(response["start_date"], "2026-08-01")
+        self.assertEqual(response["end_date"], "2026-09-30")
+        self.assertEqual([plan["id"] for plan in response["plans"]], ["older", "deleted-member-plan"])
+        members = {member["member_id"]: member for member in response["members"]}
+        self.assertEqual(members["known"]["member_name"], "Known Profile Name")
+        self.assertEqual(members["deleted"]["member_name"], "Deleted Member Name")
+
+        include_db = fake_db(
+            users=[{"_id": "known", "name": "Known Profile Name"}],
+            plans=plans,
+        )
+        with patch(
+            "app.modules.work_plans.service.list_member_presence_summaries",
+            new=AsyncMock(return_value={}),
+        ):
+            included = await list_work_plan_schedule(
+                include_db,
+                range_name="all",
+                member_ids=None,
+                include_cancelled=True,
+                observed_at=observed_at,
+            )
+
+        self.assertEqual(included["end_date"], "2026-10-01")
+        self.assertEqual(
+            [plan["id"] for plan in included["plans"]],
+            ["older", "deleted-member-plan", "cancelled-latest"],
+        )
+
+    async def test_empty_all_range_uses_local_observed_date_and_rejects_unknown_ranges(self) -> None:
+        observed_at = datetime(2026, 8, 15, 16, 0, tzinfo=UTC)
+        db = fake_db(users=[{"_id": "quiet", "name": "Quiet"}])
+
+        with patch(
+            "app.modules.work_plans.service.list_member_presence_summaries",
+            new=AsyncMock(return_value={}),
+        ):
+            response = await list_work_plan_schedule(
+                db,
+                range_name="all",
+                member_ids=None,
+                include_cancelled=False,
+                observed_at=observed_at,
+            )
+
+        self.assertEqual(response["start_date"], "2026-08-16")
+        self.assertEqual(response["end_date"], "2026-08-16")
+        with self.assertRaisesRegex(ValueError, "7d.*30d.*all"):
+            await list_work_plan_schedule(
+                db,
+                range_name="14d",
+                member_ids=None,
+                include_cancelled=False,
+                observed_at=observed_at,
+            )
+
+    async def test_all_range_bounds_cover_records_beyond_the_return_limit(self) -> None:
+        first_date = date(2020, 1, 1)
+        plans = [
+            {
+                "_id": f"plan-{index:04d}",
+                "member_id": "member",
+                "member_name": "Member",
+                "plan_date": (first_date + timedelta(days=index)).isoformat(),
+                "plan_type": "work",
+                "start_minute": 540,
+                "end_minute": 1080,
+            }
+            for index in range(4_001)
+        ]
+        db = fake_db(users=[{"_id": "member", "name": "Member"}], plans=plans)
+
+        with patch(
+            "app.modules.work_plans.service.list_member_presence_summaries",
+            new=AsyncMock(return_value={}),
+        ):
+            response = await list_work_plan_schedule(
+                db,
+                range_name="all",
+                member_ids=None,
+                include_cancelled=False,
+                observed_at=OBSERVED_AT,
+            )
+
+        self.assertEqual(len(response["plans"]), 4_000)
+        self.assertEqual(response["start_date"], plans[0]["plan_date"])
+        self.assertEqual(response["end_date"], plans[-1]["plan_date"])
 
 
 class WorkPlanHistoryServiceTests(unittest.IsolatedAsyncioTestCase):

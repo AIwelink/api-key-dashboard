@@ -10,6 +10,7 @@ from app.modules.work_plans.domain import (
     WorkPlanConflictError,
     WorkPlanRuleError,
     build_plan_drafts,
+    collaboration_status,
     deterministic_plan_id,
     is_plan_manager,
     time_to_minute,
@@ -97,6 +98,30 @@ class WorkPlanTimeRuleTests(unittest.TestCase):
                         create_payload(start_time="09:00", end_time=end_time),
                         OBSERVED_AT,
                     )
+
+
+class WorkPlanCollaborationStatusTests(unittest.TestCase):
+    def test_temporary_unavailable_has_priority_while_offline(self) -> None:
+        self.assertEqual(
+            collaboration_status(
+                is_online=False,
+                active_plan={"plan_type": "temporary_unavailable"},
+            ),
+            "temporary_unavailable",
+        )
+
+    def test_offline_member_in_current_work_plan_is_neutrally_planned_offline(self) -> None:
+        self.assertEqual(
+            collaboration_status(
+                is_online=False,
+                active_plan={"plan_type": "work"},
+            ),
+            "planned_offline",
+        )
+
+    def test_online_and_unscheduled_offline_states_are_distinct(self) -> None:
+        self.assertEqual(collaboration_status(is_online=True, active_plan=None), "online")
+        self.assertEqual(collaboration_status(is_online=False, active_plan=None), "offline")
 
 
 class WorkPlanCreateRuleTests(unittest.TestCase):

@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.modules.system.audit import write_audit_log
-from app.modules.work_plans.domain import build_plan_drafts
+from app.modules.system.presence import list_member_presence_summaries
+from app.modules.work_plans.domain import (
+    SHANGHAI_TIMEZONE,
+    build_plan_drafts,
+    collaboration_status,
+)
 from app.modules.work_plans.schemas import WorkPlanCreate
 from app.utils import now_utc, serialize_doc
 
@@ -15,6 +21,7 @@ from app.utils import now_utc, serialize_doc
 DEFAULT_HISTORY_LIMIT = 1_000
 MAX_HISTORY_LIMIT = 4_000
 MAX_READBACK_FALLBACKS = 5
+MAX_SCHEDULE_PLANS = 4_000
 
 
 logger = logging.getLogger(__name__)
@@ -188,6 +195,185 @@ async def list_my_work_plans(
     return {"items": items, "total": len(items)}
 
 
+async def list_work_plan_schedule(
+    db: AsyncIOMotorDatabase,
+    *,
+    range_name: str,
+    member_ids: list[str] | None,
+    include_cancelled: bool,
+    observed_at: datetime | None = None,
+) -> dict[str, Any]:
+    if range_name not in {"7d", "30d", "all"}:
+        raise ValueError("range_name must be one of 7d, 30d or all")
+
+    observed = observed_at or now_utc()
+    if observed.tzinfo is None or observed.utcoffset() is None:
+        observed = observed.replace(tzinfo=UTC)
+    else:
+        observed = observed.astimezone(UTC)
+    observed_local = observed.astimezone(SHANGHAI_TIMEZONE)
+    local_today = observed_local.date()
+    selected_member_ids = list(
+        dict.fromkeys(
+            member_id
+            for value in member_ids or []
+            if (member_id := str(value).strip())
+        )
+    )
+
+    query: dict[str, Any] = {}
+    if range_name != "all":
+        day_count = 7 if range_name == "7d" else 30
+        start_date = local_today
+        end_date = start_date + timedelta(days=day_count - 1)
+        query["plan_date"] = {
+            "$gte": start_date.isoformat(),
+            "$lte": end_date.isoformat(),
+        }
+    if selected_member_ids:
+        query["member_id"] = {"$in": selected_member_ids}
+    if not include_cancelled:
+        query["is_cancelled"] = {"$ne": True}
+        query["status"] = {"$ne": "cancelled"}
+
+    plan_cursor = db.work_plans.find(query).sort(
+        [("plan_date", 1), ("start_minute", 1)]
+    ).limit(MAX_SCHEDULE_PLANS)
+    latest_plan_cursor = (
+        db.work_plans.find(query).sort([("plan_date", -1)]).limit(1)
+        if range_name == "all"
+        else None
+    )
+    user_cursor = db.users.find({})
+    plan_results = await asyncio.gather(
+        _collect_documents(plan_cursor),
+        _collect_documents(user_cursor),
+        list_member_presence_summaries(db, observed_at=observed),
+        *(
+            [_collect_documents(latest_plan_cursor)]
+            if latest_plan_cursor is not None
+            else []
+        ),
+    )
+    plans, users, presence_by_user = plan_results[:3]
+
+    if range_name == "all":
+        latest_plans = plan_results[3]
+        if plans and latest_plans:
+            start_date_text = str(plans[0]["plan_date"])
+            end_date_text = str(latest_plans[0]["plan_date"])
+        else:
+            start_date_text = end_date_text = local_today.isoformat()
+    else:
+        start_date_text = start_date.isoformat()
+        end_date_text = end_date.isoformat()
+
+    profiles: dict[str, dict[str, Any]] = {}
+    for user in users:
+        member_id = str(user.get("_id") or user.get("id") or "").strip()
+        if not member_id or (
+            selected_member_ids and member_id not in selected_member_ids
+        ):
+            continue
+        profiles[member_id] = {
+            "member_id": member_id,
+            "member_name": user.get("name") or user.get("email") or member_id,
+            "member_email": user.get("email"),
+            "role": user.get("role"),
+            "account_status": user.get("status"),
+        }
+
+    for plan in plans:
+        member_id = str(plan.get("member_id") or "").strip()
+        if not member_id:
+            continue
+        profiles.setdefault(
+            member_id,
+            {
+                "member_id": member_id,
+                "member_name": plan.get("member_name") or member_id,
+                "member_email": None,
+                "role": None,
+                "account_status": None,
+            },
+        )
+    for member_id in selected_member_ids:
+        profiles.setdefault(
+            member_id,
+            {
+                "member_id": member_id,
+                "member_name": member_id,
+                "member_email": None,
+                "role": None,
+                "account_status": None,
+            },
+        )
+
+    current_minute = observed_local.hour * 60 + observed_local.minute
+    current_date_text = local_today.isoformat()
+    active_plans: dict[str, dict[str, Any]] = {}
+    for plan in plans:
+        if (
+            plan.get("plan_date") != current_date_text
+            or plan.get("is_cancelled") is True
+            or plan.get("status") == "cancelled"
+        ):
+            continue
+        start_minute = plan.get("start_minute")
+        end_minute = plan.get("end_minute")
+        if not isinstance(start_minute, int) or not isinstance(end_minute, int):
+            continue
+        if not (start_minute <= current_minute < end_minute):
+            continue
+        member_id = str(plan.get("member_id") or "").strip()
+        current = active_plans.get(member_id)
+        if current is None or (
+            current.get("plan_type") != "temporary_unavailable"
+            and plan.get("plan_type") == "temporary_unavailable"
+        ):
+            active_plans[member_id] = plan
+
+    members = []
+    for member_id, profile in profiles.items():
+        summary = presence_by_user.get(member_id, {})
+        is_online = bool(summary.get("is_online"))
+        active_plan = active_plans.get(member_id)
+        members.append(
+            {
+                **profile,
+                "is_online": is_online,
+                "active_clients": int(summary.get("active_clients") or 0),
+                "last_seen_at": summary.get("last_seen_at"),
+                "active_plan": active_plan,
+                "collaboration_status": collaboration_status(
+                    is_online=is_online,
+                    active_plan=active_plan,
+                ),
+            }
+        )
+    members.sort(
+        key=lambda member: (
+            str(member.get("member_name") or "").casefold(),
+            member["member_id"],
+        )
+    )
+
+    return serialize_doc(
+        {
+            "members": members,
+            "plans": plans,
+            "start_date": start_date_text,
+            "end_date": end_date_text,
+            "observed_at": observed,
+            "timezone": str(SHANGHAI_TIMEZONE),
+        }
+    )
+
+
+async def _collect_documents(cursor: Any) -> list[dict[str, Any]]:
+    return [document async for document in cursor]
+
+
 def _write_error_message(error: Exception | None) -> str:
     del error
     return "保存工作计划失败，请稍后重试"
@@ -197,5 +383,6 @@ __all__ = [
     "WorkPlanAccessError",
     "create_work_plans",
     "list_my_work_plans",
+    "list_work_plan_schedule",
     "require_browser_actor",
 ]

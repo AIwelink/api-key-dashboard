@@ -49,6 +49,20 @@ def is_plan_manager(actor: dict) -> bool:
     return actor.get("role") in {"owner", "admin"}
 
 
+def collaboration_status(
+    *,
+    is_online: bool,
+    active_plan: dict | None,
+) -> str:
+    if active_plan and active_plan.get("plan_type") == "temporary_unavailable":
+        return "temporary_unavailable"
+    if is_online:
+        return "online"
+    if active_plan is not None:
+        return "planned_offline"
+    return "offline"
+
+
 def build_plan_drafts(
     actor: dict,
     payload: WorkPlanCreate,
