@@ -1,9 +1,14 @@
+import logging
+
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo.errors import OperationFailure
 
 from app.config import get_settings
 from app.security import hash_password
 from app.utils import now_utc
+
+
+logger = logging.getLogger(__name__)
 
 
 async def ensure_tpm_indexes(db: AsyncIOMotorDatabase) -> None:
@@ -162,13 +167,81 @@ async def ensure_frontend_presence_indexes(db: AsyncIOMotorDatabase) -> None:
 
 
 async def ensure_work_plan_indexes(db: AsyncIOMotorDatabase) -> None:
+    legacy_index_name = "member_id_1_idempotency_key_1_plan_date_1"
+    try:
+        indexes = await db.work_plans.index_information()
+    except OperationFailure as exc:
+        if exc.code != 26:
+            raise
+        indexes = {}
+    legacy_index = indexes.get(legacy_index_name, {})
+    if legacy_index and "partialFilterExpression" not in legacy_index:
+        await db.work_plans.drop_index(legacy_index_name)
     await db.work_plans.create_index(
         [("member_id", 1), ("idempotency_key", 1), ("plan_date", 1)],
         unique=True,
+        partialFilterExpression={"schema_version": {"$exists": False}},
     )
     await db.work_plans.create_index([("plan_date", 1), ("member_id", 1), ("created_at", -1)])
     await db.work_plans.create_index([("member_id", 1), ("plan_date", -1), ("created_at", -1)])
     await db.work_plans.create_index([("is_cancelled", 1), ("plan_date", 1)])
+    await db.work_plans.create_index(
+        [
+            ("member_id", 1),
+            ("idempotency_key", 1),
+            ("anchor_date", 1),
+            ("operation_type", 1),
+            ("effective_start_at", 1),
+        ],
+        unique=True,
+        partialFilterExpression={"schema_version": 2},
+    )
+    await db.work_plans.create_index(
+        [("member_id", 1), ("member_sequence", 1)],
+        unique=True,
+        partialFilterExpression={"schema_version": 2},
+    )
+    await db.work_plans.create_index(
+        [
+            ("member_id", 1),
+            ("effective_start_at", 1),
+            ("effective_end_at", 1),
+        ],
+        partialFilterExpression={"schema_version": 2},
+    )
+    await db.work_plans.create_index(
+        [("member_id", 1), ("member_sequence", -1)],
+        partialFilterExpression={"schema_version": 2},
+    )
+    await db.work_plans.create_index("compensates_operation_id", sparse=True)
+    await db.work_plan_member_heads.create_index("lease_until")
+
+
+async def ensure_work_plan_priority_defaults(db: AsyncIOMotorDatabase) -> None:
+    cursor = db.users.find(
+        {
+            "role": "owner",
+            "status": "active",
+            "work_plan_priority": {"$exists": False},
+        }
+    )
+    matches = [
+        user
+        async for user in cursor
+        if str(user.get("name") or "").strip() == "张城玮"
+    ]
+    if len(matches) > 1:
+        logger.warning(
+            "work_plan_priority_bootstrap_ambiguous owner_count=%s",
+            len(matches),
+        )
+        return
+    if not matches:
+        return
+    await db.users.update_one(
+        {"_id": matches[0]["_id"], "work_plan_priority": {"$exists": False}},
+        {"$set": {"work_plan_priority": 1}},
+    )
 
 
 async def ensure_audit_indexes(db: AsyncIOMotorDatabase) -> None:
@@ -379,5 +452,6 @@ async def ensure_bootstrap_data(db: AsyncIOMotorDatabase) -> None:
     from app.modules.system.permissions import ensure_role_permissions_settings
 
     await ensure_initial_owner(db)
+    await ensure_work_plan_priority_defaults(db)
     await ensure_role_permissions_settings(db)
     await migrate_legacy_client_sites(db)

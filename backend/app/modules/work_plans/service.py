@@ -895,7 +895,6 @@ async def list_work_plan_schedule(
             if (member_id := str(value).strip())
         )
     )
-
     start_date = local_today
     end_date = local_today
     query: dict[str, Any] = {}
@@ -1201,6 +1200,65 @@ async def list_work_plan_schedule(
             "total_operations": len(projection_documents),
             "has_more": has_more,
             "next_cursor": next_cursor,
+        }
+    )
+
+
+async def set_member_priority(
+    db: AsyncIOMotorDatabase,
+    *,
+    actor: dict[str, Any],
+    member_id: str,
+    priority: int | None,
+    observed_at: datetime | None = None,
+) -> dict[str, Any]:
+    require_browser_actor(actor)
+    if not is_plan_manager(actor):
+        raise WorkPlanPermissionError("只有管理员可以设置工作计划优先级")
+    normalized_member_id = str(member_id).strip()
+    if not normalized_member_id:
+        raise WorkPlanNotFoundError("成员不存在")
+    if priority is not None and (
+        isinstance(priority, bool)
+        or not isinstance(priority, int)
+        or priority <= 0
+        or priority > 9_223_372_036_854_775_807
+    ):
+        raise WorkPlanRuleError("优先级必须是大于 0 的整数")
+
+    existing = await db.users.find_one({"_id": normalized_member_id})
+    if existing is None:
+        raise WorkPlanNotFoundError("成员不存在")
+    observed = observed_at or now_utc()
+    actor_id = str(actor.get("_id") or "").strip()
+    updated = await db.users.find_one_and_update(
+        {"_id": normalized_member_id},
+        {
+            "$set": {
+                "work_plan_priority": priority,
+                "updated_at": observed,
+                "updated_by": actor_id,
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if updated is None:
+        raise WorkPlanNotFoundError("成员不存在")
+    await write_audit_log(
+        db,
+        actor=actor,
+        action="work_plan.priority.update",
+        resource_type="user",
+        resource_id=normalized_member_id,
+        before={"work_plan_priority": existing.get("work_plan_priority")},
+        after={"work_plan_priority": priority},
+    )
+    return serialize_doc(
+        {
+            "member_id": normalized_member_id,
+            "member_name": updated.get("name") or updated.get("email") or normalized_member_id,
+            "role": updated.get("role"),
+            "work_plan_priority": updated.get("work_plan_priority"),
         }
     )
 

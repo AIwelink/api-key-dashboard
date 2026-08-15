@@ -11,6 +11,7 @@ PlanType = Literal["work", "temporary_unavailable"]
 OperationType = Literal["activate", "cancel"]
 EndTime = time | Literal["24:00"]
 _MUTABLE_UPDATE_FIELDS = {"plan_type", "start_time", "end_time", "note"}
+MAX_MONGO_INT64 = 9_223_372_036_854_775_807
 
 
 def _trim_note(value: object) -> object:
@@ -66,6 +67,12 @@ class WorkPlanOperationCreate(BaseModel):
         if self.end_offset_minute <= self.start_offset_minute:
             raise ValueError("结束时间必须晚于开始时间")
         return self
+
+
+class WorkPlanPriorityUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    priority: int | None = Field(ge=1, le=MAX_MONGO_INT64)
 
 
 class WorkPlanUpdate(BaseModel):

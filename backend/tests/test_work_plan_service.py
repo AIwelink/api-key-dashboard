@@ -25,6 +25,7 @@ from app.modules.work_plans.service import (
     create_work_plans,
     list_my_work_plans,
     list_work_plan_schedule,
+    set_member_priority,
     update_work_plan,
 )
 
@@ -999,6 +1000,57 @@ class WorkPlanOperationServiceTests(unittest.IsolatedAsyncioTestCase):
             1,
         )
 
+
+class WorkPlanPriorityServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_priority_requires_manager_and_accepts_large_positive_integer(self) -> None:
+        db = fake_db(users=[{"_id": "member", "name": "Member", "role": "viewer"}])
+
+        with self.assertRaises(WorkPlanPermissionError):
+            await set_member_priority(
+                db,
+                actor={**ACTOR, "role": "viewer", "actor_type": "user"},
+                member_id="member",
+                priority=10,
+                observed_at=OBSERVED_AT,
+            )
+
+        result = await set_member_priority(
+            db,
+            actor={**ACTOR, "role": "admin", "actor_type": "user"},
+            member_id="member",
+            priority=10_000_000,
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertEqual(result["work_plan_priority"], 10_000_000)
+        self.assertEqual(db.users.documents["member"]["work_plan_priority"], 10_000_000)
+
+    async def test_priority_clear_is_persisted_as_explicit_null(self) -> None:
+        db = fake_db(
+            users=[
+                {
+                    "_id": "member",
+                    "name": "Member",
+                    "role": "viewer",
+                    "work_plan_priority": 3,
+                }
+            ]
+        )
+
+        result = await set_member_priority(
+            db,
+            actor={**ACTOR, "role": "owner", "actor_type": "user"},
+            member_id="member",
+            priority=None,
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertIsNone(result["work_plan_priority"])
+        self.assertIn("work_plan_priority", db.users.documents["member"])
+        self.assertIsNone(db.users.documents["member"]["work_plan_priority"])
+
+
+class WorkPlanOperationLeaseServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_expired_lease_is_recovered_without_reusing_sequence(self) -> None:
         db = fake_db()
         db.work_plan_member_heads.documents[ACTOR["_id"]] = {

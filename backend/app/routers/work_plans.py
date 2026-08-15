@@ -12,7 +12,12 @@ from app.modules.work_plans.domain import (
     WorkPlanRuleError,
     is_plan_manager,
 )
-from app.modules.work_plans.schemas import WorkPlanCreate, WorkPlanUpdate
+from app.modules.work_plans.schemas import (
+    WorkPlanCreate,
+    WorkPlanOperationCreate,
+    WorkPlanPriorityUpdate,
+    WorkPlanUpdate,
+)
 from app.modules.work_plans.service import (
     WorkPlanAccessError,
     WorkPlanNotFoundError,
@@ -22,6 +27,7 @@ from app.modules.work_plans.service import (
     list_my_work_plans,
     list_work_plan_schedule,
     require_browser_actor,
+    set_member_priority,
     update_work_plan,
 )
 
@@ -73,7 +79,7 @@ async def get_my_work_plans(
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def post_work_plans(
-    payload: WorkPlanCreate,
+    payload: WorkPlanOperationCreate | WorkPlanCreate,
     actor: dict = Depends(WORK_PLAN_PERMISSION),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
@@ -82,6 +88,30 @@ async def post_work_plans(
         return await create_work_plans(db, actor=actor, payload=payload)
     except WorkPlanRuleError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.patch("/members/{member_id}/priority")
+async def patch_member_work_plan_priority(
+    member_id: str,
+    payload: WorkPlanPriorityUpdate,
+    actor: dict = Depends(WORK_PLAN_PERMISSION),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    _require_browser_actor(actor)
+    try:
+        return await set_member_priority(
+            db,
+            actor=actor,
+            member_id=member_id,
+            priority=payload.priority,
+        )
+    except (
+        WorkPlanNotFoundError,
+        WorkPlanPermissionError,
+        WorkPlanAccessError,
+        WorkPlanRuleError,
+    ) as exc:
+        _raise_http_error(exc)
 
 
 @router.patch("/{plan_id}")

@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 
 from app.modules.work_plans.domain import WorkPlanConflictError
-from app.modules.work_plans.schemas import WorkPlanUpdate
+from app.modules.work_plans.schemas import (
+    WorkPlanOperationCreate,
+    WorkPlanPriorityUpdate,
+    WorkPlanUpdate,
+)
 from app.main import app
 from app.routers import work_plans as work_plans_router
 
@@ -24,6 +28,7 @@ class WorkPlanRouterTests(unittest.IsolatedAsyncioTestCase):
         paths = {route.path for route in app.routes}
         self.assertIn("/api/work-plans/schedule", paths)
         self.assertIn("/api/work-plans/{plan_id}/cancel", paths)
+        self.assertIn("/api/work-plans/members/{member_id}/priority", paths)
 
     def test_router_exposes_complete_contract_with_work_plan_permission(self) -> None:
         routes = {
@@ -37,6 +42,7 @@ class WorkPlanRouterTests(unittest.IsolatedAsyncioTestCase):
             ("/work-plans", "POST"),
             ("/work-plans/{plan_id}", "PATCH"),
             ("/work-plans/{plan_id}/cancel", "POST"),
+            ("/work-plans/members/{member_id}/priority", "PATCH"),
         }
         self.assertTrue(expected <= set(routes))
         for key in expected:
@@ -103,6 +109,46 @@ class WorkPlanRouterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(raised.exception.status_code, 403)
         self.assertIn("管理员", raised.exception.detail)
+
+    async def test_create_route_accepts_v2_operation_payload(self) -> None:
+        payload = WorkPlanOperationCreate.model_validate(
+            {
+                "operation_type": "activate",
+                "anchor_dates": ["2026-08-18"],
+                "start_offset_minute": 540,
+                "end_offset_minute": 1_080,
+                "idempotency_key": "00000000-0000-0000-0000-000000000001",
+            }
+        )
+        with patch.object(
+            work_plans_router,
+            "create_work_plans",
+            new=AsyncMock(return_value={"results": [], "total": 0}),
+        ) as create:
+            await work_plans_router.post_work_plans(
+                payload=payload,
+                actor={"_id": "member", "actor_type": "user"},
+                db=SimpleNamespace(),
+            )
+
+        self.assertIs(create.await_args.kwargs["payload"], payload)
+
+    async def test_priority_route_forwards_validated_value(self) -> None:
+        payload = WorkPlanPriorityUpdate(priority=12)
+        with patch.object(
+            work_plans_router,
+            "set_member_priority",
+            new=AsyncMock(return_value={"member_id": "member", "work_plan_priority": 12}),
+        ) as update:
+            response = await work_plans_router.patch_member_work_plan_priority(
+                member_id="member",
+                payload=payload,
+                actor={"_id": "admin", "role": "admin", "actor_type": "user"},
+                db=SimpleNamespace(),
+            )
+
+        self.assertEqual(response["work_plan_priority"], 12)
+        self.assertEqual(update.await_args.kwargs["priority"], 12)
 
 
 if __name__ == "__main__":
