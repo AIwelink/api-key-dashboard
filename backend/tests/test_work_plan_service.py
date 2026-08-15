@@ -11,7 +11,11 @@ from uuid import UUID
 from bson import ObjectId
 
 from app.modules.work_plans.domain import WorkPlanConflictError, WorkPlanRuleError, deterministic_plan_id
-from app.modules.work_plans.schemas import WorkPlanCreate, WorkPlanUpdate
+from app.modules.work_plans.schemas import (
+    WorkPlanCreate,
+    WorkPlanOperationCreate,
+    WorkPlanUpdate,
+)
 from app.modules.work_plans import service as work_plan_service
 from app.modules.work_plans.service import (
     WorkPlanAccessError,
@@ -47,9 +51,28 @@ def create_payload(**overrides: object) -> WorkPlanCreate:
     return WorkPlanCreate.model_validate(values)
 
 
+def operation_payload(**overrides: object) -> WorkPlanOperationCreate:
+    values = {
+        "operation_type": "activate",
+        "anchor_dates": [date(2026, 8, 18)],
+        "start_offset_minute": 9 * 60,
+        "end_offset_minute": 18 * 60,
+        "note": "original note",
+        "idempotency_key": IDEMPOTENCY_KEY,
+    }
+    values.update(overrides)
+    return WorkPlanOperationCreate.model_validate(values)
+
+
 class FakeUpdateResult:
-    def __init__(self, *, upserted_id: object | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        upserted_id: object | None = None,
+        matched_count: int = 0,
+    ) -> None:
         self.upserted_id = upserted_id
+        self.matched_count = matched_count
 
 
 class FakeInsertResult:
@@ -141,7 +164,7 @@ class FakeCollection:
             )
             if existing is not None:
                 self._apply_update(existing, update)
-                return FakeUpdateResult()
+                return FakeUpdateResult(matched_count=1)
             if not upsert:
                 return FakeUpdateResult()
 
@@ -159,6 +182,7 @@ class FakeCollection:
         update: dict,
         *,
         return_document: object | None = None,
+        upsert: bool = False,
     ) -> dict | None:
         del return_document
         self.find_one_and_update_calls.append((deepcopy(query), deepcopy(update)))
@@ -173,7 +197,18 @@ class FakeCollection:
                 None,
             )
             if existing is None:
-                return None
+                if not upsert:
+                    return None
+                document = {
+                    field: deepcopy(value)
+                    for field, value in query.items()
+                    if not field.startswith("$") and not isinstance(value, dict)
+                }
+                document.update(deepcopy(update.get("$setOnInsert", {})))
+                self._apply_update(document, update)
+                document_id = document.setdefault("_id", ObjectId())
+                self.documents[document_id] = document
+                return deepcopy(document)
             self._apply_update(existing, update)
             return deepcopy(existing)
 
@@ -262,7 +297,12 @@ class FakeCollection:
 
     @staticmethod
     def _apply_update(document: dict, update: dict) -> None:
+        for field, value in update.get("$setOnInsert", {}).items():
+            document.setdefault(field, deepcopy(value))
         document.update(deepcopy(update.get("$set", {})))
+        for field, value in update.get("$max", {}).items():
+            if field not in document or document[field] < value:
+                document[field] = deepcopy(value)
         for field in update.get("$unset", {}):
             document.pop(field, None)
         for field, value in update.get("$push", {}).items():
@@ -297,6 +337,7 @@ def fake_db(
 ) -> SimpleNamespace:
     return SimpleNamespace(
         work_plans=FakeCollection(plans),
+        work_plan_member_heads=FakeCollection(),
         users=FakeCollection(users),
         audit_logs=FakeCollection(),
     )
@@ -862,6 +903,146 @@ class WorkPlanCreateServiceTests(unittest.IsolatedAsyncioTestCase):
                         observed_at=OBSERVED_AT,
                     )
                 self.assertEqual(db.work_plans.update_calls, [])
+
+
+class WorkPlanOperationServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_member_commands_receive_monotonic_sequences(self) -> None:
+        db = fake_db()
+
+        first = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=operation_payload(),
+            observed_at=OBSERVED_AT,
+        )
+        second = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=operation_payload(idempotency_key=UUID(int=2)),
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertEqual(first["results"][0]["operation"]["member_sequence"], 1)
+        self.assertEqual(second["results"][0]["operation"]["member_sequence"], 2)
+        self.assertEqual(
+            db.work_plan_member_heads.documents[ACTOR["_id"]]["last_sequence"],
+            2,
+        )
+
+    async def test_cancel_persists_only_current_green_overlap(self) -> None:
+        db = fake_db()
+        await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=operation_payload(),
+            observed_at=OBSERVED_AT,
+        )
+
+        response = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=operation_payload(
+                operation_type="cancel",
+                start_offset_minute=8 * 60,
+                end_offset_minute=12 * 60,
+                idempotency_key=UUID(int=2),
+            ),
+            observed_at=OBSERVED_AT,
+        )
+
+        operation = response["results"][0]["operation"]
+        self.assertEqual(operation["requested_start_offset_minute"], 8 * 60)
+        self.assertEqual(operation["requested_end_offset_minute"], 12 * 60)
+        self.assertEqual(operation["effective_start_offset_minute"], 9 * 60)
+        self.assertEqual(operation["effective_end_offset_minute"], 12 * 60)
+        self.assertEqual(operation["member_sequence"], 2)
+
+    async def test_cancel_without_green_overlap_writes_nothing(self) -> None:
+        db = fake_db()
+
+        with self.assertRaisesRegex(WorkPlanRuleError, "没有可取消的工作计划"):
+            await create_work_plans(
+                db,
+                actor=ACTOR,
+                payload=operation_payload(
+                    operation_type="cancel",
+                    idempotency_key=UUID(int=2),
+                ),
+                observed_at=OBSERVED_AT,
+            )
+
+        self.assertEqual(db.work_plans.documents, {})
+
+    async def test_idempotent_replay_returns_original_without_advancing_sequence(self) -> None:
+        db = fake_db()
+        payload = operation_payload()
+
+        first = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=payload,
+            observed_at=OBSERVED_AT,
+        )
+        replay = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=payload,
+            observed_at=OBSERVED_AT + timedelta(minutes=30),
+        )
+
+        self.assertEqual(first["results"][0]["outcome"], "created")
+        self.assertEqual(replay["results"][0]["outcome"], "duplicate")
+        self.assertTrue(replay["duplicate_submission"])
+        self.assertEqual(len(db.work_plans.documents), 1)
+        self.assertEqual(
+            db.work_plan_member_heads.documents[ACTOR["_id"]]["last_sequence"],
+            1,
+        )
+
+    async def test_expired_lease_is_recovered_without_reusing_sequence(self) -> None:
+        db = fake_db()
+        db.work_plan_member_heads.documents[ACTOR["_id"]] = {
+            "_id": ACTOR["_id"],
+            "last_sequence": 4,
+            "lease_owner": "abandoned",
+            "lease_until": OBSERVED_AT - timedelta(seconds=1),
+        }
+
+        response = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=operation_payload(),
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertEqual(response["results"][0]["operation"]["member_sequence"], 5)
+        head = db.work_plan_member_heads.documents[ACTOR["_id"]]
+        self.assertEqual(head["last_sequence"], 5)
+        self.assertNotIn("lease_owner", head)
+        self.assertNotIn("lease_until", head)
+
+    async def test_lost_acknowledgement_is_reconciled_from_readback(self) -> None:
+        db = fake_db()
+        operation_id = deterministic_plan_id(
+            ACTOR["_id"],
+            IDEMPOTENCY_KEY,
+            date(2026, 8, 18),
+        )
+        db.work_plans.fail_after_write[operation_id] = 1
+
+        response = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=operation_payload(),
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertIn(response["results"][0]["outcome"], {"created", "duplicate"})
+        self.assertEqual(response["results"][0]["operation"]["member_sequence"], 1)
+        self.assertEqual(
+            db.work_plan_member_heads.documents[ACTOR["_id"]]["last_sequence"],
+            1,
+        )
 
 
 class WorkPlanScheduleServiceTests(unittest.IsolatedAsyncioTestCase):

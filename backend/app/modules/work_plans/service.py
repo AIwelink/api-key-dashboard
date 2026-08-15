@@ -5,23 +5,37 @@ import base64
 import binascii
 import json
 import logging
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from app.modules.system.audit import write_audit_log
 from app.modules.system.presence import list_member_presence_summaries
 from app.modules.work_plans.domain import (
     SHANGHAI_TIMEZONE,
     WorkPlanConflictError,
+    WorkPlanRuleError,
+    build_operation_drafts,
     build_plan_drafts,
     collaboration_status,
     is_plan_manager,
     validate_update,
 )
-from app.modules.work_plans.schemas import WorkPlanCreate, WorkPlanUpdate
+from app.modules.work_plans.projection import (
+    NormalizedOperation,
+    clip_cancellation,
+    project_operations,
+)
+from app.modules.work_plans.schemas import (
+    WorkPlanCreate,
+    WorkPlanOperationCreate,
+    WorkPlanUpdate,
+)
 from app.utils import now_utc, serialize_doc
 
 
@@ -31,6 +45,7 @@ MAX_READBACK_FALLBACKS = 5
 MAX_SCHEDULE_PLANS = 4_000
 MAX_AUDIT_REPAIR_INTENTS = 100
 DEFAULT_AUDIT_RECONCILIATION_INTERVAL_SECONDS = 60
+MEMBER_OPERATION_LEASE_SECONDS = 10
 AUDIT_INTENTS_FIELD = "_audit_intents"
 
 
@@ -252,11 +267,18 @@ async def create_work_plans(
     db: AsyncIOMotorDatabase,
     *,
     actor: dict[str, Any],
-    payload: WorkPlanCreate,
+    payload: WorkPlanCreate | WorkPlanOperationCreate,
     observed_at: datetime | None = None,
 ) -> dict[str, Any]:
     require_browser_actor(actor)
     observed = observed_at or now_utc()
+    if isinstance(payload, WorkPlanOperationCreate):
+        return await _create_work_plan_operations(
+            db,
+            actor=actor,
+            payload=payload,
+            observed_at=observed,
+        )
     # Draft construction performs all validation and must precede every write.
     drafts = build_plan_drafts(actor, payload, observed)
     for draft in drafts:
@@ -383,6 +405,252 @@ async def create_work_plans(
         "duplicate_submission": bool(results) and all(
             result["outcome"] == "duplicate" for result in results
         ),
+        "results": results,
+        "total": len(results),
+    }
+
+
+@asynccontextmanager
+async def _member_operation_lease(
+    db: AsyncIOMotorDatabase,
+    *,
+    member_id: str,
+    observed_at: datetime,
+):
+    owner = str(uuid4())
+    lease_until = observed_at + timedelta(seconds=MEMBER_OPERATION_LEASE_SECONDS)
+    try:
+        head = await db.work_plan_member_heads.find_one_and_update(
+            {
+                "_id": member_id,
+                "$or": [
+                    {"lease_until": {"$lte": observed_at}},
+                    {"lease_until": {"$exists": False}},
+                ],
+            },
+            {
+                "$set": {
+                    "lease_owner": owner,
+                    "lease_until": lease_until,
+                    "updated_at": observed_at,
+                },
+                "$setOnInsert": {"last_sequence": 0},
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError as exc:
+        raise WorkPlanConflictError("计划正在更新，请稍后重试") from exc
+    if head is None or head.get("lease_owner") != owner:
+        raise WorkPlanConflictError("计划正在更新，请稍后重试")
+    try:
+        yield head
+    finally:
+        await db.work_plan_member_heads.update_one(
+            {"_id": member_id, "lease_owner": owner},
+            {"$unset": {"lease_owner": "", "lease_until": ""}},
+        )
+
+
+async def _repair_operation_sequence(
+    db: AsyncIOMotorDatabase,
+    *,
+    member_id: str,
+    head: dict[str, Any],
+) -> int:
+    cursor = db.work_plans.find(
+        {"member_id": member_id, "schema_version": 2}
+    ).sort([("member_sequence", -1)]).limit(1)
+    latest_documents = await _collect_documents(cursor)
+    highest_committed = int(
+        (latest_documents[0] if latest_documents else {}).get("member_sequence") or 0
+    )
+    highest = max(int(head.get("last_sequence") or 0), highest_committed)
+    await db.work_plan_member_heads.update_one(
+        {"_id": member_id},
+        {"$max": {"last_sequence": highest}},
+    )
+    return highest
+
+
+async def _create_work_plan_operations(
+    db: AsyncIOMotorDatabase,
+    *,
+    actor: dict[str, Any],
+    payload: WorkPlanOperationCreate,
+    observed_at: datetime,
+) -> dict[str, Any]:
+    drafts = build_operation_drafts(actor, payload, observed_at)
+    member_id = str(actor["_id"]).strip()
+    async with _member_operation_lease(
+        db,
+        member_id=member_id,
+        observed_at=observed_at,
+    ) as head:
+        replay = await _find_operation_replay(
+            db,
+            member_id=member_id,
+            idempotency_key=str(payload.idempotency_key),
+        )
+        if replay:
+            return _operation_command_response(replay, outcome="duplicate")
+
+        sequence = await _repair_operation_sequence(
+            db,
+            member_id=member_id,
+            head=head,
+        )
+        operations = await _expand_operation_drafts(db, drafts)
+        persisted: list[dict[str, Any]] = []
+        outcomes: list[str] = []
+        for draft in operations:
+            sequence += 1
+            draft["member_sequence"] = sequence
+            plan_id = str(draft["_id"])
+            draft[AUDIT_INTENTS_FIELD] = [
+                _build_audit_intent(
+                    actor=actor,
+                    action="work_plan.create",
+                    plan_id=plan_id,
+                    before=None,
+                    after=draft,
+                    dedupe_key=f"work_plan.create:{plan_id}",
+                )
+            ]
+            outcome = "created"
+            try:
+                result = await db.work_plans.update_one(
+                    {"_id": draft["_id"]},
+                    {"$setOnInsert": draft},
+                    upsert=True,
+                )
+                if getattr(result, "upserted_id", None) is None:
+                    outcome = "duplicate"
+            except Exception as exc:  # noqa: BLE001 - readback resolves lost acknowledgements.
+                _log_create_failure("operation_write", exc, plan_id=plan_id)
+                stored_after_error = await db.work_plans.find_one({"_id": draft["_id"]})
+                if stored_after_error is None:
+                    raise WorkPlanConflictError("工作计划提交失败，请重试") from exc
+                outcome = "created"
+
+            stored = await db.work_plans.find_one({"_id": draft["_id"]})
+            if stored is None:
+                raise WorkPlanConflictError("工作计划提交结果不确定，请稍后刷新")
+            persisted.append(stored)
+            outcomes.append(outcome)
+            await db.work_plan_member_heads.update_one(
+                {"_id": member_id},
+                {"$max": {"last_sequence": int(stored["member_sequence"])}},
+            )
+            await _reconcile_document_audit_intents(
+                db,
+                plan_id=plan_id,
+                document=stored,
+            )
+
+        response_outcome = "duplicate" if outcomes and all(
+            outcome == "duplicate" for outcome in outcomes
+        ) else "created"
+        return _operation_command_response(persisted, outcome=response_outcome)
+
+
+async def _find_operation_replay(
+    db: AsyncIOMotorDatabase,
+    *,
+    member_id: str,
+    idempotency_key: str,
+) -> list[dict[str, Any]]:
+    cursor = db.work_plans.find(
+        {
+            "member_id": member_id,
+            "schema_version": 2,
+            "idempotency_key": idempotency_key,
+        }
+    ).sort([("member_sequence", 1)])
+    return await _collect_documents(cursor)
+
+
+async def _expand_operation_drafts(
+    db: AsyncIOMotorDatabase,
+    drafts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not drafts or drafts[0]["operation_type"] != "cancel":
+        return drafts
+
+    draft = drafts[0]
+    cursor = db.work_plans.find(
+        {"member_id": draft["member_id"], "schema_version": 2}
+    )
+    committed = await _collect_documents(cursor)
+    normalized = [
+        NormalizedOperation(
+            operation_id=str(document["_id"]),
+            member_id=str(document["member_id"]),
+            operation_type=str(document["operation_type"]),
+            start_at=document["effective_start_at"],
+            end_at=document["effective_end_at"],
+            order_key=(2, int(document.get("member_sequence") or 0), str(document["_id"])),
+        )
+        for document in committed
+    ]
+    projected = project_operations(
+        normalized,
+        window_start=draft["requested_start_at"],
+        window_end=draft["requested_end_at"],
+    )
+    fragments = clip_cancellation(
+        projected,
+        requested_start=draft["requested_start_at"],
+        requested_end=draft["requested_end_at"],
+    )
+    if not fragments:
+        raise WorkPlanRuleError("所选时间段没有可取消的工作计划")
+
+    expanded: list[dict[str, Any]] = []
+    for index, (effective_start_at, effective_end_at) in enumerate(fragments):
+        operation = dict(draft)
+        if index:
+            operation["_id"] = f"{draft['_id']}:{index + 1}"
+        start_delta = int(
+            (effective_start_at - draft["requested_start_at"]).total_seconds() // 60
+        )
+        end_delta = int(
+            (effective_end_at - draft["requested_start_at"]).total_seconds() // 60
+        )
+        operation["effective_start_at"] = effective_start_at
+        operation["effective_end_at"] = effective_end_at
+        operation["effective_start_offset_minute"] = (
+            draft["start_offset_minute"] + start_delta
+        )
+        operation["effective_end_offset_minute"] = (
+            draft["start_offset_minute"] + end_delta
+        )
+        expanded.append(operation)
+    return expanded
+
+
+def _operation_command_response(
+    operations: list[dict[str, Any]],
+    *,
+    outcome: str,
+) -> dict[str, Any]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for operation in operations:
+        grouped.setdefault(str(operation["anchor_date"]), []).append(operation)
+    results = []
+    for anchor_date in sorted(grouped):
+        serialized = [_serialize_plan(operation) for operation in grouped[anchor_date]]
+        results.append(
+            {
+                "anchor_date": anchor_date,
+                "plan_date": anchor_date,
+                "outcome": outcome,
+                "operation": serialized[0],
+                "operations": serialized,
+            }
+        )
+    return {
+        "duplicate_submission": outcome == "duplicate" and bool(results),
         "results": results,
         "total": len(results),
     }
