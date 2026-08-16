@@ -390,6 +390,11 @@ type ConfirmState = {
 };
 
 const DEFAULT_ACCOUNT_PAGE_SIZE = 50;
+const EMPTY_VISIBLE_ITEMS: [] = [];
+
+export function stableVisibleItems<T>(matchesCurrentView: boolean, items: T[]): T[] {
+  return matchesCurrentView ? items : EMPTY_VISIBLE_ITEMS;
+}
 
 type CacheMeta = {
   status?: string;
@@ -467,11 +472,12 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
   currentAccountKeyRef.current = currentAccountKey;
   selectedSiteIdRef.current = selectedSiteId;
   const accountsMatchCurrent = Boolean(currentAccountKey && accountsDataKey === currentAccountKey);
-  const visibleAccounts = accountsMatchCurrent ? accounts : [];
+  const visibleAccounts = stableVisibleItems(accountsMatchCurrent, accounts);
   const visibleAccountsTotal = accountsMatchCurrent ? accountsTotal : 0;
   const loadingAccounts = loadingAccountsKey !== null;
   const loadingCurrentAccounts = Boolean(currentAccountKey && loadingAccountsKey === currentAccountKey);
   const accountViewLoading = Boolean(currentAccountKey && !accountsMatchCurrent && loadingCurrentAccounts);
+  const pageBusy = loadingGroups || accountViewLoading || refreshingRemote || refreshingFrontend;
   const summary = useMemo(() => summarizeGroups(groups), [groups]);
   const accountSummary = useMemo(() => summarizeRemoteAccounts(visibleAccounts), [visibleAccounts]);
   const capacitySummaryLoading = accountViewLoading || (selectedGroupId !== null && !selectedGroup?.capacity_summary);
@@ -973,8 +979,12 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
 
   return (
     <AutoRefreshAnimationContext.Provider value={autoRefreshRevision}>
-    <section className="view pool-status-page">
-      <section className="panel pool-compact-toolbar">
+    <section
+      aria-busy={pageBusy}
+      className={`view pool-status-page ${pageBusy ? "is-loading" : "is-ready"}`}
+    >
+      <div aria-hidden="true" className={`data-sync-rail ${pageBusy ? "is-active" : ""}`} />
+      <section className="panel pool-compact-toolbar motion-section motion-delay-1">
         <div className="pool-title">
           <h2>API 账号池状态</h2>
           <p>远程 sub2api groups 和账号调度状态</p>
@@ -1027,7 +1037,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
         </div>
       </section>
 
-      <section className="panel group-strip-panel">
+      <section className="panel group-strip-panel motion-section motion-delay-2">
         <div className="group-strip-left">
           <div>
             <h3>Groups</h3>
@@ -1067,7 +1077,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
         </label>
       </section>
 
-      <section className="panel account-pool-panel">
+      <section className="panel account-pool-panel motion-section motion-delay-3">
           <div className="panel-header">
             <div>
               <div className="account-pool-title-row">
@@ -1166,7 +1176,7 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
                   <th className="col-action">操作</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody aria-busy={accountViewLoading}>
                 {visibleAccounts.map((account) => (
                   <RemoteAccountRow
                     account={account}
@@ -1178,12 +1188,19 @@ export function ApiPoolStatusPage({ token, showToast }: Props) {
                     onTest={() => testRemoteAccount(account)}
                   />
                 ))}
-                {!visibleAccounts.length && (
-                  <tr>
-                    <td colSpan={10} className="muted">
-                      {accountViewLoading ? "加载中..." : "暂无账号"}
+                {!visibleAccounts.length && accountViewLoading && (
+                  <tr className="pool-account-loading-row">
+                    <td colSpan={10}>
+                      <div className="table-loading-surface" role="status">
+                        <span className="data-loading-mark" aria-hidden="true" />
+                        <span>正在加载账号池数据</span>
+                        <div className="data-loading-lines" aria-hidden="true"><i /><i /><i /></div>
+                      </div>
                     </td>
                   </tr>
+                )}
+                {!visibleAccounts.length && !accountViewLoading && (
+                  <tr><td colSpan={10} className="muted">暂无账号</td></tr>
                 )}
               </tbody>
             </table>

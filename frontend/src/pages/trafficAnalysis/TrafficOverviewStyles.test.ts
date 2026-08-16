@@ -22,6 +22,13 @@ function redesignRule(selector: string) {
 }
 
 describe("traffic overview layout styles", () => {
+  it("stages overview data bands and preserves the page during refresh", () => {
+    expect(styles).toContain(".growth-tab-stage {");
+    expect(styles).toContain(".traffic-overview.is-loading > .data-sync-rail {");
+    expect(styles).toContain(".traffic-overview-main > .traffic-overview-section {");
+    expect(styles).toContain(".traffic-overview-table-scroll tbody tr:nth-child(-n + 6) {");
+  });
+
   it("keeps table regions horizontal-only so the page owns vertical wheel scrolling", () => {
     const tableScroll = rule(".traffic-overview-table-scroll");
 

@@ -198,7 +198,8 @@ function App() {
       </aside>
 
       <main className="main">
-        {!token ? (
+        <div className="app-view-stage" key={token ? view : "login"}>
+          {!token ? (
           <LoginPage
             onLogin={(nextToken, nextUser) => {
               setToken(nextToken);
@@ -256,7 +257,8 @@ function App() {
             )}
             {view === "logs" && <AuditPage token={token} showToast={showToast} />}
           </>
-        ) : null}
+          ) : null}
+        </div>
         {toast && <div className={`toast ${toast.isError ? "danger" : ""}`}>{toast.message}</div>}
       </main>
     </div>

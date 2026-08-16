@@ -280,6 +280,9 @@ describe("operations management workspace", () => {
   it("renders the overview as a full-width query-first workspace", () => {
     const html = renderToStaticMarkup(<OperationsManagementPage {...props} />);
 
+    expect(html).toContain('aria-busy="false"');
+    expect(html).toContain('class="data-sync-rail "');
+    expect(html).toContain('class="operations-tab-stage"');
     expect(html).toContain("运营概览");
     expect(html).toContain("内部人员");
     expect(html).toContain("额度与兑换码");

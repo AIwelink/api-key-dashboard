@@ -13,6 +13,15 @@ function rule(selector: string) {
 }
 
 describe("operations management open workspace styles", () => {
+  it("stages data bands, loading rows, and result overlays", () => {
+    expect(styles).toContain("/* Operations motion layer */");
+    expect(styles).toContain(".operations-workspace-page > .data-sync-rail {");
+    expect(styles).toContain(".operations-tab-stage {");
+    expect(styles).toContain(".operations-table-loading {");
+    expect(styles).toContain(".operations-data-section tbody tr:nth-child(-n + 6) {");
+    expect(styles).toContain("animation: operations-result-enter");
+  });
+
   it("uses a sticky indexed workspace and open data sections", () => {
     expect(styles).toContain(marker);
     expect(rule(".operations-overview-workspace")).toContain("grid-template-columns: 176px minmax(0, 1fr);");
