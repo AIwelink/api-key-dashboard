@@ -1,5 +1,5 @@
 import { CalendarPlus, History, RefreshCw, TriangleAlert, UsersRound } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -324,6 +324,8 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
   const [cancelPlan, setCancelPlan] = useState<WorkPlanHistoryItem | null>(null);
   const [cancelSegment, setCancelSegment] = useState<Pick<WorkPlanSegment, "start_at" | "end_at"> | null>(null);
   const [cancelOperationKey, setCancelOperationKey] = useState<string | null>(null);
+  const [pageEntered, setPageEntered] = useState(false);
+  const [isPending, startTransition] = useTransition();
   const [scheduleRequestGuard] = useState(createLatestRequestGuard);
   const drawerHandoffTimer = useRef<number | null>(null);
   const canManageAll = currentUser.role === "owner" || currentUser.role === "admin";
@@ -412,6 +414,10 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
   useEffect(() => {
     loadHistory(true).catch(() => undefined);
   }, [loadHistory]);
+
+  useEffect(() => {
+    setPageEntered(true);
+  }, []);
 
   useEffect(() => {
     if (range !== "all" && includeCancelled) setIncludeCancelled(false);
@@ -621,9 +627,14 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
       editingPlan.member_sequence,
     )
     : undefined;
+  const pageBusy = loading || refreshing || mutationBusy || isPending;
 
   return (
-    <section className="view work-plan-page">
+    <section
+      aria-busy={pageBusy}
+      className={`view work-plan-page${pageEntered ? " is-entered" : ""}${isPending ? " is-transitioning" : ""}`}
+    >
+      <div aria-hidden="true" className={`work-plan-refresh-line${refreshing ? " active" : ""}`} />
       <header className="work-plan-page-header">
         <div><h2>工作计划</h2><p>{schedule.start_date} 至 {schedule.end_date} · 上海时间</p></div>
         <div className="work-plan-header-actions">
@@ -641,10 +652,10 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
 
       <div className="work-plan-toolbar">
         <div className="work-plan-range-control" aria-label="日期范围">
-          {(["7d", "30d", "all"] as const).map((value) => <button aria-pressed={range === value} className={range === value ? "active" : ""} key={value} onClick={() => setRange(value)} type="button">{{ "7d": "未来 7 天", "30d": "未来 30 天", all: "全部记录" }[value]}</button>)}
+          {(["7d", "30d", "all"] as const).map((value) => <button aria-pressed={range === value} className={range === value ? "active" : ""} key={value} onClick={() => startTransition(() => setRange(value))} type="button">{{ "7d": "未来 7 天", "30d": "未来 30 天", all: "全部记录" }[value]}</button>)}
         </div>
         <div className="work-plan-toolbar-filters">
-          <label><UsersRound size={15} /><select aria-label="按成员筛选" onChange={(event) => setMemberId(event.target.value)} value={memberId}><option value="">全部成员</option>{schedule.members.map((member) => <option key={member.member_id} value={member.member_id}>{member.member_name}</option>)}</select></label>
+          <label><UsersRound size={15} /><select aria-label="按成员筛选" onChange={(event) => { const nextMemberId = event.target.value; startTransition(() => setMemberId(nextMemberId)); }} value={memberId}><option value="">全部成员</option>{schedule.members.map((member) => <option key={member.member_id} value={member.member_id}>{member.member_name}</option>)}</select></label>
           {canManageAll && range === "all" ? <label className="work-plan-cancelled-toggle"><input checked={includeCancelled} onChange={(event) => setIncludeCancelled(event.target.checked)} type="checkbox" />含已取消</label> : null}
           <button aria-label="刷新" className="work-plan-icon-button" disabled={refreshing} onClick={() => refreshAll(true).catch(() => undefined)} title="刷新" type="button"><RefreshCw className={refreshing ? "spinning" : ""} size={17} /></button>
         </div>
@@ -659,7 +670,12 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
       ) : null}
 
       <div className={`work-plan-schedule-frame ${loading ? "loading" : ""}`}>
-        {loading && !schedule.plans.length && !schedule.segments?.length ? <div className="work-plan-loading">加载中...</div> : <WorkPlanSchedule currentUser={currentUser} onCancelPlan={openCancel} onEditPlan={openEdit} onSetMemberPriority={setMemberPriority} priorityBusy={Boolean(priorityBusyMemberId)} range={range} response={schedule} />}
+        {loading && !schedule.plans.length && !schedule.segments?.length ? (
+          <div aria-live="polite" className="work-plan-loading" role="status">
+            <span aria-hidden="true" className="work-plan-loading-mark" />
+            <div><strong>正在同步排班</strong><span>数据就绪后会自动显示</span></div>
+          </div>
+        ) : <WorkPlanSchedule currentUser={currentUser} onCancelPlan={openCancel} onEditPlan={openEdit} onSetMemberPriority={setMemberPriority} priorityBusy={Boolean(priorityBusyMemberId)} range={range} response={schedule} />}
       </div>
       {schedule.has_more ? <div className="work-plan-pagination"><span>已显示 {schedule.total_operations ?? schedule.plans.length} / {schedule.total} 条记录</span><button className="ghost" disabled={refreshing} onClick={loadOlderSchedule} type="button">{refreshing ? "加载中..." : "加载更早记录"}</button></div> : null}
 
