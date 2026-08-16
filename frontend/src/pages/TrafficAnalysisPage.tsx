@@ -1103,17 +1103,22 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
   const visibleCampaigns = filterCampaigns(campaigns, campaignFilters);
   const linkEditTimeInvalid = !isValidGrowthTimeRange(linkEditForm.valid_from, linkEditForm.valid_until);
   const campaignEditTimeInvalid = !isValidGrowthTimeRange(campaignEditForm.starts_at, campaignEditForm.ends_at);
+  const configurationLoading = loading && activeTab !== "overview";
 
   return (
-    <section className="view accounts-page growth-workspace-page">
-      <div className="topbar growth-workspace-head">
+    <section
+      aria-busy={configurationLoading}
+      className={`view accounts-page growth-workspace-page ${configurationLoading ? "is-loading" : "is-ready"}`}
+    >
+      <div aria-hidden="true" className={`data-sync-rail ${configurationLoading ? "is-active" : ""}`} />
+      <div className="topbar growth-workspace-head motion-section motion-delay-1">
         <div>
           <h2>访问流量分析</h2>
           <p>配置可追踪的访问入口与站点归属</p>
         </div>
       </div>
 
-      <div className="growth-workspace-tabs" role="tablist" aria-label="访问流量分析配置">
+      <div className="growth-workspace-tabs motion-section motion-delay-2" role="tablist" aria-label="访问流量分析配置">
         {([['overview', '流量概览'], ['links', '推广链接'], ['campaigns', '活动管理'], ['channels', '渠道管理'], ['sites', '站点接入']] as const).map(([key, label]) => (
           <button
             className={activeTab === key ? "active" : ""}
@@ -1128,6 +1133,7 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
         ))}
       </div>
 
+      <div className="growth-tab-stage" key={activeTab}>
       {activeTab === "overview" ? (
         <TrafficOverview
           token={token}
@@ -1138,7 +1144,11 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
           showToast={showToast}
         />
       ) : loading ? (
-        <div className="growth-workspace-empty">正在加载流量配置...</div>
+        <div className="data-loading-surface growth-loading-surface" role="status">
+          <span className="data-loading-mark" aria-hidden="true" />
+          <div><strong>正在加载流量配置</strong><span>同步站点、渠道、活动与推广链接</span></div>
+          <div className="data-loading-lines" aria-hidden="true"><i /><i /><i /></div>
+        </div>
       ) : loadError ? (
         <div className="panel growth-workspace-error" role="alert">
           <div>
@@ -1312,6 +1322,7 @@ export function TrafficAnalysisWorkspace(props: WorkspaceProps) {
           </div>
         </form>
       )}
+      </div>
 
       {!editTarget && createModal === "link" && (
         <GrowthCreateModal title="新建推广链接" submitLabel="创建链接" saving={saving} submitDisabled={!linkForm.site_id || !linkForm.campaign_id || !linkForm.source_name.trim()} onClose={onCloseCreate} onSubmit={onCreateLink}>

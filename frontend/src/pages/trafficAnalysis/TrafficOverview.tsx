@@ -515,7 +515,8 @@ export function TrafficOverviewView({
   };
 
   return (
-    <div className="traffic-overview" aria-busy={loading}>
+    <div className={`traffic-overview ${loading ? "is-loading" : "is-ready"}`} aria-busy={loading}>
+      <div aria-hidden="true" className={`data-sync-rail ${loading ? "is-active" : ""}`} />
       <div className="traffic-overview-workspace">
         <WorkspaceRail
           label="访问流量页面索引"
@@ -538,7 +539,13 @@ export function TrafficOverviewView({
         <button className="ghost" type="button" onClick={() => onFiltersChange(defaultTrafficOverviewFilters)}>重置</button>
       </div>
 
-      {loading ? <div className="traffic-overview-loading" role="status">正在加载流量概览</div> : null}
+      {loading && !overview ? (
+        <div className="data-loading-surface traffic-overview-loading" role="status">
+          <span className="data-loading-mark" aria-hidden="true" />
+          <div><strong>正在加载流量概览</strong><span>汇总有效访问、归因与注册数据</span></div>
+          <div className="data-loading-lines" aria-hidden="true"><i /><i /><i /></div>
+        </div>
+      ) : null}
       {error ? <div className="traffic-overview-error" role="alert"><div><strong>流量概览加载失败</strong><span>{error}</span></div><button type="button" onClick={onRetry}>重新加载</button></div> : null}
 
       {!error && overview ? (

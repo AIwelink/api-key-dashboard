@@ -144,6 +144,7 @@ function renderWorkspace(
   workspaceCampaigns: GrowthCampaign[] = [campaign],
   workspaceSites: GrowthSite[] = [site],
   editState: Record<string, unknown> = {},
+  loading = false,
 ) {
   return renderToStaticMarkup(
     <TrafficAnalysisWorkspace
@@ -164,7 +165,7 @@ function renderWorkspace(
       channelForm={emptyChannelForm}
       campaignForm={campaignForm}
       siteForm={{ ...emptySiteForm, public_origin: "https://api.aiwelink.cc" }}
-      loading={false}
+      loading={loading}
       saving={false}
       loadError={loadError}
       createModal={createModal}
@@ -180,6 +181,16 @@ function renderWorkspace(
 }
 
 describe("traffic analysis configuration workspace", () => {
+  it("keeps tab geometry stable while configuration data is loading", () => {
+    const html = renderWorkspace("links", "", undefined, null, [campaign], [site], {}, true);
+
+    expect(html).toContain('aria-busy="true"');
+    expect(html).toContain('class="data-sync-rail is-active"');
+    expect(html).toContain('class="growth-tab-stage"');
+    expect(html).toContain('class="data-loading-surface growth-loading-surface"');
+    expect(html).toContain('role="status"');
+  });
+
   it("notifies configuration load failures only on configuration tabs", () => {
     expect(shouldNotifyTrafficConfigurationError("overview")).toBe(false);
     expect(shouldNotifyTrafficConfigurationError("links")).toBe(true);

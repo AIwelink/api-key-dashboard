@@ -651,7 +651,20 @@ function SiteSelect({ value, onChange, sites, includeAll = true }: { value: stri
 }
 
 function EmptyRow({ columns, text = "暂无数据" }: { columns: number; text?: string }) {
-  return <tr><td className="operations-empty-cell" colSpan={columns}>{text}</td></tr>;
+  const isLoading = text.startsWith("正在加载");
+  return (
+    <tr className={isLoading ? "operations-loading-row" : undefined}>
+      <td className="operations-empty-cell" colSpan={columns}>
+        {isLoading ? (
+          <div className="operations-table-loading" role="status">
+            <span className="data-loading-mark" aria-hidden="true" />
+            <span>{text}</span>
+            <div className="data-loading-lines" aria-hidden="true"><i /><i /><i /></div>
+          </div>
+        ) : text}
+      </td>
+    </tr>
+  );
 }
 
 const operationsMetricDefinitions: Record<string, MetricDefinitionDetails> = {
@@ -1441,10 +1454,15 @@ export function OperationsManagementPage(
       : "按可核验现金确认付费身份，订阅收入单独摊销";
   const showValueRankings = hasAigclinkAccess && effectiveQuery.siteId !== "aiwelink";
   const metricDefinitionSiteId = effectiveQuery.siteId;
+  const pageBusy = loading || refreshing || redemptionLoading;
 
   return (
-    <section className="view operations-workspace-page">
-      <div className="topbar operations-page-head">
+    <section
+      aria-busy={pageBusy}
+      className={`view operations-workspace-page ${pageBusy ? "is-loading" : "is-ready"}`}
+    >
+      <div aria-hidden="true" className={`data-sync-rail ${pageBusy ? "is-active" : ""}`} />
+      <div className="topbar operations-page-head motion-section motion-delay-1">
         <div>
           <h2>运营管理</h2>
           <p>{pageDescription}</p>
@@ -1453,7 +1471,7 @@ export function OperationsManagementPage(
         {tab === "overview" && <button className="ghost" type="button" disabled={refreshing} onClick={refreshSources}>{refreshing ? "提交中..." : "刷新源数据"}</button>}
       </div>
 
-      <div className="growth-workspace-tabs operations-tabs" role="tablist" aria-label="运营管理页面">
+      <div className="growth-workspace-tabs operations-tabs motion-section motion-delay-2" role="tablist" aria-label="运营管理页面">
         {([
           ["overview", "运营概览"],
           ["internal-users", "内部人员"],
@@ -1464,6 +1482,7 @@ export function OperationsManagementPage(
 
       {loadError && <div className="operations-inline-error" role="alert"><strong>数据更新失败</strong><span>{loadError}</span><small>已加载的数据不会被清空</small></div>}
 
+      <div className="operations-tab-stage" key={tab}>
       {tab === "overview" && (
         <div className="operations-overview-workspace">
           <WorkspaceRail
@@ -1606,6 +1625,7 @@ export function OperationsManagementPage(
           </section>
         </div>
       )}
+      </div>
 
       {modal?.kind === "internal" && <GrowthCreateModal title={modal.item ? "编辑内部人员" : "添加内部人员"} submitLabel={modal.item ? "保存修改" : "确认添加"} saving={saving} submitDisabled={!internalForm.site_id || !internalForm.email.trim()} onClose={() => setModal(null)} onSubmit={saveInternal}><div className="growth-form-grid operations-modal-grid"><label><span className="field-label"><strong>站点</strong></span><SiteSelect sites={allowedSites} includeAll={false} value={internalForm.site_id} onChange={(site_id) => setInternalForm({ ...internalForm, site_id })} /></label><label><span className="field-label"><strong>邮箱</strong></span><input type="email" autoComplete="off" value={internalForm.email} onChange={(event) => setInternalForm({ ...internalForm, email: event.target.value })} required /></label><label className="span-2"><span className="field-label"><strong>标记原因</strong><span>（可选）</span></span><input value={internalForm.reason} onChange={(event) => setInternalForm({ ...internalForm, reason: event.target.value })} /></label><label><span className="field-label"><strong>生效时间</strong></span><input type="datetime-local" value={internalForm.active_from} onChange={(event) => setInternalForm({ ...internalForm, active_from: event.target.value })} /></label><label><span className="field-label"><strong>失效时间</strong><span>（可选）</span></span><input type="datetime-local" value={internalForm.active_until} onChange={(event) => setInternalForm({ ...internalForm, active_until: event.target.value })} /></label></div></GrowthCreateModal>}
 
