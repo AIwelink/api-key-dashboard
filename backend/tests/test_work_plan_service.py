@@ -346,6 +346,44 @@ def fake_db(
 
 
 class WorkPlanCreateServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_created_operation_is_visible_after_naive_mongodb_round_trip(self) -> None:
+        db = fake_db(users=[{"_id": ACTOR["_id"], "name": ACTOR["name"]}])
+
+        created = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=operation_payload(),
+            observed_at=OBSERVED_AT,
+        )
+        for document in db.work_plans.documents.values():
+            for field in (
+                "requested_start_at",
+                "requested_end_at",
+                "effective_start_at",
+                "effective_end_at",
+                "created_at",
+            ):
+                document[field] = document[field].replace(tzinfo=None)
+
+        with patch(
+            "app.modules.work_plans.service.list_member_presence_summaries",
+            new=AsyncMock(return_value={}),
+        ):
+            schedule = await list_work_plan_schedule(
+                db,
+                range_name="all",
+                member_ids=None,
+                include_cancelled=False,
+                observed_at=OBSERVED_AT,
+            )
+        history = await list_my_work_plans(db, actor=ACTOR, limit=20)
+
+        self.assertEqual(created["results"][0]["outcome"], "created")
+        self.assertEqual(len(schedule["segments"]), 1)
+        self.assertEqual(schedule["segments"][0]["start_at"], "2026-08-18T01:00:00+00:00")
+        self.assertEqual(history["items"][0]["id"], schedule["segments"][0]["winning_operation_id"])
+        self.assertEqual(history["items"][0]["created_at"], "2026-08-15T00:00:00+00:00")
+
     async def test_actor_identity_is_the_only_identity_written(self) -> None:
         db = fake_db()
 
@@ -1099,6 +1137,43 @@ class WorkPlanOperationLeaseServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WorkPlanScheduleServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_schedule_accepts_naive_utc_datetimes_returned_by_mongodb(self) -> None:
+        db = fake_db(
+            users=[{"_id": "member-1", "name": "Member One"}],
+            plans=[
+                {
+                    "_id": "activate-naive-utc",
+                    "schema_version": 2,
+                    "record_kind": "operation",
+                    "member_id": "member-1",
+                    "member_name": "Member One",
+                    "operation_type": "activate",
+                    "anchor_date": "2026-08-16",
+                    "plan_date": "2026-08-16",
+                    "effective_start_at": datetime(2026, 8, 16, 1),
+                    "effective_end_at": datetime(2026, 8, 16, 9),
+                    "member_sequence": 1,
+                    "created_at": datetime(2026, 8, 15, 10),
+                }
+            ],
+        )
+
+        with patch(
+            "app.modules.work_plans.service.list_member_presence_summaries",
+            new=AsyncMock(return_value={}),
+        ):
+            response = await list_work_plan_schedule(
+                db,
+                range_name="all",
+                member_ids=None,
+                include_cancelled=False,
+                observed_at=OBSERVED_AT,
+            )
+
+        self.assertEqual(response["timezone"], "Asia/Shanghai")
+        self.assertEqual(response["segments"][0]["start_at"], "2026-08-16T01:00:00+00:00")
+        self.assertEqual(response["segments"][0]["end_at"], "2026-08-16T09:00:00+00:00")
+
     async def test_schedule_projects_cross_day_operations_into_continuous_segments(self) -> None:
         observed_at = datetime(2026, 8, 15, 16, 0, tzinfo=UTC)
         db = fake_db(
@@ -1577,6 +1652,33 @@ class WorkPlanScheduleServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WorkPlanHistoryServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_history_serializes_naive_mongodb_datetimes_with_utc_offset(self) -> None:
+        db = fake_db(
+            plans=[
+                {
+                    "_id": "operation-naive-utc",
+                    "schema_version": 2,
+                    "record_kind": "operation",
+                    "member_id": ACTOR["_id"],
+                    "member_name": ACTOR["name"],
+                    "operation_type": "activate",
+                    "anchor_date": "2026-08-18",
+                    "requested_start_at": datetime(2026, 8, 18, 1),
+                    "requested_end_at": datetime(2026, 8, 18, 9),
+                    "effective_start_at": datetime(2026, 8, 18, 1),
+                    "effective_end_at": datetime(2026, 8, 18, 9),
+                    "member_sequence": 1,
+                    "created_at": datetime(2026, 8, 15, 9),
+                }
+            ]
+        )
+
+        response = await list_my_work_plans(db, actor=ACTOR, limit=20)
+
+        item = response["items"][0]
+        self.assertEqual(item["created_at"], "2026-08-15T09:00:00+00:00")
+        self.assertEqual(item["effective_start_at"], "2026-08-18T01:00:00+00:00")
+
     async def test_v2_history_uses_anchor_date_and_keeps_operation_details(self) -> None:
         db = fake_db(
             plans=[

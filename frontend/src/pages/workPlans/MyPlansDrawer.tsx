@@ -3,6 +3,8 @@ import { Ban, CalendarClock, Pencil, X } from "lucide-react";
 import { useModalFocus } from "../../hooks/useModalFocus";
 import type { WorkPlan, WorkPlanHistoryItem, WorkPlanOperation } from "./types";
 
+const SHANGHAI_TIMEZONE_LABEL = "Asia/Shanghai (UTC+8)";
+
 type MyPlansDrawerProps = {
   open: boolean;
   items: WorkPlanHistoryItem[];
@@ -56,7 +58,7 @@ export function MyPlansDrawer({ open, blocked = false, items, total, hasMore, lo
     <div className={`work-plan-drawer-layer ${open ? "open" : ""}`} inert={!open || blocked}>
       <button aria-label="关闭我的安排" className="work-plan-drawer-backdrop" onClick={onClose} type="button" />
       <aside aria-labelledby="my-plans-title" aria-modal="true" className={`work-plan-drawer work-plan-history-drawer ${open ? "open" : ""}`} ref={dialogRef} role="dialog" tabIndex={-1}>
-        <header className="work-plan-drawer-header"><div><span className="work-plan-header-icon"><CalendarClock size={18} /></span><div><h3 id="my-plans-title">我的安排</h3><p>已加载 {items.length} / {total} 条记录</p></div></div><button aria-label="关闭" className="work-plan-icon-button" onClick={onClose} type="button"><X size={19} /></button></header>
+        <header className="work-plan-drawer-header"><div><span className="work-plan-header-icon"><CalendarClock size={18} /></span><div><h3 id="my-plans-title">我的安排</h3><p>已加载 {items.length} / {total} 条记录 · {SHANGHAI_TIMEZONE_LABEL}</p></div></div><button aria-label="关闭" className="work-plan-icon-button" onClick={onClose} type="button"><X size={19} /></button></header>
         <div className="work-plan-history-list">
           {items.map((item) => isOperation(item) ? (
             <OperationHistoryItem busy={busy} editable={item.member_sequence === latestOperationSequence && operationState(item) !== "replaced"} item={item} key={item.id} onEdit={onEdit} />

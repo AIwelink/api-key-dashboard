@@ -92,14 +92,22 @@ def normalize_v2_operation(document: dict[str, Any]) -> NormalizedOperation:
         operation_id=str(document.get("_id") or ""),
         member_id=str(document.get("member_id") or ""),
         operation_type=str(document.get("operation_type") or ""),
-        start_at=document["effective_start_at"],
-        end_at=document["effective_end_at"],
+        start_at=_as_utc_datetime(document["effective_start_at"]),
+        end_at=_as_utc_datetime(document["effective_end_at"]),
         order_key=(
             2,
             int(document.get("member_sequence") or 0),
             str(document.get("_id") or ""),
         ),
     )
+
+
+def _as_utc_datetime(value: Any) -> datetime:
+    if not isinstance(value, datetime):
+        raise TypeError("工作计划时间格式无效")
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def normalize_legacy_records(

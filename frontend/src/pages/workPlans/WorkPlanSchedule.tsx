@@ -29,6 +29,8 @@ type RenderableSegment = {
   plan?: WorkPlan;
 };
 
+const SHANGHAI_TIMEZONE_LABEL = "Asia/Shanghai (UTC+8)";
+
 export function canManagePlan(
   currentUser: Pick<User, "email" | "id" | "role">,
   plan: WorkPlan,
@@ -248,6 +250,7 @@ export function WorkPlanSchedule({
 
   return (
     <section className="work-plan-schedule" aria-label="团队工作计划">
+      <div className="work-plan-timezone-label">时间基准：{SHANGHAI_TIMEZONE_LABEL}</div>
       <div className="work-plan-schedule-scroll">
         <div className="work-plan-gantt" style={timelineStyle}>
           <div className="work-plan-gantt-header work-plan-member-cell"><span>成员</span><small>{response.members.length} 人</small></div>

@@ -230,6 +230,15 @@
   min-width: 0;
 }
 
+.work-plan-timezone-label {
+  background: #f7f9f8;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  padding: 7px 14px;
+  text-align: right;
+}
+
 .work-plan-schedule-scroll {
   overflow: auto;
   overscroll-behavior-inline: contain;

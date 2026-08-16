@@ -371,6 +371,7 @@ describe("work plan components", () => {
     expect(html.match(/work-plan-member-track/g)?.length).toBe(1);
     expect(html).toContain("work-plan-segment active");
     expect(html).toContain("work-plan-segment cancelled");
+    expect(html).toContain("Asia/Shanghai (UTC+8)");
   });
 
   it("shows priority editing only to managers", () => {
@@ -505,6 +506,7 @@ describe("work plan components", () => {
     expect(html).toContain("取消计划");
     expect(html).toContain("灰色保留");
     expect(html).toContain("编辑操作");
+    expect(html).toContain("Asia/Shanghai (UTC+8)");
   });
 
   it("exposes explicit history progress and a load-more action", () => {
