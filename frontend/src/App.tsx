@@ -198,7 +198,11 @@ function App() {
       </aside>
 
       <main className="main">
-        <div className="app-view-stage" key={token ? view : "login"}>
+        <div
+          className="app-view-stage site-motion-scope"
+          data-view={token ? view : "login"}
+          key={token ? view : "login"}
+        >
           {!token ? (
           <LoginPage
             onLogin={(nextToken, nextUser) => {
