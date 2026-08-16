@@ -12,7 +12,7 @@
 }
 
 .daily-team-intro::before {
-  animation: daily-intro-morning-light 3s cubic-bezier(.22, 1, .36, 1) both;
+  animation: daily-intro-morning-light 7.8s cubic-bezier(.22, 1, .36, 1) both;
   background: linear-gradient(132deg, #fffafc 0%, #edf7ff 36%, #fff 57%, #ffeaf1 100%);
   content: "";
   inset: -8%;
@@ -44,7 +44,6 @@
   font-family: "Songti SC", STSong, "Noto Serif SC", SimSun, serif;
   font-size: 28px;
   font-weight: 600;
-  gap: 8px;
   letter-spacing: 0;
   line-height: 1.75;
   margin: 42px 0 0;
@@ -54,16 +53,27 @@
 }
 
 .daily-team-intro-message span {
-  animation: daily-intro-message-arrive 800ms cubic-bezier(.16, 1, .3, 1) both;
   display: block;
+  grid-area: 1 / 1;
+  opacity: 0;
 }
 
-.daily-team-intro-message span:first-child {
-  animation-delay: 1000ms;
+.daily-team-intro[data-message-stage="first"] .daily-team-intro-message span:first-child {
+  animation: daily-intro-message-arrive 800ms cubic-bezier(.16, 1, .3, 1) 1000ms both;
 }
 
-.daily-team-intro-message span:last-child {
-  animation-delay: 1120ms;
+.daily-team-intro[data-message-stage="second"] .daily-team-intro-message span:first-child {
+  animation: daily-intro-message-depart 560ms cubic-bezier(.4, 0, .2, 1) both;
+}
+
+.daily-team-intro[data-message-stage="second"] .daily-team-intro-message span:last-child {
+  animation: daily-intro-message-arrive 800ms cubic-bezier(.16, 1, .3, 1) 260ms both;
+}
+
+.daily-team-intro[data-stage="exiting"][data-message-stage="first"] .daily-team-intro-message span:first-child,
+.daily-team-intro[data-stage="exiting"][data-message-stage="second"] .daily-team-intro-message span:last-child {
+  animation: none;
+  opacity: 1;
 }
 
 .daily-team-intro-skip {
@@ -71,17 +81,19 @@
   animation: daily-intro-skip-arrive 400ms ease 300ms both;
   background: rgb(255 255 255 / 68%);
   border: 1px solid rgb(103 122 137 / 18%);
-  border-radius: 50%;
+  border-radius: 6px;
   color: #53616b;
   display: flex;
+  font-size: 14px;
+  font-weight: 600;
   height: 36px;
   justify-content: center;
   min-height: 36px;
-  padding: 0;
+  min-width: 58px;
+  padding: 0 14px;
   position: absolute;
   right: 24px;
   top: 24px;
-  width: 36px;
   z-index: 2;
 }
 
@@ -109,7 +121,7 @@
   animation: daily-intro-skip-out 220ms ease both;
 }
 
-.daily-team-intro[data-stage="opening"] + .app-shell {
+.daily-team-intro:is([data-stage="first"], [data-stage="second"]) + .app-shell {
   filter: blur(6px);
   transform: scale(.994);
 }
@@ -140,6 +152,11 @@
 @keyframes daily-intro-message-arrive {
   from { opacity: 0; transform: translate3d(0, 10px, 0); }
   to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes daily-intro-message-depart {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 0; transform: translate3d(0, -8px, 0); }
 }
 
 @keyframes daily-intro-skip-arrive {
@@ -226,6 +243,15 @@
 
   .daily-team-intro[data-stage="exiting"] {
     animation: daily-intro-reduced-out 300ms ease both !important;
+  }
+
+  .daily-team-intro[data-message-stage="reduced"] .daily-team-intro-message {
+    gap: 8px;
+  }
+
+  .daily-team-intro[data-message-stage="reduced"] .daily-team-intro-message span {
+    grid-area: auto;
+    opacity: 1;
   }
 }
 

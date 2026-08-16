@@ -77,9 +77,11 @@ describe("DailyTeamIntro", () => {
     expect(html).toContain("愿君心有赤焰，足履薄冰，终见日月新天。");
     expect(html).toContain(`aria-label="${DAILY_TEAM_MESSAGE}"`);
     expect(html).toContain('aria-label="跳过开场"');
+    expect(html).toContain(">跳过</button>");
+    expect(html).not.toContain("lucide-x");
   });
 
-  it("runs the standard 3.9 second sequence and restores document scrolling", async () => {
+  it("shows each sentence for 3.9 seconds before the 900ms exit", async () => {
     vi.useFakeTimers();
     try {
       document.documentElement.style.overflow = "clip";
@@ -88,9 +90,17 @@ describe("DailyTeamIntro", () => {
 
       expect(document.documentElement.style.overflow).toBe("hidden");
       expect(document.documentElement.style.scrollbarGutter).toBe("auto");
-      expect(container?.querySelector(".daily-team-intro")?.getAttribute("data-stage")).toBe("opening");
+      expect(container?.querySelector(".daily-team-intro")?.getAttribute("data-stage")).toBe("first");
 
-      await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_900); });
+      expect(container?.querySelector(".daily-team-intro")?.getAttribute("data-stage")).toBe("second");
+      expect(onComplete).not.toHaveBeenCalled();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_899); });
+      expect(container?.querySelector(".daily-team-intro")?.getAttribute("data-stage")).toBe("second");
+      expect(onComplete).not.toHaveBeenCalled();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
       expect(container?.querySelector(".daily-team-intro")?.getAttribute("data-stage")).toBe("exiting");
       expect(onComplete).not.toHaveBeenCalled();
 
