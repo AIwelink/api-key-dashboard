@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
 
 import logoUrl from "../../../AIwelink_logo_bule_A.png";
 import type { User } from "../../types";
@@ -13,9 +12,9 @@ import "./DailyTeamIntro.css";
 
 export const DAILY_TEAM_MESSAGE = "世事浮沉，皆为淬炼；商海浩瀚，唯有坚毅。愿君心有赤焰，足履薄冰，终见日月新天。";
 
-type DailyTeamIntroStage = "opening" | "reduced" | "exiting";
+type DailyTeamIntroMessageStage = "first" | "second" | "reduced";
 
-const STANDARD_HOLD_MS = 3_000;
+const MESSAGE_STAGE_MS = 3_900;
 const STANDARD_EXIT_MS = 900;
 const REDUCED_HOLD_MS = 300;
 const REDUCED_EXIT_MS = 300;
@@ -31,7 +30,8 @@ function prefersReducedMotion(): boolean {
 
 export function DailyTeamIntro({ onComplete }: { onComplete: () => void }) {
   const reducedMotion = useRef(prefersReducedMotion()).current;
-  const [stage, setStage] = useState<DailyTeamIntroStage>(reducedMotion ? "reduced" : "opening");
+  const [messageStage, setMessageStage] = useState<DailyTeamIntroMessageStage>(reducedMotion ? "reduced" : "first");
+  const [exiting, setExiting] = useState(false);
   const completionScheduled = useRef(false);
   const timers = useRef<number[]>([]);
 
@@ -44,7 +44,7 @@ export function DailyTeamIntro({ onComplete }: { onComplete: () => void }) {
     if (completionScheduled.current) return;
     completionScheduled.current = true;
     clearTimers();
-    setStage("exiting");
+    setExiting(true);
     timers.current = [window.setTimeout(onComplete, duration)];
   }, [clearTimers, onComplete]);
 
@@ -58,10 +58,12 @@ export function DailyTeamIntro({ onComplete }: { onComplete: () => void }) {
     };
     window.addEventListener("keydown", handleKeyDown);
 
-    timers.current = [window.setTimeout(
-      () => beginExit(reducedMotion ? REDUCED_EXIT_MS : STANDARD_EXIT_MS),
-      reducedMotion ? REDUCED_HOLD_MS : STANDARD_HOLD_MS,
-    )];
+    timers.current = reducedMotion
+      ? [window.setTimeout(() => beginExit(REDUCED_EXIT_MS), REDUCED_HOLD_MS)]
+      : [
+          window.setTimeout(() => setMessageStage("second"), MESSAGE_STAGE_MS),
+          window.setTimeout(() => beginExit(STANDARD_EXIT_MS), MESSAGE_STAGE_MS * 2),
+        ];
 
     return () => {
       clearTimers();
@@ -75,7 +77,8 @@ export function DailyTeamIntro({ onComplete }: { onComplete: () => void }) {
       aria-label="AIwelink 每日团队寄语"
       aria-modal="true"
       className="daily-team-intro"
-      data-stage={stage}
+      data-message-stage={messageStage}
+      data-stage={exiting ? "exiting" : messageStage}
       role="dialog"
     >
       <button
@@ -85,7 +88,7 @@ export function DailyTeamIntro({ onComplete }: { onComplete: () => void }) {
         title="跳过开场"
         type="button"
       >
-        <X aria-hidden="true" size={18} strokeWidth={1.8} />
+        跳过
       </button>
 
       <div className="daily-team-intro-content">
