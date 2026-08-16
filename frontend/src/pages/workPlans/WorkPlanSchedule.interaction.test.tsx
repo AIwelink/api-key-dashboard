@@ -132,6 +132,63 @@ afterEach(async () => {
 });
 
 describe("work plan detail modal handoff", () => {
+  it("stages the first member row and newly rendered segment", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root?.render(
+      <WorkPlanSchedule
+        currentUser={{ email: PLAN.member_id, role: "viewer" }}
+        onCancelPlan={() => undefined}
+        onEditPlan={() => undefined}
+        range="7d"
+        response={LINEAR_SCHEDULE}
+      />,
+    ));
+
+    const row = document.querySelector<HTMLElement>(".work-plan-gantt-row");
+    const mobileMember = document.querySelector<HTMLElement>(".work-plan-mobile-member");
+    const segment = document.querySelector<HTMLElement>(".work-plan-segment");
+    expect(row?.style.getPropertyValue("--work-plan-entry-delay")).toBe("220ms");
+    expect(mobileMember?.style.getPropertyValue("--work-plan-entry-delay")).toBe("220ms");
+    expect(segment?.classList.contains("work-plan-segment-enter")).toBe(true);
+  });
+
+  it("gives a changed segment one local feedback animation", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root?.render(
+      <WorkPlanSchedule
+        currentUser={{ email: PLAN.member_id, role: "viewer" }}
+        onCancelPlan={() => undefined}
+        onEditPlan={() => undefined}
+        range="7d"
+        response={LINEAR_SCHEDULE}
+      />,
+    ));
+
+    const changedSchedule: WorkPlanScheduleResponse = {
+      ...LINEAR_SCHEDULE,
+      segments: [{
+        ...LINEAR_SCHEDULE.segments![0],
+        end_at: "2026-08-16T05:00:00+00:00",
+      }],
+    };
+    await act(async () => root?.render(
+      <WorkPlanSchedule
+        currentUser={{ email: PLAN.member_id, role: "viewer" }}
+        onCancelPlan={() => undefined}
+        onEditPlan={() => undefined}
+        range="7d"
+        response={changedSchedule}
+      />,
+    ));
+
+    expect(document.querySelector(".work-plan-segment")?.classList
+      .contains("work-plan-segment-feedback")).toBe(true);
+  });
+
   it("opens editable actions for a linear segment source operation", async () => {
     const container = document.createElement("div");
     document.body.append(container);

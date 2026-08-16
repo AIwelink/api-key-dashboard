@@ -14,6 +14,11 @@ import type {
   WorkPlanSegment,
 } from "./types";
 import { WorkPlanPriorityPopover } from "./WorkPlanPriorityPopover";
+import {
+  findChangedSegmentKeys,
+  memberEntryDelay,
+  type SegmentMotionSnapshot,
+} from "./workPlanMotion";
 import { collaborationLabel, timelineGeometry } from "./workPlanViewModel";
 
 type WorkPlanScheduleProps = {
@@ -123,6 +128,10 @@ function renderableSegments(response: WorkPlanScheduleResponse): RenderableSegme
   return response.plans.map(legacySegment);
 }
 
+function segmentMotionKey(segment: WorkPlanSegment): string {
+  return `${segment.member_id}:${segment.winning_operation_id}`;
+}
+
 function observedShanghaiTime(value: string): { date: string; minute: number } | null {
   const observed = new Date(value);
   if (Number.isNaN(observed.getTime())) return null;
@@ -227,6 +236,17 @@ export function WorkPlanSchedule({
   const dates = useMemo(() => displayDates(response, range), [range, response]);
   const bounds = useMemo(() => timelineBounds(response), [response]);
   const segments = useMemo(() => renderableSegments(response), [response]);
+  const motionSnapshots = useMemo<SegmentMotionSnapshot[]>(() => segments.map(({ segment }) => ({
+    key: segmentMotionKey(segment),
+    state: segment.state,
+    startAt: segment.start_at,
+    endAt: segment.end_at,
+  })), [segments]);
+  const previousMotionSnapshots = useRef<SegmentMotionSnapshot[]>([]);
+  const [enterSegmentKeys, setEnterSegmentKeys] = useState<Set<string>>(
+    () => new Set(motionSnapshots.map((segment) => segment.key)),
+  );
+  const [feedbackSegmentKeys, setFeedbackSegmentKeys] = useState<Set<string>>(() => new Set());
   const segmentsByMember = useMemo(() => {
     const index = new Map<string, RenderableSegment[]>();
     for (const item of segments) {
@@ -251,6 +271,27 @@ export function WorkPlanSchedule({
     if (modalHandoffTimer.current !== null) window.clearTimeout(modalHandoffTimer.current);
   }, []);
 
+  useEffect(() => {
+    const previous = previousMotionSnapshots.current;
+    const previousKeys = new Set(previous.map((segment) => segment.key));
+    const changedKeys = findChangedSegmentKeys(previous, motionSnapshots);
+    const entering = new Set([...changedKeys].filter((key) => !previousKeys.has(key)));
+    const changing = new Set([...changedKeys].filter((key) => previousKeys.has(key)));
+    previousMotionSnapshots.current = motionSnapshots;
+    setEnterSegmentKeys((current) => {
+      const next = new Set(current);
+      changing.forEach((key) => next.delete(key));
+      entering.forEach((key) => next.add(key));
+      return next;
+    });
+    setFeedbackSegmentKeys(changing);
+    if (!entering.size && !changing.size) return;
+    const timer = window.setTimeout(() => {
+      setFeedbackSegmentKeys(new Set());
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [motionSnapshots]);
+
   const handoffModal = useCallback((callback: () => void) => {
     if (modalHandoffTimer.current !== null) window.clearTimeout(modalHandoffTimer.current);
     setSelectedPlan(null);
@@ -268,7 +309,11 @@ export function WorkPlanSchedule({
     const geometry = timelineGeometry(bounds.startAt, bounds.endAt, item.segment.start_at, item.segment.end_at);
     const record = item.record ?? item.plan;
     const interval = item.plan ? rangeLabel(item.plan) : segmentIntervalLabel(item.segment);
-    const className = `work-plan-segment ${item.segment.state}${record ? " work-plan-bar" : ""}`;
+    const motionKey = segmentMotionKey(item.segment);
+    const motionClass = enterSegmentKeys.has(motionKey)
+      ? " work-plan-segment-enter"
+      : feedbackSegmentKeys.has(motionKey) ? " work-plan-segment-feedback" : "";
+    const className = `work-plan-segment ${item.segment.state}${record ? " work-plan-bar" : ""}${motionClass}`;
     const style = { left: `${geometry.leftPercent}%`, width: `${geometry.widthPercent}%` };
     if (record) {
       return (
@@ -296,8 +341,12 @@ export function WorkPlanSchedule({
               </div>
             ))}
           </div>
-          {response.members.map((member) => (
-            <div className="work-plan-gantt-row" key={member.member_id}>
+          {response.members.map((member, index) => (
+            <div
+              className="work-plan-gantt-row"
+              key={member.member_id}
+              style={{ "--work-plan-entry-delay": `${memberEntryDelay(index)}ms` } as CSSProperties}
+            >
               <div className="work-plan-member-cell">
                 <span className={`work-plan-presence-dot ${member.is_online ? "online" : "offline"}`} />
                 <div><strong>{member.member_name}</strong><small>{collaborationLabel(member.collaboration_status)}</small><small className="work-plan-last-seen">{lastSeenLabel(member.last_seen_at)}</small></div>
@@ -314,8 +363,12 @@ export function WorkPlanSchedule({
       </div>
 
       <div className="work-plan-mobile-list">
-        {response.members.map((member) => (
-          <section className="work-plan-mobile-member" key={member.member_id}>
+        {response.members.map((member, index) => (
+          <section
+            className="work-plan-mobile-member"
+            key={member.member_id}
+            style={{ "--work-plan-entry-delay": `${memberEntryDelay(index)}ms` } as CSSProperties}
+          >
             <header>
               <span className={`work-plan-presence-dot ${member.is_online ? "online" : "offline"}`} />
               <div><strong>{member.member_name}</strong><small className="work-plan-mobile-presence">{mobilePresenceLabel(member)} · {lastSeenLabel(member.last_seen_at)}</small></div>

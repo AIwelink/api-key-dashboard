@@ -4,9 +4,101 @@
   --work-plan-amber: #a86112;
   --work-plan-amber-soft: #fff1d9;
   --work-plan-neutral: #f6f7f8;
+  --wp-motion-fast: 160ms;
+  --wp-motion-standard: 220ms;
+  --wp-motion-drawer: 280ms;
+  --wp-motion-page: 560ms;
+  --wp-motion-stagger: 40ms;
+  --wp-ease-enter: cubic-bezier(.16, 1, .3, 1);
+  --wp-ease-state: cubic-bezier(.22, 1, .36, 1);
+  --wp-ease-exit: cubic-bezier(.4, 0, 1, 1);
   display: grid;
   gap: 16px;
   min-width: 0;
+  position: relative;
+}
+
+.work-plan-page > .work-plan-page-header,
+.work-plan-page > .work-plan-summary-band,
+.work-plan-page > .work-plan-toolbar,
+.work-plan-page > .work-plan-stale-notice,
+.work-plan-page > .work-plan-schedule-frame,
+.work-plan-page > .work-plan-pagination {
+  opacity: 0;
+  transform: translate3d(0, 8px, 0);
+}
+
+.work-plan-page.is-entered > .work-plan-page-header,
+.work-plan-page.is-entered > .work-plan-summary-band,
+.work-plan-page.is-entered > .work-plan-toolbar,
+.work-plan-page.is-entered > .work-plan-stale-notice,
+.work-plan-page.is-entered > .work-plan-schedule-frame,
+.work-plan-page.is-entered > .work-plan-pagination {
+  animation: work-plan-page-enter var(--wp-motion-page) var(--wp-ease-enter) both;
+}
+
+.work-plan-page.is-entered > .work-plan-summary-band {
+  animation-delay: 40ms;
+}
+
+.work-plan-page.is-entered > .work-plan-toolbar {
+  animation-delay: 100ms;
+}
+
+.work-plan-page.is-entered > .work-plan-stale-notice {
+  animation-delay: 140ms;
+}
+
+.work-plan-page.is-entered > .work-plan-schedule-frame,
+.work-plan-page.is-entered > .work-plan-pagination {
+  animation-delay: 180ms;
+}
+
+.work-plan-refresh-line {
+  background: var(--accent);
+  height: 2px;
+  left: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  top: -1px;
+  transform: scaleX(0);
+  transform-origin: left center;
+  width: 100%;
+  z-index: 12;
+}
+
+.work-plan-refresh-line.active {
+  animation: work-plan-refresh 1.15s var(--wp-ease-state) 100ms infinite;
+}
+
+.work-plan-page.is-transitioning .work-plan-schedule-frame {
+  opacity: .88;
+  transition: opacity var(--wp-motion-fast) var(--wp-ease-state);
+}
+
+@keyframes work-plan-page-enter {
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes work-plan-refresh {
+  0% {
+    opacity: 0;
+    transform: scaleX(0);
+  }
+
+  8% {
+    opacity: 1;
+  }
+
+  72%,
+  100% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
 }
 
 .work-plan-page button,
@@ -220,6 +312,30 @@
   min-height: 358px;
 }
 
+.work-plan-loading > div {
+  display: grid;
+  gap: 3px;
+  text-align: center;
+}
+
+.work-plan-loading strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.work-plan-loading span:not(.work-plan-loading-mark) {
+  font-size: 12px;
+}
+
+.work-plan-loading-mark {
+  border: 2px solid #dce8e2;
+  border-radius: 50%;
+  border-top-color: var(--work-plan-green);
+  height: 22px;
+  animation: work-plan-loading-spin 800ms linear infinite;
+  width: 22px;
+}
+
 .work-plan-empty strong {
   color: var(--text);
   font-size: 15px;
@@ -252,6 +368,8 @@
 }
 
 .work-plan-gantt-row {
+  animation: work-plan-row-enter 420ms var(--wp-ease-enter) both;
+  animation-delay: var(--work-plan-entry-delay, 260ms);
   display: grid;
   grid-column: 1 / -1;
   grid-template-columns: 220px minmax(calc(var(--work-plan-date-count) * 190px), 1fr);
@@ -426,6 +544,16 @@
   z-index: 2;
 }
 
+.work-plan-segment-enter {
+  animation: work-plan-segment-enter 420ms var(--wp-ease-state) both;
+  transform-origin: left center;
+}
+
+.work-plan-segment-feedback {
+  animation: work-plan-segment-feedback 620ms ease-out both;
+  transform-origin: left center;
+}
+
 .work-plan-segment > span {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -446,6 +574,53 @@
 .work-plan-segment:hover {
   filter: brightness(0.97);
   transform: translateY(-1px);
+}
+
+@keyframes work-plan-row-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes work-plan-segment-enter {
+  from {
+    opacity: 0;
+    transform: scaleX(0);
+  }
+
+  to {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+@keyframes work-plan-segment-feedback {
+  0% {
+    filter: brightness(1);
+    transform: scaleX(1);
+  }
+
+  34% {
+    filter: brightness(1.08);
+    transform: scaleX(1.015);
+  }
+
+  100% {
+    filter: brightness(1);
+    transform: scaleX(1);
+  }
+}
+
+@keyframes work-plan-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .work-plan-priority-value {
@@ -487,6 +662,7 @@
 }
 
 .work-plan-priority-popover {
+  animation: work-plan-priority-popover-enter 220ms var(--wp-ease-enter, cubic-bezier(.16, 1, .3, 1)) both;
   background: #fff;
   border: 1px solid #d9dfe1;
   border-radius: 7px;
@@ -555,6 +731,7 @@
 }
 
 .work-plan-detail-popover {
+  animation: work-plan-detail-popover-enter 240ms var(--wp-ease-enter) both;
   background: #fff;
   border: 1px solid var(--line);
   border-radius: 7px;
@@ -673,6 +850,19 @@
 
 .work-plan-drawer.open {
   transform: translateX(0);
+}
+
+.work-plan-drawer.open .work-plan-drawer-header {
+  animation: work-plan-drawer-content-enter 320ms var(--wp-ease-enter, cubic-bezier(.16, 1, .3, 1)) 50ms both;
+}
+
+.work-plan-drawer.open .work-plan-form-body > *,
+.work-plan-drawer.open .work-plan-history-list > * {
+  animation: work-plan-drawer-content-enter 340ms var(--wp-ease-enter, cubic-bezier(.16, 1, .3, 1)) 90ms both;
+}
+
+.work-plan-drawer.open .work-plan-drawer-footer {
+  animation: work-plan-drawer-content-enter 320ms var(--wp-ease-enter, cubic-bezier(.16, 1, .3, 1)) 120ms both;
 }
 
 .work-plan-drawer-header {
@@ -830,6 +1020,7 @@
 }
 
 .work-plan-more-dates {
+  animation: work-plan-more-dates-enter 260ms var(--wp-ease-enter, cubic-bezier(.16, 1, .3, 1)) both;
   background: var(--work-plan-neutral);
   border: 1px solid #e1e5e7;
   border-radius: 7px;
@@ -1109,6 +1300,54 @@
   to { transform: rotate(360deg); }
 }
 
+@keyframes work-plan-drawer-content-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(8px, 0, 0);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes work-plan-more-dates-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -6px, 0);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes work-plan-detail-popover-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes work-plan-priority-popover-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 4px, 0) scale(.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
 @media (max-width: 900px) {
   .work-plan-toolbar {
     align-items: stretch;
@@ -1193,6 +1432,11 @@
 
   .work-plan-mobile-member + .work-plan-mobile-member {
     border-top: 1px solid var(--line);
+  }
+
+  .work-plan-mobile-member {
+    animation: work-plan-row-enter 420ms var(--wp-ease-enter) both;
+    animation-delay: var(--work-plan-entry-delay, 260ms);
   }
 
   .work-plan-mobile-member > header {
@@ -1346,5 +1590,25 @@
     animation: none !important;
     scroll-behavior: auto !important;
     transition: none !important;
+  }
+
+  .work-plan-priority-popover {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .work-plan-page > .work-plan-page-header,
+  .work-plan-page > .work-plan-summary-band,
+  .work-plan-page > .work-plan-toolbar,
+  .work-plan-page > .work-plan-stale-notice,
+  .work-plan-page > .work-plan-schedule-frame,
+  .work-plan-page > .work-plan-pagination {
+    opacity: 1;
+    transform: none;
+  }
+
+  .work-plan-refresh-line.active {
+    opacity: 1;
+    transform: scaleX(1);
   }
 }

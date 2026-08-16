@@ -7423,6 +7423,7 @@ button.ghost.success-button:hover {
 }
 
 .confirm-backdrop {
+  animation: confirm-backdrop-enter 180ms ease-out both;
   position: fixed;
   inset: 0;
   z-index: 80;
@@ -7433,6 +7434,7 @@ button.ghost.success-button:hover {
 }
 
 .confirm-dialog {
+  animation: confirm-dialog-enter 240ms cubic-bezier(.16, 1, .3, 1) both;
   width: min(690px, 100%);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -7535,6 +7537,7 @@ code {
 }
 
 .toast {
+  animation: toast-enter 260ms cubic-bezier(.16, 1, .3, 1) both;
   position: fixed;
   right: 22px;
   bottom: 22px;
@@ -7544,6 +7547,42 @@ code {
   color: #fff;
   box-shadow: var(--shadow);
   max-width: 420px;
+}
+
+@keyframes confirm-backdrop-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes confirm-dialog-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0) scale(.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes toast-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .confirm-backdrop,
+  .confirm-dialog,
+  .toast {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 
 .hidden {

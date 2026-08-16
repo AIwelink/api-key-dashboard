@@ -39,4 +39,27 @@ describe("work plan overlay styles", () => {
     expect(styleRule(workPlanStyles, ".work-plan-drawer-backdrop:hover")).toMatch(/background:/);
     expect(styleRule(workPlanStyles, ".work-plan-more-date-toggle:hover")).toMatch(/background:/);
   });
+
+  it("animates each work-plan surface from its interaction origin", () => {
+    expect(styleRule(workPlanStyles, ".work-plan-drawer.open .work-plan-drawer-header"))
+      .toContain("animation:");
+    expect(styleRule(workPlanStyles, ".work-plan-more-dates")).toContain("animation:");
+    expect(styleRule(workPlanStyles, ".work-plan-detail-popover")).toContain("animation:");
+    expect(styleRule(workPlanStyles, ".work-plan-priority-popover")).toContain("animation:");
+  });
+
+  it("animates global confirmations and toast feedback", () => {
+    expect(styleRule(globalStyles, ".confirm-backdrop")).toContain("animation:");
+    expect(styleRule(globalStyles, ".confirm-dialog")).toContain("animation:");
+    expect(styleRule(globalStyles, ".toast")).toContain("animation:");
+  });
+
+  it("disables overlay motion when reduced motion is requested", () => {
+    expect(workPlanStyles).toContain(
+      ".work-plan-priority-popover {\n    animation: none !important;\n    transition: none !important;\n  }",
+    );
+    expect(globalStyles).toContain(
+      ".confirm-backdrop,\n  .confirm-dialog,\n  .toast {\n    animation: none !important;\n    transition: none !important;\n  }",
+    );
+  });
 });
