@@ -28,7 +28,6 @@ from app.modules.work_plans.domain import (
     validate_update,
 )
 from app.modules.work_plans.projection import (
-    NormalizedOperation,
     clip_cancellation,
     normalize_legacy_records,
     normalize_v2_operation,
@@ -700,17 +699,7 @@ async def _expand_operation_drafts(
         {"member_id": draft["member_id"], "schema_version": 2}
     )
     committed = await _collect_documents(cursor)
-    normalized = [
-        NormalizedOperation(
-            operation_id=str(document["_id"]),
-            member_id=str(document["member_id"]),
-            operation_type=str(document["operation_type"]),
-            start_at=document["effective_start_at"],
-            end_at=document["effective_end_at"],
-            order_key=(2, int(document.get("member_sequence") or 0), str(document["_id"])),
-        )
-        for document in committed
-    ]
+    normalized = [normalize_v2_operation(document) for document in committed]
     projected = project_operations(
         normalized,
         window_start=draft["requested_start_at"],
