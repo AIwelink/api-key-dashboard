@@ -32,6 +32,14 @@ describe("work plan overlay styles", () => {
     );
   });
 
+  it("contains the wide timeline and closed drawer without creating page overflow", () => {
+    expect(styleRule(workPlanStyles, ".work-plan-schedule")).toContain("max-width: 100%;");
+    expect(styleRule(workPlanStyles, ".work-plan-schedule-scroll")).toContain("width: 100%;");
+    expect(styleRule(workPlanStyles, ".work-plan-schedule-scroll")).toContain("overflow-x: auto;");
+    expect(styleRule(workPlanStyles, ".work-plan-schedule-scroll")).toContain("overflow-y: hidden;");
+    expect(styleRule(workPlanStyles, ".work-plan-drawer-layer")).toContain("overflow: hidden;");
+  });
+
   it("packs overview metrics and filters into one compact command bar", () => {
     expect(styleRule(workPlanStyles, ".work-plan-command-bar")).toContain("display: flex;");
     expect(styleRule(workPlanStyles, ".work-plan-summary-band > div")).toContain("min-height: 48px;");
