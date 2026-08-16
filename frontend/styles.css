@@ -10649,7 +10649,7 @@ code {
 
 .app-view-stage {
   min-width: 0;
-  animation: app-view-enter var(--motion-page) var(--ease-enter) both;
+  animation: app-view-enter var(--motion-page) var(--ease-enter) backwards;
 }
 
 .app-shell button {
@@ -10742,6 +10742,83 @@ code {
 
 .motion-delay-3 {
   animation-delay: 120ms;
+}
+
+/* All-page content choreography */
+.site-motion-scope > .view:not(.work-plan-page):not(.pool-status-page):not(.growth-workspace-page):not(.operations-workspace-page) > :not([class*="backdrop"]):not([role="dialog"]):not(:has([class*="backdrop"], .floating-menu, [role="dialog"])),
+.site-motion-scope > .auth-panel > * {
+  animation: content-band-enter 340ms var(--ease-enter) backwards;
+}
+
+.site-motion-scope > .view:not(.work-plan-page):not(.pool-status-page):not(.growth-workspace-page):not(.operations-workspace-page) > :nth-child(1):not([class*="backdrop"]):not([role="dialog"]):not(:has([class*="backdrop"], .floating-menu, [role="dialog"])),
+.site-motion-scope > .auth-panel > :nth-child(1) {
+  animation-delay: 25ms;
+}
+
+.site-motion-scope > .view:not(.work-plan-page):not(.pool-status-page):not(.growth-workspace-page):not(.operations-workspace-page) > :nth-child(2):not([class*="backdrop"]):not([role="dialog"]):not(:has([class*="backdrop"], .floating-menu, [role="dialog"])),
+.site-motion-scope > .auth-panel > :nth-child(2) {
+  animation-delay: 60ms;
+}
+
+.site-motion-scope > .view:not(.work-plan-page):not(.pool-status-page):not(.growth-workspace-page):not(.operations-workspace-page) > :nth-child(3):not([class*="backdrop"]):not([role="dialog"]):not(:has([class*="backdrop"], .floating-menu, [role="dialog"])),
+.site-motion-scope > .auth-panel > :nth-child(3) {
+  animation-delay: 95ms;
+}
+
+.site-motion-scope > .view:not(.work-plan-page):not(.pool-status-page):not(.growth-workspace-page):not(.operations-workspace-page) > :nth-child(n + 4):not([class*="backdrop"]):not([role="dialog"]):not(:has([class*="backdrop"], .floating-menu, [role="dialog"])),
+.site-motion-scope > .auth-panel > :nth-child(n + 4) {
+  animation-delay: 125ms;
+}
+
+.site-motion-scope > .view:not(.work-plan-page):not(.pool-status-page):not(.growth-workspace-page):not(.operations-workspace-page) :where([class*="-tab-body"], [role="tabpanel"]):not([class*="backdrop"] *):not([role="dialog"] *):not(.floating-menu *) {
+  animation: tab-stage-enter 300ms var(--ease-enter) backwards;
+}
+
+.site-motion-scope > .view:not(.work-plan-page):not(.pool-status-page):not(.growth-workspace-page):not(.operations-workspace-page) :where(
+  tbody > tr:nth-child(-n + 6),
+  .list > :nth-child(-n + 6),
+  [class$="-list"] > :nth-child(-n + 6)
+):not([class*="backdrop"] *):not([role="dialog"] *):not(.floating-menu *) {
+  animation: data-row-enter 280ms var(--ease-enter) backwards;
+}
+
+.site-motion-scope > .view:not(.work-plan-page):not(.pool-status-page):not(.growth-workspace-page):not(.operations-workspace-page) :where(
+  tbody > tr:nth-child(2),
+  .list > :nth-child(2),
+  [class$="-list"] > :nth-child(2)
+):not([class*="backdrop"] *):not([role="dialog"] *):not(.floating-menu *) { animation-delay: 25ms; }
+
+.site-motion-scope > .view:not(.work-plan-page):not(.pool-status-page):not(.growth-workspace-page):not(.operations-workspace-page) :where(
+  tbody > tr:nth-child(3),
+  .list > :nth-child(3),
+  [class$="-list"] > :nth-child(3)
+):not([class*="backdrop"] *):not([role="dialog"] *):not(.floating-menu *) { animation-delay: 45ms; }
+
+.site-motion-scope > .view:not(.work-plan-page):not(.pool-status-page):not(.growth-workspace-page):not(.operations-workspace-page) :where(
+  tbody > tr:nth-child(4),
+  .list > :nth-child(4),
+  [class$="-list"] > :nth-child(4)
+):not([class*="backdrop"] *):not([role="dialog"] *):not(.floating-menu *) { animation-delay: 65ms; }
+
+.site-motion-scope > .view:not(.work-plan-page):not(.pool-status-page):not(.growth-workspace-page):not(.operations-workspace-page) :where(
+  tbody > tr:nth-child(5),
+  .list > :nth-child(5),
+  [class$="-list"] > :nth-child(5)
+):not([class*="backdrop"] *):not([role="dialog"] *):not(.floating-menu *) { animation-delay: 85ms; }
+
+.site-motion-scope > .view:not(.work-plan-page):not(.pool-status-page):not(.growth-workspace-page):not(.operations-workspace-page) :where(
+  tbody > tr:nth-child(6),
+  .list > :nth-child(6),
+  [class$="-list"] > :nth-child(6)
+):not([class*="backdrop"] *):not([role="dialog"] *):not(.floating-menu *) { animation-delay: 105ms; }
+
+.site-motion-scope > .view:not(.work-plan-page):not(.pool-status-page):not(.growth-workspace-page):not(.operations-workspace-page) :where([class*="-empty"], [role="status"], [role="alert"]):not([class*="backdrop"] *):not([role="dialog"] *):not(.floating-menu *) {
+  animation: content-state-enter 240ms var(--ease-enter) backwards;
+}
+
+.site-motion-scope > .view:not(.work-plan-page) .floating-menu {
+  transform-origin: top right;
+  animation: motion-dialog-enter var(--motion-standard) var(--ease-enter) both;
 }
 
 .data-loading-surface {
@@ -10892,23 +10969,28 @@ code {
 }
 
 @keyframes app-view-enter {
-  from { opacity: 0; transform: translate3d(0, 5px, 0); }
-  to { opacity: 1; transform: translate3d(0, 0, 0); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 @keyframes content-band-enter {
   from { opacity: 0; transform: translate3d(0, 7px, 0); }
-  to { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 1; transform: none; }
 }
 
 @keyframes tab-stage-enter {
   from { opacity: 0; transform: translate3d(0, 6px, 0); }
-  to { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 1; transform: none; }
 }
 
 @keyframes data-row-enter {
   from { opacity: 0; transform: translate3d(0, 4px, 0); }
-  to { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes content-state-enter {
+  from { opacity: 0; transform: translate3d(0, 3px, 0); }
+  to { opacity: 1; transform: none; }
 }
 
 @keyframes data-sync-rail-reveal {
@@ -10957,6 +11039,19 @@ code {
 
 @media (prefers-reduced-motion: reduce) {
   .app-view-stage,
+  .site-motion-scope > .view > *,
+  .site-motion-scope > .auth-panel > *,
+  .site-motion-scope > .view :where(
+    [class*="-tab-body"],
+    [role="tabpanel"],
+    tbody > tr,
+    .list > *,
+    [class$="-list"] > *,
+    [class*="-empty"],
+    [role="status"],
+    [role="alert"],
+    .floating-menu
+  ),
   .motion-section,
   .growth-tab-stage,
   .operations-tab-stage,
