@@ -4,6 +4,8 @@
   --work-plan-amber: #a86112;
   --work-plan-amber-soft: #fff1d9;
   --work-plan-neutral: #f6f7f8;
+  --work-plan-member-column-width: 176px;
+  --work-plan-day-width: 342px;
   --wp-motion-fast: 160ms;
   --wp-motion-standard: 220ms;
   --wp-motion-drawer: 280ms;
@@ -378,8 +380,8 @@
 
 .work-plan-gantt {
   display: grid;
-  grid-template-columns: 220px minmax(calc(var(--work-plan-date-count) * 190px), 1fr);
-  min-width: calc(220px + var(--work-plan-date-count) * 190px);
+  grid-template-columns: var(--work-plan-member-column-width) minmax(calc(var(--work-plan-date-count) * var(--work-plan-day-width)), 1fr);
+  min-width: calc(var(--work-plan-member-column-width) + var(--work-plan-date-count) * var(--work-plan-day-width));
 }
 
 .work-plan-gantt-row {
@@ -387,12 +389,12 @@
   animation-delay: var(--work-plan-entry-delay, 260ms);
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: 220px minmax(calc(var(--work-plan-date-count) * 190px), 1fr);
+  grid-template-columns: var(--work-plan-member-column-width) minmax(calc(var(--work-plan-date-count) * var(--work-plan-day-width)), 1fr);
 }
 
 .work-plan-timeline-header {
   display: grid;
-  grid-template-columns: repeat(var(--work-plan-date-count), minmax(190px, 1fr));
+  grid-template-columns: repeat(var(--work-plan-date-count), minmax(var(--work-plan-day-width), 1fr));
 }
 
 .work-plan-gantt-header {

@@ -17,6 +17,21 @@ function styleRule(styles: string, selector: string) {
 }
 
 describe("work plan overlay styles", () => {
+  it("gives the timeline 1.8 times more daily space while narrowing the member column", () => {
+    expect(styleRule(workPlanStyles, ".work-plan-page")).toContain(
+      "--work-plan-member-column-width: 176px;",
+    );
+    expect(styleRule(workPlanStyles, ".work-plan-page")).toContain(
+      "--work-plan-day-width: 342px;",
+    );
+    expect(styleRule(workPlanStyles, ".work-plan-gantt")).toContain(
+      "grid-template-columns: var(--work-plan-member-column-width)",
+    );
+    expect(styleRule(workPlanStyles, ".work-plan-timeline-header")).toContain(
+      "minmax(var(--work-plan-day-width), 1fr)",
+    );
+  });
+
   it("packs overview metrics and filters into one compact command bar", () => {
     expect(styleRule(workPlanStyles, ".work-plan-command-bar")).toContain("display: flex;");
     expect(styleRule(workPlanStyles, ".work-plan-summary-band > div")).toContain("min-height: 48px;");
