@@ -494,11 +494,10 @@
   display: grid;
   gap: 12px;
   padding: 12px;
-  position: absolute;
-  right: 0;
-  top: 31px;
+  max-width: calc(100vw - 16px);
+  position: fixed;
   width: 228px;
-  z-index: 10;
+  z-index: 80;
 }
 
 .work-plan-priority-popover > header,

@@ -80,6 +80,28 @@ afterEach(async () => {
 });
 
 describe("work plan detail modal handoff", () => {
+  it("renders the priority editor outside schedule stacking contexts", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root?.render(
+      <WorkPlanSchedule
+        currentUser={{ email: PLAN.member_id, role: "owner" }}
+        onCancelPlan={() => undefined}
+        onEditPlan={() => undefined}
+        onSetMemberPriority={() => undefined}
+        range="7d"
+        response={SCHEDULE}
+      />,
+    ));
+
+    const trigger = document.querySelector<HTMLButtonElement>(".work-plan-priority-trigger");
+    await act(async () => trigger?.click());
+
+    const popover = document.querySelector<HTMLFormElement>(".work-plan-priority-popover");
+    expect(popover?.parentElement).toBe(document.body);
+  });
+
   for (const actionName of ["编辑", "取消计划"]) {
     it(`restores the triggering plan after the ${actionName} successor closes`, async () => {
       const container = document.createElement("div");
