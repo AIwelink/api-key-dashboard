@@ -11,12 +11,36 @@ function zIndex(styles: string, selector: string) {
 }
 
 function styleRule(styles: string, selector: string) {
-  const rule = styles.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{[^}]+\\}`))?.[0];
+  const rule = styles.match(new RegExp(`(?:^|\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{[^}]+\\}`))?.[0];
   if (!rule) throw new Error(`Missing style rule: ${selector}`);
   return rule;
 }
 
 describe("work plan overlay styles", () => {
+  it("gives the timeline 1.8 times more daily space while narrowing the member column", () => {
+    expect(styleRule(workPlanStyles, ".work-plan-page")).toContain(
+      "--work-plan-member-column-width: 176px;",
+    );
+    expect(styleRule(workPlanStyles, ".work-plan-page")).toContain(
+      "--work-plan-day-width: 342px;",
+    );
+    expect(styleRule(workPlanStyles, ".work-plan-gantt")).toContain(
+      "grid-template-columns: var(--work-plan-member-column-width)",
+    );
+    expect(styleRule(workPlanStyles, ".work-plan-timeline-header")).toContain(
+      "minmax(var(--work-plan-day-width), 1fr)",
+    );
+  });
+
+  it("packs overview metrics and filters into one compact command bar", () => {
+    expect(styleRule(workPlanStyles, ".work-plan-command-bar")).toContain("display: flex;");
+    expect(styleRule(workPlanStyles, ".work-plan-summary-band > div")).toContain("min-height: 48px;");
+    expect(styleRule(workPlanStyles, ".work-plan-summary-band strong")).toContain("font-size: 18px;");
+    expect(workPlanStyles).toMatch(
+      /@media \(max-width: 720px\)[\s\S]*?\.work-plan-summary-band > div\s*\{[^}]*min-height:\s*40px;/,
+    );
+  });
+
   it("keeps confirmation dialogs above an open work-plan drawer", () => {
     expect(zIndex(globalStyles, ".confirm-backdrop")).toBeGreaterThan(
       zIndex(workPlanStyles, ".work-plan-drawer-layer"),

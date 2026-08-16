@@ -636,28 +636,30 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
     >
       <div aria-hidden="true" className={`work-plan-refresh-line${refreshing ? " active" : ""}`} />
       <header className="work-plan-page-header">
-        <div><h2>工作计划</h2><p>{schedule.start_date} 至 {schedule.end_date} · 上海时间</p></div>
+        <div className="work-plan-page-title"><h2>工作计划</h2><p>{schedule.start_date} 至 {schedule.end_date} · 上海时间</p></div>
         <div className="work-plan-header-actions">
           <button className="ghost" onClick={() => setHistoryOpen(true)} type="button"><History size={17} />我的安排</button>
           <button onClick={openCreate} type="button"><CalendarPlus size={17} />填写我的计划</button>
         </div>
       </header>
 
-      <div className="work-plan-summary-band" aria-label="排班概览">
-        <div><span>团队成员</span><strong>{schedule.members.length}</strong></div>
-        <div><span>当前在线</span><strong>{onlineCount}</strong></div>
-        <div><span>工作计划</span><strong>{workCount}</strong></div>
-        <div><span>取消区间</span><strong>{cancelledCount}</strong></div>
-      </div>
-
-      <div className="work-plan-toolbar">
-        <div className="work-plan-range-control" aria-label="日期范围">
-          {(["7d", "30d", "all"] as const).map((value) => <button aria-pressed={range === value} className={range === value ? "active" : ""} key={value} onClick={() => startTransition(() => setRange(value))} type="button">{{ "7d": "未来 7 天", "30d": "未来 30 天", all: "全部记录" }[value]}</button>)}
+      <div className="work-plan-command-bar">
+        <div className="work-plan-summary-band" aria-label="排班概览">
+          <div><span>团队成员</span><strong>{schedule.members.length}</strong></div>
+          <div><span>当前在线</span><strong>{onlineCount}</strong></div>
+          <div><span>工作计划</span><strong>{workCount}</strong></div>
+          <div><span>取消区间</span><strong>{cancelledCount}</strong></div>
         </div>
-        <div className="work-plan-toolbar-filters">
-          <label><UsersRound size={15} /><select aria-label="按成员筛选" onChange={(event) => { const nextMemberId = event.target.value; startTransition(() => setMemberId(nextMemberId)); }} value={memberId}><option value="">全部成员</option>{schedule.members.map((member) => <option key={member.member_id} value={member.member_id}>{member.member_name}</option>)}</select></label>
-          {canManageAll && range === "all" ? <label className="work-plan-cancelled-toggle"><input checked={includeCancelled} onChange={(event) => setIncludeCancelled(event.target.checked)} type="checkbox" />含已取消</label> : null}
-          <button aria-label="刷新" className="work-plan-icon-button" disabled={refreshing} onClick={() => refreshAll(true).catch(() => undefined)} title="刷新" type="button"><RefreshCw className={refreshing ? "spinning" : ""} size={17} /></button>
+
+        <div className="work-plan-toolbar">
+          <div className="work-plan-range-control" aria-label="日期范围">
+            {(["7d", "30d", "all"] as const).map((value) => <button aria-pressed={range === value} className={range === value ? "active" : ""} key={value} onClick={() => startTransition(() => setRange(value))} type="button">{{ "7d": "未来 7 天", "30d": "未来 30 天", all: "全部记录" }[value]}</button>)}
+          </div>
+          <div className="work-plan-toolbar-filters">
+            <label><UsersRound size={15} /><select aria-label="按成员筛选" onChange={(event) => { const nextMemberId = event.target.value; startTransition(() => setMemberId(nextMemberId)); }} value={memberId}><option value="">全部成员</option>{schedule.members.map((member) => <option key={member.member_id} value={member.member_id}>{member.member_name}</option>)}</select></label>
+            {canManageAll && range === "all" ? <label className="work-plan-cancelled-toggle"><input checked={includeCancelled} onChange={(event) => setIncludeCancelled(event.target.checked)} type="checkbox" />含已取消</label> : null}
+            <button aria-label="刷新" className="work-plan-icon-button" disabled={refreshing} onClick={() => refreshAll(true).catch(() => undefined)} title="刷新" type="button"><RefreshCw className={refreshing ? "spinning" : ""} size={17} /></button>
+          </div>
         </div>
       </div>
 
