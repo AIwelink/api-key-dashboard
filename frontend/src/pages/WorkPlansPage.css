@@ -13,14 +13,13 @@
   --wp-ease-state: cubic-bezier(.22, 1, .36, 1);
   --wp-ease-exit: cubic-bezier(.4, 0, 1, 1);
   display: grid;
-  gap: 16px;
+  gap: 12px;
   min-width: 0;
   position: relative;
 }
 
 .work-plan-page > .work-plan-page-header,
-.work-plan-page > .work-plan-summary-band,
-.work-plan-page > .work-plan-toolbar,
+.work-plan-page > .work-plan-command-bar,
 .work-plan-page > .work-plan-stale-notice,
 .work-plan-page > .work-plan-schedule-frame,
 .work-plan-page > .work-plan-pagination {
@@ -29,29 +28,24 @@
 }
 
 .work-plan-page.is-entered > .work-plan-page-header,
-.work-plan-page.is-entered > .work-plan-summary-band,
-.work-plan-page.is-entered > .work-plan-toolbar,
+.work-plan-page.is-entered > .work-plan-command-bar,
 .work-plan-page.is-entered > .work-plan-stale-notice,
 .work-plan-page.is-entered > .work-plan-schedule-frame,
 .work-plan-page.is-entered > .work-plan-pagination {
   animation: work-plan-page-enter var(--wp-motion-page) var(--wp-ease-enter) both;
 }
 
-.work-plan-page.is-entered > .work-plan-summary-band {
-  animation-delay: 40ms;
-}
-
-.work-plan-page.is-entered > .work-plan-toolbar {
-  animation-delay: 100ms;
+.work-plan-page.is-entered > .work-plan-command-bar {
+  animation-delay: 60ms;
 }
 
 .work-plan-page.is-entered > .work-plan-stale-notice {
-  animation-delay: 140ms;
+  animation-delay: 100ms;
 }
 
 .work-plan-page.is-entered > .work-plan-schedule-frame,
 .work-plan-page.is-entered > .work-plan-pagination {
-  animation-delay: 180ms;
+  animation-delay: 140ms;
 }
 
 .work-plan-refresh-line {
@@ -116,10 +110,18 @@
 }
 
 .work-plan-page-header {
-  align-items: flex-start;
+  align-items: center;
   display: flex;
   gap: 16px;
   justify-content: space-between;
+}
+
+.work-plan-page-title {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-width: 0;
 }
 
 .work-plan-page-header h2 {
@@ -130,7 +132,7 @@
 .work-plan-page-header p {
   color: var(--muted);
   font-size: 13px;
-  margin-top: 5px;
+  margin: 0;
 }
 
 .work-plan-header-actions {
@@ -139,18 +141,30 @@
   gap: 8px;
 }
 
-.work-plan-summary-band {
+.work-plan-command-bar {
+  align-items: stretch;
   background: var(--panel);
   border-block: 1px solid var(--line);
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  display: flex;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 5px 6px 5px 0;
+}
+
+.work-plan-summary-band {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 400px;
 }
 
 .work-plan-summary-band > div {
-  display: grid;
-  gap: 5px;
-  min-height: 74px;
-  padding: 14px 18px;
+  align-items: baseline;
+  display: flex;
+  flex: 1 1 0;
+  gap: 7px;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 12px;
 }
 
 .work-plan-summary-band > div + div {
@@ -164,7 +178,7 @@
 
 .work-plan-summary-band strong {
   color: var(--text);
-  font-size: 23px;
+  font-size: 18px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -180,8 +194,9 @@
 .work-plan-toolbar {
   align-items: center;
   display: flex;
-  gap: 14px;
-  justify-content: space-between;
+  flex: 0 0 auto;
+  gap: 8px;
+  justify-content: flex-end;
   min-width: 0;
 }
 
@@ -190,7 +205,7 @@
   border: 1px solid #dde1e4;
   border-radius: 7px;
   display: inline-grid;
-  grid-template-columns: repeat(3, minmax(90px, 1fr));
+  grid-template-columns: repeat(3, minmax(78px, 1fr));
   padding: 3px;
 }
 
@@ -198,8 +213,8 @@
   background: transparent;
   border: 0;
   color: #5f6870;
-  min-height: 32px;
-  padding-inline: 12px;
+  min-height: 30px;
+  padding-inline: 9px;
 }
 
 .work-plan-range-control button.active {
@@ -1348,20 +1363,31 @@
   }
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1180px) {
+  .work-plan-command-bar {
+    flex-wrap: wrap;
+    padding: 0;
+  }
+
+  .work-plan-summary-band {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
   .work-plan-toolbar {
-    align-items: stretch;
-    flex-direction: column;
+    border-top: 1px solid var(--line);
+    flex: 1 1 100%;
+    padding: 6px;
   }
 
   .work-plan-toolbar-filters {
-    justify-content: space-between;
+    margin-left: auto;
   }
 }
 
 @media (max-width: 720px), (max-width: 900px) and (orientation: portrait) {
   .work-plan-page {
-    gap: 12px;
+    gap: 10px;
   }
 
   .work-plan-page-header {
@@ -1373,27 +1399,50 @@
     font-size: 20px;
   }
 
+  .work-plan-page-title {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+
   .work-plan-header-actions {
     display: grid;
     grid-template-columns: 1fr 1fr;
   }
 
   .work-plan-summary-band {
-    grid-template-columns: repeat(2, 1fr);
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    width: 100%;
   }
 
   .work-plan-summary-band > div {
-    min-height: 64px;
-    padding: 11px 13px;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 1px;
+    justify-content: center;
+    min-height: 40px;
+    padding: 4px 7px;
+  }
+
+  .work-plan-summary-band span {
+    font-size: 11px;
   }
 
   .work-plan-summary-band > div:nth-child(3) {
-    border-left: 0;
-    border-top: 1px solid var(--line);
+    border-left: 1px solid var(--line);
   }
 
-  .work-plan-summary-band > div:nth-child(4) {
-    border-top: 1px solid var(--line);
+  .work-plan-command-bar {
+    display: grid;
+  }
+
+  .work-plan-toolbar {
+    display: grid;
+    gap: 4px;
+    grid-template-columns: minmax(0, 1fr);
+    padding: 4px;
+    width: 100%;
   }
 
   .work-plan-range-control {
@@ -1402,6 +1451,7 @@
   }
 
   .work-plan-range-control button {
+    min-height: 28px;
     min-width: 0;
     padding-inline: 4px;
   }
@@ -1409,10 +1459,15 @@
   .work-plan-toolbar-filters {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto auto;
+    margin-left: 0;
   }
 
   .work-plan-toolbar-filters > label:first-child {
     min-width: 0;
+  }
+
+  .work-plan-toolbar-filters select {
+    min-height: 32px;
   }
 
   .work-plan-schedule-frame {
@@ -1598,8 +1653,7 @@
   }
 
   .work-plan-page > .work-plan-page-header,
-  .work-plan-page > .work-plan-summary-band,
-  .work-plan-page > .work-plan-toolbar,
+  .work-plan-page > .work-plan-command-bar,
   .work-plan-page > .work-plan-stale-notice,
   .work-plan-page > .work-plan-schedule-frame,
   .work-plan-page > .work-plan-pagination {
