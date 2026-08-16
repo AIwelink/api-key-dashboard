@@ -358,8 +358,8 @@
   font-size: 15px;
 }
 
-.work-plan-schedule,
-.work-plan-schedule-scroll {
+.work-plan-schedule {
+  max-width: 100%;
   min-width: 0;
 }
 
@@ -373,9 +373,13 @@
 }
 
 .work-plan-schedule-scroll {
-  overflow: auto;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
   overscroll-behavior-inline: contain;
   scrollbar-color: #c6cdd1 transparent;
+  width: 100%;
 }
 
 .work-plan-gantt {
@@ -816,6 +820,7 @@
 
 .work-plan-drawer-layer {
   inset: 0;
+  overflow: hidden;
   pointer-events: none;
   position: fixed;
   transition: visibility 0s linear 280ms;
