@@ -6,6 +6,7 @@ import type { User } from "../../types";
 import {
   claimDailyIntro,
   shouldShowDailyIntro,
+  type DailyIntroMember,
   type DailyIntroStorage,
 } from "./dailyIntro";
 import "./DailyTeamIntro.css";
@@ -19,6 +20,10 @@ const STANDARD_EXIT_MS = 900;
 const REDUCED_HOLD_MS = 300;
 const REDUCED_EXIT_MS = 300;
 const SKIP_EXIT_MS = 360;
+const SIGNED_OUT_VISITOR: DailyIntroMember = {
+  id: "signed-out-visitor",
+  email: "signed-out-visitor@local",
+};
 
 function prefersReducedMotion(): boolean {
   return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
@@ -95,7 +100,7 @@ export function DailyTeamIntro({ onComplete }: { onComplete: () => void }) {
 }
 
 type DailyTeamIntroGateProps = {
-  user: Pick<User, "id" | "email">;
+  user: Pick<User, "id" | "email"> | null;
   storage?: DailyIntroStorage;
   now?: Date;
 };
@@ -103,13 +108,20 @@ type DailyTeamIntroGateProps = {
 export function DailyTeamIntroGate({ user, storage, now }: DailyTeamIntroGateProps) {
   const resolvedStorage = storage ?? window.localStorage;
   const [claimedAt] = useState(() => now ?? new Date());
+  const [audience] = useState<DailyIntroMember>(() => user ?? SIGNED_OUT_VISITOR);
   const [visible, setVisible] = useState(() => (
-    shouldShowDailyIntro(resolvedStorage, user, claimedAt)
+    shouldShowDailyIntro(resolvedStorage, audience, claimedAt)
   ));
 
   useEffect(() => {
-    if (visible) claimDailyIntro(resolvedStorage, user, claimedAt);
-  }, [claimedAt, resolvedStorage, user.email, user.id, visible]);
+    if (visible) claimDailyIntro(resolvedStorage, audience, claimedAt);
+  }, [audience, claimedAt, resolvedStorage, visible]);
+
+  useEffect(() => {
+    if (audience === SIGNED_OUT_VISITOR && user) {
+      claimDailyIntro(resolvedStorage, user, claimedAt);
+    }
+  }, [audience, claimedAt, resolvedStorage, user?.email, user?.id]);
 
   const handleComplete = useCallback(() => setVisible(false), []);
 

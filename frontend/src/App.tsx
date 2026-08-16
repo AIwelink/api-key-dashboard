@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import logoUrl from "../AIwelink_logo_bule_A.png";
 import { DailyTeamIntroGate } from "./components/dailyIntro/DailyTeamIntro";
-import { dailyIntroIdentity } from "./components/dailyIntro/dailyIntro";
 import { AccountPoolsPage } from "./pages/AccountPoolsPage";
 import { AccountsPage } from "./pages/AccountsPage";
 import { AgentAnalysisPage } from "./pages/AgentAnalysisPage";
@@ -156,9 +155,7 @@ function App() {
 
   return (
     <>
-      {token && user ? (
-        <DailyTeamIntroGate key={dailyIntroIdentity(user)} user={user} />
-      ) : null}
+      <DailyTeamIntroGate user={user} />
       <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
         <div className="brand">

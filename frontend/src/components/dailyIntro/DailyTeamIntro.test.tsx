@@ -170,6 +170,64 @@ describe("DailyTeamIntro", () => {
     expect(container.querySelector(".daily-team-intro")).toBeNull();
   });
 
+  it("mounts the gate once per Shanghai day before login", async () => {
+    const storage = memoryStorage();
+    const now = new Date("2026-08-17T00:00:00Z");
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => root?.render(
+      <DailyTeamIntroGate now={now} storage={storage} user={null} />,
+    ));
+    expect(container.querySelector(".daily-team-intro")).not.toBeNull();
+
+    act(() => root?.unmount());
+    container.remove();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => root?.render(
+      <DailyTeamIntroGate now={now} storage={storage} user={null} />,
+    ));
+    expect(container.querySelector(".daily-team-intro")).toBeNull();
+  });
+
+  it("does not replay after a signed-out visitor logs in on the same day", async () => {
+    vi.useFakeTimers();
+    try {
+      const storage = memoryStorage();
+      const now = new Date("2026-08-17T00:00:00Z");
+      const user = { id: "member-1", email: "member@example.com" };
+
+      container = document.createElement("div");
+      document.body.appendChild(container);
+      root = createRoot(container);
+      await act(async () => root?.render(
+        <DailyTeamIntroGate now={now} storage={storage} user={null} />,
+      ));
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+        await vi.advanceTimersByTimeAsync(360);
+      });
+      await act(async () => root?.render(
+        <DailyTeamIntroGate now={now} storage={storage} user={user} />,
+      ));
+
+      act(() => root?.unmount());
+      container.remove();
+      container = document.createElement("div");
+      document.body.appendChild(container);
+      root = createRoot(container);
+      await act(async () => root?.render(
+        <DailyTeamIntroGate now={now} storage={storage} user={user} />,
+      ));
+      expect(container.querySelector(".daily-team-intro")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("finishes an Escape exit when the authenticated member object refreshes", async () => {
     vi.useFakeTimers();
     try {
@@ -197,12 +255,13 @@ describe("DailyTeamIntro", () => {
     }
   });
 
-  it("mounts the authenticated intro gate before the application shell", () => {
+  it("mounts the intro gate before the application shell for signed-out and signed-in visitors", () => {
     const appSource = readFileSync(resolve(process.cwd(), "src/App.tsx"), "utf8");
     const gateIndex = appSource.indexOf("<DailyTeamIntroGate");
     const shellIndex = appSource.indexOf('<div className={`app-shell');
 
-    expect(appSource).toContain("key={dailyIntroIdentity(user)}");
+    expect(appSource).toContain("<DailyTeamIntroGate user={user} />");
+    expect(appSource).not.toContain("key={dailyIntroIdentity(user)}");
     expect(gateIndex).toBeGreaterThan(-1);
     expect(gateIndex).toBeLessThan(shellIndex);
   });
