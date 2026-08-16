@@ -1272,6 +1272,11 @@ async def list_work_plan_schedule(
 
     segments_by_member: dict[str, list[dict[str, Any]]] = {}
     for member_id, documents in projection_by_member.items():
+        documents_by_id = {
+            str(document.get("_id") or ""): document
+            for document in documents
+            if document.get("_id") is not None
+        }
         normalized = normalize_legacy_records(
             documents,
             local_timezone=SHANGHAI_TIMEZONE,
@@ -1292,8 +1297,14 @@ async def list_work_plan_schedule(
             window_start=visible_start_at,
             window_end=visible_end_at,
         )
-        segments_by_member[member_id] = [
-            {
+        segment_rows: list[dict[str, Any]] = []
+        for segment in projected:
+            source_document = documents_by_id.get(segment.winning_operation_id)
+            if source_document is None and segment.winning_operation_id.startswith("legacy:"):
+                legacy_parts = segment.winning_operation_id.split(":", 2)
+                if len(legacy_parts) == 3:
+                    source_document = documents_by_id.get(legacy_parts[1])
+            row = {
                 "member_id": member_id,
                 "member_name": profiles.get(member_id, {}).get("member_name") or member_id,
                 "state": segment.state,
@@ -1302,8 +1313,10 @@ async def list_work_plan_schedule(
                 "winning_operation_id": segment.winning_operation_id,
                 "operation_ids": list(segment.operation_ids),
             }
-            for segment in projected
-        ]
+            if source_document is not None:
+                row["record"] = _serialize_plan(source_document)
+            segment_rows.append(row)
+        segments_by_member[member_id] = segment_rows
 
     active_plans: dict[str, dict[str, Any]] = {}
     for plan in active_plan_documents:

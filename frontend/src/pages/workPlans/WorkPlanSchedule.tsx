@@ -6,7 +6,9 @@ import type { User } from "../../types";
 import { isoDateRange } from "./dateSelection";
 import type {
   WorkPlan,
+  WorkPlanHistoryItem,
   WorkPlanMember,
+  WorkPlanOperation,
   WorkPlanRange,
   WorkPlanScheduleResponse,
   WorkPlanSegment,
@@ -18,8 +20,8 @@ type WorkPlanScheduleProps = {
   response: WorkPlanScheduleResponse;
   range: WorkPlanRange;
   currentUser: Pick<User, "email" | "id" | "role">;
-  onEditPlan: (plan: WorkPlan) => void;
-  onCancelPlan: (plan: WorkPlan) => void;
+  onEditPlan: (plan: WorkPlanHistoryItem) => void;
+  onCancelPlan: (plan: WorkPlanHistoryItem, segment?: WorkPlanSegment) => void;
   onSetMemberPriority?: (memberId: string, priority: number | null) => Promise<void> | void;
   priorityBusy?: boolean;
 };
@@ -27,15 +29,20 @@ type WorkPlanScheduleProps = {
 type RenderableSegment = {
   segment: WorkPlanSegment;
   plan?: WorkPlan;
+  record?: WorkPlanHistoryItem;
 };
 
 const SHANGHAI_TIMEZONE_LABEL = "Asia/Shanghai (UTC+8)";
 
 export function canManagePlan(
   currentUser: Pick<User, "email" | "id" | "role">,
-  plan: WorkPlan,
+  plan: WorkPlanHistoryItem,
 ): boolean {
   return currentUser.role === "owner" || currentUser.role === "admin" || (currentUser.id || currentUser.email) === plan.member_id;
+}
+
+function isOperation(item: WorkPlanHistoryItem): item is WorkPlanOperation {
+  return "record_kind" in item && item.record_kind === "operation";
 }
 
 function canSetPriority(currentUser: Pick<User, "role">): boolean {
@@ -49,6 +56,30 @@ function minuteLabel(value: number): string {
 
 function rangeLabel(plan: WorkPlan): string {
   return `${minuteLabel(plan.start_minute)} - ${minuteLabel(plan.end_minute)}`;
+}
+
+function historyTypeLabel(item: WorkPlanHistoryItem): string {
+  if (isOperation(item)) return item.operation_type === "activate" ? "创建工作计划" : "取消计划";
+  return item.plan_type === "work" ? "工作计划" : "取消计划";
+}
+
+function historyDateLabel(item: WorkPlanHistoryItem): string {
+  return isOperation(item) ? item.anchor_date : item.plan_date;
+}
+
+function historyRangeLabel(item: WorkPlanHistoryItem): string {
+  return isOperation(item)
+    ? `${minuteLabel(item.requested_start_offset_minute)} - ${minuteLabel(item.requested_end_offset_minute)}`
+    : rangeLabel(item);
+}
+
+function canCancelRecord(item: WorkPlanHistoryItem): boolean {
+  if (isOperation(item)) return item.operation_type === "activate";
+  return item.plan_type === "work" && !item.is_cancelled;
+}
+
+function canEditRecord(item: WorkPlanHistoryItem): boolean {
+  return isOperation(item) || !item.is_cancelled;
 }
 
 function displayDates(response: WorkPlanScheduleResponse, range: WorkPlanRange): string[] {
@@ -88,7 +119,7 @@ function legacySegment(plan: WorkPlan): RenderableSegment {
 }
 
 function renderableSegments(response: WorkPlanScheduleResponse): RenderableSegment[] {
-  if (response.segments?.length) return response.segments.map((segment) => ({ segment }));
+  if (response.segments?.length) return response.segments.map((segment) => ({ segment, record: segment.record }));
   return response.plans.map(legacySegment);
 }
 
@@ -143,36 +174,39 @@ function segmentIntervalLabel(segment: WorkPlanSegment): string {
 }
 
 type WorkPlanDetailDialogProps = {
-  plan: WorkPlan;
+  plan: WorkPlanHistoryItem;
+  segment?: WorkPlanSegment;
   currentUser: Pick<User, "email" | "id" | "role">;
-  onEditPlan: (plan: WorkPlan) => void;
-  onCancelPlan: (plan: WorkPlan) => void;
+  onEditPlan: (plan: WorkPlanHistoryItem) => void;
+  onCancelPlan: (plan: WorkPlanHistoryItem, segment?: WorkPlanSegment) => void;
   onClose: () => void;
 };
 
 export function WorkPlanDetailDialog({
   plan,
+  segment,
   currentUser,
   onEditPlan,
   onCancelPlan,
   onClose,
 }: WorkPlanDetailDialogProps) {
   const dialogRef = useModalFocus<HTMLDivElement>(true, onClose);
+  const manageable = canManagePlan(currentUser, plan);
   return (
     <div aria-label="计划详情" aria-modal="true" className="work-plan-detail-popover" ref={dialogRef} role="dialog" tabIndex={-1}>
       <header>
-        <div><strong>{plan.member_name}</strong><span>{plan.plan_type === "work" ? "工作计划" : "取消计划"}</span></div>
+        <div><strong>{plan.member_name}</strong><span>{historyTypeLabel(plan)}</span></div>
         <button aria-label="关闭详情" className="work-plan-icon-button" onClick={onClose} type="button"><X size={17} /></button>
       </header>
       <dl>
-        <div><dt>日期</dt><dd>{plan.plan_date}</dd></div>
-        <div><dt>时间</dt><dd>{rangeLabel(plan)}</dd></div>
+        <div><dt>日期</dt><dd>{historyDateLabel(plan)}</dd></div>
+        <div><dt>时间</dt><dd>{historyRangeLabel(plan)}</dd></div>
         {plan.note ? <div><dt>备注</dt><dd>{plan.note}</dd></div> : null}
       </dl>
-      {canManagePlan(currentUser, plan) && !plan.is_cancelled ? (
+      {manageable && canEditRecord(plan) ? (
         <footer>
           <button className="ghost" onClick={() => { onEditPlan(plan); onClose(); }} type="button"><Pencil size={15} />编辑</button>
-          <button className="danger-ghost" onClick={() => { onCancelPlan(plan); onClose(); }} type="button"><Ban size={15} />取消计划</button>
+          {canCancelRecord(plan) ? <button className="danger-ghost" onClick={() => { onCancelPlan(plan, segment); onClose(); }} type="button"><Ban size={15} />取消计划</button> : null}
         </footer>
       ) : null}
     </div>
@@ -188,7 +222,7 @@ export function WorkPlanSchedule({
   onSetMemberPriority,
   priorityBusy = false,
 }: WorkPlanScheduleProps) {
-  const [selectedPlan, setSelectedPlan] = useState<WorkPlan | null>(null);
+  const [selectedPlan, setSelectedPlan] = useState<{ plan: WorkPlanHistoryItem; segment: WorkPlanSegment } | null>(null);
   const modalHandoffTimer = useRef<number | null>(null);
   const dates = useMemo(() => displayDates(response, range), [range, response]);
   const bounds = useMemo(() => timelineBounds(response), [response]);
@@ -232,13 +266,13 @@ export function WorkPlanSchedule({
 
   const renderSegment = (item: RenderableSegment) => {
     const geometry = timelineGeometry(bounds.startAt, bounds.endAt, item.segment.start_at, item.segment.end_at);
-    const plan = item.plan;
-    const interval = plan ? rangeLabel(plan) : segmentIntervalLabel(item.segment);
-    const className = `work-plan-segment ${item.segment.state}${plan ? " work-plan-bar" : ""}`;
+    const record = item.record ?? item.plan;
+    const interval = item.plan ? rangeLabel(item.plan) : segmentIntervalLabel(item.segment);
+    const className = `work-plan-segment ${item.segment.state}${record ? " work-plan-bar" : ""}`;
     const style = { left: `${geometry.leftPercent}%`, width: `${geometry.widthPercent}%` };
-    if (plan) {
+    if (record) {
       return (
-        <button aria-label={`${item.segment.member_name} ${interval}`} className={className} key={item.segment.winning_operation_id} onClick={() => setSelectedPlan(plan)} style={style} title={`${interval}${plan.note ? ` · ${plan.note}` : ""}`} type="button"><span>{interval}</span></button>
+        <button aria-label={`${item.segment.member_name} ${interval}`} className={className} key={item.segment.winning_operation_id} onClick={() => setSelectedPlan({ plan: record, segment: item.segment })} style={style} title={`${interval}${record.note ? ` · ${record.note}` : ""}`} type="button"><span>{interval}</span></button>
       );
     }
     return (
@@ -302,7 +336,7 @@ export function WorkPlanSchedule({
       </div>
 
       {selectedPlan ? (
-        <WorkPlanDetailDialog currentUser={currentUser} onCancelPlan={(plan) => handoffModal(() => onCancelPlan(plan))} onClose={() => setSelectedPlan(null)} onEditPlan={(plan) => handoffModal(() => onEditPlan(plan))} plan={selectedPlan} />
+        <WorkPlanDetailDialog currentUser={currentUser} onCancelPlan={(plan, segment) => handoffModal(() => onCancelPlan(plan, segment))} onClose={() => setSelectedPlan(null)} onEditPlan={(plan) => handoffModal(() => onEditPlan(plan))} plan={selectedPlan.plan} segment={selectedPlan.segment} />
       ) : null}
     </section>
   );

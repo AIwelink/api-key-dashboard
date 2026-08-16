@@ -1137,6 +1137,56 @@ class WorkPlanOperationLeaseServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WorkPlanScheduleServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_schedule_segments_include_sanitized_source_record(self) -> None:
+        db = fake_db(
+            users=[{"_id": "member-1", "name": "Member One"}],
+            plans=[
+                {
+                    "_id": "activate-source",
+                    "schema_version": 2,
+                    "record_kind": "operation",
+                    "member_id": "member-1",
+                    "member_name": "Member One",
+                    "operation_type": "activate",
+                    "anchor_date": "2026-08-16",
+                    "plan_date": "2026-08-16",
+                    "requested_start_at": datetime(2026, 8, 16, 1, tzinfo=UTC),
+                    "requested_end_at": datetime(2026, 8, 16, 9, tzinfo=UTC),
+                    "effective_start_at": datetime(2026, 8, 16, 1, tzinfo=UTC),
+                    "effective_end_at": datetime(2026, 8, 16, 9, tzinfo=UTC),
+                    "requested_start_offset_minute": 9 * 60,
+                    "requested_end_offset_minute": 17 * 60,
+                    "effective_start_offset_minute": 9 * 60,
+                    "effective_end_offset_minute": 17 * 60,
+                    "member_sequence": 4,
+                    "note": "可编辑操作",
+                    "idempotency_key": "secret-key",
+                    "created_at": datetime(2026, 8, 15, 10, tzinfo=UTC),
+                    "_audit_intents": [{"action": "work_plan.create"}],
+                }
+            ],
+        )
+
+        with patch(
+            "app.modules.work_plans.service.list_member_presence_summaries",
+            new=AsyncMock(return_value={}),
+        ):
+            response = await list_work_plan_schedule(
+                db,
+                range_name="7d",
+                member_ids=None,
+                include_cancelled=False,
+                observed_at=datetime(2026, 8, 15, 16, tzinfo=UTC),
+            )
+
+        record = response["segments"][0]["record"]
+        self.assertEqual(record["id"], "activate-source")
+        self.assertEqual(record["operation_type"], "activate")
+        self.assertEqual(record["requested_start_offset_minute"], 9 * 60)
+        self.assertEqual(record["member_sequence"], 4)
+        self.assertEqual(record["note"], "可编辑操作")
+        self.assertNotIn("_audit_intents", record)
+
     async def test_schedule_accepts_naive_utc_datetimes_returned_by_mongodb(self) -> None:
         db = fake_db(
             users=[{"_id": "member-1", "name": "Member One"}],
