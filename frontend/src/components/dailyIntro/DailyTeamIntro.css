@@ -1,0 +1,235 @@
+.daily-team-intro {
+  align-items: center;
+  animation: daily-intro-overlay-in 650ms cubic-bezier(.22, 1, .36, 1) both;
+  background: #fffafc;
+  color: #2d2028;
+  display: grid;
+  inset: 0;
+  justify-items: center;
+  overflow: hidden;
+  position: fixed;
+  z-index: 1000;
+}
+
+.daily-team-intro::before {
+  animation: daily-intro-morning-light 3s cubic-bezier(.22, 1, .36, 1) both;
+  background: linear-gradient(132deg, #fffafc 0%, #edf7ff 36%, #fff 57%, #ffeaf1 100%);
+  content: "";
+  inset: -8%;
+  pointer-events: none;
+  position: absolute;
+  transform-origin: center;
+}
+
+.daily-team-intro-content {
+  align-items: center;
+  display: grid;
+  justify-items: center;
+  max-width: calc(100vw - 48px);
+  position: relative;
+  width: min(940px, calc(100vw - 48px));
+  z-index: 1;
+}
+
+.daily-team-intro-logo {
+  animation: daily-intro-logo-focus 900ms cubic-bezier(.16, 1, .3, 1) 350ms both;
+  display: block;
+  height: 96px;
+  object-fit: contain;
+  width: 96px;
+}
+
+.daily-team-intro-message {
+  display: grid;
+  font-family: "Songti SC", STSong, "Noto Serif SC", SimSun, serif;
+  font-size: 28px;
+  font-weight: 600;
+  gap: 8px;
+  letter-spacing: 0;
+  line-height: 1.75;
+  margin: 42px 0 0;
+  max-width: 920px;
+  text-align: center;
+  text-wrap: balance;
+}
+
+.daily-team-intro-message span {
+  animation: daily-intro-message-arrive 800ms cubic-bezier(.16, 1, .3, 1) both;
+  display: block;
+}
+
+.daily-team-intro-message span:first-child {
+  animation-delay: 1000ms;
+}
+
+.daily-team-intro-message span:last-child {
+  animation-delay: 1120ms;
+}
+
+.daily-team-intro-skip {
+  align-items: center;
+  animation: daily-intro-skip-arrive 400ms ease 300ms both;
+  background: rgb(255 255 255 / 68%);
+  border: 1px solid rgb(103 122 137 / 18%);
+  border-radius: 50%;
+  color: #53616b;
+  display: flex;
+  height: 36px;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0;
+  position: absolute;
+  right: 24px;
+  top: 24px;
+  width: 36px;
+  z-index: 2;
+}
+
+.daily-team-intro-skip:hover {
+  background: #fff;
+  border-color: rgb(216 92 130 / 30%);
+  color: #b83f68;
+}
+
+.daily-team-intro-skip:focus-visible {
+  outline: 2px solid #1889d5;
+  outline-offset: 3px;
+}
+
+.daily-team-intro[data-stage="exiting"] {
+  animation: daily-intro-overlay-out 900ms cubic-bezier(.4, 0, 1, 1) both;
+  pointer-events: none;
+}
+
+.daily-team-intro[data-stage="exiting"] .daily-team-intro-content {
+  animation: daily-intro-content-out 720ms cubic-bezier(.4, 0, 1, 1) both;
+}
+
+.daily-team-intro[data-stage="exiting"] .daily-team-intro-skip {
+  animation: daily-intro-skip-out 220ms ease both;
+}
+
+.daily-team-intro[data-stage="opening"] + .app-shell {
+  filter: blur(6px);
+  transform: scale(.994);
+}
+
+.daily-team-intro + .app-shell {
+  transform-origin: center;
+}
+
+.daily-team-intro[data-stage="exiting"] + .app-shell {
+  animation: daily-intro-workspace-reveal 900ms cubic-bezier(.16, 1, .3, 1) both;
+}
+
+@keyframes daily-intro-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes daily-intro-morning-light {
+  from { transform: translate3d(-1.5%, 1.2%, 0) scale(1.08); }
+  to { transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes daily-intro-logo-focus {
+  from { filter: blur(8px); opacity: 0; transform: translate3d(0, 10px, 0) scale(.96); }
+  to { filter: blur(0); opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes daily-intro-message-arrive {
+  from { opacity: 0; transform: translate3d(0, 10px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes daily-intro-skip-arrive {
+  from { opacity: 0; transform: scale(.94); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes daily-intro-overlay-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes daily-intro-content-out {
+  from { filter: blur(0); opacity: 1; transform: translate3d(0, 0, 0); }
+  to { filter: blur(4px); opacity: 0; transform: translate3d(0, -12px, 0); }
+}
+
+@keyframes daily-intro-skip-out {
+  to { opacity: 0; }
+}
+
+@keyframes daily-intro-workspace-reveal {
+  from { filter: blur(6px); transform: scale(.994); }
+  to { filter: blur(0); transform: scale(1); }
+}
+
+@media (max-width: 720px), (max-width: 900px) and (orientation: portrait) {
+  .daily-team-intro-content {
+    max-width: calc(100vw - 32px);
+    width: calc(100vw - 32px);
+  }
+
+  .daily-team-intro-logo {
+    height: 74px;
+    width: 74px;
+  }
+
+  .daily-team-intro-message {
+    font-size: 20px;
+    gap: 10px;
+    line-height: 1.8;
+    margin-top: 30px;
+    max-width: 100%;
+  }
+
+  .daily-team-intro-skip {
+    right: 14px;
+    top: 14px;
+  }
+}
+
+@media (max-height: 540px) {
+  .daily-team-intro-logo {
+    height: 64px;
+    width: 64px;
+  }
+
+  .daily-team-intro-message {
+    margin-top: 22px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .daily-team-intro,
+  .daily-team-intro::before,
+  .daily-team-intro-content,
+  .daily-team-intro-logo,
+  .daily-team-intro-message span,
+  .daily-team-intro-skip,
+  .daily-team-intro + .app-shell {
+    filter: none !important;
+    transform: none !important;
+  }
+
+  .daily-team-intro,
+  .daily-team-intro::before,
+  .daily-team-intro-logo,
+  .daily-team-intro-message span,
+  .daily-team-intro-skip,
+  .daily-team-intro + .app-shell {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .daily-team-intro[data-stage="exiting"] {
+    animation: daily-intro-reduced-out 300ms ease both !important;
+  }
+}
+
+@keyframes daily-intro-reduced-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
