@@ -997,6 +997,47 @@ class WorkPlanOperationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(operation["effective_end_offset_minute"], 12 * 60)
         self.assertEqual(operation["member_sequence"], 2)
 
+    async def test_cancel_accepts_naive_mongodb_datetimes_for_exact_request(self) -> None:
+        db = fake_db()
+        await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=operation_payload(
+                anchor_dates=[date(2026, 8, 17)],
+                start_offset_minute=9 * 60,
+                end_offset_minute=24 * 60,
+            ),
+            observed_at=OBSERVED_AT,
+        )
+        for document in db.work_plans.documents.values():
+            for field in (
+                "requested_start_at",
+                "requested_end_at",
+                "effective_start_at",
+                "effective_end_at",
+                "created_at",
+            ):
+                document[field] = document[field].replace(tzinfo=None)
+
+        response = await create_work_plans(
+            db,
+            actor=ACTOR,
+            payload=operation_payload(
+                operation_type="cancel",
+                anchor_dates=[date(2026, 8, 17)],
+                start_offset_minute=540,
+                end_offset_minute=1440,
+                note=None,
+                idempotency_key=UUID("341b0035-391c-4926-90a4-4f0ff36c9752"),
+            ),
+            observed_at=OBSERVED_AT,
+        )
+
+        operation = response["results"][0]["operation"]
+        self.assertEqual(operation["operation_type"], "cancel")
+        self.assertEqual(operation["effective_start_offset_minute"], 540)
+        self.assertEqual(operation["effective_end_offset_minute"], 1440)
+
     async def test_cancel_without_green_overlap_writes_nothing(self) -> None:
         db = fake_db()
 
