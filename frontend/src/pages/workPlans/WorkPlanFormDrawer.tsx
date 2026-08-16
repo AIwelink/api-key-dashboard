@@ -67,7 +67,7 @@ const WEEKDAYS = [
   { value: 0, label: "日" },
 ] as const;
 
-function createIdempotencyKey(): string {
+export function createIdempotencyKey(): string {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   const bytes = new Uint8Array(16);
   if (globalThis.crypto?.getRandomValues) {

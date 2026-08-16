@@ -18,6 +18,8 @@ import type {
 } from "./workPlans/types";
 import {
   beginCreate,
+  buildWorkPlanCancellationPayload,
+  cancellationStartsTooSoon,
   createLatestRequestGuard,
   drawerExitDelay,
   initialRequestState,
@@ -257,6 +259,47 @@ describe("work plan components", () => {
       idempotency_key: draft.idempotencyKey,
     });
     expect(buildWorkPlanCreatePayload(draft)).not.toHaveProperty("member_id");
+  });
+
+  it("builds a cancellation command from the clicked linear segment interval", () => {
+    const activation = {
+      ...OPERATION,
+      operation_type: "activate" as const,
+      requested_start_offset_minute: 9 * 60,
+      requested_end_offset_minute: 24 * 60,
+      effective_start_offset_minute: 9 * 60,
+      effective_end_offset_minute: 24 * 60,
+    };
+
+    expect(buildWorkPlanCancellationPayload(
+      activation,
+      {
+        start_at: "2026-08-16T04:00:00+00:00",
+        end_at: "2026-08-16T06:00:00+00:00",
+      },
+      "cancel-key",
+    )).toEqual({
+      operation_type: "cancel",
+      anchor_dates: ["2026-08-16"],
+      start_offset_minute: 12 * 60,
+      end_offset_minute: 14 * 60,
+      note: null,
+      idempotency_key: "cancel-key",
+    });
+  });
+
+  it("rejects cancellation commands that start within one hour of server time", () => {
+    const payload = {
+      operation_type: "cancel" as const,
+      anchor_dates: ["2026-08-16"],
+      start_offset_minute: 12 * 60,
+      end_offset_minute: 14 * 60,
+      note: null,
+      idempotency_key: "cancel-key",
+    };
+
+    expect(cancellationStartsTooSoon(payload, "2026-08-16T03:30:00+00:00")).toBe(true);
+    expect(cancellationStartsTooSoon(payload, "2026-08-16T02:30:00+00:00")).toBe(false);
   });
 
   it("builds a compensating v2 edit command with the current member revision", () => {

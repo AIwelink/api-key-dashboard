@@ -80,6 +80,7 @@ export type WorkPlanSegment = {
   end_at: string;
   winning_operation_id: string;
   operation_ids: string[];
+  record?: WorkPlan | WorkPlanOperation;
 };
 
 export type WorkPlanHistoryItem = WorkPlan | WorkPlanOperation;

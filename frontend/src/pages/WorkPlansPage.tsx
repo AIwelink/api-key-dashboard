@@ -7,7 +7,7 @@ import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import type { User } from "../types";
 import { errorMessage } from "../utils/format";
 import { MyPlansDrawer } from "./workPlans/MyPlansDrawer";
-import { WorkPlanFormDrawer } from "./workPlans/WorkPlanFormDrawer";
+import { createIdempotencyKey, WorkPlanFormDrawer } from "./workPlans/WorkPlanFormDrawer";
 import { WorkPlanSchedule } from "./workPlans/WorkPlanSchedule";
 import type {
   WorkPlan,
@@ -21,6 +21,7 @@ import type {
   WorkPlanPriorityResult,
   WorkPlanRange,
   WorkPlanScheduleResponse,
+  WorkPlanSegment,
   WorkPlanUpdatePayload,
 } from "./workPlans/types";
 import "./WorkPlansPage.css";
@@ -74,6 +75,50 @@ export function mutationErrorMessage(result: WorkPlanMutationResult): string | n
   return unsuccessful
     .map((item) => `${item.plan_date}：${item.error || "保存失败，请保留当前内容后重试"}`)
     .join("；");
+}
+
+function isOperation(item: WorkPlanHistoryItem): item is WorkPlanOperation {
+  return "record_kind" in item && item.record_kind === "operation";
+}
+
+export function buildWorkPlanCancellationPayload(
+  operation: WorkPlanOperation,
+  segment: Pick<WorkPlanSegment, "start_at" | "end_at"> | null,
+  idempotencyKey: string,
+): WorkPlanOperationCreatePayload {
+  const anchorStart = Date.parse(`${operation.anchor_date}T00:00:00+08:00`);
+  const resolveOffset = (value: string, fallback: number): number => {
+    const timestamp = Date.parse(value);
+    if (!Number.isFinite(anchorStart) || !Number.isFinite(timestamp)) return fallback;
+    return Math.round((timestamp - anchorStart) / 60_000);
+  };
+  const startOffsetMinute = resolveOffset(
+    segment?.start_at || operation.effective_start_at,
+    operation.effective_start_offset_minute,
+  );
+  const endOffsetMinute = resolveOffset(
+    segment?.end_at || operation.effective_end_at,
+    operation.effective_end_offset_minute,
+  );
+  return {
+    operation_type: "cancel",
+    anchor_dates: [operation.anchor_date],
+    start_offset_minute: startOffsetMinute,
+    end_offset_minute: endOffsetMinute,
+    note: null,
+    idempotency_key: idempotencyKey,
+  };
+}
+
+export function cancellationStartsTooSoon(
+  payload: WorkPlanOperationCreatePayload,
+  observedAt: string,
+): boolean {
+  const observedTimestamp = Date.parse(observedAt);
+  const anchorStart = Date.parse(`${payload.anchor_dates[0]}T00:00:00+08:00`);
+  if (!Number.isFinite(observedTimestamp) || !Number.isFinite(anchorStart)) return true;
+  const startTimestamp = anchorStart + payload.start_offset_minute * 60_000;
+  return startTimestamp < observedTimestamp + 60 * 60_000;
 }
 
 type ScheduleStaleNoticeProps = {
@@ -276,7 +321,9 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
   const [formOpen, setFormOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [editingPlan, setEditingPlan] = useState<WorkPlanHistoryItem | null>(null);
-  const [cancelPlan, setCancelPlan] = useState<WorkPlan | null>(null);
+  const [cancelPlan, setCancelPlan] = useState<WorkPlanHistoryItem | null>(null);
+  const [cancelSegment, setCancelSegment] = useState<Pick<WorkPlanSegment, "start_at" | "end_at"> | null>(null);
+  const [cancelOperationKey, setCancelOperationKey] = useState<string | null>(null);
   const [scheduleRequestGuard] = useState(createLatestRequestGuard);
   const drawerHandoffTimer = useRef<number | null>(null);
   const canManageAll = currentUser.role === "owner" || currentUser.role === "admin";
@@ -434,6 +481,12 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
     else drawerHandoffTimer.current = window.setTimeout(openForm, delay);
   };
 
+  const openCancel = useCallback((plan: WorkPlanHistoryItem, segment?: WorkPlanSegment) => {
+    setCancelPlan(plan);
+    setCancelSegment(segment ? { start_at: segment.start_at, end_at: segment.end_at } : null);
+    setCancelOperationKey(isOperation(plan) ? createIdempotencyKey() : null);
+  }, []);
+
   const submitPlan = async (
     payload: WorkPlanCreatePayload | WorkPlanOperationCreatePayload | WorkPlanOperationUpdatePayload | WorkPlanUpdatePayload,
   ) => {
@@ -491,9 +544,30 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
     if (!cancelPlan) return;
     setMutationBusy(true);
     try {
+      if (isOperation(cancelPlan)) {
+        const idempotencyKey = cancelOperationKey || createIdempotencyKey();
+        const payload = buildWorkPlanCancellationPayload(cancelPlan, cancelSegment, idempotencyKey);
+        if (cancellationStartsTooSoon(payload, schedule.observed_at)) {
+          throw new Error("取消计划的开始时间至少晚于当前时间 1 小时");
+        }
+        const result = await api<WorkPlanMutationResult>("/work-plans", token, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        const mutationError = mutationErrorMessage(result);
+        applyOperationHistory(operationHistoryFromMutation(result));
+        if (mutationError) throw new Error(mutationError);
+        setCancelPlan(null);
+        setCancelSegment(null);
+        setCancelOperationKey(null);
+        refreshAfterMutation(result.duplicate_submission ? "取消操作已提交" : "计划已取消，历史记录仍会保留");
+        return;
+      }
       const cancelled = await api<WorkPlan>(`/work-plans/${cancelPlan.id}/cancel`, token, { method: "POST" });
       applyLocalMutation([cancelled]);
       setCancelPlan(null);
+      setCancelSegment(null);
+      setCancelOperationKey(null);
       refreshAfterMutation("计划已取消，历史记录仍会保留");
     } catch (error) {
       showToast(errorMessage(error), true);
@@ -585,13 +659,13 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
       ) : null}
 
       <div className={`work-plan-schedule-frame ${loading ? "loading" : ""}`}>
-        {loading && !schedule.plans.length && !schedule.segments?.length ? <div className="work-plan-loading">加载中...</div> : <WorkPlanSchedule currentUser={currentUser} onCancelPlan={setCancelPlan} onEditPlan={openEdit} onSetMemberPriority={setMemberPriority} priorityBusy={Boolean(priorityBusyMemberId)} range={range} response={schedule} />}
+        {loading && !schedule.plans.length && !schedule.segments?.length ? <div className="work-plan-loading">加载中...</div> : <WorkPlanSchedule currentUser={currentUser} onCancelPlan={openCancel} onEditPlan={openEdit} onSetMemberPriority={setMemberPriority} priorityBusy={Boolean(priorityBusyMemberId)} range={range} response={schedule} />}
       </div>
       {schedule.has_more ? <div className="work-plan-pagination"><span>已显示 {schedule.total_operations ?? schedule.plans.length} / {schedule.total} 条记录</span><button className="ghost" disabled={refreshing} onClick={loadOlderSchedule} type="button">{refreshing ? "加载中..." : "加载更早记录"}</button></div> : null}
 
       <WorkPlanFormDrawer busy={mutationBusy} expectedMemberSequence={editingExpectedSequence} initialPlan={editingPlan} onClose={() => { if (!mutationBusy) { setFormOpen(false); setEditingPlan(null); } }} onSubmit={submitPlan} open={formOpen} serverToday={serverToday} />
-      <MyPlansDrawer blocked={Boolean(cancelPlan)} busy={mutationBusy} hasMore={history.has_more} items={history.items} loadingMore={historyLoadingMore} onCancel={setCancelPlan} onClose={() => setHistoryOpen(false)} onEdit={openEdit} onLoadMore={loadMoreHistory} open={historyOpen} total={history.total} />
-      <ConfirmDialog cancelText="返回" confirmText="取消计划" details={cancelPlan ? [["成员", cancelPlan.member_name], ["日期", cancelPlan.plan_date]] : []} message="取消后记录仍会保留。" onCancel={() => setCancelPlan(null)} onConfirm={confirmCancel} open={Boolean(cancelPlan)} title="确认取消这条计划？" tone="danger" />
+      <MyPlansDrawer blocked={Boolean(cancelPlan)} busy={mutationBusy} hasMore={history.has_more} items={history.items} loadingMore={historyLoadingMore} onCancel={(plan) => openCancel(plan)} onClose={() => setHistoryOpen(false)} onEdit={openEdit} onLoadMore={loadMoreHistory} open={historyOpen} total={history.total} />
+      <ConfirmDialog cancelText="返回" confirmText="取消计划" details={cancelPlan ? [["成员", cancelPlan.member_name], ["日期", "anchor_date" in cancelPlan ? cancelPlan.anchor_date : cancelPlan.plan_date]] : []} message="取消后记录仍会保留。" onCancel={() => { setCancelPlan(null); setCancelSegment(null); setCancelOperationKey(null); }} onConfirm={confirmCancel} open={Boolean(cancelPlan)} title="确认取消这条计划？" tone="danger" />
     </section>
   );
 }

@@ -15,7 +15,7 @@ type MyPlansDrawerProps = {
   loadingMore: boolean;
   onClose: () => void;
   onEdit: (item: WorkPlanHistoryItem) => void;
-  onCancel: (plan: WorkPlan) => void;
+  onCancel: (plan: WorkPlanHistoryItem) => void;
   onLoadMore: () => void;
 };
 
@@ -61,7 +61,7 @@ export function MyPlansDrawer({ open, blocked = false, items, total, hasMore, lo
         <header className="work-plan-drawer-header"><div><span className="work-plan-header-icon"><CalendarClock size={18} /></span><div><h3 id="my-plans-title">我的安排</h3><p>已加载 {items.length} / {total} 条记录 · {SHANGHAI_TIMEZONE_LABEL}</p></div></div><button aria-label="关闭" className="work-plan-icon-button" onClick={onClose} type="button"><X size={19} /></button></header>
         <div className="work-plan-history-list">
           {items.map((item) => isOperation(item) ? (
-            <OperationHistoryItem busy={busy} editable={item.member_sequence === latestOperationSequence && operationState(item) !== "replaced"} item={item} key={item.id} onEdit={onEdit} />
+            <OperationHistoryItem busy={busy} editable={item.member_sequence === latestOperationSequence && operationState(item) !== "replaced"} item={item} key={item.id} onCancel={onCancel} onEdit={onEdit} />
           ) : (
             <LegacyHistoryItem busy={busy} item={item} key={item.id} onCancel={onCancel} onEdit={onEdit} />
           ))}
@@ -73,7 +73,7 @@ export function MyPlansDrawer({ open, blocked = false, items, total, hasMore, lo
   );
 }
 
-function OperationHistoryItem({ busy, editable, item, onEdit }: { busy: boolean; editable: boolean; item: WorkPlanOperation; onEdit: (item: WorkPlanOperation) => void }) {
+function OperationHistoryItem({ busy, editable, item, onEdit, onCancel }: { busy: boolean; editable: boolean; item: WorkPlanOperation; onEdit: (item: WorkPlanOperation) => void; onCancel: (item: WorkPlanOperation) => void }) {
   const state = operationState(item);
   const muted = state !== "active";
   return (
@@ -94,7 +94,7 @@ function OperationHistoryItem({ busy, editable, item, onEdit }: { busy: boolean;
         <div><dt>顺序</dt><dd>第 {item.member_sequence} 次变更</dd></div>
         {muted ? <div><dt>当前显示</dt><dd>历史保留，不覆盖后续生效区间</dd></div> : null}
       </dl>
-      {editable ? <footer><button className="ghost" disabled={busy} onClick={() => onEdit(item)} type="button"><Pencil size={15} />编辑操作</button></footer> : null}
+      {editable ? <footer><button className="ghost" disabled={busy} onClick={() => onEdit(item)} type="button"><Pencil size={15} />编辑操作</button>{state === "active" && item.operation_type === "activate" ? <button className="danger-ghost" disabled={busy} onClick={() => onCancel(item)} type="button"><Ban size={15} />取消计划</button> : null}</footer> : null}
     </article>
   );
 }
