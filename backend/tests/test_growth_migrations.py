@@ -100,15 +100,53 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("growth_operations_sync_running_site_unique_idx", sql)
         self.assertIn("WHERE stream_name = 'operations' AND status = 'running'", sql)
 
-    def test_required_tables_include_initial_and_operations_domains(self) -> None:
+    def test_risk_migration_creates_paused_aiwelink_control_plane(self) -> None:
+        from app.modules.growth.migrations import RISK_DOMAIN_TABLES, RISK_MIGRATION
+
+        sql = "\n".join(RISK_MIGRATION.statements)
+
+        self.assertEqual(
+            RISK_DOMAIN_TABLES,
+            (
+                "risk_settings",
+                "risk_sync_cursors",
+                "risk_accounts",
+                "risk_ip_accounts",
+                "risk_actions",
+                "risk_events",
+            ),
+        )
+        for table_name in RISK_DOMAIN_TABLES:
+            self.assertIn(f"CREATE TABLE IF NOT EXISTS growth.{table_name}", sql)
+        self.assertIn("detector_enabled BOOLEAN NOT NULL DEFAULT FALSE", sql)
+        self.assertIn("auto_ban_enabled BOOLEAN NOT NULL DEFAULT FALSE", sql)
+        self.assertIn("poll_interval_seconds INTEGER NOT NULL DEFAULT 60", sql)
+        self.assertIn("ip_window_days INTEGER NOT NULL DEFAULT 7", sql)
+        self.assertIn("shared_ip_min_accounts INTEGER NOT NULL DEFAULT 3", sql)
+        self.assertIn("VALUES ('aiwelink', FALSE, FALSE, 60, 7, 3", sql)
+        self.assertIn("is_risk_excluded BOOLEAN NOT NULL DEFAULT FALSE", sql)
+        self.assertIn("risk_account_id UUID", sql)
+        self.assertIn(
+            "UNIQUE (site_id, external_user_id, ip_address, source_type)",
+            sql,
+        )
+        self.assertIn("growth_risk_ip_accounts_ip_window_idx", sql)
+        self.assertIn("growth_risk_accounts_status_idx", sql)
+        self.assertNotIn("request_body", sql)
+
+    def test_required_tables_include_initial_operations_and_risk_domains(self) -> None:
         from app.modules.growth.migrations import (
             INITIAL_DOMAIN_TABLES,
             OPERATIONS_DOMAIN_TABLES,
             REQUIRED_DOMAIN_TABLES,
+            RISK_DOMAIN_TABLES,
         )
 
-        self.assertEqual(REQUIRED_DOMAIN_TABLES, INITIAL_DOMAIN_TABLES + OPERATIONS_DOMAIN_TABLES)
-        self.assertEqual(len(REQUIRED_DOMAIN_TABLES), 23)
+        self.assertEqual(
+            REQUIRED_DOMAIN_TABLES,
+            INITIAL_DOMAIN_TABLES + OPERATIONS_DOMAIN_TABLES + RISK_DOMAIN_TABLES,
+        )
+        self.assertEqual(len(REQUIRED_DOMAIN_TABLES), 29)
 
     def test_migrations_are_ordered_and_uniquely_versioned(self) -> None:
         from app.modules.growth.migrations import MIGRATIONS
@@ -126,6 +164,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0004_operations_lifecycle_metrics",
                 "0005_operations_sale_credit_without_cash",
                 "0006_operations_sync_single_flight",
+                "0007_aiwelink_risk_control",
             ],
         )
 
@@ -145,9 +184,10 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0004_operations_lifecycle_metrics",
                 "0005_operations_sale_credit_without_cash",
                 "0006_operations_sync_single_flight",
+                "0007_aiwelink_risk_control",
             ],
         )
-        self.assertEqual(result["current_version"], "0006_operations_sync_single_flight")
+        self.assertEqual(result["current_version"], "0007_aiwelink_risk_control")
         self.assertEqual(result["pending_versions"], [])
         executed_sql = "\n".join(connection.statements)
         for migration in MIGRATIONS:
@@ -166,13 +206,14 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0004_operations_lifecycle_metrics",
                 "0005_operations_sale_credit_without_cash",
                 "0006_operations_sync_single_flight",
+                "0007_aiwelink_risk_control",
             ]
         )
 
         result = await apply_pending_migrations(connection)
 
         self.assertEqual(result["applied_versions"], [])
-        self.assertEqual(result["current_version"], "0006_operations_sync_single_flight")
+        self.assertEqual(result["current_version"], "0007_aiwelink_risk_control")
         for migration in MIGRATIONS:
             for statement in migration.statements:
                 self.assertNotIn(statement, connection.statements)
@@ -195,6 +236,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0004_operations_lifecycle_metrics",
                 "0005_operations_sale_credit_without_cash",
                 "0006_operations_sync_single_flight",
+                "0007_aiwelink_risk_control",
             ],
         )
         self.assertEqual(result["domain_table_count"], 0)
@@ -210,17 +252,18 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0004_operations_lifecycle_metrics",
                 "0005_operations_sale_credit_without_cash",
                 "0006_operations_sync_single_flight",
+                "0007_aiwelink_risk_control",
             ],
             ledger_exists=True,
-            domain_table_count=23,
+            domain_table_count=29,
         )
 
         result = await inspect_growth_schema(connection)
 
         self.assertTrue(result["initialized"])
-        self.assertEqual(result["current_version"], "0006_operations_sync_single_flight")
+        self.assertEqual(result["current_version"], "0007_aiwelink_risk_control")
         self.assertEqual(result["pending_versions"], [])
-        self.assertEqual(result["domain_table_count"], 23)
+        self.assertEqual(result["domain_table_count"], 29)
 
 
 class _FakeScalarResult:

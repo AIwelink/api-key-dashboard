@@ -35,7 +35,16 @@ OPERATIONS_DOMAIN_TABLES = (
     "subscription_entitlements",
 )
 
-REQUIRED_DOMAIN_TABLES = INITIAL_DOMAIN_TABLES + OPERATIONS_DOMAIN_TABLES
+RISK_DOMAIN_TABLES = (
+    "risk_settings",
+    "risk_sync_cursors",
+    "risk_accounts",
+    "risk_ip_accounts",
+    "risk_actions",
+    "risk_events",
+)
+
+REQUIRED_DOMAIN_TABLES = INITIAL_DOMAIN_TABLES + OPERATIONS_DOMAIN_TABLES + RISK_DOMAIN_TABLES
 
 
 @dataclass(frozen=True)
@@ -732,6 +741,181 @@ OPERATIONS_SYNC_SINGLE_FLIGHT_MIGRATION = Migration(
 )
 
 
+RISK_MIGRATION = Migration(
+    version="0007_aiwelink_risk_control",
+    description="Add AIWeLink shared-IP risk detection and reversible enforcement",
+    statements=(
+        "ALTER TABLE growth.ops_user_snapshots ADD COLUMN IF NOT EXISTS is_risk_excluded BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE growth.ops_user_snapshots ADD COLUMN IF NOT EXISTS risk_account_id UUID",
+        """
+        CREATE TABLE IF NOT EXISTS growth.risk_settings (
+            site_id TEXT PRIMARY KEY,
+            detector_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            auto_ban_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            poll_interval_seconds INTEGER NOT NULL DEFAULT 60
+                CHECK (poll_interval_seconds = 60),
+            ip_window_days INTEGER NOT NULL DEFAULT 7
+                CHECK (ip_window_days = 7),
+            shared_ip_min_accounts INTEGER NOT NULL DEFAULT 3
+                CHECK (shared_ip_min_accounts = 3),
+            updated_by TEXT NOT NULL DEFAULT 'system:migration',
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """.strip(),
+        """
+        INSERT INTO growth.risk_settings (
+            site_id, detector_enabled, auto_ban_enabled,
+            poll_interval_seconds, ip_window_days, shared_ip_min_accounts,
+            updated_by
+        ) VALUES ('aiwelink', FALSE, FALSE, 60, 7, 3, 'system:migration')
+        ON CONFLICT (site_id) DO NOTHING
+        """.strip(),
+        """
+        CREATE TABLE IF NOT EXISTS growth.risk_sync_cursors (
+            site_id TEXT NOT NULL,
+            source_stream TEXT NOT NULL
+                CHECK (source_stream IN ('audit_logs', 'usage_logs')),
+            last_source_id BIGINT NOT NULL DEFAULT 0 CHECK (last_source_id >= 0),
+            last_source_created_at TIMESTAMPTZ,
+            last_success_at TIMESTAMPTZ,
+            latest_observed_at TIMESTAMPTZ,
+            last_rows_read INTEGER NOT NULL DEFAULT 0 CHECK (last_rows_read >= 0),
+            last_error_code TEXT NOT NULL DEFAULT '',
+            last_error_message TEXT NOT NULL DEFAULT '',
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (site_id, source_stream)
+        )
+        """.strip(),
+        """
+        CREATE TABLE IF NOT EXISTS growth.risk_accounts (
+            risk_account_id UUID PRIMARY KEY,
+            site_id TEXT NOT NULL,
+            external_user_id TEXT NOT NULL,
+            email TEXT NOT NULL DEFAULT '',
+            normalized_email TEXT NOT NULL DEFAULT '',
+            risk_status TEXT NOT NULL
+                CHECK (risk_status IN (
+                    'high_risk', 'ban_pending', 'banned', 'ban_failed',
+                    'released', 'cleared'
+                )),
+            risk_reasons JSONB NOT NULL DEFAULT '{}'::JSONB
+                CHECK (jsonb_typeof(risk_reasons) = 'object'),
+            first_detected_at TIMESTAMPTZ NOT NULL,
+            last_detected_at TIMESTAMPTZ NOT NULL,
+            banned_at TIMESTAMPTZ,
+            released_at TIMESTAMPTZ,
+            is_stats_excluded BOOLEAN NOT NULL DEFAULT FALSE,
+            manual_override_active BOOLEAN NOT NULL DEFAULT FALSE,
+            manual_override_by TEXT,
+            manual_override_at TIMESTAMPTZ,
+            manual_override_reason TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (site_id, external_user_id),
+            UNIQUE (risk_account_id, site_id)
+        )
+        """.strip(),
+        """
+        CREATE TABLE IF NOT EXISTS growth.risk_ip_accounts (
+            site_id TEXT NOT NULL,
+            external_user_id TEXT NOT NULL,
+            email TEXT NOT NULL DEFAULT '',
+            ip_address INET NOT NULL,
+            source_type TEXT NOT NULL
+                CHECK (source_type IN ('registration_audit', 'user_audit', 'usage_log')),
+            first_seen_at TIMESTAMPTZ NOT NULL,
+            last_seen_at TIMESTAMPTZ NOT NULL,
+            event_count BIGINT NOT NULL DEFAULT 1 CHECK (event_count > 0),
+            latest_source_id BIGINT NOT NULL CHECK (latest_source_id >= 0),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (site_id, external_user_id, ip_address, source_type)
+        )
+        """.strip(),
+        """
+        CREATE TABLE IF NOT EXISTS growth.risk_actions (
+            risk_action_id UUID PRIMARY KEY,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            risk_account_id UUID NOT NULL REFERENCES growth.risk_accounts(risk_account_id),
+            site_id TEXT NOT NULL,
+            external_user_id TEXT NOT NULL,
+            email TEXT NOT NULL DEFAULT '',
+            action_type TEXT NOT NULL
+                CHECK (action_type IN ('auto_ban', 'manual_ban', 'manual_release')),
+            action_status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (action_status IN ('pending', 'running', 'succeeded', 'failed', 'conflicted')),
+            decision_reason TEXT NOT NULL DEFAULT '',
+            matched_email_rules JSONB NOT NULL DEFAULT '[]'::JSONB
+                CHECK (jsonb_typeof(matched_email_rules) = 'array'),
+            shared_ip_evidence JSONB NOT NULL DEFAULT '[]'::JSONB
+                CHECK (jsonb_typeof(shared_ip_evidence) = 'array'),
+            source_user_status_before TEXT,
+            source_user_updated_at_before TIMESTAMPTZ,
+            source_api_key_states_before JSONB NOT NULL DEFAULT '[]'::JSONB
+                CHECK (jsonb_typeof(source_api_key_states_before) = 'array'),
+            result_details JSONB NOT NULL DEFAULT '{}'::JSONB
+                CHECK (jsonb_typeof(result_details) = 'object'),
+            attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+            error_code TEXT NOT NULL DEFAULT '',
+            error_message TEXT NOT NULL DEFAULT '',
+            requested_by TEXT NOT NULL,
+            requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            started_at TIMESTAMPTZ,
+            completed_at TIMESTAMPTZ
+        )
+        """.strip(),
+        """
+        CREATE TABLE IF NOT EXISTS growth.risk_events (
+            risk_event_id UUID PRIMARY KEY,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            risk_account_id UUID REFERENCES growth.risk_accounts(risk_account_id),
+            site_id TEXT NOT NULL,
+            external_user_id TEXT NOT NULL DEFAULT '',
+            email TEXT NOT NULL DEFAULT '',
+            event_type TEXT NOT NULL CHECK (event_type IN (
+                'high_risk_detected', 'risk_cleared',
+                'auto_ban_succeeded', 'auto_ban_failed',
+                'manual_ban_succeeded', 'manual_ban_failed',
+                'manual_release_succeeded', 'manual_release_partial',
+                'manual_override_set', 'manual_override_removed',
+                'detector_paused', 'detector_resumed',
+                'auto_ban_paused', 'auto_ban_resumed'
+            )),
+            decision_reason TEXT NOT NULL DEFAULT '',
+            matched_email_rules JSONB NOT NULL DEFAULT '[]'::JSONB
+                CHECK (jsonb_typeof(matched_email_rules) = 'array'),
+            shared_ip_evidence JSONB NOT NULL DEFAULT '[]'::JSONB
+                CHECK (jsonb_typeof(shared_ip_evidence) = 'array'),
+            risk_action_id UUID REFERENCES growth.risk_actions(risk_action_id),
+            event_result JSONB NOT NULL DEFAULT '{}'::JSONB
+                CHECK (jsonb_typeof(event_result) = 'object'),
+            error_code TEXT NOT NULL DEFAULT '',
+            error_message TEXT NOT NULL DEFAULT '',
+            actor_id TEXT NOT NULL DEFAULT '',
+            actor_name TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """.strip(),
+        """
+        ALTER TABLE growth.ops_user_snapshots
+        DROP CONSTRAINT IF EXISTS ops_user_snapshots_risk_account_id_fkey
+        """.strip(),
+        """
+        ALTER TABLE growth.ops_user_snapshots
+        ADD CONSTRAINT ops_user_snapshots_risk_account_id_fkey
+        FOREIGN KEY (risk_account_id) REFERENCES growth.risk_accounts(risk_account_id)
+        """.strip(),
+        "CREATE INDEX IF NOT EXISTS growth_risk_accounts_status_idx ON growth.risk_accounts (site_id, risk_status, last_detected_at DESC)",
+        "CREATE INDEX IF NOT EXISTS growth_risk_accounts_email_idx ON growth.risk_accounts (site_id, lower(normalized_email))",
+        "CREATE INDEX IF NOT EXISTS growth_risk_ip_accounts_ip_window_idx ON growth.risk_ip_accounts (site_id, ip_address, last_seen_at DESC)",
+        "CREATE INDEX IF NOT EXISTS growth_risk_ip_accounts_account_window_idx ON growth.risk_ip_accounts (site_id, external_user_id, last_seen_at DESC)",
+        "CREATE INDEX IF NOT EXISTS growth_risk_actions_status_idx ON growth.risk_actions (site_id, action_status, requested_at)",
+        "CREATE INDEX IF NOT EXISTS growth_risk_events_account_time_idx ON growth.risk_events (risk_account_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS growth_ops_users_risk_excluded_idx ON growth.ops_user_snapshots (site_id, is_risk_excluded, registered_at DESC)",
+    ),
+)
+
+
 MIGRATIONS = (
     INITIAL_MIGRATION,
     OPERATIONS_MIGRATION,
@@ -739,6 +923,7 @@ MIGRATIONS = (
     LIFECYCLE_METRICS_MIGRATION,
     SALE_CREDIT_CASH_MIGRATION,
     OPERATIONS_SYNC_SINGLE_FLIGHT_MIGRATION,
+    RISK_MIGRATION,
 )
 
 
