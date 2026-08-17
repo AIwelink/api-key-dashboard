@@ -13,6 +13,7 @@ from app.logging_config import RequestLoggingMiddleware, cleanup_old_logs, log_c
 from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, auto_replenishment, client_metrics, client_sites, event_records, growth, import_batches, imports, notifications, operations, plus_self_produced, presence, settings, sub2api_sites, sync, todo_items, users, work_plans
 from app.modules.client_metrics.sampler import client_metric_sampler_loop
 from app.modules.operations.sync import operations_sync_loop
+from app.modules.risk.scheduler import risk_control_loop
 from app.modules.system.bootstrap import ensure_bootstrap_data, ensure_indexes
 from app.modules.agent.scheduler import start_agent_scheduler, stop_agent_scheduler
 from app.modules.sub2api.account_probe import probe_scheduler_loop
@@ -51,6 +52,10 @@ async def lifespan(app_instance: FastAPI):
     forecast_accuracy_task = asyncio.create_task(forecast_accuracy_evaluator_loop(db))
     client_metric_sampler_task = asyncio.create_task(client_metric_sampler_loop(db))
     operations_sync_task = asyncio.create_task(operations_sync_loop(db))
+    risk_control_task = asyncio.create_task(
+        risk_control_loop(db),
+        name="aiwelink-risk-control",
+    )
     work_plan_audit_task = asyncio.create_task(
         work_plan_audit_reconciliation_loop(db),
         name="work-plan-audit-reconciliation",
@@ -74,6 +79,7 @@ async def lifespan(app_instance: FastAPI):
             forecast_accuracy_task,
             client_metric_sampler_task,
             operations_sync_task,
+            risk_control_task,
             work_plan_audit_task,
             cleanup_task,
         )

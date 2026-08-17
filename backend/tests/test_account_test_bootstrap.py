@@ -38,6 +38,12 @@ class AccountTestBootstrapTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("account_test_scheduler_loop", source)
         self.assertNotIn("long_7d_probe_scheduler_loop", source)
 
+    def test_application_starts_aiwelink_risk_scheduler(self) -> None:
+        source = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
+
+        self.assertIn("risk_control_loop", source)
+        self.assertIn("risk_control_task", source)
+
 
 if __name__ == "__main__":
     unittest.main()

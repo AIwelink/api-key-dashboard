@@ -157,6 +157,8 @@ Run the Task 4 command and expect PASS.
 
 Cover paused defaults, advisory single-flight, first seven-day backfill, independent cursors, bounded pagination, 60-second sleep, audit and usage union, high-risk versus auto-ban outcomes, pending-action recovery, ban failures, release partial conflicts, manual false-positive exceptions, stale usage health, and task startup/cancellation.
 
+Also verify that any account with historical verified payment remains `high_risk` and never enters automatic enforcement, using both completed Sub2API cash orders and classified Growth cash-sale facts.
+
 ```python
 self.assertEqual(RISK_POLL_INTERVAL_SECONDS, 60)
 self.assertEqual(result["decision"], "ban")

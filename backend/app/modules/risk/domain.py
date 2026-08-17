@@ -106,11 +106,12 @@ def decide_risk(
     email_rules: tuple[EmailRule, ...],
     shared_ips: tuple[SharedIpEvidence, ...],
     manual_override: bool,
+    has_paid_history: bool = False,
 ) -> RiskDecision:
     if manual_override:
         return RiskDecision.CLEAR
     if email_rules and shared_ips:
-        return RiskDecision.BAN
+        return RiskDecision.HIGH_RISK if has_paid_history else RiskDecision.BAN
     if email_rules or shared_ips:
         return RiskDecision.HIGH_RISK
     return RiskDecision.CLEAR

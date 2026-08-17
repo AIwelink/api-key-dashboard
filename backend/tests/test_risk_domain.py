@@ -138,6 +138,28 @@ class RiskDomainTests(unittest.TestCase):
             RiskDecision.CLEAR,
         )
 
+    def test_paid_history_downgrades_a_ban_candidate_to_manual_review(self) -> None:
+        from app.modules.risk.domain import RiskDecision, SharedIpEvidence, decide_risk
+
+        shared = SharedIpEvidence(
+            ip_address="14.31.212.25",
+            distinct_account_count=3,
+            external_user_ids=("1", "2", "3"),
+            sources=("usage_log",),
+            first_seen_at=NOW,
+            last_seen_at=NOW,
+        )
+
+        self.assertEqual(
+            decide_risk(
+                email_rules=("email_local_part_dot",),
+                shared_ips=(shared,),
+                manual_override=False,
+                has_paid_history=True,
+            ),
+            RiskDecision.HIGH_RISK,
+        )
+
     def test_source_health_reports_coverage_age_not_connection_health(self) -> None:
         from app.modules.risk.domain import source_health
 

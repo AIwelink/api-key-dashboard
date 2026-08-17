@@ -1071,8 +1071,9 @@ async def resolve_classification_task(
 
 def _segment_filter(alias: str) -> str:
     return (
+        f"(NOT {alias}.is_risk_excluded AND "
         f"(:segment = 'all' OR (:segment = 'internal' AND {alias}.is_internal) "
-        f"OR (:segment = 'ordinary' AND NOT {alias}.is_internal))"
+        f"OR (:segment = 'ordinary' AND NOT {alias}.is_internal)))"
     )
 
 
@@ -2232,6 +2233,7 @@ async def _replace_aggregate_table(
                        0::NUMERIC AS refund_cny
                 FROM growth.ops_user_snapshots AS snapshot
                 WHERE snapshot.site_id = :site_id
+                  AND NOT snapshot.is_risk_excluded
                   AND snapshot.registered_at >= {event_start_expression}
                   AND snapshot.registered_at < {event_end_expression}
                 UNION ALL
@@ -2256,6 +2258,7 @@ async def _replace_aggregate_table(
                   ON snapshot.site_id = usage.site_id
                  AND snapshot.external_user_id = usage.external_user_id
                 WHERE usage.site_id = :site_id
+                  AND NOT snapshot.is_risk_excluded
                   AND usage.occurred_at >= {event_start_expression}
                   AND usage.occurred_at < {event_end_expression}
                 UNION ALL
@@ -2283,6 +2286,7 @@ async def _replace_aggregate_table(
                  AND snapshot.external_user_id = event.external_user_id
                 WHERE event.classification_status = 'classified'
                   AND event.site_id = :site_id
+                  AND NOT snapshot.is_risk_excluded
                   AND event.occurred_at >= {event_start_expression}
                   AND event.occurred_at < {event_end_expression}
             ), segmented AS (
