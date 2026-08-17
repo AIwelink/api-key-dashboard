@@ -249,7 +249,7 @@ def validate_update(
         if not isinstance(current_updated_at, datetime) or _as_utc(
             payload.expected_updated_at,
             field_name="expected_updated_at",
-        ) != _as_utc(current_updated_at, field_name="updated_at"):
+        ) != _stored_datetime_as_utc(current_updated_at):
             raise WorkPlanConflictError("计划已被更新，请刷新后重试")
 
     fields_set = payload.model_fields_set
@@ -312,6 +312,12 @@ def _actor_name(actor: dict, actor_id: str) -> str:
 def _as_utc(value: datetime, *, field_name: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise WorkPlanRuleError(f"{field_name} 必须包含时区")
+    return value.astimezone(UTC)
+
+
+def _stored_datetime_as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
 
 
