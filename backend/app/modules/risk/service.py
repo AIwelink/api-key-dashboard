@@ -8,6 +8,7 @@ from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from app.modules.risk import repository
+from app.modules.growth.database import growth_connection
 from app.modules.risk.adapters.sub2api import SourcePage
 from app.modules.risk.domain import (
     EmailRule,
@@ -274,3 +275,106 @@ def _datetime(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+async def get_risk_overview(mongo_db: Any, *, now: datetime | None = None) -> dict[str, Any]:
+    current_time = now or datetime.now(UTC)
+    async with growth_connection(mongo_db) as connection:
+        settings = await repository.get_settings(connection, site_id="aiwelink")
+        overview = await repository.get_overview(
+            connection,
+            site_id="aiwelink",
+            cutoff=current_time - timedelta(days=7),
+            minimum_accounts=3,
+        )
+        cursors = await repository.list_cursors(connection, site_id="aiwelink")
+    cursor_by_stream = {row["source_stream"]: row for row in cursors}
+    source_payloads = [
+        source_health_payload(
+            {"source_stream": stream, **cursor_by_stream.get(stream, {})},
+            now=current_time,
+        )
+        for stream in ("audit_logs", "usage_logs")
+    ]
+    return {**overview, "settings": settings, "source_health": source_payloads}
+
+
+async def list_risk_accounts(mongo_db: Any, **filters: Any) -> dict[str, Any]:
+    async with growth_connection(mongo_db) as connection:
+        return await repository.list_accounts(connection, site_id="aiwelink", **filters)
+
+
+async def get_risk_account_detail(mongo_db: Any, *, risk_account_id: UUID) -> dict[str, Any]:
+    async with growth_connection(mongo_db) as connection:
+        return await repository.get_account_detail(connection, risk_account_id=risk_account_id)
+
+
+async def list_risk_ip_clusters(mongo_db: Any, *, query: str | None, limit: int) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    async with growth_connection(mongo_db) as connection:
+        items = await repository.list_ip_clusters(
+            connection,
+            site_id="aiwelink",
+            cutoff=now - timedelta(days=7),
+            minimum_accounts=3,
+            query=query,
+            limit=limit,
+        )
+    return {"items": items, "total": len(items)}
+
+
+async def list_risk_events(mongo_db: Any, *, event_type: str | None, limit: int) -> dict[str, Any]:
+    async with growth_connection(mongo_db) as connection:
+        items = await repository.list_events(
+            connection,
+            site_id="aiwelink",
+            event_type=event_type,
+            limit=limit,
+        )
+    return {"items": items, "total": len(items)}
+
+
+async def get_risk_settings(mongo_db: Any) -> dict[str, Any]:
+    async with growth_connection(mongo_db) as connection:
+        return await repository.get_settings(connection, site_id="aiwelink")
+
+
+async def update_risk_settings(
+    mongo_db: Any,
+    *,
+    detector_enabled: bool | None,
+    auto_ban_enabled: bool | None,
+    actor_id: str,
+) -> dict[str, Any]:
+    async with growth_connection(mongo_db, write=True) as connection:
+        return await repository.update_settings(
+            connection,
+            site_id="aiwelink",
+            detector_enabled=detector_enabled,
+            auto_ban_enabled=auto_ban_enabled,
+            actor_id=actor_id,
+        )
+
+
+async def manual_ban(mongo_db: Any, **kwargs: Any) -> dict[str, Any]:
+    from app.modules.risk.management import manual_ban as execute
+
+    return await execute(mongo_db, **kwargs)
+
+
+async def manual_release(mongo_db: Any, **kwargs: Any) -> dict[str, Any]:
+    from app.modules.risk.management import manual_release as execute
+
+    return await execute(mongo_db, **kwargs)
+
+
+async def set_false_positive(mongo_db: Any, **kwargs: Any) -> dict[str, Any]:
+    from app.modules.risk.management import set_false_positive as execute
+
+    return await execute(mongo_db, **kwargs)
+
+
+async def remove_manual_override(mongo_db: Any, **kwargs: Any) -> dict[str, Any]:
+    from app.modules.risk.management import remove_manual_override as execute
+
+    return await execute(mongo_db, **kwargs)

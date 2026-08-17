@@ -14,6 +14,7 @@ from app.modules.operations.cache import operations_response_cache
 from app.modules.operations.sync import OPERATIONS_AGGREGATE_HISTORY_START
 from app.modules.risk import repository
 from app.modules.risk.adapters.sub2api import (
+    ApiKeyState,
     EnforcementResult,
     SourceAccountState,
     Sub2ApiRiskAdapter,
@@ -22,6 +23,7 @@ from app.modules.risk.service import (
     PreparedBanCandidate,
     action_idempotency_key,
     collect_stream_pages,
+    evaluate_account_input,
     reconcile_risk_inputs,
     source_window_start,
 )
@@ -121,6 +123,12 @@ async def _run_enabled_cycle(
     settings: dict[str, Any],
     detected_at: datetime,
 ) -> dict[str, Any]:
+    recovery = await recover_pending_auto_bans(
+        growth,
+        source_engine=source_engine,
+        adapter=adapter,
+        recovered_at=detected_at,
+    )
     async with growth.begin():
         cursors = {
             stream: await repository.get_cursor(
@@ -284,7 +292,211 @@ async def _run_enabled_cycle(
         "candidates": len(candidates),
         "actions_succeeded": actions_succeeded,
         "actions_failed": actions_failed,
+        "recovery": recovery,
     }
+
+
+async def recover_pending_auto_bans(
+    growth: Any,
+    *,
+    source_engine: Any,
+    adapter: Any,
+    recovered_at: datetime,
+) -> dict[str, int]:
+    async with growth.begin():
+        actions = await repository.list_pending_auto_ban_actions(
+            growth,
+            site_id=SITE_ID,
+            limit=200,
+        )
+
+    counts = {"succeeded": 0, "conflicted": 0, "failed": 0}
+    for action in actions:
+        candidate = _candidate_from_action(action)
+        action_id = UUID(str(action["risk_action_id"]))
+        before = _source_state_from_action(action)
+        requested_at = _datetime(action.get("requested_at"))
+        try:
+            async with source_engine.begin() as source_write:
+                current = await adapter.capture_account_state(
+                    source_write,
+                    before.external_user_id,
+                )
+                state, applied = _classify_recovery_state(
+                    before=before,
+                    current=current,
+                    requested_at=requested_at,
+                )
+                if state == "conflicted":
+                    await _finalize_recovery_conflict(
+                        growth,
+                        candidate=candidate,
+                        action_id=action_id,
+                        completed_at=recovered_at,
+                    )
+                    counts["conflicted"] += 1
+                    continue
+                if state == "not_applied":
+                    if await adapter.has_completed_payment(
+                        source_write,
+                        before.external_user_id,
+                    ):
+                        await _finalize_paid_protection(
+                            growth,
+                            candidate=candidate,
+                            action_id=action_id,
+                            completed_at=recovered_at,
+                        )
+                        counts["conflicted"] += 1
+                        continue
+                    applied = await adapter.disable_account(
+                        source_write,
+                        before=before,
+                        changed_at=recovered_at,
+                    )
+            if applied is None:
+                raise RuntimeError("recovered source state did not include enforcement details")
+            await _finalize_success(
+                growth,
+                candidate=candidate,
+                action_id=action_id,
+                enforced=applied,
+                completed_at=recovered_at,
+            )
+            counts["succeeded"] += 1
+        except Exception as exc:  # noqa: BLE001 - failed recovery remains visible.
+            await _finalize_failure(
+                growth,
+                candidate=candidate,
+                action_id=action_id,
+                error=exc,
+                completed_at=recovered_at,
+            )
+            counts["failed"] += 1
+    return counts
+
+
+def _classify_recovery_state(
+    *,
+    before: SourceAccountState,
+    current: SourceAccountState,
+    requested_at: datetime | None,
+) -> tuple[str, EnforcementResult | None]:
+    if current == before:
+        return "not_applied", None
+    if (
+        requested_at is None
+        or current.external_user_id != before.external_user_id
+        or current.email != before.email
+        or current.user_status != "disabled"
+        or current.user_updated_at != requested_at
+        or len(current.api_keys) != len(before.api_keys)
+    ):
+        return "conflicted", None
+
+    current_keys = {key.id: key for key in current.api_keys}
+    enforced_keys: list[ApiKeyState] = []
+    for prior in before.api_keys:
+        observed = current_keys.get(prior.id)
+        if observed is None:
+            return "conflicted", None
+        if prior.status == "active":
+            if observed.status != "inactive" or observed.updated_at != requested_at:
+                return "conflicted", None
+            enforced_keys.append(observed)
+        elif observed != prior:
+            return "conflicted", None
+    return (
+        "applied",
+        EnforcementResult(
+            user_status=current.user_status,
+            user_updated_at=current.user_updated_at,
+            api_keys=tuple(enforced_keys),
+        ),
+    )
+
+
+def _source_state_from_action(action: dict[str, Any]) -> SourceAccountState:
+    return SourceAccountState(
+        external_user_id=str(action.get("external_user_id") or ""),
+        email=str(action.get("email") or ""),
+        user_status=str(action.get("source_user_status_before") or ""),
+        user_updated_at=_datetime(action.get("source_user_updated_at_before")),
+        api_keys=tuple(
+            ApiKeyState(
+                id=str(item.get("id") or ""),
+                status=str(item.get("status") or ""),
+                updated_at=_datetime(item.get("updated_at")),
+            )
+            for item in (action.get("source_api_key_states_before") or [])
+        ),
+    )
+
+
+def _candidate_from_action(action: dict[str, Any]) -> PreparedBanCandidate:
+    evaluation = evaluate_account_input(
+        {
+            "external_user_id": action.get("external_user_id"),
+            "email": action.get("email"),
+            "shared_ip_evidence": action.get("shared_ip_evidence") or [],
+            "manual_override_active": False,
+            "has_paid_history": False,
+        }
+    )
+    return PreparedBanCandidate(
+        risk_account_id=str(action.get("risk_account_id") or ""),
+        evaluation=evaluation,
+    )
+
+
+async def _finalize_recovery_conflict(
+    growth: Any,
+    *,
+    candidate: PreparedBanCandidate,
+    action_id: UUID,
+    completed_at: datetime,
+) -> None:
+    async with growth.begin():
+        await repository.complete_action(
+            growth,
+            risk_action_id=action_id,
+            status="conflicted",
+            completed_at=completed_at,
+            error_code="SourceStateConflict",
+            error_message="AIWeLink source state does not match the pending ban snapshot",
+        )
+        await repository.upsert_risk_account(
+            growth,
+            site_id=SITE_ID,
+            external_user_id=candidate.evaluation.external_user_id,
+            email=candidate.evaluation.email,
+            risk_status="high_risk",
+            risk_reasons={
+                **_risk_reasons(candidate),
+                "protection_reasons": ["source_state_conflict"],
+            },
+            detected_at=completed_at,
+            risk_account_id=UUID(candidate.risk_account_id),
+        )
+        await repository.append_event(
+            growth,
+            risk_event_id=uuid4(),
+            idempotency_key=f"auto-ban-conflicted:{action_id}",
+            risk_account_id=UUID(candidate.risk_account_id),
+            site_id=SITE_ID,
+            external_user_id=candidate.evaluation.external_user_id,
+            email=candidate.evaluation.email,
+            event_type="auto_ban_conflicted",
+            decision_reason="source_state_conflict",
+            matched_email_rules=list(candidate.evaluation.email_rules),
+            shared_ip_evidence=_evidence_payload(candidate),
+            risk_action_id=action_id,
+            error_code="SourceStateConflict",
+            error_message="AIWeLink source state does not match the pending ban snapshot",
+            actor_id="system:risk-detector",
+            actor_name="AIWeLink risk detector",
+            created_at=completed_at,
+        )
 
 
 async def _finalize_success(
@@ -459,3 +671,15 @@ def _risk_reasons(candidate: PreparedBanCandidate) -> dict[str, Any]:
         "shared_ips": _evidence_payload(candidate),
         "protection_reasons": [],
     }
+
+
+def _datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)

@@ -72,6 +72,11 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             patch.object(coordinator.repository, "save_cursor_error", AsyncMock()) as failed,
             patch.object(coordinator.repository, "cleanup_observations", AsyncMock(return_value=0)),
             patch.object(coordinator.repository, "list_account_risk_inputs", AsyncMock(return_value=[])),
+            patch.object(
+                coordinator.repository,
+                "list_pending_auto_ban_actions",
+                AsyncMock(return_value=[]),
+            ),
         ):
             result = await coordinator.run_risk_cycle(
                 object(),
@@ -166,6 +171,11 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             patch.object(coordinator.repository, "save_cursor_success", AsyncMock()),
             patch.object(coordinator.repository, "cleanup_observations", AsyncMock(return_value=0)),
             patch.object(coordinator.repository, "list_account_risk_inputs", AsyncMock(return_value=[{}])),
+            patch.object(
+                coordinator.repository,
+                "list_pending_auto_ban_actions",
+                AsyncMock(return_value=[]),
+            ),
             patch.object(coordinator, "reconcile_risk_inputs", AsyncMock(return_value=[candidate])),
             patch.object(coordinator.repository, "create_action", create_action),
             patch.object(coordinator.repository, "complete_action", AsyncMock()) as complete,
@@ -197,6 +207,136 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         aggregate.assert_awaited_once()
         source.dispose.assert_awaited_once()
 
+    async def test_pending_auto_ban_retries_when_source_is_unchanged(self) -> None:
+        from app.modules.risk import coordinator
+        from app.modules.risk.adapters.sub2api import (
+            ApiKeyState,
+            EnforcementResult,
+            SourceAccountState,
+        )
+
+        growth = _TransactionConnection()
+        source = _SourceEngine()
+        adapter = AsyncMock()
+        before = SourceAccountState(
+            "42",
+            "a.b@example.com",
+            "active",
+            NOW,
+            (ApiKeyState("key-1", "active", NOW),),
+        )
+        enforced = EnforcementResult(
+            "disabled",
+            NOW,
+            (ApiKeyState("key-1", "inactive", NOW),),
+        )
+        adapter.capture_account_state.return_value = before
+        adapter.has_completed_payment.return_value = False
+        adapter.disable_account.return_value = enforced
+        action = _pending_action()
+
+        with (
+            patch.object(
+                coordinator.repository,
+                "list_pending_auto_ban_actions",
+                AsyncMock(return_value=[action]),
+            ),
+            patch.object(coordinator.repository, "complete_action", AsyncMock()) as complete,
+            patch.object(coordinator.repository, "upsert_risk_account", AsyncMock(return_value={})),
+            patch.object(coordinator.repository, "set_stats_exclusion", AsyncMock()),
+            patch.object(coordinator.repository, "append_event", AsyncMock()),
+            patch.object(coordinator.operations_repository, "replace_affected_aggregates", AsyncMock()),
+        ):
+            result = await coordinator.recover_pending_auto_bans(
+                growth,
+                source_engine=source,
+                adapter=adapter,
+                recovered_at=NOW,
+            )
+
+        self.assertEqual(result, {"succeeded": 1, "conflicted": 0, "failed": 0})
+        adapter.disable_account.assert_awaited_once()
+        self.assertEqual(complete.await_args.kwargs["status"], "succeeded")
+
+    async def test_pending_auto_ban_finalizes_when_source_mutation_already_committed(self) -> None:
+        from app.modules.risk import coordinator
+        from app.modules.risk.adapters.sub2api import ApiKeyState, SourceAccountState
+
+        growth = _TransactionConnection()
+        source = _SourceEngine()
+        adapter = AsyncMock()
+        applied = SourceAccountState(
+            "42",
+            "a.b@example.com",
+            "disabled",
+            NOW,
+            (ApiKeyState("key-1", "inactive", NOW),),
+        )
+        adapter.capture_account_state.return_value = applied
+        action = _pending_action()
+
+        with (
+            patch.object(
+                coordinator.repository,
+                "list_pending_auto_ban_actions",
+                AsyncMock(return_value=[action]),
+            ),
+            patch.object(coordinator.repository, "complete_action", AsyncMock()) as complete,
+            patch.object(coordinator.repository, "upsert_risk_account", AsyncMock(return_value={})),
+            patch.object(coordinator.repository, "set_stats_exclusion", AsyncMock()),
+            patch.object(coordinator.repository, "append_event", AsyncMock()),
+            patch.object(coordinator.operations_repository, "replace_affected_aggregates", AsyncMock()),
+        ):
+            result = await coordinator.recover_pending_auto_bans(
+                growth,
+                source_engine=source,
+                adapter=adapter,
+                recovered_at=NOW,
+            )
+
+        self.assertEqual(result["succeeded"], 1)
+        adapter.disable_account.assert_not_awaited()
+        self.assertEqual(complete.await_args.kwargs["status"], "succeeded")
+
+    async def test_pending_auto_ban_marks_unexpected_source_state_conflicted(self) -> None:
+        from app.modules.risk import coordinator
+        from app.modules.risk.adapters.sub2api import ApiKeyState, SourceAccountState
+
+        growth = _TransactionConnection()
+        source = _SourceEngine()
+        adapter = AsyncMock()
+        adapter.capture_account_state.return_value = SourceAccountState(
+            "42",
+            "a.b@example.com",
+            "active",
+            NOW,
+            (ApiKeyState("key-1", "revoked", NOW),),
+        )
+        action = _pending_action()
+
+        with (
+            patch.object(
+                coordinator.repository,
+                "list_pending_auto_ban_actions",
+                AsyncMock(return_value=[action]),
+            ),
+            patch.object(coordinator.repository, "complete_action", AsyncMock()) as complete,
+            patch.object(coordinator.repository, "upsert_risk_account", AsyncMock()) as upsert,
+            patch.object(coordinator.repository, "append_event", AsyncMock()) as event,
+        ):
+            result = await coordinator.recover_pending_auto_bans(
+                growth,
+                source_engine=source,
+                adapter=adapter,
+                recovered_at=NOW,
+            )
+
+        self.assertEqual(result["conflicted"], 1)
+        adapter.disable_account.assert_not_awaited()
+        self.assertEqual(complete.await_args.kwargs["status"], "conflicted")
+        self.assertEqual(upsert.await_args.kwargs["risk_status"], "high_risk")
+        self.assertEqual(event.await_args.kwargs["event_type"], "auto_ban_conflicted")
+
 
 class _TransactionConnection:
     def __init__(self):
@@ -217,6 +357,31 @@ class _SourceEngine:
 
     def begin(self):
         return _async_context(self.write_connection)
+
+
+def _pending_action() -> dict:
+    return {
+        "risk_action_id": "00000000-0000-0000-0000-000000000043",
+        "risk_account_id": "00000000-0000-0000-0000-000000000042",
+        "external_user_id": "42",
+        "email": "a.b@example.com",
+        "decision_reason": "email_and_shared_ip",
+        "matched_email_rules": ["email_local_part_dot"],
+        "shared_ip_evidence": [{
+            "ip_address": "14.31.212.25",
+            "distinct_account_count": 3,
+            "external_user_ids": ["42", "43", "44"],
+            "sources": ["user_audit"],
+            "first_seen_at": NOW,
+            "last_seen_at": NOW,
+        }],
+        "source_user_status_before": "active",
+        "source_user_updated_at_before": NOW,
+        "source_api_key_states_before": [
+            {"id": "key-1", "status": "active", "updated_at": NOW}
+        ],
+        "requested_at": NOW,
+    }
 
 
 @asynccontextmanager

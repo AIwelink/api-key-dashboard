@@ -469,6 +469,60 @@ async def complete_action(
     return _one(result) or {}
 
 
+async def get_latest_succeeded_ban_action(
+    connection: Any,
+    *,
+    risk_account_id: UUID,
+) -> dict[str, Any]:
+    result = await connection.execute(
+        text(
+            """
+            SELECT risk_action_id, action_type, action_status,
+                   source_user_status_before, source_user_updated_at_before,
+                   source_api_key_states_before, result_details,
+                   requested_at, completed_at
+            FROM growth.risk_actions
+            WHERE risk_account_id = :risk_account_id
+              AND action_type IN ('auto_ban', 'manual_ban')
+              AND action_status = 'succeeded'
+            ORDER BY completed_at DESC NULLS LAST, requested_at DESC
+            LIMIT 1
+            """
+        ),
+        {"risk_account_id": risk_account_id},
+    )
+    row = _one(result)
+    if row is None:
+        raise LookupError("successful risk ban action not found")
+    return row
+
+
+async def list_pending_auto_ban_actions(
+    connection: Any,
+    *,
+    site_id: str,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    result = await connection.execute(
+        text(
+            """
+            SELECT risk_action_id, risk_account_id, external_user_id, email,
+                   decision_reason, matched_email_rules, shared_ip_evidence,
+                   source_user_status_before, source_user_updated_at_before,
+                   source_api_key_states_before, requested_at
+            FROM growth.risk_actions
+            WHERE site_id = :site_id
+              AND action_type = 'auto_ban'
+              AND action_status = 'pending'
+            ORDER BY requested_at, risk_action_id
+            LIMIT :limit
+            """
+        ),
+        {"site_id": site_id, "limit": min(max(int(limit), 1), 200)},
+    )
+    return _rows(result)
+
+
 async def append_event(
     connection: Any,
     *,
@@ -621,3 +675,334 @@ async def cleanup_observations(
     )
     row = _one(result)
     return int((row or {}).get("deleted_count") or 0)
+
+
+async def get_overview(
+    connection: Any,
+    *,
+    site_id: str,
+    cutoff: datetime,
+    minimum_accounts: int,
+) -> dict[str, Any]:
+    result = await connection.execute(
+        text(
+            """
+            WITH account_counts AS (
+                SELECT COUNT(*) FILTER (WHERE risk_status = 'banned') AS banned_count,
+                       COUNT(*) FILTER (WHERE risk_status IN ('high_risk', 'ban_pending'))
+                           AS high_risk_count
+                FROM growth.risk_accounts
+                WHERE site_id = :site_id
+            ), shared_clusters AS (
+                SELECT COUNT(*) AS shared_ip_cluster_count
+                FROM (
+                    SELECT ip_address
+                    FROM growth.risk_ip_accounts
+                    WHERE site_id = :site_id AND last_seen_at >= :cutoff
+                    GROUP BY ip_address
+                    HAVING COUNT(DISTINCT external_user_id) >= :minimum_accounts
+                ) AS clusters
+            ), failed_actions AS (
+                SELECT COUNT(*) AS failed_action_count
+                FROM growth.risk_actions
+                WHERE site_id = :site_id AND action_status IN ('failed', 'conflicted')
+            )
+            SELECT account_counts.banned_count, account_counts.high_risk_count,
+                   shared_clusters.shared_ip_cluster_count,
+                   failed_actions.failed_action_count
+            FROM account_counts, shared_clusters, failed_actions
+            """
+        ),
+        {"site_id": site_id, "cutoff": cutoff, "minimum_accounts": minimum_accounts},
+    )
+    return _one(result) or {
+        "banned_count": 0,
+        "high_risk_count": 0,
+        "shared_ip_cluster_count": 0,
+        "failed_action_count": 0,
+    }
+
+
+async def list_cursors(connection: Any, *, site_id: str) -> list[dict[str, Any]]:
+    result = await connection.execute(
+        text(
+            """
+            SELECT * FROM growth.risk_sync_cursors
+            WHERE site_id = :site_id
+            ORDER BY source_stream
+            """
+        ),
+        {"site_id": site_id},
+    )
+    return _rows(result)
+
+
+async def list_accounts(
+    connection: Any,
+    *,
+    site_id: str,
+    status: str | None = None,
+    query: str | None = None,
+    rule: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    result = await connection.execute(
+        text(
+            """
+            SELECT account.*,
+                   COUNT(*) OVER () AS total_count,
+                   COALESCE(ip_summary.shared_ip_count, 0) AS shared_ip_count,
+                   COALESCE(ip_summary.max_linked_account_count, 0)
+                       AS max_linked_account_count
+            FROM growth.risk_accounts AS account
+            LEFT JOIN LATERAL (
+                SELECT COUNT(DISTINCT own.ip_address) AS shared_ip_count,
+                       MAX(cluster.account_count) AS max_linked_account_count
+                FROM growth.risk_ip_accounts AS own
+                JOIN LATERAL (
+                    SELECT COUNT(DISTINCT linked.external_user_id) AS account_count
+                    FROM growth.risk_ip_accounts AS linked
+                    WHERE linked.site_id = own.site_id
+                      AND linked.ip_address = own.ip_address
+                      AND linked.last_seen_at >= NOW() - INTERVAL '7 days'
+                ) AS cluster ON cluster.account_count >= 3
+                WHERE own.site_id = account.site_id
+                  AND own.external_user_id = account.external_user_id
+                  AND own.last_seen_at >= NOW() - INTERVAL '7 days'
+            ) AS ip_summary ON TRUE
+            WHERE account.site_id = :site_id
+              AND (CAST(:status AS TEXT) IS NULL OR account.risk_status = :status)
+              AND (
+                  CAST(:query AS TEXT) IS NULL
+                  OR account.email ILIKE '%' || :query || '%'
+                  OR account.external_user_id ILIKE '%' || :query || '%'
+              )
+              AND (
+                  CAST(:rule AS TEXT) IS NULL
+                  OR account.risk_reasons -> 'email_rules' ? :rule
+              )
+            ORDER BY account.last_detected_at DESC, account.risk_account_id
+            LIMIT :limit OFFSET :offset
+            """
+        ),
+        {
+            "site_id": site_id,
+            "status": status or None,
+            "query": query.strip() if query else None,
+            "rule": rule or None,
+            "limit": min(max(int(limit), 1), 200),
+            "offset": max(int(offset), 0),
+        },
+    )
+    rows = _rows(result)
+    total = int(rows[0].pop("total_count", 0)) if rows else 0
+    for row in rows[1:]:
+        row.pop("total_count", None)
+    return {"items": rows, "total": total, "limit": min(max(int(limit), 1), 200), "offset": max(int(offset), 0)}
+
+
+async def get_account(connection: Any, *, risk_account_id: UUID) -> dict[str, Any]:
+    result = await connection.execute(
+        text("SELECT * FROM growth.risk_accounts WHERE risk_account_id = :risk_account_id"),
+        {"risk_account_id": risk_account_id},
+    )
+    row = _one(result)
+    if row is None:
+        raise LookupError("risk account not found")
+    return row
+
+
+async def get_account_detail(connection: Any, *, risk_account_id: UUID) -> dict[str, Any]:
+    account = await get_account(connection, risk_account_id=risk_account_id)
+    ip_result = await connection.execute(
+        text(
+            """
+            SELECT host(own.ip_address) AS ip_address, own.source_type,
+                   own.first_seen_at, own.last_seen_at, own.event_count,
+                   COUNT(DISTINCT linked.external_user_id) AS linked_account_count,
+                   ARRAY_AGG(DISTINCT linked.external_user_id ORDER BY linked.external_user_id)
+                       AS linked_external_user_ids
+            FROM growth.risk_ip_accounts AS own
+            JOIN growth.risk_ip_accounts AS linked
+              ON linked.site_id = own.site_id
+             AND linked.ip_address = own.ip_address
+             AND linked.last_seen_at >= NOW() - INTERVAL '7 days'
+            WHERE own.site_id = :site_id
+              AND own.external_user_id = :external_user_id
+              AND own.last_seen_at >= NOW() - INTERVAL '30 days'
+            GROUP BY own.ip_address, own.source_type, own.first_seen_at,
+                     own.last_seen_at, own.event_count
+            ORDER BY own.last_seen_at DESC
+            """
+        ),
+        {"site_id": account["site_id"], "external_user_id": account["external_user_id"]},
+    )
+    action_result = await connection.execute(
+        text(
+            """
+            SELECT risk_action_id, action_type, action_status, decision_reason,
+                   matched_email_rules, shared_ip_evidence, attempt_count,
+                   error_code, error_message, requested_by, requested_at,
+                   started_at, completed_at
+            FROM growth.risk_actions
+            WHERE risk_account_id = :risk_account_id
+            ORDER BY requested_at DESC
+            LIMIT 50
+            """
+        ),
+        {"risk_account_id": risk_account_id},
+    )
+    event_result = await connection.execute(
+        text(
+            """
+            SELECT risk_event_id, event_type, decision_reason, matched_email_rules,
+                   shared_ip_evidence, risk_action_id, event_result,
+                   error_code, error_message, actor_id, actor_name, created_at
+            FROM growth.risk_events
+            WHERE risk_account_id = :risk_account_id
+            ORDER BY created_at DESC
+            LIMIT 200
+            """
+        ),
+        {"risk_account_id": risk_account_id},
+    )
+    return {
+        **account,
+        "ip_evidence": _rows(ip_result),
+        "actions": _rows(action_result),
+        "events": _rows(event_result),
+    }
+
+
+async def list_ip_clusters(
+    connection: Any,
+    *,
+    site_id: str,
+    cutoff: datetime,
+    minimum_accounts: int,
+    query: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    result = await connection.execute(
+        text(
+            """
+            SELECT host(ip_address) AS ip_address,
+                   COUNT(DISTINCT external_user_id) AS account_count,
+                   ARRAY_AGG(DISTINCT external_user_id ORDER BY external_user_id)
+                       AS external_user_ids,
+                   ARRAY_AGG(DISTINCT source_type ORDER BY source_type) AS sources,
+                   MIN(first_seen_at) AS first_seen_at,
+                   MAX(last_seen_at) AS last_seen_at
+            FROM growth.risk_ip_accounts
+            WHERE site_id = :site_id
+              AND last_seen_at >= :cutoff
+              AND (CAST(:query AS TEXT) IS NULL OR host(ip_address) ILIKE '%' || :query || '%')
+            GROUP BY ip_address
+            HAVING COUNT(DISTINCT external_user_id) >= :minimum_accounts
+            ORDER BY account_count DESC, last_seen_at DESC
+            LIMIT :limit
+            """
+        ),
+        {
+            "site_id": site_id,
+            "cutoff": cutoff,
+            "minimum_accounts": minimum_accounts,
+            "query": query.strip() if query else None,
+            "limit": min(max(int(limit), 1), 200),
+        },
+    )
+    return _rows(result)
+
+
+async def list_events(
+    connection: Any,
+    *,
+    site_id: str,
+    event_type: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    result = await connection.execute(
+        text(
+            """
+            SELECT risk_event_id, risk_account_id, external_user_id, email,
+                   event_type, decision_reason, error_code, error_message,
+                   actor_id, actor_name, created_at
+            FROM growth.risk_events
+            WHERE site_id = :site_id
+              AND (CAST(:event_type AS TEXT) IS NULL OR event_type = :event_type)
+            ORDER BY created_at DESC
+            LIMIT :limit
+            """
+        ),
+        {"site_id": site_id, "event_type": event_type or None, "limit": min(max(limit, 1), 200)},
+    )
+    return _rows(result)
+
+
+async def update_settings(
+    connection: Any,
+    *,
+    site_id: str,
+    detector_enabled: bool | None,
+    auto_ban_enabled: bool | None,
+    actor_id: str,
+) -> dict[str, Any]:
+    result = await connection.execute(
+        text(
+            """
+            UPDATE growth.risk_settings
+            SET detector_enabled = COALESCE(:detector_enabled, detector_enabled),
+                auto_ban_enabled = COALESCE(:auto_ban_enabled, auto_ban_enabled),
+                updated_by = :actor_id,
+                updated_at = NOW()
+            WHERE site_id = :site_id
+            RETURNING *
+            """
+        ),
+        {
+            "site_id": site_id,
+            "detector_enabled": detector_enabled,
+            "auto_ban_enabled": auto_ban_enabled,
+            "actor_id": actor_id,
+        },
+    )
+    return _one(result) or {}
+
+
+async def set_manual_override(
+    connection: Any,
+    *,
+    risk_account_id: UUID,
+    active: bool,
+    actor_id: str,
+    reason: str,
+    risk_status: str,
+) -> dict[str, Any]:
+    result = await connection.execute(
+        text(
+            """
+            UPDATE growth.risk_accounts
+            SET manual_override_active = :active,
+                manual_override_by = CASE WHEN :active THEN :actor_id ELSE NULL END,
+                manual_override_at = CASE WHEN :active THEN NOW() ELSE NULL END,
+                manual_override_reason = CASE WHEN :active THEN :reason ELSE '' END,
+                risk_status = :risk_status,
+                is_stats_excluded = :risk_status = 'banned',
+                updated_at = NOW()
+            WHERE risk_account_id = :risk_account_id
+            RETURNING *
+            """
+        ),
+        {
+            "risk_account_id": risk_account_id,
+            "active": active,
+            "actor_id": actor_id,
+            "reason": reason,
+            "risk_status": risk_status,
+        },
+    )
+    row = _one(result)
+    if row is None:
+        raise LookupError("risk account not found")
+    return row
