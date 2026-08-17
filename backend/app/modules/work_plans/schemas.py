@@ -1,15 +1,27 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 
 PlanType = Literal["work", "temporary_unavailable"]
 OperationType = Literal["activate", "cancel"]
 EndTime = time | Literal["24:00"]
+NextDayTime = Annotated[
+    str,
+    StringConstraints(pattern=r"^(?:(?:2[4-9]|3\d|4[0-7]):(?:00|30)|48:00)$"),
+]
+UpdateTime = time | NextDayTime
 _MUTABLE_UPDATE_FIELDS = {"plan_type", "start_time", "end_time", "note"}
 MAX_MONGO_INT64 = 9_223_372_036_854_775_807
 
@@ -104,8 +116,8 @@ class WorkPlanUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     plan_type: PlanType | None = None
-    start_time: time | None = None
-    end_time: EndTime | None = None
+    start_time: UpdateTime | None = None
+    end_time: UpdateTime | None = None
     note: str | None = Field(default=None, max_length=500)
     expected_updated_at: datetime | None = None
 
