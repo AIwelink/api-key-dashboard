@@ -408,6 +408,38 @@ class WorkPlanOperationRuleTests(unittest.TestCase):
 
 
 class WorkPlanUpdateRuleTests(unittest.TestCase):
+    def test_update_accepts_next_day_end_time_from_legacy_editor(self) -> None:
+        payload = WorkPlanUpdate(
+            plan_type="work",
+            start_time="12:00",
+            end_time="26:00",
+            note=None,
+            expected_updated_at=existing_plan()["updated_at"],
+        )
+
+        updates = validate_update(existing_plan(), payload, OBSERVED_AT)
+
+        self.assertEqual(updates["start_minute"], 12 * 60)
+        self.assertEqual(updates["end_minute"], 26 * 60)
+
+    def test_update_enforces_half_hour_slots_inside_48_hour_window(self) -> None:
+        boundary = validate_update(
+            existing_plan(),
+            WorkPlanUpdate(start_time="47:30", end_time="48:00"),
+            OBSERVED_AT,
+        )
+
+        self.assertEqual(boundary["start_minute"], 47 * 60 + 30)
+        self.assertEqual(boundary["end_minute"], 48 * 60)
+        for field_name, value in (
+            ("start_time", "26:15"),
+            ("end_time", "48:30"),
+            ("end_time", "49:00"),
+        ):
+            with self.subTest(field_name=field_name, value=value):
+                with self.assertRaises(ValidationError):
+                    WorkPlanUpdate.model_validate({field_name: value})
+
     def test_update_merges_omitted_fields_and_excludes_immutable_fields(self) -> None:
         payload = WorkPlanUpdate(start_time="10:00")
 
@@ -482,6 +514,23 @@ class WorkPlanUpdateRuleTests(unittest.TestCase):
 
         self.assertEqual(note_updates["note"], "changed")
         self.assertEqual(end_updates["end_minute"], 9 * 60 + 30)
+
+    def test_temporary_unavailable_update_accepts_next_day_start_time(self) -> None:
+        existing = existing_plan(
+            plan_date="2026-08-15",
+            plan_type="temporary_unavailable",
+            start_minute=8 * 60,
+            end_minute=9 * 60,
+        )
+
+        updates = validate_update(
+            existing,
+            WorkPlanUpdate(start_time="25:00", end_time="26:00"),
+            OBSERVED_AT,
+        )
+
+        self.assertEqual(updates["start_minute"], 25 * 60)
+        self.assertEqual(updates["end_minute"], 26 * 60)
 
     def test_unchanged_temporary_full_form_update_ignores_elapsed_lead_time(self) -> None:
         existing = existing_plan(

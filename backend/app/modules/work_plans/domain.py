@@ -25,10 +25,21 @@ class WorkPlanConflictError(WorkPlanRuleError):
 
 
 def time_to_minute(value: time | str) -> int:
-    if value == "24:00":
-        return 1_440
-    if not isinstance(value, time):
-        raise WorkPlanRuleError("时间格式无效")
+    if isinstance(value, str):
+        try:
+            hour_text, minute_text = value.split(":", maxsplit=1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+        except (TypeError, ValueError) as exc:
+            raise WorkPlanRuleError("时间格式无效") from exc
+        if (
+            hour < 24
+            or hour > 48
+            or minute not in {0, 30}
+            or (hour == 48 and minute != 0)
+        ):
+            raise WorkPlanRuleError("时间格式无效")
+        return hour * 60 + minute
     if value.tzinfo is not None:
         raise WorkPlanRuleError("时间不能包含时区，请使用 Asia/Shanghai 当地时间")
     if value.second != 0 or value.microsecond != 0 or value.minute not in {0, 30}:
@@ -92,7 +103,7 @@ def build_plan_drafts(
             raise WorkPlanRuleError("临时不可用计划只能选择 1 个日期")
         _validate_temporary_unavailable_start(
             plan_date=dates[0],
-            start_time=payload.start_time,
+            start_minute=start_minute,
             observed_at=observed_utc,
         )
 
@@ -269,7 +280,7 @@ def validate_update(
     if temporary_start_became_relevant:
         _validate_temporary_unavailable_start(
             plan_date=date.fromisoformat(existing["plan_date"]),
-            start_time=_minute_to_time(start_minute),
+            start_minute=start_minute,
             observed_at=_as_utc(observed_at, field_name="observed_at"),
         )
 
@@ -329,14 +340,13 @@ def _validate_time_window(start_minute: int, end_minute: int) -> None:
 def _validate_temporary_unavailable_start(
     *,
     plan_date: date,
-    start_time: time,
+    start_minute: int,
     observed_at: datetime,
 ) -> None:
-    local_start = datetime.combine(plan_date, start_time, tzinfo=SHANGHAI_TIMEZONE)
+    local_start = datetime.combine(
+        plan_date,
+        time.min,
+        tzinfo=SHANGHAI_TIMEZONE,
+    ) + timedelta(minutes=start_minute)
     if local_start < observed_at + timedelta(hours=1):
         raise WorkPlanRuleError("临时不可用计划的开始时间至少晚于当前时间 1 小时")
-
-
-def _minute_to_time(value: int) -> time:
-    hour, minute = divmod(value, 60)
-    return time(hour, minute)
