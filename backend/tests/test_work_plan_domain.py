@@ -611,6 +611,26 @@ class WorkPlanUpdateRuleTests(unittest.TestCase):
         self.assertEqual(updates["note"], "changed")
         self.assertNotIn("expected_updated_at", updates)
 
+    def test_update_accepts_matching_naive_mongodb_timestamp_as_utc(self) -> None:
+        existing = existing_plan(updated_at=datetime(2026, 8, 14, 12))
+        payload = WorkPlanUpdate(
+            note="changed",
+            expected_updated_at=datetime(2026, 8, 14, 12, tzinfo=UTC),
+        )
+
+        updates = validate_update(existing, payload, OBSERVED_AT)
+
+        self.assertEqual(updates["note"], "changed")
+
+    def test_update_still_rejects_naive_client_expected_timestamp(self) -> None:
+        payload = WorkPlanUpdate(
+            note="changed",
+            expected_updated_at=datetime(2026, 8, 14, 12),
+        )
+
+        with self.assertRaisesRegex(WorkPlanRuleError, "expected_updated_at 必须包含时区"):
+            validate_update(existing_plan(), payload, OBSERVED_AT)
+
 
 if __name__ == "__main__":
     unittest.main()
