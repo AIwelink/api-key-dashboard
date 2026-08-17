@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Iterable
 from uuid import UUID, uuid4
@@ -506,15 +506,59 @@ async def list_pending_auto_ban_actions(
     result = await connection.execute(
         text(
             """
-            SELECT risk_action_id, risk_account_id, external_user_id, email,
-                   decision_reason, matched_email_rules, shared_ip_evidence,
-                   source_user_status_before, source_user_updated_at_before,
-                   source_api_key_states_before, requested_at
-            FROM growth.risk_actions
-            WHERE site_id = :site_id
-              AND action_type = 'auto_ban'
-              AND action_status = 'pending'
-            ORDER BY requested_at, risk_action_id
+            SELECT action.risk_action_id, action.risk_account_id,
+                   action.external_user_id, action.email,
+                   action.decision_reason, action.matched_email_rules,
+                   action.shared_ip_evidence, action.source_user_status_before,
+                   action.source_user_updated_at_before,
+                   action.source_api_key_states_before, action.requested_at,
+                   account.manual_override_active
+            FROM growth.risk_actions AS action
+            JOIN growth.risk_accounts AS account
+              ON account.risk_account_id = action.risk_account_id
+            WHERE action.site_id = :site_id
+              AND action.action_type = 'auto_ban'
+              AND action.action_status = 'pending'
+            ORDER BY action.requested_at, action.risk_action_id
+            LIMIT :limit
+            """
+        ),
+        {"site_id": site_id, "limit": min(max(int(limit), 1), 200)},
+    )
+    return _rows(result)
+
+
+async def list_pending_manual_actions(
+    connection: Any,
+    *,
+    site_id: str,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    result = await connection.execute(
+        text(
+            """
+            SELECT action.risk_action_id, action.risk_account_id,
+                   action.external_user_id, action.email, action.action_type,
+                   action.decision_reason, action.source_user_status_before,
+                   action.source_user_updated_at_before,
+                   action.source_api_key_states_before, action.requested_by,
+                   action.requested_at,
+                   ban.result_details AS ban_result_details
+            FROM growth.risk_actions AS action
+            LEFT JOIN LATERAL (
+                SELECT prior.result_details
+                FROM growth.risk_actions AS prior
+                WHERE prior.risk_account_id = action.risk_account_id
+                  AND prior.action_type IN ('auto_ban', 'manual_ban')
+                  AND prior.action_status = 'succeeded'
+                  AND prior.completed_at <= action.requested_at
+                ORDER BY prior.completed_at DESC NULLS LAST, prior.requested_at DESC
+                LIMIT 1
+            ) AS ban ON action.action_type = 'manual_release'
+            WHERE action.site_id = :site_id
+              AND action.action_type IN ('manual_ban', 'manual_release')
+              AND action.action_status = 'pending'
+            ORDER BY action.requested_at, action.risk_action_id
             LIMIT :limit
             """
         ),
@@ -629,6 +673,8 @@ async def set_stats_exclusion(
                     is_active = TRUE,
                     updated_by = EXCLUDED.updated_by,
                     updated_at = NOW()
+                WHERE growth.user_exclusions.source = 'rule'
+                  AND growth.user_exclusions.reason LIKE 'risk_control:%'
                 """
             ),
             {
@@ -652,6 +698,43 @@ async def set_stats_exclusion(
             ),
             {"site_id": site_id, "external_user_id": external_user_id, "actor_id": actor_id},
         )
+    await connection.execute(
+        text(
+            """
+            UPDATE growth.risk_settings
+            SET aggregates_dirty = TRUE, updated_at = NOW()
+            WHERE site_id = :site_id
+            """
+        ),
+        {"site_id": site_id},
+    )
+
+
+async def risk_aggregates_are_dirty(connection: Any, *, site_id: str) -> bool:
+    result = await connection.execute(
+        text(
+            """
+            SELECT aggregates_dirty
+            FROM growth.risk_settings
+            WHERE site_id = :site_id
+            """
+        ),
+        {"site_id": site_id},
+    )
+    return bool(result.scalar_one_or_none())
+
+
+async def clear_risk_aggregates_dirty(connection: Any, *, site_id: str) -> None:
+    await connection.execute(
+        text(
+            """
+            UPDATE growth.risk_settings
+            SET aggregates_dirty = FALSE, updated_at = NOW()
+            WHERE site_id = :site_id
+            """
+        ),
+        {"site_id": site_id},
+    )
 
 
 async def cleanup_observations(
@@ -843,11 +926,36 @@ async def get_account_detail(connection: Any, *, risk_account_id: UUID) -> dict[
             """
             SELECT risk_action_id, action_type, action_status, decision_reason,
                    matched_email_rules, shared_ip_evidence, attempt_count,
+                   source_user_status_before, source_user_updated_at_before,
+                   jsonb_array_length(source_api_key_states_before)
+                       AS source_api_key_count_before,
+                   jsonb_build_object(
+                       'user_status', result_details -> 'user_status',
+                       'user_updated_at', result_details -> 'user_updated_at',
+                       'api_key_count', CASE
+                           WHEN jsonb_typeof(result_details -> 'api_keys') = 'array'
+                           THEN jsonb_array_length(result_details -> 'api_keys')
+                           ELSE 0
+                       END,
+                       'user_restored', result_details -> 'user_restored',
+                       'restored_key_count', CASE
+                           WHEN jsonb_typeof(result_details -> 'restored_key_ids') = 'array'
+                           THEN jsonb_array_length(result_details -> 'restored_key_ids')
+                           ELSE 0
+                       END,
+                       'conflicted_key_count', CASE
+                           WHEN jsonb_typeof(result_details -> 'conflicted_key_ids') = 'array'
+                           THEN jsonb_array_length(result_details -> 'conflicted_key_ids')
+                           ELSE 0
+                       END,
+                       'partial', result_details -> 'partial',
+                       'protected_reason', result_details -> 'protected_reason'
+                   ) AS result_summary,
                    error_code, error_message, requested_by, requested_at,
                    started_at, completed_at
             FROM growth.risk_actions
             WHERE risk_account_id = :risk_account_id
-            ORDER BY requested_at DESC
+            ORDER BY requested_at DESC, risk_action_id DESC
             LIMIT 50
             """
         ),
@@ -883,25 +991,30 @@ async def list_ip_clusters(
     minimum_accounts: int,
     query: str | None = None,
     limit: int = 100,
-) -> list[dict[str, Any]]:
+    offset: int = 0,
+) -> dict[str, Any]:
     result = await connection.execute(
         text(
             """
-            SELECT host(ip_address) AS ip_address,
-                   COUNT(DISTINCT external_user_id) AS account_count,
-                   ARRAY_AGG(DISTINCT external_user_id ORDER BY external_user_id)
-                       AS external_user_ids,
-                   ARRAY_AGG(DISTINCT source_type ORDER BY source_type) AS sources,
-                   MIN(first_seen_at) AS first_seen_at,
-                   MAX(last_seen_at) AS last_seen_at
-            FROM growth.risk_ip_accounts
-            WHERE site_id = :site_id
-              AND last_seen_at >= :cutoff
-              AND (CAST(:query AS TEXT) IS NULL OR host(ip_address) ILIKE '%' || :query || '%')
-            GROUP BY ip_address
-            HAVING COUNT(DISTINCT external_user_id) >= :minimum_accounts
-            ORDER BY account_count DESC, last_seen_at DESC
-            LIMIT :limit
+            WITH clusters AS (
+                SELECT host(ip_address) AS ip_address,
+                       COUNT(DISTINCT external_user_id) AS account_count,
+                       ARRAY_AGG(DISTINCT external_user_id ORDER BY external_user_id)
+                           AS external_user_ids,
+                       ARRAY_AGG(DISTINCT source_type ORDER BY source_type) AS sources,
+                       MIN(first_seen_at) AS first_seen_at,
+                       MAX(last_seen_at) AS last_seen_at
+                FROM growth.risk_ip_accounts
+                WHERE site_id = :site_id
+                  AND last_seen_at >= :cutoff
+                  AND (CAST(:query AS TEXT) IS NULL OR host(ip_address) ILIKE '%' || :query || '%')
+                GROUP BY ip_address
+                HAVING COUNT(DISTINCT external_user_id) >= :minimum_accounts
+            )
+            SELECT clusters.*, COUNT(*) OVER () AS total_count
+            FROM clusters
+            ORDER BY account_count DESC, last_seen_at DESC, ip_address DESC
+            LIMIT :limit OFFSET :offset
             """
         ),
         {
@@ -910,9 +1023,19 @@ async def list_ip_clusters(
             "minimum_accounts": minimum_accounts,
             "query": query.strip() if query else None,
             "limit": min(max(int(limit), 1), 200),
+            "offset": max(int(offset), 0),
         },
     )
-    return _rows(result)
+    rows = _rows(result)
+    total = int(rows[0].pop("total_count", 0)) if rows else 0
+    for row in rows[1:]:
+        row.pop("total_count", None)
+    return {
+        "items": rows,
+        "total": total,
+        "limit": min(max(int(limit), 1), 200),
+        "offset": max(int(offset), 0),
+    }
 
 
 async def list_events(
@@ -920,24 +1043,49 @@ async def list_events(
     *,
     site_id: str,
     event_type: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
     limit: int = 100,
-) -> list[dict[str, Any]]:
+    offset: int = 0,
+) -> dict[str, Any]:
     result = await connection.execute(
         text(
             """
             SELECT risk_event_id, risk_account_id, external_user_id, email,
                    event_type, decision_reason, error_code, error_message,
-                   actor_id, actor_name, created_at
+                   actor_id, actor_name, created_at,
+                   COUNT(*) OVER () AS total_count
             FROM growth.risk_events
             WHERE site_id = :site_id
               AND (CAST(:event_type AS TEXT) IS NULL OR event_type = :event_type)
-            ORDER BY created_at DESC
-            LIMIT :limit
+              AND (CAST(:start_date AS DATE) IS NULL OR created_at >= CAST(:start_date AS DATE))
+              AND (
+                CAST(:end_date AS DATE) IS NULL
+                OR created_at < CAST(:end_date AS DATE) + INTERVAL '1 day'
+              )
+            ORDER BY created_at DESC, risk_event_id DESC
+            LIMIT :limit OFFSET :offset
             """
         ),
-        {"site_id": site_id, "event_type": event_type or None, "limit": min(max(limit, 1), 200)},
+        {
+            "site_id": site_id,
+            "event_type": event_type or None,
+            "start_date": start_date,
+            "end_date": end_date,
+            "limit": min(max(limit, 1), 200),
+            "offset": max(int(offset), 0),
+        },
     )
-    return _rows(result)
+    rows = _rows(result)
+    total = int(rows[0].pop("total_count", 0)) if rows else 0
+    for row in rows[1:]:
+        row.pop("total_count", None)
+    return {
+        "items": rows,
+        "total": total,
+        "limit": min(max(int(limit), 1), 200),
+        "offset": max(int(offset), 0),
+    }
 
 
 async def update_settings(

@@ -257,7 +257,7 @@ class Sub2ApiRiskAdapter:
         user_result = await connection.execute(
             text(
                 """
-                SELECT id, status, updated_at
+                SELECT id, email, status, updated_at
                 FROM users
                 WHERE CAST(id AS TEXT) = :external_user_id AND deleted_at IS NULL
                 FOR UPDATE
@@ -270,7 +270,8 @@ class Sub2ApiRiskAdapter:
             raise LookupError("AIWeLink user not found")
         current_user = users[0]
         if (
-            str(current_user.get("status") or "") != before.user_status
+            normalize_email(current_user.get("email")) != before.email
+            or str(current_user.get("status") or "") != before.user_status
             or current_user.get("updated_at") != before.user_updated_at
         ):
             raise SourceStateConflict("AIWeLink user state changed before ban")

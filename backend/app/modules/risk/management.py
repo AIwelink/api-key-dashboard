@@ -30,32 +30,40 @@ async def set_false_positive(
 ) -> dict[str, Any]:
     normalized_reason = _reason(reason)
     async with growth_session_factory(mongo_db) as growth:
-        async with growth.begin():
-            account = await repository.get_account(growth, risk_account_id=risk_account_id)
-            if account.get("risk_status") == "banned":
-                raise ValueError("release the banned account before marking it as a false positive")
-            updated = await repository.set_manual_override(
-                growth,
-                risk_account_id=risk_account_id,
-                active=True,
-                actor_id=actor_id,
-                reason=normalized_reason,
-                risk_status="cleared",
-            )
-            await repository.append_event(
-                growth,
-                risk_event_id=uuid4(),
-                idempotency_key=f"manual-override-set:{risk_account_id}:{uuid4()}",
-                risk_account_id=risk_account_id,
-                site_id=SITE_ID,
-                external_user_id=str(account.get("external_user_id") or ""),
-                email=str(account.get("email") or ""),
-                event_type="manual_override_set",
-                decision_reason=normalized_reason,
-                actor_id=actor_id,
-                actor_name=actor_name,
-                created_at=datetime.now(UTC),
-            )
+        acquired = await repository.acquire_cycle_lock(growth, site_id=SITE_ID)
+        await growth.commit()
+        if not acquired:
+            raise RuntimeError("risk control is busy; retry the false-positive update")
+        try:
+            async with growth.begin():
+                account = await repository.get_account(growth, risk_account_id=risk_account_id)
+                if account.get("risk_status") == "banned":
+                    raise ValueError("release the banned account before marking it as a false positive")
+                updated = await repository.set_manual_override(
+                    growth,
+                    risk_account_id=risk_account_id,
+                    active=True,
+                    actor_id=actor_id,
+                    reason=normalized_reason,
+                    risk_status="cleared",
+                )
+                await repository.append_event(
+                    growth,
+                    risk_event_id=uuid4(),
+                    idempotency_key=f"manual-override-set:{risk_account_id}:{uuid4()}",
+                    risk_account_id=risk_account_id,
+                    site_id=SITE_ID,
+                    external_user_id=str(account.get("external_user_id") or ""),
+                    email=str(account.get("email") or ""),
+                    event_type="manual_override_set",
+                    decision_reason=normalized_reason,
+                    actor_id=actor_id,
+                    actor_name=actor_name,
+                    created_at=datetime.now(UTC),
+                )
+        finally:
+            await repository.release_cycle_lock(growth, site_id=SITE_ID)
+            await growth.commit()
     return updated
 
 
@@ -70,31 +78,39 @@ async def remove_manual_override(
 ) -> dict[str, Any]:
     normalized_reason = _reason(reason)
     async with growth_session_factory(mongo_db) as growth:
-        async with growth.begin():
-            account = await repository.get_account(growth, risk_account_id=risk_account_id)
-            target_status = "banned" if account.get("risk_status") == "banned" else "high_risk"
-            updated = await repository.set_manual_override(
-                growth,
-                risk_account_id=risk_account_id,
-                active=False,
-                actor_id=actor_id,
-                reason=normalized_reason,
-                risk_status=target_status,
-            )
-            await repository.append_event(
-                growth,
-                risk_event_id=uuid4(),
-                idempotency_key=f"manual-override-removed:{risk_account_id}:{uuid4()}",
-                risk_account_id=risk_account_id,
-                site_id=SITE_ID,
-                external_user_id=str(account.get("external_user_id") or ""),
-                email=str(account.get("email") or ""),
-                event_type="manual_override_removed",
-                decision_reason=normalized_reason,
-                actor_id=actor_id,
-                actor_name=actor_name,
-                created_at=datetime.now(UTC),
-            )
+        acquired = await repository.acquire_cycle_lock(growth, site_id=SITE_ID)
+        await growth.commit()
+        if not acquired:
+            raise RuntimeError("risk control is busy; retry the override removal")
+        try:
+            async with growth.begin():
+                account = await repository.get_account(growth, risk_account_id=risk_account_id)
+                target_status = "banned" if account.get("risk_status") == "banned" else "high_risk"
+                updated = await repository.set_manual_override(
+                    growth,
+                    risk_account_id=risk_account_id,
+                    active=False,
+                    actor_id=actor_id,
+                    reason=normalized_reason,
+                    risk_status=target_status,
+                )
+                await repository.append_event(
+                    growth,
+                    risk_event_id=uuid4(),
+                    idempotency_key=f"manual-override-removed:{risk_account_id}:{uuid4()}",
+                    risk_account_id=risk_account_id,
+                    site_id=SITE_ID,
+                    external_user_id=str(account.get("external_user_id") or ""),
+                    email=str(account.get("email") or ""),
+                    event_type="manual_override_removed",
+                    decision_reason=normalized_reason,
+                    actor_id=actor_id,
+                    actor_name=actor_name,
+                    created_at=datetime.now(UTC),
+                )
+        finally:
+            await repository.release_cycle_lock(growth, site_id=SITE_ID)
+            await growth.commit()
     return updated
 
 

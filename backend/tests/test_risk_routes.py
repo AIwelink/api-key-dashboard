@@ -162,6 +162,7 @@ class RiskRouteTests(unittest.IsolatedAsyncioTestCase):
                 await risk.get_risk_ip_clusters(
                     search=None,
                     limit=100,
+                    offset=0,
                     actor={
                         "_id": "operator-1",
                         "role": "operator",

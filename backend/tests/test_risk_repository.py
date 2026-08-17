@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 
 from app.modules.risk.domain import IpObservation
@@ -114,10 +114,42 @@ class RiskRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(rows[0]["risk_action_id"], str(action_id))
         sql, parameters = connection.calls[0]
-        self.assertIn("action_type = 'auto_ban'", sql)
-        self.assertIn("action_status = 'pending'", sql)
+        self.assertIn("action.action_type = 'auto_ban'", sql)
+        self.assertIn("action.action_status = 'pending'", sql)
         self.assertIn("source_api_key_states_before", sql)
+        self.assertIn("manual_override_active", sql)
+        self.assertIn("JOIN growth.risk_accounts", sql)
         self.assertIn("LIMIT :limit", sql)
+        self.assertEqual(parameters["limit"], 200)
+
+    async def test_pending_manual_actions_include_original_recovery_snapshot(self) -> None:
+        from app.modules.risk.repository import list_pending_manual_actions
+
+        action_id = uuid4()
+        connection = _FakeConnection([[
+            {
+                "risk_action_id": action_id,
+                "action_type": "manual_ban",
+                "action_status": "pending",
+                "source_api_key_states_before": [],
+            }
+        ]])
+
+        rows = await list_pending_manual_actions(
+            connection,
+            site_id="aiwelink",
+            limit=5000,
+        )
+
+        self.assertEqual(rows[0]["risk_action_id"], str(action_id))
+        sql, parameters = connection.calls[0]
+        self.assertIn("action.action_type IN ('manual_ban', 'manual_release')", sql)
+        self.assertIn("action.action_status = 'pending'", sql)
+        self.assertIn("source_user_status_before", sql)
+        self.assertIn("source_api_key_states_before", sql)
+        self.assertIn("action.requested_by", sql)
+        self.assertIn("ban.result_details AS ban_result_details", sql)
+        self.assertIn("LEFT JOIN LATERAL", sql)
         self.assertEqual(parameters["limit"], 200)
 
     async def test_settings_default_to_paused_fixed_thresholds(self) -> None:
@@ -302,6 +334,9 @@ class RiskRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("is_risk_excluded = :excluded", statements)
         self.assertIn("INSERT INTO growth.user_exclusions", statements)
         self.assertIn("source = 'rule'", statements)
+        self.assertIn("WHERE growth.user_exclusions.source = 'rule'", statements)
+        self.assertIn("growth.user_exclusions.reason LIKE 'risk_control:%'", statements)
+        self.assertIn("aggregates_dirty = TRUE", statements)
 
     async def test_release_only_deactivates_risk_owned_traffic_exclusion(self) -> None:
         from app.modules.risk.repository import set_stats_exclusion
@@ -412,8 +447,67 @@ class RiskRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(detail["actions"]), 1)
         self.assertEqual(len(detail["events"]), 1)
         statements = "\n".join(statement for statement, _ in connection.calls)
-        self.assertNotIn("source_api_key_states_before", statements)
+        self.assertIn("source_user_status_before", statements)
+        self.assertIn("source_api_key_count_before", statements)
+        self.assertIn("result_summary", statements)
+        self.assertNotIn("action.source_api_key_states_before,", statements)
         self.assertIn("growth.risk_events", statements)
+
+    async def test_ip_clusters_return_stable_paginated_total(self) -> None:
+        from app.modules.risk.repository import list_ip_clusters
+
+        connection = _FakeConnection([[{
+            "ip_address": "14.31.212.25",
+            "account_count": 3,
+            "total_count": 27,
+        }]])
+
+        result = await list_ip_clusters(
+            connection,
+            site_id="aiwelink",
+            cutoff=NOW,
+            minimum_accounts=3,
+            query=None,
+            limit=25,
+            offset=25,
+        )
+
+        self.assertEqual(result["total"], 27)
+        self.assertEqual(result["offset"], 25)
+        sql, parameters = connection.calls[0]
+        self.assertIn("COUNT(*) OVER () AS total_count", sql)
+        self.assertIn("ip_address DESC", sql)
+        self.assertIn("LIMIT :limit OFFSET :offset", sql)
+        self.assertEqual(parameters["offset"], 25)
+
+    async def test_events_return_stable_paginated_total(self) -> None:
+        from app.modules.risk.repository import list_events
+
+        connection = _FakeConnection([[{
+            "risk_event_id": uuid4(),
+            "event_type": "auto_ban_succeeded",
+            "total_count": 81,
+        }]])
+
+        result = await list_events(
+            connection,
+            site_id="aiwelink",
+            event_type=None,
+            start_date=date(2026, 8, 1),
+            end_date=date(2026, 8, 18),
+            limit=25,
+            offset=50,
+        )
+
+        self.assertEqual(result["total"], 81)
+        self.assertEqual(result["offset"], 50)
+        sql, parameters = connection.calls[0]
+        self.assertIn("COUNT(*) OVER () AS total_count", sql)
+        self.assertIn("risk_event_id DESC", sql)
+        self.assertIn("LIMIT :limit OFFSET :offset", sql)
+        self.assertIn("created_at >= CAST(:start_date AS DATE)", sql)
+        self.assertIn("created_at < CAST(:end_date AS DATE) + INTERVAL '1 day'", sql)
+        self.assertEqual(parameters["offset"], 50)
 
 
 class _FakeMappings:

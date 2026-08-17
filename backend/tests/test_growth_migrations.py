@@ -132,7 +132,23 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("growth_risk_ip_accounts_ip_window_idx", sql)
         self.assertIn("growth_risk_accounts_status_idx", sql)
+        self.assertIn("growth_risk_actions_account_success_idx", sql)
+        self.assertIn("growth_risk_events_site_time_idx", sql)
+        self.assertIn("'auto_ban_conflicted'", sql)
         self.assertNotIn("request_body", sql)
+
+    def test_risk_hardening_migration_updates_already_deployed_risk_schema(self) -> None:
+        from app.modules.growth.migrations import RISK_HARDENING_MIGRATION
+
+        sql = "\n".join(RISK_HARDENING_MIGRATION.statements)
+
+        self.assertEqual(RISK_HARDENING_MIGRATION.version, "0008_aiwelink_risk_hardening")
+        self.assertIn("DROP CONSTRAINT IF EXISTS risk_events_event_type_check", sql)
+        self.assertIn("ADD CONSTRAINT risk_events_event_type_check", sql)
+        self.assertIn("'auto_ban_conflicted'", sql)
+        self.assertIn("growth_risk_actions_account_success_idx", sql)
+        self.assertIn("growth_risk_events_site_time_idx", sql)
+        self.assertIn("aggregates_dirty BOOLEAN NOT NULL DEFAULT FALSE", sql)
 
     def test_required_tables_include_initial_operations_and_risk_domains(self) -> None:
         from app.modules.growth.migrations import (
@@ -165,6 +181,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0005_operations_sale_credit_without_cash",
                 "0006_operations_sync_single_flight",
                 "0007_aiwelink_risk_control",
+                "0008_aiwelink_risk_hardening",
             ],
         )
 
@@ -185,9 +202,10 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0005_operations_sale_credit_without_cash",
                 "0006_operations_sync_single_flight",
                 "0007_aiwelink_risk_control",
+                "0008_aiwelink_risk_hardening",
             ],
         )
-        self.assertEqual(result["current_version"], "0007_aiwelink_risk_control")
+        self.assertEqual(result["current_version"], "0008_aiwelink_risk_hardening")
         self.assertEqual(result["pending_versions"], [])
         executed_sql = "\n".join(connection.statements)
         for migration in MIGRATIONS:
@@ -207,13 +225,14 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0005_operations_sale_credit_without_cash",
                 "0006_operations_sync_single_flight",
                 "0007_aiwelink_risk_control",
+                "0008_aiwelink_risk_hardening",
             ]
         )
 
         result = await apply_pending_migrations(connection)
 
         self.assertEqual(result["applied_versions"], [])
-        self.assertEqual(result["current_version"], "0007_aiwelink_risk_control")
+        self.assertEqual(result["current_version"], "0008_aiwelink_risk_hardening")
         for migration in MIGRATIONS:
             for statement in migration.statements:
                 self.assertNotIn(statement, connection.statements)
@@ -237,6 +256,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0005_operations_sale_credit_without_cash",
                 "0006_operations_sync_single_flight",
                 "0007_aiwelink_risk_control",
+                "0008_aiwelink_risk_hardening",
             ],
         )
         self.assertEqual(result["domain_table_count"], 0)
@@ -253,6 +273,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0005_operations_sale_credit_without_cash",
                 "0006_operations_sync_single_flight",
                 "0007_aiwelink_risk_control",
+                "0008_aiwelink_risk_hardening",
             ],
             ledger_exists=True,
             domain_table_count=29,
@@ -261,7 +282,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
         result = await inspect_growth_schema(connection)
 
         self.assertTrue(result["initialized"])
-        self.assertEqual(result["current_version"], "0007_aiwelink_risk_control")
+        self.assertEqual(result["current_version"], "0008_aiwelink_risk_hardening")
         self.assertEqual(result["pending_versions"], [])
         self.assertEqual(result["domain_table_count"], 29)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 from uuid import UUID
 
@@ -105,12 +106,18 @@ async def get_risk_account_detail(
 async def get_risk_ip_clusters(
     search: str | None = Query(default=None, max_length=80),
     limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     _authorize(actor)
     try:
-        return await service.list_risk_ip_clusters(db, query=search, limit=limit)
+        return await service.list_risk_ip_clusters(
+            db,
+            query=search,
+            limit=limit,
+            offset=offset,
+        )
     except Exception as exc:  # noqa: BLE001
         _raise(exc)
 
@@ -118,13 +125,23 @@ async def get_risk_ip_clusters(
 @router.get("/events")
 async def get_risk_events(
     event_type: str | None = Query(default=None),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     _authorize(actor)
     try:
-        return await service.list_risk_events(db, event_type=event_type, limit=limit)
+        return await service.list_risk_events(
+            db,
+            event_type=event_type,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            offset=offset,
+        )
     except Exception as exc:  # noqa: BLE001
         _raise(exc)
 

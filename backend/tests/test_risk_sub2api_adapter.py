@@ -175,7 +175,12 @@ class Sub2ApiRiskAdapterTests(unittest.IsolatedAsyncioTestCase):
         changed_at = datetime(2026, 8, 17, 12, 1, tzinfo=UTC)
         connection = _FakeConnection(
             [
-                [{"id": "42", "status": "active", "updated_at": NOW}],
+                [{
+                    "id": "42",
+                    "email": "a.b@example.com",
+                    "status": "active",
+                    "updated_at": NOW,
+                }],
                 [
                     {"id": "key-1", "status": "active", "updated_at": NOW},
                     {"id": "key-2", "status": "quota_exhausted", "updated_at": NOW},
@@ -210,6 +215,34 @@ class Sub2ApiRiskAdapterTests(unittest.IsolatedAsyncioTestCase):
         connection = _FakeConnection(
             [[{"id": "42", "status": "disabled", "updated_at": NOW}]]
         )
+
+        with self.assertRaises(SourceStateConflict):
+            await Sub2ApiRiskAdapter().disable_account(
+                connection,
+                before=before,
+                changed_at=NOW,
+            )
+
+        self.assertEqual(len(connection.calls), 1)
+
+    async def test_disable_account_rejects_an_email_changed_after_detection(self) -> None:
+        from app.modules.risk.adapters.sub2api import (
+            SourceAccountState,
+            SourceStateConflict,
+            Sub2ApiRiskAdapter,
+        )
+
+        before = SourceAccountState("42", "a.b@example.com", "active", NOW, ())
+        connection = _FakeConnection([
+            [{
+                "id": "42",
+                "email": "normal@example.com",
+                "status": "active",
+                "updated_at": NOW,
+            }],
+            [],
+            [{"updated_at": NOW}],
+        ])
 
         with self.assertRaises(SourceStateConflict):
             await Sub2ApiRiskAdapter().disable_account(

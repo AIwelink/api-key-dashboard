@@ -299,6 +299,82 @@ class RiskServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(candidates[0].evaluation.external_user_id, "42")
         self.assertEqual(upsert.await_args.kwargs["risk_status"], "ban_pending")
 
+    async def test_reconciliation_keeps_confirmed_ban_as_a_terminal_state(self) -> None:
+        from app.modules.risk import service
+
+        row = {
+            "external_user_id": "42",
+            "email": "a.b@example.com",
+            "risk_status": "banned",
+            "manual_override_active": False,
+            "has_verified_payment": False,
+            "shared_ip_evidence": [{
+                "ip_address": "14.31.212.25",
+                "distinct_account_count": 3,
+                "external_user_ids": ["42", "43", "44"],
+                "sources": ["user_audit"],
+                "first_seen_at": NOW,
+                "last_seen_at": NOW,
+            }],
+        }
+        payment_checker = AsyncMock(return_value=False)
+        with (
+            patch.object(
+                service.repository,
+                "upsert_risk_account",
+                AsyncMock(return_value={
+                    "risk_account_id": "00000000-0000-0000-0000-000000000042",
+                    "risk_status": "ban_pending",
+                }),
+            ) as upsert,
+            patch.object(service.repository, "append_event", AsyncMock()) as append,
+        ):
+            candidates = await service.reconcile_risk_inputs(
+                object(),
+                rows=[row],
+                auto_ban_enabled=True,
+                detected_at=NOW,
+                source_payment_checker=payment_checker,
+            )
+
+        self.assertEqual(candidates, [])
+        payment_checker.assert_not_awaited()
+        upsert.assert_not_awaited()
+        append.assert_not_awaited()
+
+    async def test_reconciliation_keeps_released_override_as_a_terminal_state(self) -> None:
+        from app.modules.risk import service
+
+        row = {
+            "external_user_id": "42",
+            "email": "a.b@example.com",
+            "risk_status": "released",
+            "manual_override_active": True,
+            "has_verified_payment": False,
+            "shared_ip_evidence": [],
+        }
+        with (
+            patch.object(
+                service.repository,
+                "upsert_risk_account",
+                AsyncMock(return_value={
+                    "risk_account_id": "00000000-0000-0000-0000-000000000042",
+                }),
+            ) as upsert,
+            patch.object(service.repository, "append_event", AsyncMock()) as append,
+        ):
+            candidates = await service.reconcile_risk_inputs(
+                object(),
+                rows=[row],
+                auto_ban_enabled=True,
+                detected_at=NOW,
+                source_payment_checker=AsyncMock(return_value=False),
+            )
+
+        self.assertEqual(candidates, [])
+        upsert.assert_not_awaited()
+        append.assert_not_awaited()
+
     async def test_unchanged_high_risk_state_does_not_append_duplicate_event(self) -> None:
         from app.modules.risk import service
 

@@ -874,7 +874,7 @@ RISK_MIGRATION = Migration(
             email TEXT NOT NULL DEFAULT '',
             event_type TEXT NOT NULL CHECK (event_type IN (
                 'high_risk_detected', 'risk_cleared',
-                'auto_ban_succeeded', 'auto_ban_failed',
+                'auto_ban_succeeded', 'auto_ban_failed', 'auto_ban_conflicted',
                 'manual_ban_succeeded', 'manual_ban_failed',
                 'manual_release_succeeded', 'manual_release_partial',
                 'manual_override_set', 'manual_override_removed',
@@ -910,8 +910,37 @@ RISK_MIGRATION = Migration(
         "CREATE INDEX IF NOT EXISTS growth_risk_ip_accounts_ip_window_idx ON growth.risk_ip_accounts (site_id, ip_address, last_seen_at DESC)",
         "CREATE INDEX IF NOT EXISTS growth_risk_ip_accounts_account_window_idx ON growth.risk_ip_accounts (site_id, external_user_id, last_seen_at DESC)",
         "CREATE INDEX IF NOT EXISTS growth_risk_actions_status_idx ON growth.risk_actions (site_id, action_status, requested_at)",
+        "CREATE INDEX IF NOT EXISTS growth_risk_actions_account_success_idx ON growth.risk_actions (risk_account_id, completed_at DESC, requested_at DESC) WHERE action_status = 'succeeded' AND action_type IN ('auto_ban', 'manual_ban')",
         "CREATE INDEX IF NOT EXISTS growth_risk_events_account_time_idx ON growth.risk_events (risk_account_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS growth_risk_events_site_time_idx ON growth.risk_events (site_id, created_at DESC, risk_event_id DESC)",
         "CREATE INDEX IF NOT EXISTS growth_ops_users_risk_excluded_idx ON growth.ops_user_snapshots (site_id, is_risk_excluded, registered_at DESC)",
+    ),
+)
+
+
+RISK_HARDENING_MIGRATION = Migration(
+    version="0008_aiwelink_risk_hardening",
+    description="Harden AIWeLink risk recovery and operations indexes",
+    statements=(
+        "ALTER TABLE growth.risk_settings ADD COLUMN IF NOT EXISTS aggregates_dirty BOOLEAN NOT NULL DEFAULT FALSE",
+        """
+        ALTER TABLE growth.risk_events
+        DROP CONSTRAINT IF EXISTS risk_events_event_type_check
+        """.strip(),
+        """
+        ALTER TABLE growth.risk_events
+        ADD CONSTRAINT risk_events_event_type_check CHECK (event_type IN (
+            'high_risk_detected', 'risk_cleared',
+            'auto_ban_succeeded', 'auto_ban_failed', 'auto_ban_conflicted',
+            'manual_ban_succeeded', 'manual_ban_failed',
+            'manual_release_succeeded', 'manual_release_partial',
+            'manual_override_set', 'manual_override_removed',
+            'detector_paused', 'detector_resumed',
+            'auto_ban_paused', 'auto_ban_resumed'
+        ))
+        """.strip(),
+        "CREATE INDEX IF NOT EXISTS growth_risk_actions_account_success_idx ON growth.risk_actions (risk_account_id, completed_at DESC, requested_at DESC) WHERE action_status = 'succeeded' AND action_type IN ('auto_ban', 'manual_ban')",
+        "CREATE INDEX IF NOT EXISTS growth_risk_events_site_time_idx ON growth.risk_events (site_id, created_at DESC, risk_event_id DESC)",
     ),
 )
 
@@ -924,6 +953,7 @@ MIGRATIONS = (
     SALE_CREDIT_CASH_MIGRATION,
     OPERATIONS_SYNC_SINGLE_FLIGHT_MIGRATION,
     RISK_MIGRATION,
+    RISK_HARDENING_MIGRATION,
 )
 
 

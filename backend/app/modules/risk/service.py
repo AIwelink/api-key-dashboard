@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -167,6 +167,11 @@ async def reconcile_risk_inputs(
 ) -> list[PreparedBanCandidate]:
     candidates: list[PreparedBanCandidate] = []
     for row in rows:
+        previous_status = str(row.get("risk_status") or "")
+        if previous_status == "banned":
+            continue
+        if previous_status == "released" and bool(row.get("manual_override_active")):
+            continue
         evaluation = evaluate_account_input(row)
         if evaluation.decision == RiskDecision.BAN:
             has_source_payment = bool(
@@ -175,7 +180,6 @@ async def reconcile_risk_inputs(
             if has_source_payment:
                 evaluation = evaluate_account_input({**row, "has_paid_history": True})
 
-        previous_status = str(row.get("risk_status") or "")
         target_status = desired_risk_status(
             evaluation,
             auto_ban_enabled=auto_ban_enabled,
@@ -309,29 +313,45 @@ async def get_risk_account_detail(mongo_db: Any, *, risk_account_id: UUID) -> di
         return await repository.get_account_detail(connection, risk_account_id=risk_account_id)
 
 
-async def list_risk_ip_clusters(mongo_db: Any, *, query: str | None, limit: int) -> dict[str, Any]:
+async def list_risk_ip_clusters(
+    mongo_db: Any,
+    *,
+    query: str | None,
+    limit: int,
+    offset: int,
+) -> dict[str, Any]:
     now = datetime.now(UTC)
     async with growth_connection(mongo_db) as connection:
-        items = await repository.list_ip_clusters(
+        return await repository.list_ip_clusters(
             connection,
             site_id="aiwelink",
             cutoff=now - timedelta(days=7),
             minimum_accounts=3,
             query=query,
             limit=limit,
+            offset=offset,
         )
-    return {"items": items, "total": len(items)}
 
 
-async def list_risk_events(mongo_db: Any, *, event_type: str | None, limit: int) -> dict[str, Any]:
+async def list_risk_events(
+    mongo_db: Any,
+    *,
+    event_type: str | None,
+    start_date: date | None,
+    end_date: date | None,
+    limit: int,
+    offset: int,
+) -> dict[str, Any]:
     async with growth_connection(mongo_db) as connection:
-        items = await repository.list_events(
+        return await repository.list_events(
             connection,
             site_id="aiwelink",
             event_type=event_type,
+            start_date=start_date,
+            end_date=end_date,
             limit=limit,
+            offset=offset,
         )
-    return {"items": items, "total": len(items)}
 
 
 async def get_risk_settings(mongo_db: Any) -> dict[str, Any]:

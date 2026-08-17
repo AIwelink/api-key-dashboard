@@ -26,6 +26,8 @@ class RiskManagementTests(unittest.IsolatedAsyncioTestCase):
             "risk_status": "high_risk",
         }
         with (
+            patch.object(management.repository, "acquire_cycle_lock", AsyncMock(return_value=True)) as acquire,
+            patch.object(management.repository, "release_cycle_lock", AsyncMock()) as release,
             patch.object(management.repository, "get_account", AsyncMock(return_value=account)),
             patch.object(management.repository, "set_manual_override", AsyncMock(return_value={
                 **account,
@@ -47,15 +49,21 @@ class RiskManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(override.await_args.kwargs["active"])
         self.assertEqual(override.await_args.kwargs["risk_status"], "cleared")
         self.assertEqual(event.await_args.kwargs["event_type"], "manual_override_set")
+        acquire.assert_awaited_once()
+        release.assert_awaited_once()
 
     async def test_false_positive_requires_release_for_banned_account(self) -> None:
         from app.modules.risk import management
 
         growth = _TransactionConnection()
-        with patch.object(management.repository, "get_account", AsyncMock(return_value={
-            "risk_account_id": str(RISK_ID),
-            "risk_status": "banned",
-        })):
+        with (
+            patch.object(management.repository, "acquire_cycle_lock", AsyncMock(return_value=True)),
+            patch.object(management.repository, "release_cycle_lock", AsyncMock()),
+            patch.object(management.repository, "get_account", AsyncMock(return_value={
+                "risk_account_id": str(RISK_ID),
+                "risk_status": "banned",
+            })),
+        ):
             with self.assertRaisesRegex(ValueError, "release"):
                 await management.set_false_positive(
                     object(),

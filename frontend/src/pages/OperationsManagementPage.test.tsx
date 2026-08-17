@@ -287,6 +287,7 @@ describe("operations management workspace", () => {
     expect(html).toContain("内部人员");
     expect(html).toContain("额度与兑换码");
     expect(html).toContain("待分类");
+    expect(html).toContain("风控");
     expect(html).toContain('class="operations-query-bar"');
     expect(html).toContain("最近 7 天");
     expect(html).toContain("全部用户");
@@ -533,6 +534,18 @@ describe("operations site access", () => {
     expect(html).toContain("AIWeLink");
     expect(html).not.toContain("AIGCLink");
     expect(html).not.toContain("\u5168\u90e8\u7ad9\u70b9");
+  });
+
+  it("shows AIWeLink risk control only to users with AIWeLink access", () => {
+    const aiwelinkHtml = renderToStaticMarkup(
+      <OperationsManagementPage {...props} allowedSiteIds={["aiwelink"]} />,
+    );
+    const aigclinkHtml = renderToStaticMarkup(
+      <OperationsManagementPage {...props} allowedSiteIds={["aigclink"]} />,
+    );
+
+    expect(aiwelinkHtml).toContain("风控");
+    expect(aigclinkHtml).not.toContain("风控");
   });
 
   it("retains the all-sites option for a two-site user", () => {
