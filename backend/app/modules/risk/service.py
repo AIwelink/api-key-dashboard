@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -23,6 +23,7 @@ from app.modules.risk.domain import (
 RISK_WINDOW = timedelta(days=7)
 RISK_PAGE_SIZE = 1000
 RISK_MAX_PAGES_PER_CYCLE = 50
+RISK_EVENT_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
 RiskStream = Literal["audit_logs", "usage_logs"]
 
 
@@ -45,6 +46,30 @@ class PreparedBanCandidate:
 
 def source_window_start(*, now: datetime) -> datetime:
     return now - RISK_WINDOW
+
+
+def event_date_bounds(
+    *,
+    start_date: date | None,
+    end_date: date | None,
+) -> tuple[datetime | None, datetime | None]:
+    if start_date is not None and end_date is not None and end_date < start_date:
+        raise ValueError("end_date must not be before start_date")
+    start_at = (
+        datetime.combine(start_date, time.min, tzinfo=RISK_EVENT_TIMEZONE).astimezone(UTC)
+        if start_date is not None
+        else None
+    )
+    end_at = (
+        datetime.combine(
+            end_date + timedelta(days=1),
+            time.min,
+            tzinfo=RISK_EVENT_TIMEZONE,
+        ).astimezone(UTC)
+        if end_date is not None
+        else None
+    )
+    return start_at, end_at
 
 
 async def collect_stream_pages(
@@ -342,13 +367,14 @@ async def list_risk_events(
     limit: int,
     offset: int,
 ) -> dict[str, Any]:
+    start_at, end_at = event_date_bounds(start_date=start_date, end_date=end_date)
     async with growth_connection(mongo_db) as connection:
         return await repository.list_events(
             connection,
             site_id="aiwelink",
             event_type=event_type,
-            start_date=start_date,
-            end_date=end_date,
+            start_at=start_at,
+            end_at=end_at,
             limit=limit,
             offset=offset,
         )

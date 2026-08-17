@@ -435,6 +435,15 @@ async def recover_pending_auto_bans(
         action_id = UUID(str(action["risk_action_id"]))
         before = _source_state_from_action(action)
         requested_at = _datetime(action.get("requested_at"))
+        if requested_at is None:
+            await _finalize_recovery_conflict(
+                growth,
+                candidate=candidate,
+                action_id=action_id,
+                completed_at=recovered_at,
+            )
+            counts["conflicted"] += 1
+            continue
         applied: EnforcementResult | None = None
         recovery_state = ""
         paid_protected = False
@@ -464,7 +473,7 @@ async def recover_pending_auto_bans(
                         applied = await adapter.disable_account(
                             source_write,
                             before=before,
-                            changed_at=recovered_at,
+                            changed_at=requested_at,
                         )
         except Exception:  # Source transaction rolled back; keep the action pending for retry.
             counts["failed"] += 1
@@ -569,7 +578,7 @@ async def recover_pending_manual_actions(
                         enforced = await adapter.disable_account(
                             source_write,
                             before=before,
-                            changed_at=recovered_at,
+                            changed_at=requested_at,
                         )
                     release_result = None
                 elif action_type == "manual_release":
@@ -588,7 +597,7 @@ async def recover_pending_manual_actions(
                             source_write,
                             before=before,
                             enforced=enforced_state,
-                            changed_at=recovered_at,
+                            changed_at=requested_at,
                         )
                         release_result = _merge_release_results(
                             existing_result,
@@ -643,7 +652,7 @@ def _classify_recovery_state(
         or current.external_user_id != before.external_user_id
         or current.email != before.email
         or current.user_status != "disabled"
-        or not _at_or_after(current.user_updated_at, requested_at)
+        or current.user_updated_at != requested_at
         or len(current.api_keys) != len(before.api_keys)
     ):
         return "conflicted", None
@@ -657,7 +666,7 @@ def _classify_recovery_state(
         if prior.status == "active":
             if (
                 observed.status != "inactive"
-                or observed.updated_at != current.user_updated_at
+                or observed.updated_at != requested_at
             ):
                 return "conflicted", None
             enforced_keys.append(observed)
@@ -688,7 +697,7 @@ def _classify_release_recovery_state(
 
     user_restored = (
         current.user_status == before.user_status
-        and _at_or_after(current.user_updated_at, requested_at)
+        and current.user_updated_at == requested_at
     )
     user_pending = (
         current.user_status == enforced.user_status
@@ -707,12 +716,15 @@ def _classify_release_recovery_state(
         observed = current_keys.get(prior.id)
         if observed is None:
             conflicted_key_ids.append(prior.id)
-        elif observed.status == "active" and _at_or_after(observed.updated_at, requested_at):
+        elif observed.status == "active" and observed.updated_at == requested_at:
             restored_key_ids.append(prior.id)
         elif observed == prior:
             pending_key_ids.append(prior.id)
         else:
             conflicted_key_ids.append(prior.id)
+
+    if user_conflicted and not restored_key_ids and not pending_key_ids:
+        return "conflicted", None
 
     existing = ReleaseResult(
         user_restored=user_restored,
@@ -728,10 +740,6 @@ def _classify_release_recovery_state(
     if user_pending or pending_key_ids:
         return "retry", existing
     return "applied", existing
-
-
-def _at_or_after(value: datetime | None, minimum: datetime) -> bool:
-    return value is not None and value >= minimum
 
 
 def _current_source_evaluation(

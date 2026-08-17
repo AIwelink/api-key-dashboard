@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from app.modules.risk.domain import IpObservation
@@ -493,8 +493,8 @@ class RiskRepositoryTests(unittest.IsolatedAsyncioTestCase):
             connection,
             site_id="aiwelink",
             event_type=None,
-            start_date=date(2026, 8, 1),
-            end_date=date(2026, 8, 18),
+            start_at=datetime(2026, 7, 31, 16, 0, tzinfo=UTC),
+            end_at=datetime(2026, 8, 18, 16, 0, tzinfo=UTC),
             limit=25,
             offset=50,
         )
@@ -505,8 +505,10 @@ class RiskRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("COUNT(*) OVER () AS total_count", sql)
         self.assertIn("risk_event_id DESC", sql)
         self.assertIn("LIMIT :limit OFFSET :offset", sql)
-        self.assertIn("created_at >= CAST(:start_date AS DATE)", sql)
-        self.assertIn("created_at < CAST(:end_date AS DATE) + INTERVAL '1 day'", sql)
+        self.assertIn("created_at >= CAST(:start_at AS TIMESTAMPTZ)", sql)
+        self.assertIn("created_at < CAST(:end_at AS TIMESTAMPTZ)", sql)
+        self.assertEqual(parameters["start_at"], datetime(2026, 7, 31, 16, 0, tzinfo=UTC))
+        self.assertEqual(parameters["end_at"], datetime(2026, 8, 18, 16, 0, tzinfo=UTC))
         self.assertEqual(parameters["offset"], 50)
 
 

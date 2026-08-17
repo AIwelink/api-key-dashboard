@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock
 from unittest.mock import patch
 
@@ -10,6 +10,26 @@ NOW = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
 
 
 class RiskServiceTests(unittest.IsolatedAsyncioTestCase):
+    def test_event_date_bounds_use_shanghai_calendar_days_as_utc_half_open_range(self) -> None:
+        from app.modules.risk.service import event_date_bounds
+
+        start_at, end_at = event_date_bounds(
+            start_date=date(2026, 8, 1),
+            end_date=date(2026, 8, 18),
+        )
+
+        self.assertEqual(start_at, datetime(2026, 7, 31, 16, 0, tzinfo=UTC))
+        self.assertEqual(end_at, datetime(2026, 8, 18, 16, 0, tzinfo=UTC))
+
+    def test_event_date_bounds_reject_reversed_range(self) -> None:
+        from app.modules.risk.service import event_date_bounds
+
+        with self.assertRaisesRegex(ValueError, "end_date must not be before start_date"):
+            event_date_bounds(
+                start_date=date(2026, 8, 18),
+                end_date=date(2026, 8, 1),
+            )
+
     def test_source_window_is_always_limited_to_the_last_seven_days(self) -> None:
         from app.modules.risk.service import source_window_start
 

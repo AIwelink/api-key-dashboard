@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Iterable
 from uuid import UUID, uuid4
@@ -1043,8 +1043,8 @@ async def list_events(
     *,
     site_id: str,
     event_type: str | None = None,
-    start_date: date | None = None,
-    end_date: date | None = None,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -1058,10 +1058,13 @@ async def list_events(
             FROM growth.risk_events
             WHERE site_id = :site_id
               AND (CAST(:event_type AS TEXT) IS NULL OR event_type = :event_type)
-              AND (CAST(:start_date AS DATE) IS NULL OR created_at >= CAST(:start_date AS DATE))
               AND (
-                CAST(:end_date AS DATE) IS NULL
-                OR created_at < CAST(:end_date AS DATE) + INTERVAL '1 day'
+                CAST(:start_at AS TIMESTAMPTZ) IS NULL
+                OR created_at >= CAST(:start_at AS TIMESTAMPTZ)
+              )
+              AND (
+                CAST(:end_at AS TIMESTAMPTZ) IS NULL
+                OR created_at < CAST(:end_at AS TIMESTAMPTZ)
               )
             ORDER BY created_at DESC, risk_event_id DESC
             LIMIT :limit OFFSET :offset
@@ -1070,8 +1073,8 @@ async def list_events(
         {
             "site_id": site_id,
             "event_type": event_type or None,
-            "start_date": start_date,
-            "end_date": end_date,
+            "start_at": start_at,
+            "end_at": end_at,
             "limit": min(max(limit, 1), 200),
             "offset": max(int(offset), 0),
         },

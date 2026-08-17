@@ -559,11 +559,12 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
                 growth,
                 source_engine=source,
                 adapter=adapter,
-                recovered_at=NOW,
+                recovered_at=NOW + timedelta(minutes=2),
             )
 
         self.assertEqual(result, {"succeeded": 1, "conflicted": 0, "failed": 0})
         adapter.disable_account.assert_awaited_once()
+        self.assertEqual(adapter.disable_account.await_args.kwargs["changed_at"], NOW)
         self.assertEqual(complete.await_args.kwargs["status"], "succeeded")
 
     async def test_pending_auto_ban_does_not_run_while_auto_ban_is_paused(self) -> None:
@@ -605,8 +606,8 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             "42",
             "a.b@example.com",
             "disabled",
-            NOW + timedelta(minutes=1),
-            (ApiKeyState("key-1", "inactive", NOW + timedelta(minutes=1)),),
+            NOW,
+            (ApiKeyState("key-1", "inactive", NOW),),
         )
         with (
             patch.object(
@@ -961,11 +962,12 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
                 growth,
                 source_engine=source,
                 adapter=adapter,
-                recovered_at=NOW,
+                recovered_at=NOW + timedelta(minutes=2),
             )
 
         self.assertEqual(result, {"succeeded": 1, "conflicted": 0, "failed": 0})
         adapter.release_account.assert_awaited_once()
+        self.assertEqual(adapter.release_account.await_args.kwargs["changed_at"], NOW)
         finalize.assert_awaited_once()
 
     async def test_pending_manual_ban_marks_changed_source_state_conflicted(self) -> None:
@@ -1103,7 +1105,7 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(coordinator._candidate_for_current_source(candidate, current))
 
-    def test_recovery_classifies_source_write_after_request_as_applied(self) -> None:
+    def test_recovery_rejects_source_write_after_request_as_external_change(self) -> None:
         from app.modules.risk import coordinator
         from app.modules.risk.adapters.sub2api import ApiKeyState, SourceAccountState
 
@@ -1123,10 +1125,10 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             requested_at=NOW,
         )
 
-        self.assertEqual(state, "applied")
-        self.assertEqual(enforced.user_updated_at, applied_at)
+        self.assertEqual(state, "conflicted")
+        self.assertIsNone(enforced)
 
-    def test_release_recovery_accepts_a_complete_write_after_request(self) -> None:
+    def test_release_recovery_rejects_a_complete_write_after_request_as_external_change(self) -> None:
         from app.modules.risk import coordinator
         from app.modules.risk.adapters.sub2api import ApiKeyState, EnforcementResult, SourceAccountState
 
@@ -1151,9 +1153,8 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             requested_at=NOW,
         )
 
-        self.assertEqual(state, "applied")
-        self.assertTrue(result.user_restored)
-        self.assertFalse(result.partial)
+        self.assertEqual(state, "conflicted")
+        self.assertIsNone(result)
 
     async def test_auto_recovery_source_error_leaves_action_pending(self) -> None:
         from app.modules.risk import coordinator

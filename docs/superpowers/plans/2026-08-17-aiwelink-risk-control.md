@@ -274,6 +274,6 @@ Start the local app, open the operations risk tab in the in-app browser, and ins
 
 Confirm migration defaults are paused, no secrets or request bodies are persisted, source queries are bounded, auto-ban needs both signals, normal shared-IP users are not auto-banned, and release uses captured state checks.
 
-- [ ] **Step 5: Commit, push, and open the PR**
+- [x] **Step 5: Commit, push, and open the PR**
 
 Commit the tested implementation, push `codex/aiwelink-risk-control`, and open a pull request targeting `achernar/dev` with the rule matrix, paused rollout requirement, usage-log staleness disclosure, and verification results.
