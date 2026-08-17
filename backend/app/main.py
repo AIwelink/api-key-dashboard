@@ -10,9 +10,10 @@ from fastapi.staticfiles import StaticFiles
 from app.config import PROJECT_ROOT, get_settings
 from app.database import close_mongo_connection, connect_to_mongo, get_db
 from app.logging_config import RequestLoggingMiddleware, cleanup_old_logs, log_cleanup_loop, setup_logging
-from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, auto_replenishment, client_metrics, client_sites, event_records, growth, import_batches, imports, notifications, operations, plus_self_produced, presence, settings, sub2api_sites, sync, todo_items, users, work_plans
+from app.routers import accounts, agent, api_pools, api_tokens, audit, auth, auto_replenishment, client_metrics, client_sites, event_records, growth, import_batches, imports, notifications, operations, plus_self_produced, presence, risk, settings, sub2api_sites, sync, todo_items, users, work_plans
 from app.modules.client_metrics.sampler import client_metric_sampler_loop
 from app.modules.operations.sync import operations_sync_loop
+from app.modules.risk.scheduler import risk_control_loop
 from app.modules.system.bootstrap import ensure_bootstrap_data, ensure_indexes
 from app.modules.agent.scheduler import start_agent_scheduler, stop_agent_scheduler
 from app.modules.sub2api.account_probe import probe_scheduler_loop
@@ -51,6 +52,10 @@ async def lifespan(app_instance: FastAPI):
     forecast_accuracy_task = asyncio.create_task(forecast_accuracy_evaluator_loop(db))
     client_metric_sampler_task = asyncio.create_task(client_metric_sampler_loop(db))
     operations_sync_task = asyncio.create_task(operations_sync_loop(db))
+    risk_control_task = asyncio.create_task(
+        risk_control_loop(db),
+        name="aiwelink-risk-control",
+    )
     work_plan_audit_task = asyncio.create_task(
         work_plan_audit_reconciliation_loop(db),
         name="work-plan-audit-reconciliation",
@@ -74,6 +79,7 @@ async def lifespan(app_instance: FastAPI):
             forecast_accuracy_task,
             client_metric_sampler_task,
             operations_sync_task,
+            risk_control_task,
             work_plan_audit_task,
             cleanup_task,
         )
@@ -117,6 +123,7 @@ app.include_router(sync.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
 app.include_router(growth.router, prefix="/api")
 app.include_router(operations.router, prefix="/api")
+app.include_router(risk.router, prefix="/api")
 app.include_router(sub2api_sites.router, prefix="/api")
 app.include_router(todo_items.router, prefix="/api")
 app.include_router(audit.router, prefix="/api")

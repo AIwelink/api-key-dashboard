@@ -13,6 +13,14 @@ NOW = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
 
 
 class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    def test_segment_filter_excludes_banned_risk_accounts(self) -> None:
+        from app.modules.operations.repository import _segment_filter
+
+        sql = _segment_filter("snapshot")
+
+        self.assertIn("NOT snapshot.is_risk_excluded", sql)
+        self.assertIn("snapshot.is_internal", sql)
+
     async def test_list_redemption_batch_attributions_returns_safe_join_fields(self) -> None:
         from app.modules.operations.repository import list_redemption_batch_attributions
 
@@ -265,6 +273,7 @@ class OperationsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("usage.site_id = 'aigclink'", statements)
         self.assertIn("NOT snapshot.is_internal", statements)
         self.assertIn("event.site_id <> 'aigclink'", statements)
+        self.assertGreaterEqual(statements.count("NOT snapshot.is_risk_excluded"), 3)
         self.assertGreaterEqual(
             statements.count("date_trunc('hour', CAST(:start_at AS TIMESTAMPTZ))"),
             2,

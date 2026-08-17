@@ -16,9 +16,10 @@ import {
   type RedemptionCodeListResponse,
   type RedemptionCodeRow,
 } from "./operations/RedemptionCodeTable";
+import { OperationsRiskPanel } from "./operations/OperationsRiskPanel";
 import "./OperationsManagementPage.css";
 
-type OperationsTab = "overview" | "internal-users" | "credits" | "classification";
+type OperationsTab = "overview" | "internal-users" | "credits" | "classification" | "risk";
 type OperationsRange = "today" | "7d" | "30d" | "custom";
 type UserSegment = "all" | "ordinary" | "internal";
 type Purpose = "sale" | "promotion" | "internal" | "compensation" | "other";
@@ -907,6 +908,7 @@ export function OperationsManagementPage(
   const hasSiteAccess = allowedSites.length > 0;
   const showAllSites = allowedSites.length > 1;
   const allowedSiteSet = new Set(allowedSites.map((site) => site.value));
+  const hasAiwelinkAccess = allowedSiteSet.has("aiwelink");
   const hasAigclinkAccess = allowedSiteSet.has("aigclink");
   const normalizeSiteFilter = (siteId: string) => !siteId
     ? ""
@@ -1000,6 +1002,7 @@ export function OperationsManagementPage(
     setModal(null);
     setRedemptionCodes(null);
     setInternalDeleteTarget(null);
+    if (operationsTab.current === "risk" && !allowedSiteSet.has("aiwelink")) setTab("overview");
     setInternalForm({ ...emptyInternalUserForm, site_id: firstAllowedSiteId });
     setRedemptionForm({ ...emptyRedemptionForm, site_id: firstAllowedSiteId });
     setAdjustmentForm({ ...emptyAdjustmentForm, site_id: firstAllowedSiteId });
@@ -1444,9 +1447,11 @@ export function OperationsManagementPage(
       ? "running"
       : "healthy";
   const syncErrorDetails = visibleSyncStatuses.filter((item) => item.error_message).map((item) => `${siteLabel(item.site_id)}：${item.error_message}`).join(" · ");
-  const pageDescription = allowedSites.length === 1
-    ? `查看 ${allowedSites[0].label} 的收入、消耗和用户构成`
-    : "统一查看 AIWeLink 与 AIGCLink 的收入、消耗和用户构成";
+  const pageDescription = tab === "risk"
+    ? "识别批量注册与免费额度盗刷，保留可追溯的判断和处置记录"
+    : allowedSites.length === 1
+      ? `查看 ${allowedSites[0].label} 的收入、消耗和用户构成`
+      : "统一查看 AIWeLink 与 AIGCLink 的收入、消耗和用户构成";
   const billingDescription = allowedSites.length > 1
     ? "AIWeLink 按可核验现金，AIGCLink 按数据库调用标价"
     : hasAigclinkAccess
@@ -1477,7 +1482,8 @@ export function OperationsManagementPage(
           ["internal-users", "内部人员"],
           ["credits", "额度与兑换码"],
           ["classification", "待分类"],
-        ] as const).map(([value, label]) => <button className={tab === value ? "active" : ""} role="tab" aria-selected={tab === value} type="button" onClick={() => setTab(value)} key={value}>{label}</button>)}
+          ...(hasAiwelinkAccess ? [["risk", "风控"]] as const : []),
+        ] as ReadonlyArray<readonly [OperationsTab, string]>).map(([value, label]) => <button className={tab === value ? "active" : ""} role="tab" aria-selected={tab === value} type="button" onClick={() => setTab(value)} key={value}>{label}</button>)}
       </div>
 
       {loadError && <div className="operations-inline-error" role="alert"><strong>数据更新失败</strong><span>{loadError}</span><small>已加载的数据不会被清空</small></div>}
@@ -1624,6 +1630,15 @@ export function OperationsManagementPage(
             <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>业务用户 ID</th><th>来源类型</th><th>来源记录</th><th>额度</th><th>发生时间</th><th>状态</th>{canWrite && <th>操作</th>}</tr></thead><tbody>{visibleClassificationTasks.length ? visibleClassificationTasks.map((item) => <tr key={item.classification_task_id}><td>{siteLabel(item.site_id)}</td><td><strong>{item.account_label || item.external_user_id}</strong>{item.account_label && <small className="operations-cell-subtext">{item.external_user_id}</small>}</td><td>{item.source_type}</td><td>{item.source_record_id || "-"}</td><td>{formatNumber(item.balance_units, 10)}</td><td>{formatDateTime(item.occurred_at)}</td><td><span className={`operations-status-tag ${item.status}`}>{item.status === "pending" ? "待处理" : item.status === "resolved" ? "已分类" : "已忽略"}</span></td>{canWrite && <td>{item.status === "pending" ? <button className="ghost operations-row-button" type="button" onClick={() => { setClassificationForm(emptyClassificationForm); setModal({ kind: "classification", item }); }}>补录</button> : "-"}</td>}</tr>) : <EmptyRow columns={canWrite ? 8 : 7} text={loading ? "正在加载..." : "当前筛选下暂无记录"} />}</tbody></table></div>
           </section>
         </div>
+      )}
+
+      {tab === "risk" && hasAiwelinkAccess && (
+        <OperationsRiskPanel
+          active
+          role={role}
+          showToast={showToast}
+          token={token}
+        />
       )}
       </div>
 
