@@ -150,6 +150,21 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("growth_risk_events_site_time_idx", sql)
         self.assertIn("aggregates_dirty BOOLEAN NOT NULL DEFAULT FALSE", sql)
 
+    def test_manual_risk_approval_migration_cancels_automatic_bans(self) -> None:
+        from app.modules.growth.migrations import MANUAL_RISK_APPROVAL_MIGRATION
+
+        sql = "\n".join(MANUAL_RISK_APPROVAL_MIGRATION.statements)
+
+        self.assertEqual(MANUAL_RISK_APPROVAL_MIGRATION.version, "0009_manual_risk_approval")
+        self.assertIn("'cancelled'", sql)
+        self.assertIn("action_type = 'auto_ban'", sql)
+        self.assertIn("action_status IN ('pending', 'failed')", sql)
+        self.assertIn("action_status = 'cancelled'", sql)
+        self.assertIn("error_code = 'AutoBanDisabled'", sql)
+        self.assertIn("risk_status = 'high_risk'", sql)
+        self.assertIn("risk_status = 'ban_pending'", sql)
+        self.assertIn("auto_ban_enabled = FALSE", sql)
+
     def test_required_tables_include_initial_operations_and_risk_domains(self) -> None:
         from app.modules.growth.migrations import (
             INITIAL_DOMAIN_TABLES,
@@ -182,6 +197,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0006_operations_sync_single_flight",
                 "0007_aiwelink_risk_control",
                 "0008_aiwelink_risk_hardening",
+                "0009_manual_risk_approval",
             ],
         )
 
@@ -203,9 +219,10 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0006_operations_sync_single_flight",
                 "0007_aiwelink_risk_control",
                 "0008_aiwelink_risk_hardening",
+                "0009_manual_risk_approval",
             ],
         )
-        self.assertEqual(result["current_version"], "0008_aiwelink_risk_hardening")
+        self.assertEqual(result["current_version"], "0009_manual_risk_approval")
         self.assertEqual(result["pending_versions"], [])
         executed_sql = "\n".join(connection.statements)
         for migration in MIGRATIONS:
@@ -226,13 +243,14 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0006_operations_sync_single_flight",
                 "0007_aiwelink_risk_control",
                 "0008_aiwelink_risk_hardening",
+                "0009_manual_risk_approval",
             ]
         )
 
         result = await apply_pending_migrations(connection)
 
         self.assertEqual(result["applied_versions"], [])
-        self.assertEqual(result["current_version"], "0008_aiwelink_risk_hardening")
+        self.assertEqual(result["current_version"], "0009_manual_risk_approval")
         for migration in MIGRATIONS:
             for statement in migration.statements:
                 self.assertNotIn(statement, connection.statements)
@@ -257,6 +275,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0006_operations_sync_single_flight",
                 "0007_aiwelink_risk_control",
                 "0008_aiwelink_risk_hardening",
+                "0009_manual_risk_approval",
             ],
         )
         self.assertEqual(result["domain_table_count"], 0)
@@ -274,6 +293,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
                 "0006_operations_sync_single_flight",
                 "0007_aiwelink_risk_control",
                 "0008_aiwelink_risk_hardening",
+                "0009_manual_risk_approval",
             ],
             ledger_exists=True,
             domain_table_count=29,
@@ -282,7 +302,7 @@ class GrowthMigrationContractTests(unittest.IsolatedAsyncioTestCase):
         result = await inspect_growth_schema(connection)
 
         self.assertTrue(result["initialized"])
-        self.assertEqual(result["current_version"], "0008_aiwelink_risk_hardening")
+        self.assertEqual(result["current_version"], "0009_manual_risk_approval")
         self.assertEqual(result["pending_versions"], [])
         self.assertEqual(result["domain_table_count"], 29)
 

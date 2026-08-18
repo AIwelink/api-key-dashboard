@@ -945,6 +945,49 @@ RISK_HARDENING_MIGRATION = Migration(
 )
 
 
+MANUAL_RISK_APPROVAL_MIGRATION = Migration(
+    version="0009_manual_risk_approval",
+    description="Require manual approval for AIWeLink risk bans",
+    statements=(
+        """
+        ALTER TABLE growth.risk_actions
+        DROP CONSTRAINT IF EXISTS risk_actions_action_status_check
+        """.strip(),
+        """
+        ALTER TABLE growth.risk_actions
+        ADD CONSTRAINT risk_actions_action_status_check CHECK (action_status IN (
+            'pending', 'running', 'succeeded', 'failed', 'conflicted', 'cancelled'
+        ))
+        """.strip(),
+        """
+        UPDATE growth.risk_actions
+        SET action_status = 'cancelled',
+            completed_at = COALESCE(completed_at, NOW()),
+            error_code = 'AutoBanDisabled',
+            error_message = 'Automatic bans require manual approval'
+        WHERE site_id = 'aiwelink'
+          AND action_type = 'auto_ban'
+          AND action_status IN ('pending', 'failed')
+        """.strip(),
+        """
+        UPDATE growth.risk_accounts
+        SET risk_status = 'high_risk',
+            is_stats_excluded = FALSE,
+            updated_at = NOW()
+        WHERE site_id = 'aiwelink'
+          AND risk_status = 'ban_pending'
+        """.strip(),
+        """
+        UPDATE growth.risk_settings
+        SET auto_ban_enabled = FALSE,
+            updated_by = 'system:manual-risk-approval',
+            updated_at = NOW()
+        WHERE site_id = 'aiwelink'
+        """.strip(),
+    ),
+)
+
+
 MIGRATIONS = (
     INITIAL_MIGRATION,
     OPERATIONS_MIGRATION,
@@ -954,6 +997,7 @@ MIGRATIONS = (
     OPERATIONS_SYNC_SINGLE_FLIGHT_MIGRATION,
     RISK_MIGRATION,
     RISK_HARDENING_MIGRATION,
+    MANUAL_RISK_APPROVAL_MIGRATION,
 )
 
 

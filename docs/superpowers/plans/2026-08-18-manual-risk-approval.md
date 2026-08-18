@@ -17,11 +17,11 @@
 - Test: `backend/tests/test_risk_service.py`
 - Test: `backend/tests/test_risk_domain.py`
 
-- [ ] **Step 1: Write failing service tests**
+- [x] **Step 1: Write failing service tests**
 
 Add tests that call `desired_risk_status(evaluation, auto_ban_enabled=True)` for an unprotected email-plus-shared-IP evaluation and expect `high_risk`, then call `reconcile_risk_inputs` with the same input and assert no candidate is returned and the repository is upserted with `risk_status="high_risk"`.
 
-- [ ] **Step 2: Run the focused tests and verify the red failure**
+- [x] **Step 2: Run the focused tests and verify the red failure**
 
 Run:
 ```powershell
@@ -30,11 +30,11 @@ backend\.venv\Scripts\python.exe -m pytest backend/tests/test_risk_service.py -k
 
 Expected: the existing implementation returns `ban_pending` and produces a candidate, so the new assertions fail.
 
-- [ ] **Step 3: Implement the smallest approval-only decision**
+- [x] **Step 3: Implement the smallest approval-only decision**
 
 Change `desired_risk_status` so `RiskDecision.BAN` returns `"high_risk"` regardless of `auto_ban_enabled`. Remove the `target_status == "ban_pending"` candidate branch from `reconcile_risk_inputs`; it must return an empty candidate list after persisting the high-risk account. Keep the function parameters for compatibility with existing callers until Task 2 removes automatic callers.
 
-- [ ] **Step 4: Run the focused tests and the existing risk service/domain suites**
+- [x] **Step 4: Run the focused tests and the existing risk service/domain suites**
 
 Run:
 ```powershell
@@ -43,7 +43,7 @@ backend\.venv\Scripts\python.exe -m pytest backend/tests/test_risk_service.py ba
 
 Expected: all tests pass after updating assertions that describe the old automatic-ban outcome.
 
-- [ ] **Step 5: Commit the decision change**
+- [x] **Step 5: Commit the decision change**
 
 ```powershell
 git add backend/app/modules/risk/service.py backend/tests/test_risk_service.py backend/tests/test_risk_domain.py
@@ -56,11 +56,11 @@ git commit -m "fix: require manual approval for risk bans"
 - Modify: `backend/app/modules/risk/coordinator.py:135-265,412-510`
 - Test: `backend/tests/test_risk_coordinator.py`
 
-- [ ] **Step 1: Write failing coordinator tests**
+- [x] **Step 1: Write failing coordinator tests**
 
 Add a test for `_run_enabled_cycle` with detector settings enabled that patches `recover_pending_auto_bans` and asserts it is not awaited, and patches `repository.create_action`/`adapter.disable_account` to assert neither is called for a strong risk input. Add a recovery test that passes a legacy pending action and asserts `recover_pending_auto_bans` leaves it untouched when called defensively with `auto_ban_enabled=False`.
 
-- [ ] **Step 2: Run the new tests and verify the red failure**
+- [x] **Step 2: Run the new tests and verify the red failure**
 
 Run:
 ```powershell
@@ -69,11 +69,11 @@ backend\.venv\Scripts\python.exe -m pytest backend/tests/test_risk_coordinator.p
 
 Expected: the current enabled cycle calls recovery and creates `auto_ban` actions, so the new assertions fail.
 
-- [ ] **Step 3: Remove automatic recovery and preparation**
+- [x] **Step 3: Remove automatic recovery and preparation**
 
 In `_run_enabled_cycle`, remove the `recover_pending_auto_bans` call and its result payload. Continue recovering only manual actions. Remove the `prepared` list and the source-writing loop that creates and executes `auto_ban` actions. Keep source reads, observation upserts, cursor updates, risk reconciliation, and aggregate refresh. Leave `recover_pending_auto_bans` as a defensive compatibility function that immediately returns zero counts when automatic enforcement is disabled and never calls `disable_account` for any setting.
 
-- [ ] **Step 4: Run coordinator and scheduler tests**
+- [x] **Step 4: Run coordinator and scheduler tests**
 
 Run:
 ```powershell
@@ -82,7 +82,7 @@ backend\.venv\Scripts\python.exe -m pytest backend/tests/test_risk_coordinator.p
 
 Expected: all tests pass, including proof that manual action recovery still works.
 
-- [ ] **Step 5: Commit the coordinator change**
+- [x] **Step 5: Commit the coordinator change**
 
 ```powershell
 git add backend/app/modules/risk/coordinator.py backend/tests/test_risk_coordinator.py
@@ -93,16 +93,14 @@ git commit -m "fix: remove automatic risk enforcement"
 
 **Files:**
 - Modify: `backend/app/modules/growth/migrations.py`
-- Modify: `backend/app/modules/risk/repository.py`
-- Modify: `backend/app/modules/risk/schemas.py`
 - Test: `backend/tests/test_growth_migrations.py`
 - Test: `backend/tests/test_risk_repository.py`
 
-- [ ] **Step 1: Write failing migration and repository tests**
+- [x] **Step 1: Write failing migration and repository tests**
 
 Assert the new migration is version `0009_manual_risk_approval`, allows `cancelled` in the action-status constraint, updates pending/failed `auto_ban` actions to `cancelled`, sets their completion timestamp and `error_code = 'AutoBanDisabled'`, and changes `ban_pending` accounts to `high_risk`. Add repository SQL assertions that cancelled actions are not returned by pending-action queries and that the action-status schema accepts `cancelled`.
 
-- [ ] **Step 2: Run migration/repository tests and verify the red failure**
+- [x] **Step 2: Run migration/repository tests and verify the red failure**
 
 Run:
 ```powershell
@@ -111,7 +109,7 @@ backend\.venv\Scripts\python.exe -m pytest backend/tests/test_growth_migrations.
 
 Expected: version `0009_manual_risk_approval` and the cancellation SQL are absent, so the tests fail.
 
-- [ ] **Step 3: Add the idempotent migration and status handling**
+- [x] **Step 3: Add the idempotent migration and status handling**
 
 Append `MANUAL_RISK_APPROVAL_MIGRATION` after `RISK_HARDENING_MIGRATION`, add it to `MIGRATIONS`, drop/recreate the `risk_actions_action_status_check` constraint with `cancelled`, and execute:
 ```sql
@@ -119,8 +117,7 @@ UPDATE growth.risk_actions
 SET action_status = 'cancelled',
     completed_at = COALESCE(completed_at, NOW()),
     error_code = 'AutoBanDisabled',
-    error_message = 'Automatic bans require manual approval',
-    updated_at = NOW()
+    error_message = 'Automatic bans require manual approval'
 WHERE site_id = 'aiwelink'
   AND action_type = 'auto_ban'
   AND action_status IN ('pending', 'failed');
@@ -133,9 +130,9 @@ UPDATE growth.risk_settings
 SET auto_ban_enabled = FALSE, updated_by = 'system:manual-risk-approval', updated_at = NOW()
 WHERE site_id = 'aiwelink';
 ```
-Update action status labels and list predicates so cancelled rows remain visible in history but never recover.
+The existing pending-action predicates select only `action_status = 'pending'`; keep them unchanged so cancelled rows remain visible in history but never recover.
 
-- [ ] **Step 4: Run migration and repository tests**
+- [x] **Step 4: Run migration and repository tests**
 
 Run:
 ```powershell
