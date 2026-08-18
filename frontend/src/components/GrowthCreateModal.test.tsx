@@ -1,8 +1,47 @@
-import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+// @vitest-environment jsdom
+
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { GrowthCreateModal, submitGrowthCreateModal } from "./GrowthCreateModal";
 
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 describe("GrowthCreateModal", () => {
+  let root: Root | null = null;
+  let container: HTMLDivElement | null = null;
+
+  afterEach(async () => {
+    await act(async () => root?.unmount());
+    container?.remove();
+    root = null;
+    container = null;
+  });
+
+  async function renderModal(saving = false) {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        <GrowthCreateModal
+          onClose={vi.fn()}
+          onSubmit={vi.fn()}
+          saving={saving}
+          submitDisabled={false}
+          submitLabel="创建链接"
+          title="新建推广链接"
+        >
+          <label>
+            来源名称
+            <input name="source_name" />
+          </label>
+        </GrowthCreateModal>,
+      );
+    });
+    return document.body.querySelector<HTMLElement>('[role="dialog"]');
+  }
+
   it("prevents native form submission before invoking the business submit callback", () => {
     const event = { preventDefault: vi.fn() };
     const onSubmit = vi.fn();
@@ -26,48 +65,29 @@ describe("GrowthCreateModal", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it("renders an accessible dialog with its supplied title and form body", () => {
-    const html = renderToStaticMarkup(
-      <GrowthCreateModal
-        onClose={vi.fn()}
-        onSubmit={vi.fn()}
-        saving={false}
-        submitDisabled={false}
-        submitLabel="创建链接"
-        title="新建推广链接"
-      >
-        <label>
-          来源名称
-          <input name="source_name" />
-        </label>
-      </GrowthCreateModal>,
-    );
+  it("renders an accessible dialog with its supplied title and form body", async () => {
+    const dialog = await renderModal();
 
-    expect(html).toContain('role="dialog"');
-    expect(html).toContain('aria-modal="true"');
-    expect(html).toContain('aria-labelledby="growth-create-modal-title"');
-    expect(html).toContain('id="growth-create-modal-title"');
-    expect(html).toContain("新建推广链接");
-    expect(html).toContain('name="source_name"');
+    expect(dialog?.getAttribute("aria-modal")).toBe("true");
+    expect(dialog?.getAttribute("aria-labelledby")).toBe("growth-create-modal-title");
+    expect(dialog?.querySelector("#growth-create-modal-title")?.textContent).toBe("新建推广链接");
+    expect(dialog?.querySelector('input[name="source_name"]')).not.toBeNull();
   });
 
-  it("shows a saving label and disables close, cancel, and submit actions while saving", () => {
-    const html = renderToStaticMarkup(
-      <GrowthCreateModal
-        onClose={vi.fn()}
-        onSubmit={vi.fn()}
-        saving
-        submitDisabled={false}
-        submitLabel="创建链接"
-        title="新建推广链接"
-      >
-        <input aria-label="来源名称" />
-      </GrowthCreateModal>,
-    );
+  it("shows a saving label and disables close, cancel, and submit actions while saving", async () => {
+    const dialog = await renderModal(true);
+    const buttons = [...(dialog?.querySelectorAll<HTMLButtonElement>("button") || [])];
 
-    expect(html).toContain("保存中...");
-    expect(html).toMatch(/aria-label="关闭"[^>]*disabled=""/);
-    expect(html).toMatch(/>取消<\/button>/);
-    expect((html.match(/disabled=""/g) || []).length).toBeGreaterThanOrEqual(3);
+    expect(dialog?.textContent).toContain("保存中...");
+    expect(buttons.find((button) => button.getAttribute("aria-label") === "关闭")?.disabled).toBe(true);
+    expect(buttons.find((button) => button.textContent === "取消")?.disabled).toBe(true);
+    expect(buttons.every((button) => button.disabled)).toBe(true);
+  });
+
+  it("mounts the backdrop at the document body so transformed page containers cannot offset it", async () => {
+    await renderModal();
+
+    const backdrop = document.body.querySelector<HTMLElement>(".growth-create-modal-backdrop");
+    expect(backdrop?.parentElement).toBe(document.body);
   });
 });
