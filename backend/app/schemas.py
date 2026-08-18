@@ -55,6 +55,20 @@ class LoginResponse(BaseModel):
     user: dict[str, Any]
 
 
+class LoginBindingRequiredResponse(BaseModel):
+    status: Literal["binding_required"] = "binding_required"
+    authorization_url: str
+    session_id: str
+    expires_at: datetime
+
+    @field_validator("expires_at")
+    @classmethod
+    def require_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("expires_at must include timezone")
+        return value
+
+
 class FrontendPresenceHeartbeat(BaseModel):
     client_id: str = Field(min_length=8, max_length=100, pattern=r"^[A-Za-z0-9._:-]+$")
     session_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._:-]+$")

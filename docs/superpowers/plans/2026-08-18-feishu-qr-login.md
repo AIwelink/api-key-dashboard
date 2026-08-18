@@ -43,7 +43,7 @@
 - Modify: `.env.example`
 - Test: `backend/tests/test_feishu_auth.py`
 
-- [ ] **Step 1: Write failing configuration and schema tests**
+- [x] **Step 1: Write failing configuration and schema tests**
 
 Test that comma-separated tenant keys normalize to a set, production defaults keep Feishu disabled, and `LoginBindingRequiredResponse` serializes `status="binding_required"`, `authorization_url`, `session_id`, and timezone-aware `expires_at`.
 
@@ -61,13 +61,13 @@ def test_binding_required_response_is_explicit() -> None:
     assert payload.status == "binding_required"
 ```
 
-- [ ] **Step 2: Run the focused tests and confirm missing types fail**
+- [x] **Step 2: Run the focused tests and confirm missing types fail**
 
 Run from `backend`: `.venv/Scripts/python.exe -m unittest tests.test_feishu_auth -v`
 
 Expected: import or attribute failure for the new Feishu settings/schema.
 
-- [ ] **Step 3: Add typed settings and schemas**
+- [x] **Step 3: Add typed settings and schemas**
 
 Add settings with these defaults:
 
@@ -84,7 +84,7 @@ feishu_request_timeout_seconds: float = 8.0
 
 Add Pydantic response models for session creation/status, ticket exchange, password binding required, and `authorization_status` updates. All response datetimes must be timezone-aware.
 
-- [ ] **Step 4: Run tests and commit**
+- [x] **Step 4: Run tests and commit**
 
 Run from `backend`: `.venv/Scripts/python.exe -m unittest tests.test_feishu_auth -v`
 
