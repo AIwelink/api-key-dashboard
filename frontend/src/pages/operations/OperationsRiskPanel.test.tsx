@@ -92,9 +92,10 @@ describe("OperationsRiskPanel", () => {
     );
     await act(async () => ban?.click());
 
-    expect(container?.textContent).toContain("确认封禁");
-    expect(container?.textContent).toContain("处置说明");
-    expect(container?.querySelector<HTMLButtonElement>('[role="dialog"] button[type="submit"]')?.disabled).toBe(true);
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog?.textContent).toContain("确认封禁");
+    expect(dialog?.textContent).toContain("处置说明");
+    expect(dialog?.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
   });
 
   it("pages accounts, IP clusters, and events through server offsets", async () => {
