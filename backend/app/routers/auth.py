@@ -25,6 +25,7 @@ from app.modules.auth.feishu import (
     create_authorization_session,
     fail_authorization_session,
     get_authorization_session_status,
+    has_feishu_binding,
 )
 from app.modules.system.permissions import permissions_for_user
 from app.modules.system.user_projection import public_user
@@ -67,8 +68,7 @@ async def login(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     settings = get_settings()
-    identity_key = ((user.get("feishu_identity") or {}).get("identity_key"))
-    if settings.feishu_auth_enabled and not identity_key:
+    if settings.feishu_auth_enabled and not has_feishu_binding(user):
         try:
             auth_session = await create_authorization_session(
                 db,
