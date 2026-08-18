@@ -6,13 +6,15 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
-from app.modules.work_plans.domain import WorkPlanConflictError
+from app.modules.work_plans.domain import WorkPlanConflictError, WorkPlanRuleError
 from app.modules.work_plans.schemas import (
+    WorkPlanForceCancel,
     WorkPlanOperationCreate,
     WorkPlanOperationUpdate,
     WorkPlanPriorityUpdate,
     WorkPlanUpdate,
 )
+from app.modules.work_plans.service import WorkPlanNotFoundError, WorkPlanPermissionError
 from app.main import app
 from app.routers import work_plans as work_plans_router
 
@@ -29,6 +31,7 @@ class WorkPlanRouterTests(unittest.IsolatedAsyncioTestCase):
         paths = {route.path for route in app.routes}
         self.assertIn("/api/work-plans/schedule", paths)
         self.assertIn("/api/work-plans/{plan_id}/cancel", paths)
+        self.assertIn("/api/work-plans/{plan_id}/force-cancel", paths)
         self.assertIn("/api/work-plans/members/{member_id}/priority", paths)
 
     def test_router_exposes_complete_contract_with_work_plan_permission(self) -> None:
@@ -43,6 +46,7 @@ class WorkPlanRouterTests(unittest.IsolatedAsyncioTestCase):
             ("/work-plans", "POST"),
             ("/work-plans/{plan_id}", "PATCH"),
             ("/work-plans/{plan_id}/cancel", "POST"),
+            ("/work-plans/{plan_id}/force-cancel", "POST"),
             ("/work-plans/members/{member_id}/priority", "PATCH"),
         }
         self.assertTrue(expected <= set(routes))
@@ -175,6 +179,73 @@ class WorkPlanRouterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response["work_plan_priority"], 12)
         self.assertEqual(update.await_args.kwargs["priority"], 12)
+
+    async def test_force_cancel_route_forwards_target_and_payload(self) -> None:
+        payload = WorkPlanForceCancel.model_validate(
+            {
+                "start_at": "2026-08-18T02:30:00+00:00",
+                "end_at": "2026-08-18T07:00:00+00:00",
+                "idempotency_key": "341b0035-391c-4926-90a4-4f0ff36c9752",
+            }
+        )
+        actor = {
+            "_id": "admin@example.com",
+            "role": "admin",
+            "actor_type": "user",
+        }
+        db = SimpleNamespace()
+        with patch.object(
+            work_plans_router,
+            "force_cancel_work_plan",
+            new=AsyncMock(return_value={"results": [], "total": 0}),
+        ) as force_cancel:
+            response = await work_plans_router.post_force_cancel_work_plan(
+                plan_id="operation-1",
+                payload=payload,
+                actor=actor,
+                db=db,
+            )
+
+        self.assertEqual(response, {"results": [], "total": 0})
+        force_cancel.assert_awaited_once_with(
+            db,
+            plan_id="operation-1",
+            actor=actor,
+            payload=payload,
+        )
+
+    async def test_force_cancel_route_maps_domain_errors(self) -> None:
+        payload = WorkPlanForceCancel.model_validate(
+            {
+                "start_at": "2026-08-18T02:30:00+00:00",
+                "end_at": "2026-08-18T07:00:00+00:00",
+                "idempotency_key": "341b0035-391c-4926-90a4-4f0ff36c9752",
+            }
+        )
+        cases = (
+            (WorkPlanPermissionError("只有 owner 或 admin 可以强制取消成员计划"), 403),
+            (WorkPlanNotFoundError("工作计划不存在"), 404),
+            (WorkPlanRuleError("该计划已结束，没有可取消的未来区间"), 400),
+            (WorkPlanConflictError("计划正在更新，请稍后重试"), 409),
+        )
+
+        for error, expected_status in cases:
+            with self.subTest(error=type(error).__name__):
+                with patch.object(
+                    work_plans_router,
+                    "force_cancel_work_plan",
+                    new=AsyncMock(side_effect=error),
+                ):
+                    with self.assertRaises(HTTPException) as raised:
+                        await work_plans_router.post_force_cancel_work_plan(
+                            plan_id="operation-1",
+                            payload=payload,
+                            actor={"_id": "admin", "role": "admin", "actor_type": "user"},
+                            db=SimpleNamespace(),
+                        )
+
+                self.assertEqual(raised.exception.status_code, expected_status)
+                self.assertEqual(raised.exception.detail, str(error))
 
 
 if __name__ == "__main__":
