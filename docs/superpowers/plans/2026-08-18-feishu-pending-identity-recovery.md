@@ -187,7 +187,7 @@ Expected: a redacted preview showing a qualifying pending source and active unbo
 
 Run the same command with `--yes`, then run it a second time with `--yes`. Expected: both runs resolve to the Owner; the second run reports the already-completed relationship without creating another user or audit conflict.
 
-- [ ] **Step 3: Run complete backend tests**
+- [x] **Step 3: Run complete backend tests**
 
 ```powershell
 .venv\Scripts\python.exe -m unittest discover -s tests
@@ -195,7 +195,7 @@ Run the same command with `--yes`, then run it a second time with `--yes`. Expec
 
 Expected: zero failures and zero errors.
 
-- [ ] **Step 4: Run frontend tests and build**
+- [x] **Step 4: Run frontend tests and build**
 
 ```powershell
 npm test
