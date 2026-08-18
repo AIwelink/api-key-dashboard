@@ -332,9 +332,12 @@ async def upsert_risk_account(
                 banned_at, released_at, is_stats_excluded, created_at, updated_at
             ) VALUES (
                 :risk_account_id, :site_id, :external_user_id, :email, lower(trim(:email)),
-                :risk_status, CAST(:risk_reasons AS JSONB), :detected_at, :detected_at,
-                CASE WHEN :risk_status = 'banned' THEN :detected_at ELSE NULL END,
-                CASE WHEN :risk_status = 'released' THEN :detected_at ELSE NULL END,
+                :risk_status, CAST(:risk_reasons AS JSONB),
+                CAST(:detected_at AS TIMESTAMPTZ), CAST(:detected_at AS TIMESTAMPTZ),
+                CASE WHEN :risk_status = 'banned'
+                    THEN CAST(:detected_at AS TIMESTAMPTZ) ELSE NULL END,
+                CASE WHEN :risk_status = 'released'
+                    THEN CAST(:detected_at AS TIMESTAMPTZ) ELSE NULL END,
                 :risk_status = 'banned', NOW(), NOW()
             )
             ON CONFLICT (site_id, external_user_id) DO UPDATE SET
