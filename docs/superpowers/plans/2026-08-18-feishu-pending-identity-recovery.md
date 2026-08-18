@@ -204,7 +204,7 @@ npm run build
 
 Expected: all Vitest tests pass and the Vite production build exits zero.
 
-- [ ] **Step 5: Verify repository state and publish**
+- [x] **Step 5: Verify repository state and publish**
 
 ```powershell
 git diff --check
@@ -212,4 +212,4 @@ git status --short --branch
 git push origin codex/feishu-qr-login
 ```
 
-Expected: no whitespace errors, a clean worktree after commits, and the remote branch updated for the existing PR targeting `achernar/dev`.
+Expected: no whitespace errors, a clean worktree after commits, and the remote branch updated for supplemental PR #51 targeting `achernar/dev`.
