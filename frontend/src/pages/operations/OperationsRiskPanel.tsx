@@ -160,7 +160,7 @@ const PAGE_SIZE = 25;
 
 const metricDefinitions: Record<string, MetricDefinitionDetails> = {
   "已封禁账号": {
-    definition: "已完成自动或人工封禁，且已从普通运营统计中排除的账号。",
+    definition: "已由运营人员确认封禁，且已从普通运营统计中排除的账号。",
     formula: "COUNT(risk_status = banned)",
     included: "源库用户已禁用且风控动作成功的账号",
     excluded: "仅标记高危、动作失败、已解除或误报账号",
@@ -170,13 +170,13 @@ const metricDefinitions: Record<string, MetricDefinitionDetails> = {
   "待人工审核": {
     definition: "存在异常邮箱或共享 IP 风险，但尚未执行封禁的账号。",
     formula: "COUNT(risk_status IN [high_risk, ban_pending])",
-    included: "单信号账号、历史付费保护账号、等待动作的双信号账号",
+    included: "单信号账号、历史付费保护账号和双信号待审批账号",
     excluded: "已确认封禁、已解除、已标记误报账号",
     source: "risk_accounts + verified payment facts",
     freshness: "检测器每 60 秒执行；页面每 60 秒刷新",
   },
   "共享 IP 集群": {
-    definition: "七天窗口内由操作日志或调用日志关联至少三个不同账号的 IP。",
+    definition: "7 天内同一 IP 至少关联 3 个账号，账号关系来自操作日志或调用日志。",
     formula: "COUNT(IP WHERE DISTINCT account_id >= 3 WITHIN 7d)",
     included: "操作日志与调用日志去重后的账号-IP 关系",
     excluded: "不足三个账号、超过七天窗口或无效 IP",
@@ -184,26 +184,26 @@ const metricDefinitions: Record<string, MetricDefinitionDetails> = {
     freshness: "检测器每 60 秒增量读取，证据保留 30 天",
   },
   "异常动作": {
-    definition: "自动或人工处置中失败、并发冲突，需要人工确认的动作。",
+    definition: "人工处置中失败、并发冲突，需要运营人员确认的动作。",
     formula: "COUNT(action_status IN [failed, conflicted])",
     included: "源库写入失败、状态变化冲突和恢复冲突",
     excluded: "待执行或已成功动作",
     source: "growth.risk_actions",
     freshness: "动作完成后即时更新",
   },
-  "自动封禁规则": {
-    definition: "只有异常邮箱和共享 IP 同时命中、且没有历史付款时才会自动封禁。",
-    formula: "异常邮箱 AND 7 天内同一 IP 至少关联 3 个账号 AND 无历史付款",
-    included: "邮箱 local-part 含点号或非空 + 标签，并命中共享 IP 的未付费账号",
-    excluded: "历史付费账号、人工误报例外、仅命中单一信号的账号",
+  "人工审批规则": {
+    definition: "风险检测只标记待审批账号，确认封禁后才修改用户和 API Key 状态。",
+    formula: "风险信号 -> high_risk；人工确认 -> banned",
+    included: "异常邮箱、共享 IP、历史付款保护和人工复核证据",
+    excluded: "人工误报例外和已解除账号",
     source: "用户、订单、操作日志、调用日志与 Growth 销售事实",
     freshness: "检测器启用后每 60 秒评估一次",
   },
 };
 
 const statusLabels: Record<string, string> = {
-  high_risk: "高危待审核",
-  ban_pending: "等待封禁",
+  high_risk: "高风险待审批",
+  ban_pending: "高风险待审批",
   banned: "已封禁",
   ban_failed: "封禁失败",
   released: "已解除",
@@ -224,7 +224,7 @@ const eventLabels: Record<string, string> = {
 };
 
 const riskActionLabels: Record<string, string> = {
-  auto_ban: "自动封禁",
+  auto_ban: "历史自动封禁",
   manual_ban: "人工封禁",
   manual_release: "人工解除",
 };
@@ -235,10 +235,11 @@ const riskActionStatusLabels: Record<string, string> = {
   succeeded: "已完成",
   failed: "失败",
   conflicted: "状态冲突",
+  cancelled: "自动封禁已取消",
 };
 
 const actionLabels: Record<RiskActionKind, { title: string; submit: string; endpoint: string }> = {
-  ban: { title: "确认人工封禁", submit: "人工封禁", endpoint: "ban" },
+  ban: { title: "确认封禁", submit: "确认封禁", endpoint: "ban" },
   release: { title: "确认解除封禁", submit: "解除封禁", endpoint: "release" },
   "false-positive": { title: "确认标记误报", submit: "标记误报", endpoint: "false-positive" },
   "override-remove": { title: "确认撤销误报例外", submit: "撤销例外", endpoint: "override/remove" },
@@ -278,7 +279,7 @@ export function OperationsRiskPanel({
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const requestId = useRef(0);
-  const canWrite = role === "owner" || role === "admin";
+  const canWrite = role === "owner" || role === "admin" || role === "operator";
 
   const accountQuery = useMemo(() => {
     const params = new URLSearchParams({
@@ -371,7 +372,7 @@ export function OperationsRiskPanel({
     }
   }
 
-  async function updateSetting(key: "detector_enabled" | "auto_ban_enabled", value: boolean) {
+  async function updateSetting(key: "detector_enabled", value: boolean) {
     if (!canWrite || saving) return;
     setSaving(true);
     try {
@@ -429,12 +430,12 @@ export function OperationsRiskPanel({
             <ShieldAlert aria-hidden="true" size={19} strokeWidth={1.8} />
             <strong>AIWeLink 实时风控</strong>
             <MetricDefinition
-              details={metricDefinitions["自动封禁规则"]}
-              label="自动封禁规则"
+              details={metricDefinitions["人工审批规则"]}
+              label="人工审批规则"
               showLabel={false}
             />
           </div>
-          <p>历史付费账号只标记高危，由人工审核；只有确认封禁后才从运营统计中排除。</p>
+          <p>所有风险账号先进入人工审批；只有确认封禁后才停用账号并从运营统计中排除。</p>
         </div>
         <div className="risk-setting-list">
           <RiskToggle
@@ -444,13 +445,10 @@ export function OperationsRiskPanel({
             note="每 60 秒读取新增日志"
             onChange={(value) => void updateSetting("detector_enabled", value)}
           />
-          <RiskToggle
-            checked={Boolean(overview.settings.auto_ban_enabled)}
-            disabled={!canWrite || saving}
-            label="自动封禁"
-            note="仅双信号且无付款历史"
-            onChange={(value) => void updateSetting("auto_ban_enabled", value)}
-          />
+          <div aria-label="封禁模式：人工审批" className="risk-approval-mode">
+            <BadgeCheck aria-hidden="true" size={18} strokeWidth={1.8} />
+            <span><strong>人工审批</strong><small>确认后才执行封禁</small></span>
+          </div>
         </div>
       </section>
 
@@ -522,7 +520,7 @@ export function OperationsRiskPanel({
       {view === "ip-clusters" ? <IpClustersView clusters={clusters} loading={loading} offset={clusterOffset} onPage={setClusterOffset} onSearch={(value) => { setClusterOffset(0); setClusterSearch((value ?? clusterSearchDraft).trim()); }} onSearchDraft={setClusterSearchDraft} searchDraft={clusterSearchDraft} total={clusterTotal} /> : null}
       {view === "events" ? <EventsView endDate={eventEndDate} eventType={eventType} events={events} loading={loading} offset={eventOffset} onEndDate={(value) => { setEventOffset(0); setEventEndDate(value); }} onEventType={(value) => { setEventOffset(0); setEventType(value); }} onPage={setEventOffset} onStartDate={(value) => { setEventOffset(0); setEventStartDate(value); }} startDate={eventStartDate} total={eventTotal} /> : null}
 
-      {!canWrite ? <div className="risk-readonly-note">当前角色为只读权限。人工封禁、解除和误报例外只能由 owner/admin 操作。</div> : null}
+      {!canWrite ? <div className="risk-readonly-note">当前角色为只读权限。风控操作只能由 owner/admin/operator 执行。</div> : null}
 
       {detail ? (
         <RiskDetailDrawer
@@ -594,7 +592,7 @@ function AccountsView({ accounts, canWrite, loading, offset, onAction, onDetail,
   return (
     <section className="risk-data-section">
       <div className="risk-query-bar">
-        <label><span>状态</span><select onChange={(event) => onStatus(event.target.value)} value={status}><option value="">全部状态</option><option value="high_risk">高危待审核</option><option value="ban_pending">等待封禁</option><option value="banned">已封禁</option><option value="ban_failed">封禁失败</option><option value="released">已解除</option><option value="cleared">已排除误报</option></select></label>
+        <label><span>状态</span><select onChange={(event) => onStatus(event.target.value)} value={status}><option value="">全部状态</option><option value="high_risk">高风险待审批</option><option value="ban_pending">高风险待审批</option><option value="banned">已封禁</option><option value="ban_failed">封禁失败</option><option value="released">已解除</option><option value="cleared">已排除误报</option></select></label>
         <label><span>邮箱规则</span><select onChange={(event) => onRule(event.target.value)} value={rule}><option value="">全部规则</option><option value="email_local_part_dot">邮箱点号</option><option value="email_plus_tag">+ 标签</option></select></label>
         <form className="risk-search" onSubmit={(event) => { event.preventDefault(); onSearch(); }}><label><span>账号搜索</span><input onChange={(event) => onSearchDraft(event.target.value)} placeholder="邮箱或业务用户 ID" value={searchDraft} /></label><button aria-label="查询风险账号" title="查询" type="submit"><Search aria-hidden="true" size={15} /></button></form>
         <span className="risk-result-count">{total.toLocaleString("zh-CN")} 个账号</span>
@@ -712,7 +710,9 @@ function RiskActionRecord({ action }: { action: RiskAction }) {
       </div>
       <small>{formatDateTime(action.requested_at)} · {action.requested_by || "系统"}</small>
       <span>封禁前 {action.source_user_status_before || "-"} · {Number(action.source_api_key_count_before || 0)} 个 API Key</span>
-      <ActionResultSummary actionType={action.action_type} result={result} />
+      {action.action_status === "cancelled"
+        ? <span>未执行封禁</span>
+        : <ActionResultSummary actionType={action.action_type} result={result} />}
       {action.error_message ? <p className="risk-action-error"><strong>{action.error_code || "ActionError"}</strong><span>{action.error_message}</span></p> : null}
     </div>
   );
@@ -745,7 +745,7 @@ function AccountActionCommands({ account, onAction }: { account: RiskAccount; on
   }
   return (
     <>
-      <button aria-label={`人工封禁 ${account.email}`} className="ghost icon-button danger-button" onClick={() => onAction("ban", account)} title="人工封禁" type="button"><Ban aria-hidden="true" size={15} /></button>
+      <button aria-label={`确认封禁 ${account.email}`} className="ghost icon-button danger-button" onClick={() => onAction("ban", account)} title="确认封禁" type="button"><Ban aria-hidden="true" size={15} /></button>
       {account.manual_override_active ? <button aria-label={`撤销误报例外 ${account.email}`} className="ghost icon-button" onClick={() => onAction("override-remove", account)} title="撤销误报例外" type="button"><RotateCcw aria-hidden="true" size={15} /></button> : <button aria-label={`标记误报 ${account.email}`} className="ghost icon-button" onClick={() => onAction("false-positive", account)} title="标记误报" type="button"><BadgeCheck aria-hidden="true" size={15} /></button>}
     </>
   );

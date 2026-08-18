@@ -68,15 +68,19 @@ describe("OperationsRiskPanel", () => {
     expect(container?.textContent).not.toContain("AIGCLink 风控");
   });
 
-  it("keeps operators read-only", async () => {
+  it("lets operators manage risk actions while automatic bans stay unavailable", async () => {
     installRiskFetch();
     await renderPanel({ active: true, role: "operator" });
 
-    expect(container?.querySelector('button[aria-label="人工封禁 a.b@example.com"]')).toBeNull();
+    expect(container?.querySelector('button[aria-label="确认封禁 a.b@example.com"]')).not.toBeNull();
     const toggles = [...(container?.querySelectorAll('input[type="checkbox"]') || [])];
-    expect(toggles.length).toBe(2);
-    expect(toggles.every((item) => (item as HTMLInputElement).disabled)).toBe(true);
-    expect(container?.textContent).toContain("当前角色为只读权限");
+    expect(toggles.length).toBe(1);
+    expect((toggles[0] as HTMLInputElement).disabled).toBe(false);
+    expect(container?.textContent).toContain("人工审批");
+    expect(container?.textContent).not.toContain("当前角色为只读权限");
+    const statusFilter = container?.querySelector<HTMLSelectElement>('select');
+    expect(statusFilter?.querySelector('option[value="high_risk"]')?.textContent).toBe("高风险待审批");
+    expect(statusFilter?.querySelector('option[value="ban_pending"]')?.textContent).toBe("高风险待审批");
   });
 
   it("requires a note before an admin can submit a manual ban", async () => {
@@ -84,11 +88,11 @@ describe("OperationsRiskPanel", () => {
     await renderPanel({ active: true, role: "admin" });
 
     const ban = container?.querySelector<HTMLButtonElement>(
-      'button[aria-label="人工封禁 a.b@example.com"]',
+      'button[aria-label="确认封禁 a.b@example.com"]',
     );
     await act(async () => ban?.click());
 
-    expect(container?.textContent).toContain("确认人工封禁");
+    expect(container?.textContent).toContain("确认封禁");
     expect(container?.textContent).toContain("处置说明");
     expect(container?.querySelector<HTMLButtonElement>('[role="dialog"] button[type="submit"]')?.disabled).toBe(true);
   });
@@ -122,6 +126,9 @@ describe("OperationsRiskPanel", () => {
     expect(container?.textContent).toContain("部分解除");
     expect(container?.textContent).toContain("已恢复 1 · 冲突 1");
     expect(container?.textContent).toContain("源状态已变化");
+    expect(container?.textContent).toContain("自动封禁已取消");
+    expect(container?.textContent).toContain("未执行封禁");
+    expect(container?.textContent).not.toContain("0 个 API Key 已停用");
     expect(container?.textContent).not.toContain("key-secret-id");
   });
 
@@ -234,6 +241,18 @@ function installRiskFetch(options: { paginated?: boolean; withDetail?: boolean }
                 requested_by: "admin-1",
                 requested_at: "2026-08-17T12:00:00Z",
                 completed_at: "2026-08-17T12:00:01Z",
+              }, {
+                risk_action_id: "action-legacy-auto-ban",
+                action_type: "auto_ban",
+                action_status: "cancelled",
+                decision_reason: "email_and_shared_ip",
+                source_user_status_before: "active",
+                source_api_key_count_before: 1,
+                error_code: "AutoBanDisabled",
+                error_message: "Automatic bans require manual approval",
+                requested_by: "system:risk-detector",
+                requested_at: "2026-08-17T11:59:00Z",
+                completed_at: "2026-08-18T14:32:19Z",
               }],
             }
           : account
