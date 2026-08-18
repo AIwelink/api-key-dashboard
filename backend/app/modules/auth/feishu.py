@@ -121,7 +121,28 @@ async def resolve_feishu_user(
 ) -> dict[str, Any]:
     current = await db.users.find_one({"feishu_identity.identity_key": identity.identity_key})
     if current is not None:
+        merged_target_user_id = _text(current.get("merged_into_user_id"))
+        if merged_target_user_id:
+            if purpose == "bind" and target_user_id != merged_target_user_id:
+                raise FeishuBindingConflictError(
+                    "该飞书账号已绑定其他用户，请联系管理员",
+                    code="identity_already_bound",
+                )
+            return await _resolve_identity_proxy(
+                db,
+                source=current,
+                identity=identity,
+                target_user_id=merged_target_user_id,
+                complete_binding=purpose == "bind",
+            )
         if purpose == "bind" and target_user_id and current.get("_id") != target_user_id:
+            if _is_recoverable_pending_identity_source(current):
+                return await _recover_pending_identity(
+                    db,
+                    source=current,
+                    identity=identity,
+                    target_user_id=target_user_id,
+                )
             raise FeishuBindingConflictError(
                 "该飞书账号已绑定其他用户，请联系管理员",
                 code="identity_already_bound",
@@ -190,6 +211,200 @@ async def resolve_feishu_user(
     if purpose == "bind":
         raise FeishuAuthError("待绑定的本地用户不存在", code="target_user_not_found")
     return await _create_pending_user(db, identity)
+
+
+def has_feishu_binding(user: dict[str, Any]) -> bool:
+    identity = user.get("feishu_identity") or {}
+    return bool(identity.get("identity_key") or identity.get("source_user_id"))
+
+
+def _is_recoverable_pending_identity_source(user: dict[str, Any]) -> bool:
+    return (
+        user.get("created_by") == "feishu"
+        and user.get("authorization_status") == "pending"
+        and user.get("email_is_placeholder") is True
+        and user.get("role") == "viewer"
+        and user.get("status") == "active"
+        and not user.get("merged_into_user_id")
+    )
+
+
+async def _recover_pending_identity(
+    db: AsyncIOMotorDatabase,
+    *,
+    source: dict[str, Any],
+    identity: FeishuIdentity,
+    target_user_id: str,
+) -> dict[str, Any]:
+    target = await db.users.find_one({"_id": target_user_id})
+    if target is None:
+        raise FeishuAuthError("待绑定的本地用户不存在", code="target_user_not_found")
+    _require_enabled_user(target)
+    _require_available_proxy_target(target, source_user_id=str(source["_id"]))
+
+    timestamp = now_utc()
+    merged_source = await db.users.find_one_and_update(
+        {
+            "_id": source["_id"],
+            "feishu_identity.identity_key": identity.identity_key,
+            "created_by": "feishu",
+            "authorization_status": "pending",
+            "email_is_placeholder": True,
+            "role": "viewer",
+            "status": "active",
+            "merged_into_user_id": {"$exists": False},
+        },
+        {
+            "$set": {
+                "merged_into_user_id": target_user_id,
+                "merged_at": timestamp,
+                "status": "disabled",
+                "updated_by": "feishu",
+                "updated_at": timestamp,
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if merged_source is None:
+        latest_source = await db.users.find_one({"_id": source["_id"]})
+        if latest_source is None or latest_source.get("merged_into_user_id") != target_user_id:
+            raise FeishuBindingConflictError(
+                "飞书账号绑定发生冲突，请联系管理员",
+                code="binding_conflict",
+            )
+        merged_source = latest_source
+
+    recovered_target = await _attach_identity_proxy(
+        db,
+        target=target,
+        source_user_id=str(merged_source["_id"]),
+        identity=identity,
+        timestamp=timestamp,
+    )
+    await write_audit_log(
+        db,
+        actor=None,
+        action="auth.feishu.pending_identity_merged",
+        resource_type="user",
+        resource_id=str(recovered_target["_id"]),
+        after={
+            "result_code": "pending_identity_merged",
+            "source_user_id": str(merged_source["_id"]),
+            "bound_via": "password_binding_recovery",
+        },
+    )
+    return recovered_target
+
+
+async def _resolve_identity_proxy(
+    db: AsyncIOMotorDatabase,
+    *,
+    source: dict[str, Any],
+    identity: FeishuIdentity,
+    target_user_id: str,
+    complete_binding: bool,
+) -> dict[str, Any]:
+    target = await db.users.find_one({"_id": target_user_id})
+    if target is None:
+        raise FeishuAuthError("飞书身份关联的本地用户不存在", code="target_user_not_found")
+    _require_enabled_user(target)
+    _require_available_proxy_target(target, source_user_id=str(source["_id"]))
+    timestamp = now_utc()
+
+    if complete_binding or not (target.get("feishu_identity") or {}).get("source_user_id"):
+        return await _attach_identity_proxy(
+            db,
+            target=target,
+            source_user_id=str(source["_id"]),
+            identity=identity,
+            timestamp=timestamp,
+        )
+
+    updates = _identity_proxy_login_updates(identity, timestamp=timestamp)
+    result = await db.users.update_one(
+        {
+            "_id": target_user_id,
+            "status": {"$ne": "disabled"},
+            "feishu_identity.source_user_id": str(source["_id"]),
+        },
+        {"$set": updates},
+    )
+    if getattr(result, "matched_count", 1) == 0:
+        raise FeishuBindingConflictError(
+            "飞书账号绑定发生冲突，请联系管理员",
+            code="binding_conflict",
+        )
+    return target
+
+
+async def _attach_identity_proxy(
+    db: AsyncIOMotorDatabase,
+    *,
+    target: dict[str, Any],
+    source_user_id: str,
+    identity: FeishuIdentity,
+    timestamp: datetime,
+) -> dict[str, Any]:
+    recovered_target = await db.users.find_one_and_update(
+        {
+            "_id": target["_id"],
+            "status": {"$ne": "disabled"},
+            "feishu_identity.identity_key": {"$exists": False},
+            "$or": [
+                {"feishu_identity.source_user_id": {"$exists": False}},
+                {"feishu_identity.source_user_id": source_user_id},
+            ],
+        },
+        {
+            "$set": {
+                **_identity_proxy_login_updates(identity, timestamp=timestamp),
+                "feishu_identity.source_user_id": source_user_id,
+                "feishu_identity.bound_via": "password_binding_recovery",
+                "feishu_identity.bound_at": timestamp,
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if recovered_target is not None:
+        return recovered_target
+
+    latest_target = await db.users.find_one({"_id": target["_id"]})
+    if (
+        latest_target is not None
+        and latest_target.get("status") != "disabled"
+        and (latest_target.get("feishu_identity") or {}).get("source_user_id") == source_user_id
+        and not (latest_target.get("feishu_identity") or {}).get("identity_key")
+    ):
+        return latest_target
+    raise FeishuBindingConflictError(
+        "飞书账号绑定发生冲突，请联系管理员",
+        code="binding_conflict",
+    )
+
+
+def _require_available_proxy_target(target: dict[str, Any], *, source_user_id: str) -> None:
+    target_identity = target.get("feishu_identity") or {}
+    target_identity_key = target_identity.get("identity_key")
+    target_source_user_id = target_identity.get("source_user_id")
+    if target_identity_key or (target_source_user_id and target_source_user_id != source_user_id):
+        raise FeishuBindingConflictError(
+            "当前用户已绑定其他飞书账号，请联系管理员",
+            code="user_already_bound",
+        )
+
+
+def _identity_proxy_login_updates(
+    identity: FeishuIdentity,
+    *,
+    timestamp: datetime,
+) -> dict[str, Any]:
+    return {
+        "feishu_identity.name": identity.name,
+        "feishu_identity.email": _normalize_email(identity.email),
+        "feishu_identity.avatar_url": identity.avatar_url,
+        "last_feishu_login_at": timestamp,
+        "updated_at": timestamp,
+    }
 
 
 async def consume_login_ticket(

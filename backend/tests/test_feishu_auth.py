@@ -244,6 +244,267 @@ class FeishuIdentityResolutionTests(unittest.IsolatedAsyncioTestCase):
             {"result_code": "bound", "bound_via": "password_binding"},
         )
 
+    async def test_password_binding_recovers_auto_provisioned_pending_identity(self) -> None:
+        source = {
+            "_id": "feishu-pending",
+            "email": "feishu-pending@identity.invalid",
+            "email_is_placeholder": True,
+            "name": "Feishu Member",
+            "role": "viewer",
+            "status": "active",
+            "authorization_status": "pending",
+            "created_by": "feishu",
+            "feishu_identity": {"identity_key": "tenant-a:union:union-1"},
+        }
+        target = {
+            "_id": "owner@example.com",
+            "email": "owner@example.com",
+            "name": "Owner",
+            "role": "owner",
+            "status": "active",
+            "authorization_status": "active",
+        }
+        merged_source = {
+            **source,
+            "status": "disabled",
+            "merged_into_user_id": target["_id"],
+        }
+        recovered_target = {
+            **target,
+            "feishu_identity": {
+                "source_user_id": source["_id"],
+                "bound_via": "password_binding_recovery",
+            },
+        }
+        users = SimpleNamespace(
+            find_one=AsyncMock(side_effect=[source, target]),
+            update_one=AsyncMock(),
+            find_one_and_update=AsyncMock(side_effect=[merged_source, recovered_target]),
+            insert_one=AsyncMock(),
+        )
+        timestamp = datetime(2026, 8, 18, 14, 30, tzinfo=UTC)
+
+        with (
+            patch.object(feishu, "now_utc", return_value=timestamp),
+            patch.object(feishu, "write_audit_log", AsyncMock()) as audit_mock,
+        ):
+            result = await feishu.resolve_feishu_user(
+                SimpleNamespace(users=users),
+                identity=identity(email=None),
+                purpose="bind",
+                target_user_id=target["_id"],
+            )
+
+        self.assertEqual(result["_id"], target["_id"])
+        source_call, target_call = users.find_one_and_update.await_args_list
+        self.assertEqual(
+            source_call.args[0],
+            {
+                "_id": source["_id"],
+                "feishu_identity.identity_key": "tenant-a:union:union-1",
+                "created_by": "feishu",
+                "authorization_status": "pending",
+                "email_is_placeholder": True,
+                "role": "viewer",
+                "status": "active",
+                "merged_into_user_id": {"$exists": False},
+            },
+        )
+        self.assertEqual(source_call.args[1]["$set"]["merged_into_user_id"], target["_id"])
+        self.assertEqual(source_call.args[1]["$set"]["status"], "disabled")
+        target_update = target_call.args[1]["$set"]
+        self.assertEqual(target_update["feishu_identity.source_user_id"], source["_id"])
+        self.assertEqual(target_update["feishu_identity.bound_via"], "password_binding_recovery")
+        self.assertNotIn("feishu_identity.identity_key", target_update)
+        self.assertEqual(audit_mock.await_args.kwargs["action"], "auth.feishu.pending_identity_merged")
+        self.assertEqual(
+            audit_mock.await_args.kwargs["after"],
+            {
+                "result_code": "pending_identity_merged",
+                "source_user_id": source["_id"],
+                "bound_via": "password_binding_recovery",
+            },
+        )
+
+    async def test_merged_identity_login_resolves_active_target(self) -> None:
+        source = {
+            "_id": "feishu-pending",
+            "status": "disabled",
+            "merged_into_user_id": "owner@example.com",
+            "feishu_identity": {"identity_key": "tenant-a:union:union-1"},
+        }
+        target = {
+            "_id": "owner@example.com",
+            "status": "active",
+            "role": "owner",
+            "feishu_identity": {"source_user_id": source["_id"]},
+        }
+        users = SimpleNamespace(
+            find_one=AsyncMock(side_effect=[source, target]),
+            update_one=AsyncMock(return_value=SimpleNamespace(matched_count=1)),
+            find_one_and_update=AsyncMock(),
+            insert_one=AsyncMock(),
+        )
+
+        result = await feishu.resolve_feishu_user(
+            SimpleNamespace(users=users),
+            identity=identity(email=None),
+            purpose="login",
+            target_user_id=None,
+        )
+
+        self.assertEqual(result["_id"], target["_id"])
+        self.assertEqual(
+            users.update_one.await_args.args[0],
+            {
+                "_id": target["_id"],
+                "status": {"$ne": "disabled"},
+                "feishu_identity.source_user_id": source["_id"],
+            },
+        )
+
+    async def test_same_target_binding_completes_interrupted_proxy_merge(self) -> None:
+        source = {
+            "_id": "feishu-pending",
+            "status": "disabled",
+            "merged_into_user_id": "owner@example.com",
+            "feishu_identity": {"identity_key": "tenant-a:union:union-1"},
+        }
+        target = {
+            "_id": "owner@example.com",
+            "status": "active",
+            "role": "owner",
+        }
+        recovered_target = {
+            **target,
+            "feishu_identity": {"source_user_id": source["_id"]},
+        }
+        users = SimpleNamespace(
+            find_one=AsyncMock(side_effect=[source, target]),
+            update_one=AsyncMock(),
+            find_one_and_update=AsyncMock(return_value=recovered_target),
+            insert_one=AsyncMock(),
+        )
+
+        result = await feishu.resolve_feishu_user(
+            SimpleNamespace(users=users),
+            identity=identity(email=None),
+            purpose="bind",
+            target_user_id=target["_id"],
+        )
+
+        self.assertEqual(result["_id"], target["_id"])
+        self.assertEqual(
+            users.find_one_and_update.await_args.args[0]["_id"],
+            target["_id"],
+        )
+
+    async def test_password_binding_does_not_take_over_nonrecoverable_identity(self) -> None:
+        base_source = {
+            "_id": "feishu-pending",
+            "email": "feishu-pending@identity.invalid",
+            "email_is_placeholder": True,
+            "role": "viewer",
+            "status": "active",
+            "authorization_status": "pending",
+            "created_by": "feishu",
+            "feishu_identity": {"identity_key": "tenant-a:union:union-1"},
+        }
+        cases = {
+            "active authorization": {"authorization_status": "active"},
+            "real email": {"email_is_placeholder": False},
+            "privileged role": {"role": "maintainer"},
+            "not auto provisioned": {"created_by": "admin@example.com"},
+            "disabled source": {"status": "disabled"},
+        }
+
+        for label, changes in cases.items():
+            with self.subTest(label=label):
+                source = {**base_source, **changes}
+                users = SimpleNamespace(
+                    find_one=AsyncMock(return_value=source),
+                    update_one=AsyncMock(),
+                    find_one_and_update=AsyncMock(),
+                    insert_one=AsyncMock(),
+                )
+                with self.assertRaises(feishu.FeishuBindingConflictError) as raised:
+                    await feishu.resolve_feishu_user(
+                        SimpleNamespace(users=users),
+                        identity=identity(email=None),
+                        purpose="bind",
+                        target_user_id="owner@example.com",
+                    )
+
+                self.assertEqual(raised.exception.code, "identity_already_bound")
+                users.find_one_and_update.assert_not_awaited()
+
+    async def test_password_binding_recovery_rejects_disabled_target(self) -> None:
+        source = {
+            "_id": "feishu-pending",
+            "email_is_placeholder": True,
+            "role": "viewer",
+            "status": "active",
+            "authorization_status": "pending",
+            "created_by": "feishu",
+            "feishu_identity": {"identity_key": "tenant-a:union:union-1"},
+        }
+        target = {
+            "_id": "owner@example.com",
+            "status": "disabled",
+            "role": "owner",
+        }
+        users = SimpleNamespace(
+            find_one=AsyncMock(side_effect=[source, target]),
+            update_one=AsyncMock(),
+            find_one_and_update=AsyncMock(),
+            insert_one=AsyncMock(),
+        )
+
+        with self.assertRaises(feishu.FeishuAuthError) as raised:
+            await feishu.resolve_feishu_user(
+                SimpleNamespace(users=users),
+                identity=identity(email=None),
+                purpose="bind",
+                target_user_id=target["_id"],
+            )
+
+        self.assertEqual(raised.exception.code, "user_disabled")
+        users.find_one_and_update.assert_not_awaited()
+
+    async def test_password_binding_recovery_rejects_target_with_another_identity(self) -> None:
+        source = {
+            "_id": "feishu-pending",
+            "email_is_placeholder": True,
+            "role": "viewer",
+            "status": "active",
+            "authorization_status": "pending",
+            "created_by": "feishu",
+            "feishu_identity": {"identity_key": "tenant-a:union:union-1"},
+        }
+        target = {
+            "_id": "owner@example.com",
+            "status": "active",
+            "role": "owner",
+            "feishu_identity": {"identity_key": "tenant-a:union:another-identity"},
+        }
+        users = SimpleNamespace(
+            find_one=AsyncMock(side_effect=[source, target]),
+            update_one=AsyncMock(),
+            find_one_and_update=AsyncMock(),
+            insert_one=AsyncMock(),
+        )
+
+        with self.assertRaises(feishu.FeishuBindingConflictError) as raised:
+            await feishu.resolve_feishu_user(
+                SimpleNamespace(users=users),
+                identity=identity(email=None),
+                purpose="bind",
+                target_user_id=target["_id"],
+            )
+
+        self.assertEqual(raised.exception.code, "user_already_bound")
+        users.find_one_and_update.assert_not_awaited()
+
     async def test_unknown_identity_creates_pending_user(self) -> None:
         self.assertTrue(hasattr(feishu, "resolve_feishu_user"))
         users = SimpleNamespace(
