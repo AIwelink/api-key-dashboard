@@ -1,4 +1,5 @@
 import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 
 type GrowthCreateModalProps = {
   children: ReactNode;
@@ -112,7 +113,7 @@ export function GrowthCreateModal({
     submitGrowthCreateModal(event, saving, submitDisabled, onSubmit);
   };
 
-  return (
+  const modal = (
     <div className="growth-create-modal-backdrop" onMouseDown={close} role="presentation">
       <section
         aria-labelledby="growth-create-modal-title"
@@ -143,4 +144,6 @@ export function GrowthCreateModal({
       </section>
     </div>
   );
+
+  return typeof document === "undefined" ? modal : createPortal(modal, document.body);
 }
