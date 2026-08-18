@@ -100,7 +100,7 @@ def decode_access_token(token: str) -> dict[str, Any]:
     return data
 
 
-async def get_current_user(
+async def get_authenticated_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
@@ -112,6 +112,19 @@ async def get_current_user(
     user = await db.users.find_one({"_id": payload.get("sub")})
     if user is None or user.get("status") == "disabled":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    return user
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict[str, Any]:
+    user = await get_authenticated_user(credentials=credentials, db=db)
+    if user.get("actor_type") != "api_token" and user.get("authorization_status", "active") != "active":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="尚未分配系统权限，请联系管理员",
+        )
     return user
 
 

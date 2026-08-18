@@ -25,6 +25,15 @@ class Settings(BaseSettings):
 
     access_token_expire_minutes: int = 10080
 
+    feishu_auth_enabled: bool = False
+    feishu_app_id: str | None = None
+    feishu_app_secret: str | None = None
+    feishu_redirect_uri: str | None = None
+    feishu_allowed_tenant_keys: str = ""
+    feishu_authorize_base_url: str = "https://accounts.feishu.cn"
+    feishu_open_api_base_url: str = "https://open.feishu.cn"
+    feishu_request_timeout_seconds: float = 8.0
+
     initial_owner_email: str | None = None
     initial_owner_name: str = "Admin"
     initial_owner_password: str | None = None
@@ -51,6 +60,13 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    def allowed_feishu_tenant_keys(self) -> set[str]:
+        return {
+            value
+            for item in self.feishu_allowed_tenant_keys.split(",")
+            if (value := item.strip())
+        }
 
 
 @lru_cache

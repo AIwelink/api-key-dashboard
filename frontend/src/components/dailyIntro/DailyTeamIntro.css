@@ -121,16 +121,16 @@
   animation: daily-intro-skip-out 220ms ease both;
 }
 
-.daily-team-intro:is([data-stage="first"], [data-stage="second"]) + .app-shell {
+.daily-team-intro:is([data-stage="first"], [data-stage="second"]) + :is(.app-shell, .auth-shell, .pending-auth-page, .auth-loading-page) {
   filter: blur(6px);
   transform: scale(.994);
 }
 
-.daily-team-intro + .app-shell {
+.daily-team-intro + :is(.app-shell, .auth-shell, .pending-auth-page, .auth-loading-page) {
   transform-origin: center;
 }
 
-.daily-team-intro[data-stage="exiting"] + .app-shell {
+.daily-team-intro[data-stage="exiting"] + :is(.app-shell, .auth-shell, .pending-auth-page, .auth-loading-page) {
   animation: daily-intro-workspace-reveal 900ms cubic-bezier(.16, 1, .3, 1) both;
 }
 
@@ -226,7 +226,7 @@
   .daily-team-intro-logo,
   .daily-team-intro-message span,
   .daily-team-intro-skip,
-  .daily-team-intro + .app-shell {
+  .daily-team-intro + :is(.app-shell, .auth-shell, .pending-auth-page, .auth-loading-page) {
     filter: none !important;
     transform: none !important;
   }
@@ -236,7 +236,7 @@
   .daily-team-intro-logo,
   .daily-team-intro-message span,
   .daily-team-intro-skip,
-  .daily-team-intro + .app-shell {
+  .daily-team-intro + :is(.app-shell, .auth-shell, .pending-auth-page, .auth-loading-page) {
     animation: none !important;
     transition: none !important;
   }

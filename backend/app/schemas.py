@@ -55,6 +55,53 @@ class LoginResponse(BaseModel):
     user: dict[str, Any]
 
 
+class LoginBindingRequiredResponse(BaseModel):
+    status: Literal["binding_required"] = "binding_required"
+    authorization_url: str
+    session_id: str
+    ticket: str
+    expires_at: datetime
+
+    @field_validator("expires_at")
+    @classmethod
+    def require_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("expires_at must include timezone")
+        return value
+
+
+class FeishuAuthorizationSessionResponse(BaseModel):
+    session_id: str
+    authorization_url: str
+    ticket: str
+    expires_at: datetime
+
+    @field_validator("expires_at")
+    @classmethod
+    def require_expiration_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("expires_at must include timezone")
+        return value
+
+
+class FeishuAuthorizationSessionStatusResponse(BaseModel):
+    session_id: str
+    status: Literal["pending", "processing", "completed", "failed"]
+    error_code: str | None = None
+    expires_at: datetime
+
+    @field_validator("expires_at")
+    @classmethod
+    def require_status_expiration_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("expires_at must include timezone")
+        return value
+
+
+class FeishuTicketExchangeRequest(BaseModel):
+    ticket: str = Field(min_length=20, max_length=256)
+
+
 class FrontendPresenceHeartbeat(BaseModel):
     client_id: str = Field(min_length=8, max_length=100, pattern=r"^[A-Za-z0-9._:-]+$")
     session_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._:-]+$")

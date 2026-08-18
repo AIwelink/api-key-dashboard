@@ -1,8 +1,9 @@
 import { FormEvent, useEffect, useState } from "react";
+import { RefreshCw, UserRoundCog } from "lucide-react";
 import { api } from "../api/client";
 import { usePageAutoRefresh } from "../hooks/usePageAutoRefresh";
 import type { User, UserRole, UserRoleCatalog, UserStatus } from "../types";
-import { errorMessage } from "../utils/format";
+import { errorMessage, formatDateTime } from "../utils/format";
 
 type Props = {
   canManageOwners: boolean;
@@ -39,7 +40,7 @@ export function UsersPage({ canManageOwners, token, showToast }: Props) {
 
   const loadUsers = async () => {
     const data = await api<{ items: User[] }>("/users", token);
-    setUsers(data.items);
+    setUsers(sortUsersForManagement(data.items));
   };
 
   const loadPageData = async () => {
@@ -47,7 +48,7 @@ export function UsersPage({ canManageOwners, token, showToast }: Props) {
       api<{ items: User[] }>("/users", token),
       api<UserRoleCatalog>("/settings/user-roles", token),
     ]);
-    setUsers(usersData.items);
+    setUsers(sortUsersForManagement(usersData.items));
     setRoleCatalog(settingsData);
   };
 
@@ -131,7 +132,11 @@ export function UsersPage({ canManageOwners, token, showToast }: Props) {
       await loadUsers();
       setEditingUser(updated);
       setEditForm((current) => ({ ...current, password: "" }));
-      showToast(password ? "用户已更新，密码已重置" : "用户已更新");
+      showToast(
+        editingUser.authorization_status === "pending"
+          ? "权限已分配"
+          : password ? "用户已更新，密码已重置" : "用户已更新",
+      );
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
@@ -152,7 +157,8 @@ export function UsersPage({ canManageOwners, token, showToast }: Props) {
           <h2>用户</h2>
           <p>系统不开放注册，用户由后台创建。</p>
         </div>
-        <button onClick={() => loadPageData().catch((error) => showToast(errorMessage(error), true))} type="button">
+        <button aria-label="刷新用户" onClick={() => loadPageData().catch((error) => showToast(errorMessage(error), true))} type="button">
+          <RefreshCw aria-hidden="true" />
           刷新
         </button>
       </div>
@@ -161,13 +167,28 @@ export function UsersPage({ canManageOwners, token, showToast }: Props) {
           <h3>用户列表</h3>
           <div className="list">
             {users.map((item) => (
-              <div className={`list-item user-list-item ${editingUser && userIdentity(editingUser) === userIdentity(item) ? "selected" : ""}`} key={item.id || item.email}>
+              <div className={`list-item user-list-item ${item.authorization_status === "pending" ? "pending-authorization" : ""} ${editingUser && userIdentity(editingUser) === userIdentity(item) ? "selected" : ""}`} key={item.id || item.email || item.feishu_name || "user"}>
                 <div className="user-card-main">
-                  <div className="user-card-head">
-                    <strong>{item.name || "未命名用户"}</strong>
-                    <span className={`status-pill ${statusTone(item.status)}`}>{statusLabel(item.status)}</span>
+                  <div className="user-card-identity">
+                    <span className="user-feishu-avatar" aria-hidden={!item.feishu_avatar_url}>
+                      {item.feishu_avatar_url
+                        ? <img src={item.feishu_avatar_url} alt="" />
+                        : (item.name || item.email || "飞").slice(0, 1).toUpperCase()}
+                    </span>
+                    <div className="user-card-copy">
+                      <div className="user-card-head">
+                        <strong>{item.name || "未命名用户"}</strong>
+                        <span className={`status-pill ${statusTone(item.status)}`}>{statusLabel(item.status)}</span>
+                      </div>
+                      <div className="muted">{userEmailLabel(item)}</div>
+                    </div>
                   </div>
-                  <div className="muted">{item.email}</div>
+                  <div className="user-feishu-meta">
+                    <span className={`user-feishu-status ${item.authorization_status === "pending" ? "is-pending" : item.feishu_bound ? "is-bound" : ""}`}>
+                      {authorizationLabel(item)}
+                    </span>
+                    {item.last_feishu_login_at && <span>最后登录 {formatDateTime(item.last_feishu_login_at)}</span>}
+                  </div>
                   <div className="muted">角色：{roleLabel(item.role, roleCatalog)}</div>
                 </div>
                 <div className="user-list-actions">
@@ -177,7 +198,8 @@ export function UsersPage({ canManageOwners, token, showToast }: Props) {
                     onClick={() => startEditing(item)}
                     type="button"
                   >
-                    编辑
+                    <UserRoundCog aria-hidden="true" />
+                    {userManagementActionLabel(item)}
                   </button>
                 </div>
               </div>
@@ -188,8 +210,8 @@ export function UsersPage({ canManageOwners, token, showToast }: Props) {
         <section className="panel">
           <div className="panel-header">
             <div>
-              <h3>{isEditing ? "编辑用户" : "添加用户"}</h3>
-              <p>{isEditing ? editingUser?.email : "创建后可在这里调整角色、状态或重置密码。"}</p>
+              <h3>{isEditing ? userManagementActionLabel(editingUser as User) : "添加用户"}</h3>
+              <p>{isEditing && editingUser ? userEmailLabel(editingUser) : "创建后可在这里调整角色、状态或重置密码。"}</p>
             </div>
             {isEditing && (
               <button className="ghost compact-button" disabled={busy} onClick={cancelEditing} type="button">
@@ -199,8 +221,14 @@ export function UsersPage({ canManageOwners, token, showToast }: Props) {
           </div>
           {isEditing ? (
             <form className="form-grid single" onSubmit={submitEdit}>
+              {editingUser?.authorization_status === "pending" && (
+                <div className="user-authorization-notice">
+                  <strong>飞书身份已确认</strong>
+                  <span>选择角色并分配权限后，该成员即可进入系统。</span>
+                </div>
+              )}
               <label>
-                邮箱 <input value={editingUser?.email || ""} disabled readOnly />
+                邮箱 <input value={editingUser ? userEmailLabel(editingUser) : ""} disabled readOnly />
               </label>
               <label>
                 名称 <input value={editForm.name} onChange={(event) => setEditField("name", event.target.value)} required />
@@ -229,12 +257,14 @@ export function UsersPage({ canManageOwners, token, showToast }: Props) {
                   ))}
                 </select>
               </label>
-              <label>
-                重置密码 <input minLength={8} value={editForm.password} onChange={(event) => setEditField("password", event.target.value)} placeholder="留空则不修改密码" type="password" />
-              </label>
+              {editingUser?.authorization_status !== "pending" && !editingUser?.email_is_placeholder && (
+                <label>
+                  重置密码 <input minLength={8} value={editForm.password} onChange={(event) => setEditField("password", event.target.value)} placeholder="留空则不修改密码" type="password" />
+                </label>
+              )}
               <div className="button-row">
                 <button disabled={busy} type="submit">
-                  {busy ? "保存中..." : "保存修改"}
+                  {busy ? "保存中..." : userManagementActionLabel(editingUser as User)}
                 </button>
                 <button className="ghost" disabled={busy} onClick={cancelEditing} type="button">
                   取消
@@ -282,6 +312,11 @@ function userIdentity(user: User) {
   return user.id || user.email;
 }
 
+export function userEmailLabel(user: Pick<User, "email" | "email_is_placeholder">) {
+  if (user.email_is_placeholder || !user.email) return "飞书未提供邮箱";
+  return user.email;
+}
+
 function normalizeRole(value: string): UserRole {
   return value || "maintainer";
 }
@@ -311,6 +346,23 @@ function roleLabel(value: UserRole, catalog: UserRoleCatalog | null) {
 
 export function canEditUser(user: Pick<User, "role">, canManageOwners: boolean) {
   return user.role !== "owner" || canManageOwners;
+}
+
+export function sortUsersForManagement(users: User[]) {
+  return [...users].sort((left, right) => {
+    const leftRank = left.authorization_status === "pending" ? 0 : 1;
+    const rightRank = right.authorization_status === "pending" ? 0 : 1;
+    return leftRank - rightRank;
+  });
+}
+
+export function authorizationLabel(user: Pick<User, "authorization_status" | "feishu_bound">) {
+  if (user.authorization_status === "pending") return "飞书用户 · 待分配权限";
+  return user.feishu_bound ? "飞书已绑定" : "未绑定飞书";
+}
+
+export function userManagementActionLabel(user: Pick<User, "authorization_status">) {
+  return user.authorization_status === "pending" ? "分配权限" : "编辑";
 }
 
 function normalizeStatus(value: string | undefined): UserStatus {

@@ -91,6 +91,480 @@
   }
 }
 
+/* Feishu authentication and authorization */
+.auth-shell,
+.pending-auth-page,
+.auth-loading-page {
+  min-height: 100vh;
+  min-width: 0;
+  background: linear-gradient(132deg, #fff9fb 0%, #f5f9ff 48%, #fff 72%, #fff2f6 100%);
+}
+
+.auth-shell {
+  display: grid;
+  place-items: center;
+  padding: 36px 20px;
+  overflow: hidden auto;
+}
+
+.auth-experience {
+  display: grid;
+  width: min(420px, 100%);
+  min-width: 0;
+  gap: 14px;
+}
+
+.auth-brand-lockup,
+.pending-auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.auth-brand-lockup {
+  padding-inline: 4px;
+  animation: auth-rise 420ms var(--ease-enter) both;
+}
+
+.auth-brand-lockup img,
+.pending-auth-brand img {
+  display: block;
+  width: 42px;
+  height: 42px;
+  object-fit: contain;
+}
+
+.auth-brand-lockup > div {
+  display: grid;
+  gap: 1px;
+}
+
+.auth-brand-lockup strong,
+.pending-auth-brand strong {
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.auth-brand-lockup span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.auth-experience .auth-panel {
+  position: relative;
+  width: 100%;
+  max-width: none;
+  min-height: 390px;
+  margin: 0;
+  padding: 28px;
+  overflow: hidden;
+  animation: auth-panel-enter 520ms var(--ease-enter) 45ms both;
+}
+
+.auth-experience .auth-panel::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: linear-gradient(90deg, #3370ff 0 42%, var(--accent) 72%, #efb4c4 100%);
+  content: "";
+}
+
+.auth-heading {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 22px;
+}
+
+.auth-kicker,
+.pending-auth-label {
+  color: #42628f;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.auth-heading h1 {
+  font-size: 24px;
+  line-height: 1.25;
+}
+
+.feishu-login-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 48px;
+  gap: 9px;
+  background: #3370ff;
+  box-shadow: 0 8px 18px rgba(51, 112, 255, 0.18);
+  font-weight: 750;
+}
+
+.feishu-login-button:hover:not(:disabled) {
+  background: #245bdb;
+}
+
+.feishu-login-button svg,
+.pending-auth-actions svg,
+.user-list-actions svg,
+.topbar > button svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+}
+
+.auth-state {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  min-height: 70px;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.auth-state.is-active {
+  animation: auth-state-enter 260ms var(--ease-enter) both;
+}
+
+.auth-state-mark {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid #d7e3ff;
+  border-radius: 50%;
+  background: #f1f6ff;
+  color: #3370ff;
+}
+
+.auth-state-mark svg {
+  width: 17px;
+  height: 17px;
+}
+
+.auth-state > span:last-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.auth-state strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.auth-state small {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.auth-inline-error {
+  margin-top: 10px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.password-login {
+  margin-top: 12px;
+}
+
+.password-login summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 38px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  list-style: none;
+}
+
+.password-login summary::-webkit-details-marker {
+  display: none;
+}
+
+.password-login summary svg {
+  width: 16px;
+  height: 16px;
+  transition: transform var(--motion-fast) var(--ease-state);
+}
+
+.password-login[open] summary svg {
+  transform: rotate(180deg);
+}
+
+.password-login .form-grid {
+  padding-top: 8px;
+  animation: auth-state-enter 240ms var(--ease-enter) both;
+}
+
+.auth-password-submit {
+  margin-top: 2px;
+}
+
+.auth-footnote {
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+  animation: auth-rise 420ms var(--ease-enter) 100ms both;
+}
+
+.auth-spinner {
+  animation: auth-spin 900ms linear infinite;
+}
+
+.pending-auth-page,
+.auth-loading-page {
+  display: grid;
+  place-items: center;
+  padding: 28px;
+}
+
+.pending-auth-brand {
+  position: fixed;
+  top: 24px;
+  left: 28px;
+}
+
+.pending-auth-panel {
+  display: grid;
+  justify-items: center;
+  width: min(620px, 100%);
+  gap: 10px;
+  padding: 46px 20px;
+  border-block: 1px solid var(--line);
+  text-align: center;
+  animation: auth-panel-enter 520ms var(--ease-enter) both;
+}
+
+.pending-auth-avatar {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 6px;
+  border: 1px solid #d7e3ff;
+  border-radius: 50%;
+  background: #f1f6ff;
+  color: #3370ff;
+  overflow: hidden;
+}
+
+.pending-auth-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pending-auth-avatar svg {
+  width: 27px;
+  height: 27px;
+}
+
+.pending-auth-panel h1 {
+  max-width: 520px;
+  font-size: 24px;
+  line-height: 1.45;
+}
+
+.pending-auth-panel p {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pending-auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.pending-auth-actions button,
+.topbar > button,
+.user-list-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.auth-loading-page {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.user-list-item.pending-authorization {
+  border-color: #bfd1ff;
+  background: #f8faff;
+  box-shadow: inset 3px 0 #3370ff;
+}
+
+.user-card-identity {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+}
+
+.user-card-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.user-feishu-avatar {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: #f5f7fa;
+  color: #52606d;
+  font-size: 13px;
+  font-weight: 800;
+  overflow: hidden;
+}
+
+.user-feishu-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.user-feishu-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 9px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.user-feishu-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 21px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: #f0f2f5;
+  color: #66717c;
+  font-weight: 750;
+}
+
+.user-feishu-status.is-bound {
+  background: #eaf6ef;
+  color: var(--success);
+}
+
+.user-feishu-status.is-pending {
+  background: #eaf0ff;
+  color: #245bdb;
+}
+
+.user-authorization-notice {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border-left: 3px solid #3370ff;
+  background: #f5f8ff;
+}
+
+.user-authorization-notice strong {
+  font-size: 13px;
+}
+
+.user-authorization-notice span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@keyframes auth-rise {
+  from { opacity: 0; transform: translate3d(0, 6px, 0); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes auth-panel-enter {
+  from { opacity: 0; transform: translate3d(0, 10px, 0) scale(.99); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes auth-state-enter {
+  from { opacity: 0; transform: translate3d(0, 4px, 0); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes auth-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 560px) {
+  .auth-shell {
+    align-items: start;
+    padding: 22px 14px;
+  }
+
+  .auth-experience .auth-panel {
+    min-height: 370px;
+    padding: 24px 18px;
+  }
+
+  .pending-auth-page {
+    padding: 84px 18px 28px;
+  }
+
+  .pending-auth-brand {
+    top: 18px;
+    left: 18px;
+  }
+
+  .pending-auth-panel {
+    padding: 36px 0;
+  }
+
+  .pending-auth-panel h1 {
+    font-size: 20px;
+  }
+
+  .pending-auth-actions {
+    width: 100%;
+  }
+
+  .pending-auth-actions button {
+    flex: 1 1 140px;
+  }
+
+  .user-list-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .user-list-actions button {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-brand-lockup,
+  .auth-experience .auth-panel,
+  .auth-state.is-active,
+  .password-login .form-grid,
+  .auth-footnote,
+  .auth-spinner,
+  .pending-auth-panel {
+    animation: none !important;
+    transform: none !important;
+  }
+
+  .password-login summary svg {
+    transition: none !important;
+  }
+}
+
 .auto-replenishment-page {
   max-width: 1180px;
 }

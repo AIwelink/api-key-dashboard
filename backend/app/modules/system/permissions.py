@@ -336,6 +336,8 @@ async def role_exists(db: AsyncIOMotorDatabase, role_id: str) -> bool:
 
 
 async def permissions_for_user(db: AsyncIOMotorDatabase, user: dict[str, Any]) -> dict[str, Any]:
+    if user.get("actor_type") != "api_token" and user.get("authorization_status", "active") != "active":
+        return {"allowed_views": [], "default_view": None}
     settings = await get_role_permissions_settings(db)
     role = str(user.get("role") or "viewer")
     entry = settings["roles"].get(role)

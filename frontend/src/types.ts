@@ -26,6 +26,7 @@ export type ViewName =
 
 export type UserRole = string;
 export type UserStatus = "active" | "disabled" | "pending_password_reset";
+export type AuthorizationStatus = "active" | "pending";
 
 export type RolePermissionEntry = {
   label: string;
@@ -80,13 +81,37 @@ export type UserPermissions = {
 
 export type User = {
   id?: string;
-  email: string;
+  email: string | null;
+  email_is_placeholder?: boolean;
   name?: string;
   role: UserRole;
   status?: UserStatus;
+  authorization_status?: AuthorizationStatus;
   permissions?: UserPermissions;
   operations_site_ids?: OperationsSiteId[];
+  feishu_bound?: boolean;
+  feishu_name?: string | null;
+  feishu_avatar_url?: string | null;
+  feishu_email?: string | null;
+  feishu_bound_at?: string | null;
+  last_feishu_login_at?: string | null;
 };
+
+export type LoginResponse = {
+  access_token: string;
+  token_type?: string;
+  user: User;
+};
+
+export type LoginBindingRequiredResponse = {
+  status: "binding_required";
+  authorization_url: string;
+  session_id: string;
+  ticket: string;
+  expires_at: string;
+};
+
+export type AuthLoginResponse = LoginResponse | LoginBindingRequiredResponse;
 
 export type AccountDocument = {
   id: string;

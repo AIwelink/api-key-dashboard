@@ -259,6 +259,7 @@ async def ensure_audit_indexes(db: AsyncIOMotorDatabase) -> None:
 
 async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.users.create_index("email", unique=True)
+    await ensure_feishu_auth_storage(db)
     await db.api_tokens.create_index("token_hash", unique=True)
     await db.api_tokens.create_index("token_prefix")
     await db.api_tokens.create_index("status")
@@ -446,6 +447,7 @@ async def ensure_initial_owner(db: AsyncIOMotorDatabase) -> None:
             "role": "owner",
             "password_hash": hash_password(settings.initial_owner_password),
             "status": "active",
+            "authorization_status": "active",
             "must_change_password": True,
             "created_by": "system",
             "updated_by": "system",
@@ -453,6 +455,21 @@ async def ensure_initial_owner(db: AsyncIOMotorDatabase) -> None:
             "updated_at": now,
         }
     )
+
+
+async def ensure_feishu_auth_storage(db: AsyncIOMotorDatabase) -> None:
+    await db.users.update_many(
+        {"authorization_status": {"$exists": False}},
+        {"$set": {"authorization_status": "active"}},
+    )
+    await db.users.create_index(
+        "feishu_identity.identity_key",
+        unique=True,
+        partialFilterExpression={"feishu_identity.identity_key": {"$type": "string"}},
+    )
+    await db.feishu_auth_sessions.create_index("expires_at", expireAfterSeconds=0)
+    await db.feishu_auth_sessions.create_index("state_hash", unique=True)
+    await db.feishu_auth_sessions.create_index("ticket_hash", unique=True)
 
 
 async def ensure_bootstrap_data(db: AsyncIOMotorDatabase) -> None:
