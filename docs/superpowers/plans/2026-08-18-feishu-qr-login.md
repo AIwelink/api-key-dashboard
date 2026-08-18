@@ -350,7 +350,7 @@ Expected: no whitespace errors and only intentional changes.
 
 Start the local backend/frontend, open desktop and mobile viewports, and verify login, binding-required, pending authorization, popup-blocked fallback, no overlap, no page-level horizontal overflow, and no console errors. Real Feishu exchange remains a production-configuration smoke test; local QA uses the mocked backend contract.
 
-- [ ] **Step 6: Commit documentation and publish**
+- [x] **Step 6: Commit documentation and publish**
 
 Commit: `docs: document Feishu login deployment`
 
