@@ -204,11 +204,15 @@ async def _finish_login(
     audit_action: str,
 ) -> LoginResponse:
     timestamp = now_utc()
-    await db.users.update_one(
+    update_result = await db.users.update_one(
         {"_id": user["_id"], "status": {"$ne": "disabled"}},
         {"$set": {"last_login_at": timestamp, "updated_at": timestamp}},
     )
-    current = await db.users.find_one({"_id": user["_id"]}) or user
+    if getattr(update_result, "matched_count", 1) == 0:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="当前账号已停用")
+    current = await db.users.find_one({"_id": user["_id"]})
+    if current is None or current.get("status") == "disabled":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="当前账号已停用")
     token = create_access_token(subject=current["_id"], role=current.get("role") or "viewer")
     safe_user = await user_with_permissions(db, current)
     await write_audit_log(

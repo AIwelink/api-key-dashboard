@@ -48,6 +48,24 @@ def auth_db(stored_user: dict | None = None):
 
 
 class PasswordLoginBindingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_finish_login_rejects_user_disabled_during_token_issuance(self) -> None:
+        authenticated = user(bound=True)
+        disabled = {**authenticated, "status": "disabled"}
+        db = auth_db(disabled)
+        db.users.update_one.return_value = SimpleNamespace(matched_count=1, modified_count=1)
+
+        with (
+            patch.object(auth_router, "create_access_token", return_value="must-not-be-issued") as token_mock,
+            patch.object(auth_router, "user_with_permissions", AsyncMock(return_value={"status": "disabled"})),
+            patch.object(auth_router, "write_audit_log", AsyncMock()) as audit_mock,
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await auth_router._finish_login(db, user=authenticated, audit_action="auth.login_succeeded")
+
+        self.assertEqual(raised.exception.status_code, 401)
+        token_mock.assert_not_called()
+        audit_mock.assert_not_awaited()
+
     async def test_unbound_user_receives_binding_session_instead_of_jwt(self) -> None:
         session = feishu.FeishuAuthorizationSession(
             session_id="session-1",
