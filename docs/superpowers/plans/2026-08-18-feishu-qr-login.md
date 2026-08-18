@@ -295,21 +295,21 @@ Commit: `feat: add Feishu QR login experience`
 - Modify: `frontend/src/pages/UsersPage.test.ts`
 - Modify: `styles.css`
 
-- [ ] **Step 1: Write failing user-list behavior tests**
+- [x] **Step 1: Write failing user-list behavior tests**
 
 Test pending-first sorting, labels for bound/pending users, role activation payloads, and preservation of owner edit restrictions.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `npm test -- src/pages/UsersPage.test.ts`
 
 Expected: missing pending sorting and labels.
 
-- [ ] **Step 3: Implement user-management presentation**
+- [x] **Step 3: Implement user-management presentation**
 
 Add a compact Feishu binding/status row, visually distinct pending state, and a role selector action labeled “分配权限”. Keep cards at the current radius, avoid nested cards, prevent horizontal overflow, and add reduced-motion fallbacks. Login motion must use opacity/transform only and preserve stable form dimensions.
 
-- [ ] **Step 4: Run frontend tests/build and commit**
+- [x] **Step 4: Run frontend tests/build and commit**
 
 Run: `npm test -- src/pages/UsersPage.test.ts && npm run build`
 

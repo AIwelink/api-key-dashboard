@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import type { UserRoleCatalog } from "../types";
-import { canEditUser, roleOptionsFromCatalog } from "./UsersPage";
+import type { User, UserRoleCatalog } from "../types";
+import {
+  authorizationLabel,
+  canEditUser,
+  roleOptionsFromCatalog,
+  sortUsersForManagement,
+  userManagementActionLabel,
+} from "./UsersPage";
 
 
 const catalog: UserRoleCatalog = {
@@ -32,5 +38,40 @@ describe("user role options", () => {
     expect(canEditUser(owner, false)).toBe(false);
     expect(canEditUser(owner, true)).toBe(true);
     expect(canEditUser({ email: "admin@example.com", role: "admin" }, false)).toBe(true);
+  });
+});
+
+describe("Feishu user authorization presentation", () => {
+  const active: User = {
+    id: "active@example.com",
+    email: "active@example.com",
+    role: "maintainer",
+    authorization_status: "active",
+    feishu_bound: true,
+  };
+  const pending: User = {
+    id: "pending@example.com",
+    email: "pending@example.com",
+    role: "viewer",
+    authorization_status: "pending",
+    feishu_bound: true,
+  };
+
+  it("places pending users first without mutating the API result", () => {
+    const source = [active, pending];
+
+    expect(sortUsersForManagement(source).map((user) => user.id)).toEqual([
+      "pending@example.com",
+      "active@example.com",
+    ]);
+    expect(source).toEqual([active, pending]);
+  });
+
+  it("uses explicit binding labels and a permission assignment action", () => {
+    expect(authorizationLabel(pending)).toBe("飞书用户 · 待分配权限");
+    expect(authorizationLabel(active)).toBe("飞书已绑定");
+    expect(authorizationLabel({ ...active, feishu_bound: false })).toBe("未绑定飞书");
+    expect(userManagementActionLabel(pending)).toBe("分配权限");
+    expect(userManagementActionLabel(active)).toBe("编辑");
   });
 });
