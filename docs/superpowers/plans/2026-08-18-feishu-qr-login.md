@@ -99,7 +99,7 @@ Commit: `feat: add Feishu auth configuration`
 - Create: `backend/app/modules/auth/feishu.py`
 - Test: `backend/tests/test_feishu_auth.py`
 
-- [ ] **Step 1: Write failing service tests**
+- [x] **Step 1: Write failing service tests**
 
 Cover authorization URL encoding, hashed state storage, allowed-tenant rejection, identity-key lookup, verified-email auto-binding, password-target binding with different email, disabled-user rejection, pending-user provisioning, and single-use ticket consumption.
 
@@ -119,19 +119,19 @@ async def test_existing_unbound_email_is_bound_atomically(self) -> None:
     self.assertEqual(user["feishu_identity"]["identity_key"], "tenant-a:union:union-1")
 ```
 
-- [ ] **Step 2: Confirm the service tests fail before implementation**
+- [x] **Step 2: Confirm the service tests fail before implementation**
 
 Run from `backend`: `.venv/Scripts/python.exe -m unittest tests.test_feishu_auth.FeishuIdentityResolutionTests -v`
 
 Expected: missing module/functions.
 
-- [ ] **Step 3: Implement the Feishu module**
+- [x] **Step 3: Implement the Feishu module**
 
 Implement the focused public operations `create_authorization_session`, `complete_authorization_session`, `get_authorization_session_status`, `consume_login_ticket`, and `resolve_feishu_user`. Each function accepts the database as its first argument; session functions use keyword-only IDs/tokens, while identity resolution accepts `identity`, `purpose`, and optional `target_user_id` keyword arguments.
 
 Use SHA-256 hashes for `state` and tickets, `secrets.token_urlsafe(32)` for raw values, five-minute sessions, sixty-second tickets, conditional MongoDB updates, and `DuplicateKeyError` reconciliation. Use the OAuth v2 token endpoint and user-info endpoint through an injected `httpx.AsyncClient`; never persist external access tokens.
 
-- [ ] **Step 4: Run all Feishu service tests and commit**
+- [x] **Step 4: Run all Feishu service tests and commit**
 
 Run from `backend`: `.venv/Scripts/python.exe -m unittest tests.test_feishu_auth -v`
 
