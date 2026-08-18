@@ -8,10 +8,11 @@ import type { User } from "../types";
 import { errorMessage } from "../utils/format";
 import { MyPlansDrawer } from "./workPlans/MyPlansDrawer";
 import { createIdempotencyKey, WorkPlanFormDrawer } from "./workPlans/WorkPlanFormDrawer";
-import { WorkPlanSchedule } from "./workPlans/WorkPlanSchedule";
+import { isOwnWorkPlan, WorkPlanSchedule } from "./workPlans/WorkPlanSchedule";
 import type {
   WorkPlan,
   WorkPlanCreatePayload,
+  WorkPlanForceCancelPayload,
   WorkPlanHistoryItem,
   WorkPlanOperationCreatePayload,
   WorkPlanOperationUpdatePayload,
@@ -106,6 +107,17 @@ export function buildWorkPlanCancellationPayload(
     start_offset_minute: startOffsetMinute,
     end_offset_minute: endOffsetMinute,
     note: null,
+    idempotency_key: idempotencyKey,
+  };
+}
+
+export function buildForceCancelPayload(
+  segment: Pick<WorkPlanSegment, "start_at" | "end_at">,
+  idempotencyKey: string,
+): WorkPlanForceCancelPayload {
+  return {
+    start_at: segment.start_at,
+    end_at: segment.end_at,
     idempotency_key: idempotencyKey,
   };
 }
@@ -329,6 +341,7 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
   const [scheduleRequestGuard] = useState(createLatestRequestGuard);
   const drawerHandoffTimer = useRef<number | null>(null);
   const canManageAll = currentUser.role === "owner" || currentUser.role === "admin";
+  const forceCancelling = canManageAll && cancelPlan !== null && !isOwnWorkPlan(currentUser, cancelPlan);
 
   const schedulePath = useMemo(() => {
     const params = new URLSearchParams({ range });
@@ -550,6 +563,24 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
     if (!cancelPlan) return;
     setMutationBusy(true);
     try {
+      if (forceCancelling) {
+        if (!cancelSegment) throw new Error("无法确定要强制取消的计划区间，请刷新后重试");
+        const idempotencyKey = cancelOperationKey || createIdempotencyKey();
+        const payload = buildForceCancelPayload(cancelSegment, idempotencyKey);
+        const result = await api<WorkPlanMutationResult>(
+          `/work-plans/${encodeURIComponent(cancelPlan.id)}/force-cancel`,
+          token,
+          { method: "POST", body: JSON.stringify(payload) },
+        );
+        const mutationError = mutationErrorMessage(result);
+        applyOperationHistory(operationHistoryFromMutation(result));
+        if (mutationError) throw new Error(mutationError);
+        setCancelPlan(null);
+        setCancelSegment(null);
+        setCancelOperationKey(null);
+        refreshAfterMutation(result.duplicate_submission ? "强制取消操作已提交" : "计划已强制取消，历史记录仍会保留");
+        return;
+      }
       if (isOperation(cancelPlan)) {
         const idempotencyKey = cancelOperationKey || createIdempotencyKey();
         const payload = buildWorkPlanCancellationPayload(cancelPlan, cancelSegment, idempotencyKey);
@@ -683,7 +714,7 @@ export function WorkPlansPage({ token, currentUser, showToast }: WorkPlansPagePr
 
       <WorkPlanFormDrawer busy={mutationBusy} expectedMemberSequence={editingExpectedSequence} initialPlan={editingPlan} onClose={() => { if (!mutationBusy) { setFormOpen(false); setEditingPlan(null); } }} onSubmit={submitPlan} open={formOpen} serverToday={serverToday} />
       <MyPlansDrawer blocked={Boolean(cancelPlan)} busy={mutationBusy} hasMore={history.has_more} items={history.items} loadingMore={historyLoadingMore} onCancel={(plan) => openCancel(plan)} onClose={() => setHistoryOpen(false)} onEdit={openEdit} onLoadMore={loadMoreHistory} open={historyOpen} total={history.total} />
-      <ConfirmDialog cancelText="返回" confirmText="取消计划" details={cancelPlan ? [["成员", cancelPlan.member_name], ["日期", "anchor_date" in cancelPlan ? cancelPlan.anchor_date : cancelPlan.plan_date]] : []} message="取消后记录仍会保留。" onCancel={() => { setCancelPlan(null); setCancelSegment(null); setCancelOperationKey(null); }} onConfirm={confirmCancel} open={Boolean(cancelPlan)} title="确认取消这条计划？" tone="danger" />
+      <ConfirmDialog cancelText="返回" confirmText={forceCancelling ? "强制取消" : "取消计划"} details={cancelPlan ? [["成员", cancelPlan.member_name], ["日期", "anchor_date" in cancelPlan ? cancelPlan.anchor_date : cancelPlan.plan_date]] : []} message={forceCancelling ? "仅取消当前及未来区间，历史记录仍会保留。" : "取消后记录仍会保留。"} onCancel={() => { setCancelPlan(null); setCancelSegment(null); setCancelOperationKey(null); }} onConfirm={confirmCancel} open={Boolean(cancelPlan)} title={forceCancelling ? "确认强制取消这段计划？" : "确认取消这条计划？"} tone="danger" />
     </section>
   );
 }

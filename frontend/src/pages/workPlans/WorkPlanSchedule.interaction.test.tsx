@@ -132,6 +132,46 @@ afterEach(async () => {
 });
 
 describe("work plan detail modal handoff", () => {
+  it("labels another member's manager action as force cancellation", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root?.render(
+      <WorkPlanSchedule
+        currentUser={{ email: "owner@example.com", id: "owner-id", role: "owner" }}
+        onCancelPlan={() => undefined}
+        onEditPlan={() => undefined}
+        range="7d"
+        response={LINEAR_SCHEDULE}
+      />,
+    ));
+
+    await act(async () => document.querySelector<HTMLButtonElement>(".work-plan-segment.active")?.click());
+
+    expect(Array.from(document.querySelectorAll<HTMLButtonElement>(".work-plan-detail-popover button"))
+      .map((button) => button.textContent?.trim())).toContain("强制取消计划");
+  });
+
+  it("keeps the ordinary cancellation label for the plan owner", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root?.render(
+      <WorkPlanSchedule
+        currentUser={{ email: PLAN.member_id, id: "member-id", role: "admin" }}
+        onCancelPlan={() => undefined}
+        onEditPlan={() => undefined}
+        range="7d"
+        response={LINEAR_SCHEDULE}
+      />,
+    ));
+
+    await act(async () => document.querySelector<HTMLButtonElement>(".work-plan-segment.active")?.click());
+
+    expect(Array.from(document.querySelectorAll<HTMLButtonElement>(".work-plan-detail-popover button"))
+      .map((button) => button.textContent?.trim())).toContain("取消计划");
+  });
+
   it("stages the first member row and newly rendered segment", async () => {
     const container = document.createElement("div");
     document.body.append(container);

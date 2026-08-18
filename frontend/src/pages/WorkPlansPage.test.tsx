@@ -10,7 +10,12 @@ import {
   WorkPlanFormDrawer,
   workPlanDraftReducer,
 } from "./workPlans/WorkPlanFormDrawer";
-import { canManagePlan, WorkPlanDetailDialog, WorkPlanSchedule } from "./workPlans/WorkPlanSchedule";
+import {
+  canManagePlan,
+  isOwnWorkPlan,
+  WorkPlanDetailDialog,
+  WorkPlanSchedule,
+} from "./workPlans/WorkPlanSchedule";
 import type {
   WorkPlan,
   WorkPlanOperation,
@@ -18,6 +23,7 @@ import type {
 } from "./workPlans/types";
 import {
   beginCreate,
+  buildForceCancelPayload,
   buildWorkPlanCancellationPayload,
   cancellationStartsTooSoon,
   createLatestRequestGuard,
@@ -288,6 +294,20 @@ describe("work plan components", () => {
     });
   });
 
+  it("builds a force-cancel command without client supplied member identity", () => {
+    const segment = {
+      start_at: "2026-08-16T04:00:00+00:00",
+      end_at: "2026-08-16T06:00:00+00:00",
+    };
+
+    expect(buildForceCancelPayload(segment, "force-cancel-key")).toEqual({
+      start_at: segment.start_at,
+      end_at: segment.end_at,
+      idempotency_key: "force-cancel-key",
+    });
+    expect(buildForceCancelPayload(segment, "force-cancel-key")).not.toHaveProperty("member_id");
+  });
+
   it("rejects cancellation commands that start within one hour of server time", () => {
     const payload = {
       operation_type: "cancel" as const,
@@ -504,6 +524,12 @@ describe("work plan components", () => {
     expect(canManagePlan({ email: "admin@example.com", role: "admin" }, PLAN)).toBe(true);
     expect(canManagePlan({ email: "viewer@example.com", role: "viewer" }, PLAN)).toBe(false);
     expect(canManagePlan({ email: PLAN.member_id, role: "viewer" }, PLAN)).toBe(true);
+  });
+
+  it("recognizes plan ownership from either the authenticated id or email", () => {
+    expect(isOwnWorkPlan({ id: PLAN.member_id, email: "alias@example.com" }, PLAN)).toBe(true);
+    expect(isOwnWorkPlan({ id: "user-id", email: PLAN.member_id }, PLAN)).toBe(true);
+    expect(isOwnWorkPlan({ id: "user-id", email: "alias@example.com" }, PLAN)).toBe(false);
   });
 
   it("renders cancelled history as traceable but not editable", () => {

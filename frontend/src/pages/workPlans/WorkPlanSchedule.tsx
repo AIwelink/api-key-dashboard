@@ -43,7 +43,14 @@ export function canManagePlan(
   currentUser: Pick<User, "email" | "id" | "role">,
   plan: WorkPlanHistoryItem,
 ): boolean {
-  return currentUser.role === "owner" || currentUser.role === "admin" || (currentUser.id || currentUser.email) === plan.member_id;
+  return currentUser.role === "owner" || currentUser.role === "admin" || isOwnWorkPlan(currentUser, plan);
+}
+
+export function isOwnWorkPlan(
+  currentUser: Pick<User, "email" | "id">,
+  plan: WorkPlanHistoryItem,
+): boolean {
+  return [currentUser.id, currentUser.email].filter(Boolean).includes(plan.member_id);
 }
 
 function isOperation(item: WorkPlanHistoryItem): item is WorkPlanOperation {
@@ -201,6 +208,7 @@ export function WorkPlanDetailDialog({
 }: WorkPlanDetailDialogProps) {
   const dialogRef = useModalFocus<HTMLDivElement>(true, onClose);
   const manageable = canManagePlan(currentUser, plan);
+  const ownPlan = isOwnWorkPlan(currentUser, plan);
   return (
     <div aria-label="计划详情" aria-modal="true" className="work-plan-detail-popover" ref={dialogRef} role="dialog" tabIndex={-1}>
       <header>
@@ -215,7 +223,7 @@ export function WorkPlanDetailDialog({
       {manageable && canEditRecord(plan) ? (
         <footer>
           <button className="ghost" onClick={() => { onEditPlan(plan); onClose(); }} type="button"><Pencil size={15} />编辑</button>
-          {canCancelRecord(plan) ? <button className="danger-ghost" onClick={() => { onCancelPlan(plan, segment); onClose(); }} type="button"><Ban size={15} />取消计划</button> : null}
+          {canCancelRecord(plan) ? <button className="danger-ghost" onClick={() => { onCancelPlan(plan, segment); onClose(); }} type="button"><Ban size={15} />{ownPlan ? "取消计划" : "强制取消计划"}</button> : null}
         </footer>
       ) : null}
     </div>
