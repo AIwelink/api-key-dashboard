@@ -161,13 +161,6 @@ async def _run_enabled_cycle(
         adapter=adapter,
         recovered_at=detected_at,
     )
-    recovery = await recover_pending_auto_bans(
-        growth,
-        source_engine=source_engine,
-        adapter=adapter,
-        recovered_at=detected_at,
-        auto_ban_enabled=bool(settings.get("auto_ban_enabled")),
-    )
     async with growth.begin():
         cursors = {
             stream: await repository.get_cursor(
@@ -209,7 +202,6 @@ async def _run_enabled_cycle(
                 "candidates": 0,
                 "actions_succeeded": 0,
                 "actions_failed": 0,
-                "recovery": recovery,
                 "manual_recovery": manual_recovery,
             }
         if source_connection is None:
@@ -283,105 +275,10 @@ async def _run_enabled_cycle(
             candidates = await reconcile_risk_inputs(
                 growth,
                 rows=inputs,
-                auto_ban_enabled=bool(settings.get("auto_ban_enabled")),
+                auto_ban_enabled=False,
                 detected_at=detected_at,
                 source_payment_checker=source_payment_checker,
             )
-
-        prepared = []
-        for candidate in candidates:
-            before = await adapter.capture_account_state(
-                source_connection,
-                candidate.evaluation.external_user_id,
-            )
-            current_candidate = _candidate_for_current_source(candidate, before)
-            if current_candidate is None:
-                current_evaluation = _current_source_evaluation(candidate, before)
-                async with growth.begin():
-                    await repository.upsert_risk_account(
-                        growth,
-                        site_id=SITE_ID,
-                        external_user_id=current_evaluation.external_user_id,
-                        email=current_evaluation.email,
-                        risk_status="high_risk",
-                        risk_reasons={
-                            "email_rules": list(current_evaluation.email_rules),
-                            "shared_ips": _evidence_payload(candidate),
-                            "protection_reasons": [],
-                        },
-                        detected_at=detected_at,
-                        risk_account_id=UUID(candidate.risk_account_id),
-                    )
-                continue
-            candidate = current_candidate
-            async with growth.begin():
-                action = await repository.create_action(
-                    growth,
-                    risk_action_id=uuid4(),
-                    idempotency_key=action_idempotency_key(SITE_ID, candidate.evaluation),
-                    risk_account_id=UUID(candidate.risk_account_id),
-                    site_id=SITE_ID,
-                    external_user_id=candidate.evaluation.external_user_id,
-                    email=candidate.evaluation.email,
-                    action_type="auto_ban",
-                    decision_reason="email_and_shared_ip",
-                    matched_email_rules=list(candidate.evaluation.email_rules),
-                    shared_ip_evidence=_evidence_payload(candidate),
-                    source_user_status_before=before.user_status,
-                    source_user_updated_at_before=before.user_updated_at,
-                    source_api_key_states_before=_key_state_payload(before),
-                    requested_by="system:risk-detector",
-                    requested_at=detected_at,
-                )
-            if action.get("action_status") in {"pending", "failed"}:
-                prepared.append((candidate, before, action))
-
-    actions_succeeded = 0
-    actions_failed = 0
-    for candidate, before, action in prepared:
-        action_id = UUID(str(action["risk_action_id"]))
-        paid_protected = False
-        enforced: EnforcementResult | None = None
-        try:
-            async with source_engine.begin() as source_write:
-                paid_protected = await adapter.has_completed_payment(
-                    source_write,
-                    candidate.evaluation.external_user_id,
-                )
-                if not paid_protected:
-                    enforced = await adapter.disable_account(
-                        source_write,
-                        before=before,
-                        changed_at=detected_at,
-                    )
-        except Exception as exc:  # noqa: BLE001 - action remains visible and retryable.
-            await _finalize_failure(
-                growth,
-                candidate=candidate,
-                action_id=action_id,
-                error=exc,
-                completed_at=detected_at,
-            )
-            actions_failed += 1
-            continue
-        if paid_protected:
-            await _finalize_paid_protection(
-                growth,
-                candidate=candidate,
-                action_id=action_id,
-                completed_at=detected_at,
-            )
-            continue
-        if enforced is None:
-            raise RuntimeError("source ban completed without enforcement details")
-        await _finalize_success(
-            growth,
-            candidate=candidate,
-            action_id=action_id,
-            enforced=enforced,
-            completed_at=detected_at,
-        )
-        actions_succeeded += 1
 
     await _refresh_dirty_operations_aggregates(growth, completed_at=detected_at)
 
@@ -390,9 +287,8 @@ async def _run_enabled_cycle(
         "status": "succeeded" if not source_errors else "partial",
         "sources": source_results,
         "candidates": len(candidates),
-        "actions_succeeded": actions_succeeded,
-        "actions_failed": actions_failed,
-        "recovery": recovery,
+        "actions_succeeded": 0,
+        "actions_failed": 0,
         "manual_recovery": manual_recovery,
     }
 
@@ -417,96 +313,7 @@ async def recover_pending_auto_bans(
     recovered_at: datetime,
     auto_ban_enabled: bool = True,
 ) -> dict[str, int]:
-    async with growth.begin():
-        actions = await repository.list_pending_auto_ban_actions(
-            growth,
-            site_id=SITE_ID,
-            limit=200,
-        )
-
-    counts = {"succeeded": 0, "conflicted": 0, "failed": 0}
-    for action in actions:
-        candidate = _candidate_from_action(action)
-        evidence_cutoff = source_window_start(now=recovered_at)
-        evidence_is_current = any(
-            evidence.last_seen_at >= evidence_cutoff
-            for evidence in candidate.evaluation.shared_ips
-        )
-        action_id = UUID(str(action["risk_action_id"]))
-        before = _source_state_from_action(action)
-        requested_at = _datetime(action.get("requested_at"))
-        if requested_at is None:
-            await _finalize_recovery_conflict(
-                growth,
-                candidate=candidate,
-                action_id=action_id,
-                completed_at=recovered_at,
-            )
-            counts["conflicted"] += 1
-            continue
-        applied: EnforcementResult | None = None
-        recovery_state = ""
-        paid_protected = False
-        try:
-            async with source_engine.begin() as source_write:
-                current = await adapter.capture_account_state(
-                    source_write,
-                    before.external_user_id,
-                )
-                recovery_state, applied = _classify_recovery_state(
-                    before=before,
-                    current=current,
-                    requested_at=requested_at,
-                )
-                if recovery_state == "not_applied":
-                    if (
-                        not auto_ban_enabled
-                        or action.get("manual_override_active")
-                        or not evidence_is_current
-                    ):
-                        continue
-                    paid_protected = await adapter.has_completed_payment(
-                        source_write,
-                        before.external_user_id,
-                    )
-                    if not paid_protected:
-                        applied = await adapter.disable_account(
-                            source_write,
-                            before=before,
-                            changed_at=requested_at,
-                        )
-        except Exception:  # Source transaction rolled back; keep the action pending for retry.
-            counts["failed"] += 1
-            continue
-        if recovery_state == "conflicted":
-            await _finalize_recovery_conflict(
-                growth,
-                candidate=candidate,
-                action_id=action_id,
-                completed_at=recovered_at,
-            )
-            counts["conflicted"] += 1
-            continue
-        if paid_protected:
-            await _finalize_paid_protection(
-                growth,
-                candidate=candidate,
-                action_id=action_id,
-                completed_at=recovered_at,
-            )
-            counts["conflicted"] += 1
-            continue
-        if applied is None:
-            raise RuntimeError("recovered source state did not include enforcement details")
-        await _finalize_success(
-            growth,
-            candidate=candidate,
-            action_id=action_id,
-            enforced=applied,
-            completed_at=recovered_at,
-        )
-        counts["succeeded"] += 1
-    return counts
+    return {"succeeded": 0, "conflicted": 0, "failed": 0}
 
 
 async def recover_pending_manual_actions(
