@@ -315,6 +315,33 @@ async def get_authorization_session_status(
     }
 
 
+async def fail_authorization_session(
+    db: AsyncIOMotorDatabase,
+    *,
+    state: str,
+    error_code: str,
+) -> str:
+    failed_at = now_utc()
+    session = await db.feishu_auth_sessions.find_one_and_update(
+        {
+            "state_hash": _secret_hash(state),
+            "status": "pending",
+            "expires_at": {"$gt": failed_at},
+        },
+        {
+            "$set": {
+                "status": "failed",
+                "error_code": error_code,
+                "completed_at": failed_at,
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if session is None:
+        raise FeishuAuthError("授权状态已过期或已使用", code="state_invalid")
+    return str(session["_id"])
+
+
 async def _fetch_feishu_identity(
     client: Any,
     *,

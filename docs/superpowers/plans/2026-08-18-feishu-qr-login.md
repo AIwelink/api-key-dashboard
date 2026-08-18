@@ -189,7 +189,7 @@ Commit: `feat: enforce pending user authorization boundary`
 - Create: `backend/tests/test_auth_routes.py`
 - Modify: `backend/app/schemas.py`
 
-- [ ] **Step 1: Write failing route tests**
+- [x] **Step 1: Write failing route tests**
 
 Cover disabled Feishu configuration, session creation, callback success/error HTML, session polling, ticket exchange, password login for a bound user, and password login returning `binding_required` for an unbound user.
 
@@ -200,17 +200,17 @@ async def test_password_login_requires_binding_for_unbound_user(self) -> None:
     create_session.assert_awaited_once_with(db, purpose="bind", target_user_id="member@example.com")
 ```
 
-- [ ] **Step 2: Run route tests and confirm failure**
+- [x] **Step 2: Run route tests and confirm failure**
 
 Run from `backend`: `.venv/Scripts/python.exe -m unittest tests.test_auth_routes -v`
 
 Expected: missing routes and old password response shape.
 
-- [ ] **Step 3: Implement routes and audit events**
+- [x] **Step 3: Implement routes and audit events**
 
 Add session start/status, callback, and exchange routes. Return a minimal callback HTML page that posts only the session ID to the configured frontend origin and closes. Change password login to return either `LoginResponse` or `LoginBindingRequiredResponse`; use `get_authenticated_user` for `/auth/me`. Write only redacted result codes to audit.
 
-- [ ] **Step 4: Run auth tests and commit**
+- [x] **Step 4: Run auth tests and commit**
 
 Run from `backend`: `.venv/Scripts/python.exe -m unittest tests.test_auth_routes tests.test_feishu_auth -v`
 

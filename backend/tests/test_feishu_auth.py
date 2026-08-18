@@ -32,6 +32,7 @@ class FeishuConfigurationTests(unittest.TestCase):
         response = response_type(
             authorization_url="https://accounts.feishu.cn/open-apis/authen/v1/authorize?app_id=cli_example",
             session_id="session-1",
+            ticket="ticket-token-at-least-20-characters",
             expires_at=expires_at,
         )
 
@@ -448,6 +449,23 @@ class FeishuCallbackCompletionTests(unittest.IsolatedAsyncioTestCase):
         status_filter = auth_sessions.find_one.await_args.args[0]
         self.assertEqual(status_filter["_id"], "session-1")
         self.assertNotEqual(status_filter["ticket_hash"], "ticket-1")
+
+    async def test_cancelled_callback_marks_pending_session_failed(self) -> None:
+        self.assertTrue(hasattr(feishu, "fail_authorization_session"))
+        auth_sessions = SimpleNamespace(
+            find_one_and_update=AsyncMock(return_value={"_id": "session-1", "status": "failed"})
+        )
+
+        result = await feishu.fail_authorization_session(
+            SimpleNamespace(feishu_auth_sessions=auth_sessions),
+            state="state-1",
+            error_code="access_denied",
+        )
+
+        self.assertEqual(result, "session-1")
+        update = auth_sessions.find_one_and_update.await_args.args[1]["$set"]
+        self.assertEqual(update["status"], "failed")
+        self.assertEqual(update["error_code"], "access_denied")
 
 
 class PendingAuthorizationBoundaryTests(unittest.IsolatedAsyncioTestCase):
