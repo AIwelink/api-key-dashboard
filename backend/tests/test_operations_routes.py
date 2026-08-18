@@ -263,6 +263,25 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refresh.await_args.kwargs["allowed_site_ids"], ("aiwelink",))
         audit.assert_awaited_once()
 
+    async def test_viewer_cannot_trigger_refresh(self) -> None:
+        from app.routers import operations
+        from app.modules.operations.schemas import RefreshRequest
+
+        with (
+            patch.object(operations.service, "refresh_operations", AsyncMock()) as refresh,
+            patch.object(operations, "write_audit_log", AsyncMock()) as audit,
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await operations.post_operations_refresh(
+                    payload=RefreshRequest(site_ids=["aiwelink"]),
+                    actor={"_id": "viewer-1", "role": "viewer", "operations_site_ids": ["aiwelink"]},
+                    db=object(),
+                )
+
+        self.assertEqual(raised.exception.status_code, 403)
+        refresh.assert_not_awaited()
+        audit.assert_not_awaited()
+
     async def test_refresh_rejects_any_unauthorized_requested_site(self) -> None:
         from app.routers import operations
         from app.modules.operations.schemas import RefreshRequest

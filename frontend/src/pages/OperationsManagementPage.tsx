@@ -1179,7 +1179,7 @@ export function OperationsManagementPage(
   }, [tab]);
 
   async function refreshSources() {
-    if (!hasSiteAccess) return;
+    if (!hasSiteAccess || !canWrite) return;
     setRefreshing(true);
     try {
       const siteIds = effectiveQuery.siteId ? [effectiveQuery.siteId] : allowedSites.map((site) => site.value);
@@ -1473,7 +1473,7 @@ export function OperationsManagementPage(
           <p>{pageDescription}</p>
           {tab === "overview" && <small className="operations-page-freshness">数据截至 {operationsWatermarkLabel}</small>}
         </div>
-        {tab === "overview" && <button className="ghost" type="button" disabled={refreshing} onClick={refreshSources}>{refreshing ? "提交中..." : "刷新源数据"}</button>}
+        {tab === "overview" && canWrite && <button className="ghost" type="button" disabled={refreshing} onClick={refreshSources}>{refreshing ? "提交中..." : "刷新源数据"}</button>}
       </div>
 
       <div className="growth-workspace-tabs operations-tabs motion-section motion-delay-2" role="tablist" aria-label="运营管理页面">

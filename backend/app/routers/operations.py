@@ -196,6 +196,7 @@ async def post_operations_refresh(
     actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
+    _require_operations_writer(actor)
     allowed_site_ids = _resolve_operations_site_ids(actor, payload.site_ids)
     try:
         result = await service.refresh_operations(

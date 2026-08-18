@@ -205,6 +205,11 @@ describe("operations management workspace", () => {
     expect(canManageOperations("admin")).toBe(true);
     expect(canManageOperations("operator")).toBe(true);
     expect(canManageOperations("viewer")).toBe(false);
+
+    const operatorHtml = renderToStaticMarkup(<OperationsManagementPage {...props} role="operator" />);
+    const viewerHtml = renderToStaticMarkup(<OperationsManagementPage {...props} role="viewer" />);
+    expect(operatorHtml).toContain("刷新源数据");
+    expect(viewerHtml).not.toContain("刷新源数据");
   });
 
   it("builds a trimmed redemption request with an idempotency key", () => {
