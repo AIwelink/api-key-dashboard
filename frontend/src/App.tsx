@@ -18,6 +18,7 @@ import { LoginPage } from "./pages/LoginPage";
 import { OperationsManagementPage } from "./pages/OperationsManagementPage";
 import { PresencePage } from "./pages/PresencePage";
 import { PlusSelfProducedPage } from "./pages/PlusSelfProducedPage";
+import { PendingAuthorizationPage } from "./pages/PendingAuthorizationPage";
 import { TrafficAnalysisPage } from "./pages/TrafficAnalysisPage";
 import { TrafficAnalysisConfigPage } from "./pages/TrafficAnalysisConfigPage";
 import { UploadPage } from "./pages/UploadPage";
@@ -76,8 +77,10 @@ function App() {
   const [view, setView] = useState<ViewName>(() => viewFromPath(window.location.pathname));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "true");
   const [toast, setToast] = useState<ToastState>(null);
+  const [refreshingAuthorization, setRefreshingAuthorization] = useState(false);
   const showToast = useStableToast(setToast);
-  useForegroundPresence(token, view);
+  const pendingAuthorization = Boolean(token && user?.authorization_status === "pending");
+  useForegroundPresence(pendingAuthorization ? "" : token, view);
 
   const logout = () => {
     setToken("");
@@ -95,6 +98,37 @@ function App() {
     if (isMobileMenuLayout()) {
       setSidebarCollapsed(true);
       localStorage.setItem("sidebarCollapsed", "true");
+    }
+  };
+
+  const completeLogin = (nextToken: string, nextUser: User) => {
+    setToken(nextToken);
+    setUser(nextUser);
+    localStorage.setItem("token", nextToken);
+    localStorage.setItem("user", JSON.stringify(nextUser));
+    if (nextUser.authorization_status !== "pending" && window.location.pathname === "/") {
+      navigateToView(defaultViewForPermissions(nextUser.permissions));
+    }
+    showToast("登录成功");
+  };
+
+  const refreshAuthorization = async () => {
+    if (!token) return;
+    setRefreshingAuthorization(true);
+    try {
+      const nextUser = await api<User>("/auth/me", token);
+      setUser(nextUser);
+      localStorage.setItem("user", JSON.stringify(nextUser));
+      if (nextUser.authorization_status === "pending") {
+        showToast("权限暂未更新，请联系管理员");
+      } else {
+        if (window.location.pathname === "/") navigateToView(defaultViewForPermissions(nextUser.permissions));
+        showToast("权限已更新");
+      }
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      setRefreshingAuthorization(false);
     }
   };
 
@@ -117,10 +151,10 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (token && permissions && !canAccessView(permissions, view)) {
+    if (token && user?.authorization_status !== "pending" && permissions && !canAccessView(permissions, view)) {
       navigateToView(defaultViewForPermissions(permissions));
     }
-  }, [token, permissions, view]);
+  }, [token, user?.authorization_status, permissions, view]);
 
   useEffect(() => {
     if (!token) return;
@@ -152,6 +186,42 @@ function App() {
     window.addEventListener("auth-expired", handleAuthExpired);
     return () => window.removeEventListener("auth-expired", handleAuthExpired);
   }, []);
+
+  if (!token) {
+    return (
+      <>
+        <DailyTeamIntroGate user={user} />
+        <main className="auth-shell site-motion-scope">
+          <LoginPage onLogin={completeLogin} showToast={showToast} />
+          {toast && <div className={`toast ${toast.isError ? "danger" : ""}`}>{toast.message}</div>}
+        </main>
+      </>
+    );
+  }
+
+  if (!user) {
+    return (
+      <>
+        <DailyTeamIntroGate user={user} />
+        <main className="auth-loading-page" role="status">正在确认登录状态</main>
+      </>
+    );
+  }
+
+  if (pendingAuthorization) {
+    return (
+      <>
+        <DailyTeamIntroGate user={user} />
+        <PendingAuthorizationPage
+          user={user}
+          refreshing={refreshingAuthorization}
+          onRefresh={() => { void refreshAuthorization(); }}
+          onLogout={logout}
+        />
+        {toast && <div className={`toast ${toast.isError ? "danger" : ""}`}>{toast.message}</div>}
+      </>
+    );
+  }
 
   return (
     <>
@@ -206,19 +276,7 @@ function App() {
           data-view={token ? view : "login"}
           key={token ? view : "login"}
         >
-          {!token ? (
-          <LoginPage
-            onLogin={(nextToken, nextUser) => {
-              setToken(nextToken);
-              setUser(nextUser);
-              localStorage.setItem("token", nextToken);
-              localStorage.setItem("user", JSON.stringify(nextUser));
-              if (window.location.pathname === "/") navigateToView(defaultViewForPermissions(nextUser.permissions));
-              showToast("登录成功");
-            }}
-            showToast={showToast}
-          />
-        ) : canRenderCurrentView ? (
+          {canRenderCurrentView ? (
           <>
             {view === "work-plans" && user && <WorkPlansPage currentUser={user} token={token} showToast={showToast} />}
             {view === "upload" && <UploadPage token={token} showToast={showToast} />}

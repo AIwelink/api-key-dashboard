@@ -1,7 +1,8 @@
 import json
+from typing import Annotated
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import HTMLResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -107,7 +108,7 @@ async def start_feishu_session(
 @router.get("/feishu/sessions/{session_id}", response_model=FeishuAuthorizationSessionStatusResponse)
 async def feishu_session_status(
     session_id: str,
-    ticket: str,
+    ticket: Annotated[str, Header(alias="X-Feishu-Session-Ticket")],
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> FeishuAuthorizationSessionStatusResponse:
     try:

@@ -208,6 +208,12 @@ class FeishuAuthRouteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.status, "completed")
 
+    def test_status_ticket_is_read_from_header_not_query_string(self) -> None:
+        route = next(route for route in auth_router.router.routes if route.path == "/auth/feishu/sessions/{session_id}")
+
+        self.assertEqual([field.alias for field in route.dependant.query_params], [])
+        self.assertEqual([field.alias for field in route.dependant.header_params], ["X-Feishu-Session-Ticket"])
+
     async def test_exchange_consumes_ticket_and_issues_local_jwt(self) -> None:
         self.assertTrue(hasattr(auth_router, "exchange_feishu_ticket"))
         pending = user(bound=True, authorization_status="pending")

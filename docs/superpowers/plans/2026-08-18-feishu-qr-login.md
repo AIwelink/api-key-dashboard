@@ -258,7 +258,7 @@ Commit: `feat: manage pending Feishu users`
 - Modify: `frontend/src/App.tsx`
 - Modify: `frontend/src/types.ts`
 
-- [ ] **Step 1: Write failing frontend tests**
+- [x] **Step 1: Write failing frontend tests**
 
 Test the primary Feishu button, popup launch, blocked-popup redirect fallback, session polling cleanup, password `binding_required` transition, successful ticket exchange, and `authorization_status=pending` rendering only the pending page.
 
@@ -270,17 +270,17 @@ it("falls back to same-tab authorization when the popup is blocked", () => {
 });
 ```
 
-- [ ] **Step 2: Run frontend tests and confirm failures**
+- [x] **Step 2: Run frontend tests and confirm failures**
 
 Run: `npm test -- src/auth/feishu.test.ts src/pages/LoginPage.test.tsx src/App.test.ts`
 
 Expected: missing flow/component behavior.
 
-- [ ] **Step 3: Implement the frontend auth state machine**
+- [x] **Step 3: Implement the frontend auth state machine**
 
 Use explicit states `idle`, `starting`, `waiting`, `exchanging`, `binding`, `failed`. Poll no faster than once per second and cancel timers/listeners on unmount. Validate `postMessage.origin` against `window.location.origin`. Store only the local JWT/user using the existing `onLogin` path. Pending users render `PendingAuthorizationPage` with refresh and logout actions, while the sidebar contains no business links.
 
-- [ ] **Step 4: Run frontend tests and commit**
+- [x] **Step 4: Run frontend tests and commit**
 
 Run: `npm test -- src/auth/feishu.test.ts src/pages/LoginPage.test.tsx src/App.test.ts`
 
