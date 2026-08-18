@@ -200,10 +200,11 @@ describe("operations management workspace", () => {
     expect(usePageAutoRefreshMock.mock.calls.at(-1)?.[1]).toMatchObject({ enabled: false });
   });
 
-  it("limits write controls to owner and admin", () => {
+  it("allows owner, admin, and operator to use write controls", () => {
     expect(canManageOperations("owner")).toBe(true);
     expect(canManageOperations("admin")).toBe(true);
-    expect(canManageOperations("operator")).toBe(false);
+    expect(canManageOperations("operator")).toBe(true);
+    expect(canManageOperations("viewer")).toBe(false);
   });
 
   it("builds a trimmed redemption request with an idempotency key", () => {
@@ -490,7 +491,7 @@ describe("operations management workspace", () => {
     expect(html.indexOf("兑换码列表")).toBeLessThan(html.indexOf("余额换算比例"));
   });
 
-  it("keeps operator credit and internal-user tabs read-only", () => {
+  it("shows operator credit and internal-user write controls", () => {
     const creditHtml = renderToStaticMarkup(
       <OperationsManagementPage {...props} role="operator" initialTab="credits" />,
     );
@@ -498,10 +499,10 @@ describe("operations management workspace", () => {
       <OperationsManagementPage {...props} role="operator" initialTab="internal-users" />,
     );
 
-    expect(creditHtml).not.toContain("生成兑换码");
-    expect(creditHtml).not.toContain("调整余额");
-    expect(creditHtml).not.toContain("新增换算比例");
-    expect(internalHtml).not.toContain("添加内部人员");
+    expect(creditHtml).toContain("生成兑换码");
+    expect(creditHtml).toContain("调整余额");
+    expect(creditHtml).toContain("新增换算比例");
+    expect(internalHtml).toContain("添加内部人员");
   });
 
   it("renders pending classification as an independent table page", () => {

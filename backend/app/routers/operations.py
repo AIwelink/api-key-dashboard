@@ -36,10 +36,10 @@ def _actor_id(actor: dict[str, Any]) -> str:
 
 
 def _require_operations_writer(actor: dict[str, Any]) -> None:
-    if actor.get("role") not in {"owner", "admin"}:
+    if actor.get("role") not in {"owner", "admin", "operator"}:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only owner or admin can change operations configuration",
+            detail="Only owner, admin, or operator can change operations configuration",
         )
 
 

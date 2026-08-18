@@ -440,7 +440,7 @@ const emptyClassificationForm: ClassificationForm = {
 };
 
 export function canManageOperations(role: string) {
-  return role === "owner" || role === "admin";
+  return role === "owner" || role === "admin" || role === "operator";
 }
 
 export function buildOperationsQuery(query: OperationsQueryState) {
@@ -1615,7 +1615,7 @@ export function OperationsManagementPage(
             <div className="operations-section-head"><div><h3>余额换算比例</h3><span>用于把不同系统的余额统一换算为 CNY 口径，按生效时间保留历史版本</span></div><span>{visibleRates.length} 条记录</span></div>
             <div className="operations-table-scroll"><table><thead><tr><th>站点</th><th>每 1 CNY 对应余额</th><th>生效时间</th><th>失效时间</th><th>备注</th></tr></thead><tbody>{visibleRates.length ? visibleRates.map((item) => <tr key={item.conversion_rate_id}><td>{siteLabel(item.site_id)}</td><td><strong>{formatNumber(item.balance_units_per_cny, 10)}</strong></td><td>{formatDateTime(item.effective_from)}</td><td>{formatDateTime(item.effective_until)}</td><td>{item.note || "-"}</td></tr>) : <EmptyRow columns={5} text={loading ? "正在加载..." : "暂无换算比例"} />}</tbody></table></div>
           </section>
-          {!canWrite && <div className="operations-readonly-note">当前角色为只读权限。兑换码、余额调整和换算比例只能由 owner/admin 操作。</div>}
+          {!canWrite && <div className="operations-readonly-note">当前角色为只读权限。兑换码、余额调整和换算比例只能由 owner/admin/operator 操作。</div>}
         </div>
       )}
 
