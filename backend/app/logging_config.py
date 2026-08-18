@@ -30,6 +30,11 @@ SENSITIVE_KEYS = {
     "token",
     "credentials",
     "account_json",
+    "code",
+    "state",
+    "ticket",
+    "open_id",
+    "union_id",
 }
 
 

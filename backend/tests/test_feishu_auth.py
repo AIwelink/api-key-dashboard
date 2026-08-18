@@ -7,9 +7,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlparse
 
+from fastapi import HTTPException
+
 from app import schemas
+from app import security
 from app.config import Settings
+from app.logging_config import SENSITIVE_KEYS, _redact_mapping
 from app.modules.auth import feishu
+from app.modules.system import bootstrap
 
 
 class FeishuConfigurationTests(unittest.TestCase):
@@ -443,6 +448,113 @@ class FeishuCallbackCompletionTests(unittest.IsolatedAsyncioTestCase):
         status_filter = auth_sessions.find_one.await_args.args[0]
         self.assertEqual(status_filter["_id"], "session-1")
         self.assertNotEqual(status_filter["ticket_hash"], "ticket-1")
+
+
+class PendingAuthorizationBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_authenticated_lookup_allows_pending_user_for_auth_status(self) -> None:
+        self.assertTrue(hasattr(security, "get_authenticated_user"))
+        pending = {
+            "_id": "pending-user",
+            "status": "active",
+            "authorization_status": "pending",
+            "role": "viewer",
+        }
+        db = SimpleNamespace(users=SimpleNamespace(find_one=AsyncMock(return_value=pending)))
+        credentials = SimpleNamespace(credentials="jwt-token")
+
+        with patch.object(security, "decode_access_token", return_value={"sub": "pending-user"}):
+            result = await security.get_authenticated_user(credentials=credentials, db=db)
+
+        self.assertEqual(result, pending)
+
+    async def test_business_lookup_rejects_pending_user(self) -> None:
+        pending = {
+            "_id": "pending-user",
+            "status": "active",
+            "authorization_status": "pending",
+            "role": "viewer",
+        }
+        db = SimpleNamespace(users=SimpleNamespace(find_one=AsyncMock(return_value=pending)))
+        credentials = SimpleNamespace(credentials="jwt-token")
+
+        with patch.object(security, "decode_access_token", return_value={"sub": "pending-user"}):
+            with self.assertRaises(HTTPException) as raised:
+                await security.get_current_user(credentials=credentials, db=db)
+
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(raised.exception.detail, "尚未分配系统权限，请联系管理员")
+
+    async def test_legacy_user_without_authorization_status_remains_authorized(self) -> None:
+        legacy = {"_id": "member@example.com", "status": "active", "role": "maintainer"}
+        db = SimpleNamespace(users=SimpleNamespace(find_one=AsyncMock(return_value=legacy)))
+        credentials = SimpleNamespace(credentials="jwt-token")
+
+        with patch.object(security, "decode_access_token", return_value={"sub": "member@example.com"}):
+            result = await security.get_current_user(credentials=credentials, db=db)
+
+        self.assertEqual(result, legacy)
+
+    async def test_api_token_actor_is_not_blocked_by_user_authorization_status(self) -> None:
+        actor = {
+            "_id": "api_token:token-1",
+            "actor_type": "api_token",
+            "role": "viewer",
+            "status": "active",
+        }
+        credentials = SimpleNamespace(credentials="akd_secret")
+
+        with patch.object(security, "get_api_token_actor", AsyncMock(return_value=actor)):
+            result = await security.get_current_user(credentials=credentials, db=SimpleNamespace())
+
+        self.assertEqual(result, actor)
+
+
+class FeishuStorageAndRedactionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_storage_backfills_legacy_users_and_creates_partial_unique_indexes(self) -> None:
+        self.assertTrue(hasattr(bootstrap, "ensure_feishu_auth_storage"))
+        users = SimpleNamespace(update_many=AsyncMock(), create_index=AsyncMock())
+        sessions = SimpleNamespace(create_index=AsyncMock())
+        db = SimpleNamespace(users=users, feishu_auth_sessions=sessions)
+
+        await bootstrap.ensure_feishu_auth_storage(db)
+
+        users.update_many.assert_awaited_once_with(
+            {"authorization_status": {"$exists": False}},
+            {"$set": {"authorization_status": "active"}},
+        )
+        identity_index = users.create_index.await_args_list[0]
+        self.assertEqual(identity_index.args[0], "feishu_identity.identity_key")
+        self.assertTrue(identity_index.kwargs["unique"])
+        self.assertEqual(
+            identity_index.kwargs["partialFilterExpression"],
+            {"feishu_identity.identity_key": {"$type": "string"}},
+        )
+        sessions.create_index.assert_any_await("expires_at", expireAfterSeconds=0)
+        sessions.create_index.assert_any_await("state_hash", unique=True)
+        sessions.create_index.assert_any_await("ticket_hash", unique=True)
+
+    def test_feishu_callback_secrets_are_redacted(self) -> None:
+        for key in ("code", "state", "ticket", "open_id", "union_id"):
+            with self.subTest(key=key):
+                self.assertIn(key, SENSITIVE_KEYS)
+        self.assertEqual(
+            _redact_mapping(
+                {
+                    "code": "authorization-code",
+                    "state": "state-token",
+                    "ticket": "login-ticket",
+                    "open_id": "open-1",
+                    "union_id": "union-1",
+                }
+            ),
+            {
+                "code": "***",
+                "state": "***",
+                "ticket": "***",
+                "open_id": "***",
+                "union_id": "***",
+            },
+        )
 
 
 if __name__ == "__main__":

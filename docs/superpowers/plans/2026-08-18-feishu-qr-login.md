@@ -149,7 +149,7 @@ Commit: `feat: add Feishu OAuth identity service`
 - Test: `backend/tests/test_role_permissions.py`
 - Test: `backend/tests/test_feishu_auth.py`
 
-- [ ] **Step 1: Write failing deny-by-default tests**
+- [x] **Step 1: Write failing deny-by-default tests**
 
 ```python
 async def test_pending_user_has_no_views(self) -> None:
@@ -164,17 +164,17 @@ async def test_business_current_user_rejects_pending_user(self) -> None:
 
 Also test that missing `authorization_status` remains active, API-token actors remain authorized, indexes are partial/unique, and sensitive logging keys include `code`, `state`, `ticket`, `open_id`, and `union_id`.
 
-- [ ] **Step 2: Run focused tests and verify failures**
+- [x] **Step 2: Run focused tests and verify failures**
 
 Run from `backend`: `.venv/Scripts/python.exe -m unittest tests.test_role_permissions tests.test_feishu_auth -v`
 
 Expected: pending users currently inherit viewer/work-plan permissions.
 
-- [ ] **Step 3: Implement authentication/authorization separation**
+- [x] **Step 3: Implement authentication/authorization separation**
 
 Create `get_authenticated_user` for JWT/user lookup and make `get_current_user` call it plus a pending-state rejection. Change `/auth/me` later to use `get_authenticated_user`. Keep API token actors authorized. Add idempotent status backfill and partial unique indexes in bootstrap.
 
-- [ ] **Step 4: Run focused tests and commit**
+- [x] **Step 4: Run focused tests and commit**
 
 Run from `backend`: `.venv/Scripts/python.exe -m unittest tests.test_role_permissions tests.test_feishu_auth -v`
 

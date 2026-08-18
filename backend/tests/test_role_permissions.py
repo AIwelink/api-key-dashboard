@@ -41,6 +41,36 @@ class RolePermissionSettingsTests(unittest.IsolatedAsyncioTestCase):
     def test_work_plans_is_a_valid_permission_view(self) -> None:
         self.assertIn("work-plans", get_args(ViewName))
 
+    async def test_pending_user_has_no_views_even_with_viewer_role(self) -> None:
+        db, _ = fake_db(None)
+
+        result = await permissions.permissions_for_user(
+            db,
+            {
+                "_id": "pending-user",
+                "role": "viewer",
+                "authorization_status": "pending",
+            },
+        )
+
+        self.assertEqual(result, {"allowed_views": [], "default_view": None})
+
+    async def test_legacy_user_without_authorization_status_keeps_role_permissions(self) -> None:
+        db, _ = fake_db(None)
+
+        result = await permissions.permissions_for_user(
+            db,
+            {"_id": "member@example.com", "role": "operator"},
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "allowed_views": ["work-plans", "traffic-analysis", "operations-management"],
+                "default_view": "traffic-analysis",
+            },
+        )
+
     async def test_work_plans_is_mandatory_for_builtin_and_stored_custom_roles(self) -> None:
         roles = {
             role: {
