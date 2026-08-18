@@ -13,6 +13,7 @@ from bson import ObjectId
 from app.modules.work_plans.domain import WorkPlanConflictError, WorkPlanRuleError, deterministic_plan_id
 from app.modules.work_plans.schemas import (
     WorkPlanCreate,
+    WorkPlanForceCancel,
     WorkPlanOperationCreate,
     WorkPlanOperationUpdate,
     WorkPlanUpdate,
@@ -24,6 +25,7 @@ from app.modules.work_plans.service import (
     WorkPlanPermissionError,
     cancel_work_plan,
     create_work_plans,
+    force_cancel_work_plan,
     list_my_work_plans,
     list_work_plan_schedule,
     set_member_priority,
@@ -2048,6 +2050,188 @@ class WorkPlanOperationEditServiceTests(unittest.IsolatedAsyncioTestCase):
             (operations[1]["effective_start_offset_minute"], operations[1]["effective_end_offset_minute"]),
             (13 * 60, 15 * 60),
         )
+
+
+class WorkPlanForceCancelServiceTests(unittest.IsolatedAsyncioTestCase):
+    force_key = UUID("341b0035-391c-4926-90a4-4f0ff36c9752")
+    observed_at = datetime(2026, 8, 18, 2, 17, tzinfo=UTC)
+
+    @staticmethod
+    def activation(**overrides: object) -> dict:
+        value = {
+            "_id": "operation-1",
+            "schema_version": 2,
+            "record_kind": "operation",
+            "member_id": "member@example.com",
+            "member_name": "Member",
+            "operation_type": "activate",
+            "anchor_date": "2026-08-18",
+            "plan_date": "2026-08-18",
+            "requested_start_at": datetime(2026, 8, 18, 1, tzinfo=UTC),
+            "requested_end_at": datetime(2026, 8, 18, 7, tzinfo=UTC),
+            "effective_start_at": datetime(2026, 8, 18, 1, tzinfo=UTC),
+            "effective_end_at": datetime(2026, 8, 18, 7, tzinfo=UTC),
+            "start_offset_minute": 9 * 60,
+            "end_offset_minute": 15 * 60,
+            "requested_start_offset_minute": 9 * 60,
+            "requested_end_offset_minute": 15 * 60,
+            "effective_start_offset_minute": 9 * 60,
+            "effective_end_offset_minute": 15 * 60,
+            "member_sequence": 1,
+            "idempotency_key": "source-operation",
+            "created_by": "member@example.com",
+            "created_at": datetime(2026, 8, 17, 12, tzinfo=UTC),
+        }
+        value.update(overrides)
+        return value
+
+    def payload(self, **overrides: object) -> WorkPlanForceCancel:
+        values = {
+            "start_at": datetime(2026, 8, 18, 1, tzinfo=UTC),
+            "end_at": datetime(2026, 8, 18, 7, tzinfo=UTC),
+            "idempotency_key": self.force_key,
+        }
+        values.update(overrides)
+        return WorkPlanForceCancel.model_validate(values)
+
+    async def test_owner_and_admin_force_cancel_target_member_from_next_boundary(self) -> None:
+        for role in ("owner", "admin"):
+            with self.subTest(role=role):
+                db = fake_db(plans=[self.activation()])
+                actor = {
+                    "_id": f"{role}@example.com",
+                    "name": role.title(),
+                    "role": role,
+                    "actor_type": "user",
+                }
+
+                result = await force_cancel_work_plan(
+                    db,
+                    plan_id="operation-1",
+                    actor=actor,
+                    payload=self.payload(),
+                    observed_at=self.observed_at,
+                )
+
+                operation = result["results"][0]["operation"]
+                self.assertEqual(operation["member_id"], "member@example.com")
+                self.assertEqual(operation["created_by"], actor["_id"])
+                self.assertEqual(operation["effective_start_at"], "2026-08-18T02:30:00+00:00")
+                self.assertEqual(operation["effective_end_at"], "2026-08-18T07:00:00+00:00")
+                self.assertTrue(operation["force_cancelled"])
+                self.assertEqual(operation["force_cancel_source_id"], "operation-1")
+                self.assertEqual(operation["force_cancelled_by_role"], role)
+                audit = next(iter(db.audit_logs.documents.values()))
+                self.assertEqual(audit["action"], "work_plan.force_cancel")
+                self.assertEqual(audit["actor_id"], actor["_id"])
+                self.assertEqual(audit["after"]["member_id"], "member@example.com")
+
+    async def test_force_cancel_keeps_a_future_segment_start(self) -> None:
+        db = fake_db(plans=[self.activation()])
+
+        result = await force_cancel_work_plan(
+            db,
+            plan_id="operation-1",
+            actor={"_id": "admin@example.com", "role": "admin", "actor_type": "user"},
+            payload=self.payload(start_at=datetime(2026, 8, 18, 3, tzinfo=UTC)),
+            observed_at=self.observed_at,
+        )
+
+        operation = result["results"][0]["operation"]
+        self.assertEqual(operation["effective_start_at"], "2026-08-18T03:00:00+00:00")
+
+    async def test_force_cancel_rejects_non_manager_before_reading_target(self) -> None:
+        db = fake_db(plans=[self.activation()])
+
+        with self.assertRaisesRegex(WorkPlanPermissionError, "只有 owner 或 admin"):
+            await force_cancel_work_plan(
+                db,
+                plan_id="operation-1",
+                actor={**ACTOR, "actor_type": "user"},
+                payload=self.payload(),
+                observed_at=self.observed_at,
+            )
+
+        self.assertEqual(db.work_plans.find_one_calls, [])
+        self.assertEqual(len(db.work_plans.documents), 1)
+
+    async def test_force_cancel_rejects_self_target_and_ended_interval(self) -> None:
+        member_actor = {
+            "_id": "member@example.com",
+            "role": "admin",
+            "actor_type": "user",
+        }
+        self_target_db = fake_db(plans=[self.activation()])
+        with self.assertRaisesRegex(WorkPlanRuleError, "普通取消"):
+            await force_cancel_work_plan(
+                self_target_db,
+                plan_id="operation-1",
+                actor=member_actor,
+                payload=self.payload(),
+                observed_at=self.observed_at,
+            )
+
+        ended_db = fake_db(plans=[self.activation()])
+        with self.assertRaisesRegex(WorkPlanRuleError, "已结束"):
+            await force_cancel_work_plan(
+                ended_db,
+                plan_id="operation-1",
+                actor={"_id": "admin@example.com", "role": "admin", "actor_type": "user"},
+                payload=self.payload(end_at=datetime(2026, 8, 18, 2, tzinfo=UTC)),
+                observed_at=self.observed_at,
+            )
+        self.assertEqual(len(ended_db.work_plans.documents), 1)
+
+    async def test_force_cancel_replay_is_idempotent_for_target_member(self) -> None:
+        db = fake_db(plans=[self.activation()])
+        actor = {"_id": "admin@example.com", "role": "admin", "actor_type": "user"}
+
+        first = await force_cancel_work_plan(
+            db,
+            plan_id="operation-1",
+            actor=actor,
+            payload=self.payload(),
+            observed_at=self.observed_at,
+        )
+        replay = await force_cancel_work_plan(
+            db,
+            plan_id="operation-1",
+            actor=actor,
+            payload=self.payload(),
+            observed_at=self.observed_at,
+        )
+
+        self.assertFalse(first["duplicate_submission"])
+        self.assertTrue(replay["duplicate_submission"])
+        self.assertEqual(len(db.work_plans.documents), 2)
+
+    async def test_force_cancel_projects_legacy_work_before_appending_operation(self) -> None:
+        legacy = {
+            "_id": "legacy-1",
+            "member_id": "member@example.com",
+            "member_name": "Member",
+            "plan_date": "2026-08-18",
+            "plan_type": "work",
+            "start_minute": 9 * 60,
+            "end_minute": 15 * 60,
+            "status": "active",
+            "is_cancelled": False,
+            "created_at": datetime(2026, 8, 17, 12, tzinfo=UTC),
+        }
+        db = fake_db(plans=[legacy])
+
+        result = await force_cancel_work_plan(
+            db,
+            plan_id="legacy-1",
+            actor={"_id": "admin@example.com", "role": "admin", "actor_type": "user"},
+            payload=self.payload(),
+            observed_at=self.observed_at,
+        )
+
+        operation = result["results"][0]["operation"]
+        self.assertEqual(operation["member_id"], "member@example.com")
+        self.assertEqual(operation["effective_start_at"], "2026-08-18T02:30:00+00:00")
+        self.assertEqual(len(db.work_plans.documents), 2)
 
 
 class WorkPlanMutationServiceTests(unittest.IsolatedAsyncioTestCase):

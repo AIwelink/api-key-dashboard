@@ -14,6 +14,7 @@ from app.modules.work_plans.domain import (
 )
 from app.modules.work_plans.schemas import (
     WorkPlanCreate,
+    WorkPlanForceCancel,
     WorkPlanOperationCreate,
     WorkPlanOperationUpdate,
     WorkPlanPriorityUpdate,
@@ -25,6 +26,7 @@ from app.modules.work_plans.service import (
     WorkPlanPermissionError,
     cancel_work_plan,
     create_work_plans,
+    force_cancel_work_plan,
     list_my_work_plans,
     list_work_plan_schedule,
     require_browser_actor,
@@ -149,6 +151,31 @@ async def post_cancel_work_plan(
     _require_browser_actor(actor)
     try:
         return await cancel_work_plan(db, plan_id=plan_id, actor=actor)
+    except (
+        WorkPlanNotFoundError,
+        WorkPlanPermissionError,
+        WorkPlanAccessError,
+        WorkPlanConflictError,
+        WorkPlanRuleError,
+    ) as exc:
+        _raise_http_error(exc)
+
+
+@router.post("/{plan_id}/force-cancel")
+async def post_force_cancel_work_plan(
+    plan_id: str,
+    payload: WorkPlanForceCancel,
+    actor: dict = Depends(WORK_PLAN_PERMISSION),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> dict:
+    _require_browser_actor(actor)
+    try:
+        return await force_cancel_work_plan(
+            db,
+            plan_id=plan_id,
+            actor=actor,
+            payload=payload,
+        )
     except (
         WorkPlanNotFoundError,
         WorkPlanPermissionError,

@@ -137,10 +137,21 @@ def anchor_offset_to_utc(anchor_date: date, offset_minute: int) -> datetime:
     return (local_midnight + timedelta(minutes=offset_minute)).astimezone(UTC)
 
 
+def ceil_work_plan_boundary(value: datetime) -> datetime:
+    observed = _as_utc(value, field_name="observed_at")
+    base = observed.replace(second=0, microsecond=0)
+    remainder = base.minute % 30
+    if remainder == 0 and observed == base:
+        return base
+    return base + timedelta(minutes=30 - remainder if remainder else 30)
+
+
 def build_operation_drafts(
     actor: dict,
     payload: WorkPlanOperationCreate,
     observed_at: datetime,
+    *,
+    minimum_cancel_lead_minutes: int = 60,
 ) -> list[dict]:
     actor_id = _actor_id(actor)
     actor_name = _actor_name(actor, actor_id)
@@ -163,7 +174,8 @@ def build_operation_drafts(
         )
         if (
             payload.operation_type == "cancel"
-            and requested_start_at < observed_utc + timedelta(hours=1)
+            and requested_start_at
+            < observed_utc + timedelta(minutes=minimum_cancel_lead_minutes)
         ):
             raise WorkPlanRuleError("取消计划的开始时间至少晚于当前时间 1 小时")
 

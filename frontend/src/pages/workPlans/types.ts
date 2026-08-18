@@ -126,6 +126,12 @@ export type WorkPlanOperationCreatePayload = {
   idempotency_key: string;
 };
 
+export type WorkPlanForceCancelPayload = {
+  start_at: string;
+  end_at: string;
+  idempotency_key: string;
+};
+
 export type WorkPlanOperationUpdatePayload = {
   operation_type: WorkPlanOperationType;
   anchor_date: string;

@@ -23,6 +23,7 @@ from app.modules.work_plans.domain import (
     build_compensation_operation_payloads,
     build_operation_drafts,
     build_plan_drafts,
+    ceil_work_plan_boundary,
     collaboration_status,
     is_plan_manager,
     validate_update,
@@ -36,6 +37,7 @@ from app.modules.work_plans.projection import (
 )
 from app.modules.work_plans.schemas import (
     WorkPlanCreate,
+    WorkPlanForceCancel,
     WorkPlanOperationCreate,
     WorkPlanOperationUpdate,
     WorkPlanUpdate,
@@ -511,9 +513,24 @@ async def _create_work_plan_operations(
     actor: dict[str, Any],
     payload: WorkPlanOperationCreate,
     observed_at: datetime,
+    target_actor: dict[str, Any] | None = None,
+    audit_action: str = "work_plan.create",
+    operation_metadata: dict[str, Any] | None = None,
+    minimum_cancel_lead_minutes: int = 60,
 ) -> dict[str, Any]:
-    drafts = build_operation_drafts(actor, payload, observed_at)
-    member_id = str(actor["_id"]).strip()
+    subject_actor = target_actor or actor
+    drafts = build_operation_drafts(
+        subject_actor,
+        payload,
+        observed_at,
+        minimum_cancel_lead_minutes=minimum_cancel_lead_minutes,
+    )
+    actor_id = str(actor["_id"]).strip()
+    for draft in drafts:
+        draft["created_by"] = actor_id
+        if operation_metadata:
+            draft.update(operation_metadata)
+    member_id = str(subject_actor["_id"]).strip()
     async with _member_operation_lease(
         db,
         member_id=member_id,
@@ -542,11 +559,11 @@ async def _create_work_plan_operations(
             draft[AUDIT_INTENTS_FIELD] = [
                 _build_audit_intent(
                     actor=actor,
-                    action="work_plan.create",
+                    action=audit_action,
                     plan_id=plan_id,
                     before=None,
                     after=draft,
-                    dedupe_key=f"work_plan.create:{plan_id}",
+                    dedupe_key=f"{audit_action}:{plan_id}",
                 )
             ]
             outcome = "created"
@@ -695,11 +712,23 @@ async def _expand_operation_drafts(
         return drafts
 
     draft = drafts[0]
-    cursor = db.work_plans.find(
-        {"member_id": draft["member_id"], "schema_version": 2}
-    )
+    cursor = db.work_plans.find({"member_id": draft["member_id"]})
     committed = await _collect_documents(cursor)
-    normalized = [normalize_v2_operation(document) for document in committed]
+    normalized = normalize_legacy_records(
+        committed,
+        local_timezone=SHANGHAI_TIMEZONE,
+    )
+    for document in committed:
+        if document.get("schema_version") != 2:
+            continue
+        try:
+            normalized.append(normalize_v2_operation(document))
+        except (KeyError, TypeError, ValueError):
+            logger.warning(
+                "work_plan_projection_skipped member_id=%s operation_id=%s",
+                draft["member_id"],
+                document.get("_id"),
+            )
     projected = project_operations(
         normalized,
         window_start=draft["requested_start_at"],
@@ -734,6 +763,105 @@ async def _expand_operation_drafts(
         )
         expanded.append(operation)
     return expanded
+
+
+def _force_cancel_operation_payload(
+    payload: WorkPlanForceCancel,
+    *,
+    effective_start_at: datetime,
+) -> WorkPlanOperationCreate:
+    start_at = effective_start_at.astimezone(UTC)
+    end_at = payload.end_at.astimezone(UTC)
+    anchor_date = start_at.astimezone(SHANGHAI_TIMEZONE).date()
+    anchor_start_at = datetime.combine(
+        anchor_date,
+        time.min,
+        tzinfo=SHANGHAI_TIMEZONE,
+    ).astimezone(UTC)
+    start_offset_minute = int((start_at - anchor_start_at).total_seconds() // 60)
+    end_offset_minute = int((end_at - anchor_start_at).total_seconds() // 60)
+    if (
+        start_offset_minute < 0
+        or end_offset_minute > 2_880
+        or start_offset_minute % 30
+        or end_offset_minute % 30
+    ):
+        raise WorkPlanRuleError("强制取消区间必须位于 48 小时范围内并以 30 分钟为间隔")
+    return WorkPlanOperationCreate(
+        operation_type="cancel",
+        anchor_dates=[anchor_date],
+        start_offset_minute=start_offset_minute,
+        end_offset_minute=end_offset_minute,
+        note=None,
+        idempotency_key=payload.idempotency_key,
+    )
+
+
+async def force_cancel_work_plan(
+    db: AsyncIOMotorDatabase,
+    *,
+    plan_id: str,
+    actor: dict[str, Any],
+    payload: WorkPlanForceCancel,
+    observed_at: datetime | None = None,
+) -> dict[str, Any]:
+    require_browser_actor(actor)
+    if not is_plan_manager(actor):
+        raise WorkPlanPermissionError("只有 owner 或 admin 可以强制取消成员计划")
+
+    source = await db.work_plans.find_one({"_id": plan_id})
+    if source is None:
+        raise WorkPlanNotFoundError("工作计划不存在")
+    member_id = str(source.get("member_id") or "").strip()
+    if not member_id:
+        raise WorkPlanRuleError("工作计划缺少成员信息")
+    actor_id = str(actor["_id"]).strip()
+    if member_id == actor_id:
+        raise WorkPlanRuleError("请使用普通取消功能取消自己的工作计划")
+    if source.get("schema_version") == 2 and source.get("operation_type") != "activate":
+        raise WorkPlanRuleError("只能强制取消绿色工作计划区间")
+    if source.get("schema_version") != 2 and (
+        source.get("plan_type") != "work"
+        or source.get("is_cancelled") is True
+        or source.get("status") == "cancelled"
+    ):
+        raise WorkPlanRuleError("只能强制取消绿色工作计划区间")
+
+    observed = observed_at or now_utc()
+    requested_start_at = payload.start_at.astimezone(UTC)
+    requested_end_at = payload.end_at.astimezone(UTC)
+    effective_start_at = max(
+        requested_start_at,
+        ceil_work_plan_boundary(observed),
+    )
+    if effective_start_at >= requested_end_at:
+        raise WorkPlanRuleError("该计划已结束，没有可取消的未来区间")
+
+    command = _force_cancel_operation_payload(
+        payload,
+        effective_start_at=effective_start_at,
+    )
+    member_name = str(source.get("member_name") or member_id).strip() or member_id
+    return await _create_work_plan_operations(
+        db,
+        actor=actor,
+        target_actor={
+            "_id": member_id,
+            "name": member_name,
+            "role": source.get("member_role"),
+        },
+        payload=command,
+        observed_at=observed,
+        audit_action="work_plan.force_cancel",
+        operation_metadata={
+            "force_cancelled": True,
+            "force_cancel_source_id": plan_id,
+            "force_cancel_requested_start_at": requested_start_at,
+            "force_cancel_requested_end_at": requested_end_at,
+            "force_cancelled_by_role": actor.get("role"),
+        },
+        minimum_cancel_lead_minutes=0,
+    )
 
 
 def _operation_command_response(
@@ -1588,6 +1716,7 @@ __all__ = [
     "WorkPlanPermissionError",
     "cancel_work_plan",
     "create_work_plans",
+    "force_cancel_work_plan",
     "list_my_work_plans",
     "list_work_plan_schedule",
     "reconcile_work_plan_audit_intents",

@@ -11,6 +11,7 @@ from app.modules.work_plans.domain import (
     WorkPlanRuleError,
     build_operation_drafts,
     build_plan_drafts,
+    ceil_work_plan_boundary,
     collaboration_status,
     deterministic_plan_id,
     is_plan_manager,
@@ -19,6 +20,7 @@ from app.modules.work_plans.domain import (
 )
 from app.modules.work_plans.schemas import (
     WorkPlanCreate,
+    WorkPlanForceCancel,
     WorkPlanOperationCreate,
     WorkPlanUpdate,
 )
@@ -78,6 +80,58 @@ def operation_payload(**overrides: object) -> WorkPlanOperationCreate:
 
 
 class WorkPlanTimeRuleTests(unittest.TestCase):
+    def test_force_cancel_requires_timezone_aware_half_hour_bounds(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "强制取消时间必须包含时区"):
+            WorkPlanForceCancel(
+                start_at=datetime(2026, 8, 18, 10),
+                end_at=datetime(2026, 8, 18, 12, tzinfo=UTC),
+                idempotency_key=IDEMPOTENCY_KEY,
+            )
+
+        with self.assertRaisesRegex(ValidationError, "30 分钟"):
+            WorkPlanForceCancel(
+                start_at=datetime(2026, 8, 18, 10, 15, tzinfo=UTC),
+                end_at=datetime(2026, 8, 18, 12, tzinfo=UTC),
+                idempotency_key=IDEMPOTENCY_KEY,
+            )
+
+        with self.assertRaisesRegex(ValidationError, "结束时间必须晚于开始时间"):
+            WorkPlanForceCancel(
+                start_at=datetime(2026, 8, 18, 12, tzinfo=UTC),
+                end_at=datetime(2026, 8, 18, 12, tzinfo=UTC),
+                idempotency_key=IDEMPOTENCY_KEY,
+            )
+
+    def test_ceil_work_plan_boundary_uses_next_half_hour(self) -> None:
+        self.assertEqual(
+            ceil_work_plan_boundary(datetime(2026, 8, 18, 2, 17, 9, tzinfo=UTC)),
+            datetime(2026, 8, 18, 2, 30, tzinfo=UTC),
+        )
+        self.assertEqual(
+            ceil_work_plan_boundary(datetime(2026, 8, 18, 2, 30, tzinfo=UTC)),
+            datetime(2026, 8, 18, 2, 30, tzinfo=UTC),
+        )
+
+    def test_force_cancel_can_disable_lead_time_without_changing_default(self) -> None:
+        payload = operation_payload(
+            operation_type="cancel",
+            start_offset_minute=10 * 60,
+            end_offset_minute=12 * 60,
+        )
+        observed_at = datetime(2026, 8, 18, 1, 30, tzinfo=UTC)
+
+        with self.assertRaisesRegex(WorkPlanRuleError, "至少晚于当前时间 1 小时"):
+            build_operation_drafts(ACTOR, payload, observed_at)
+
+        drafts = build_operation_drafts(
+            ACTOR,
+            payload,
+            observed_at,
+            minimum_cancel_lead_minutes=0,
+        )
+
+        self.assertEqual(drafts[0]["requested_start_at"], datetime(2026, 8, 18, 2, tzinfo=UTC))
+
     def test_schema_parses_valid_half_hour_times_and_converts_to_minutes(self) -> None:
         payload = create_payload(start_time="09:30", end_time="18:00")
 
