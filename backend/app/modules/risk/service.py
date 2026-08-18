@@ -142,7 +142,7 @@ def desired_risk_status(
     auto_ban_enabled: bool,
 ) -> str:
     if evaluation.decision == RiskDecision.BAN:
-        return "ban_pending" if auto_ban_enabled else "high_risk"
+        return "high_risk"
     if evaluation.decision == RiskDecision.HIGH_RISK:
         return "high_risk"
     return "cleared"
@@ -255,13 +255,6 @@ async def reconcile_risk_inputs(
                 created_at=detected_at,
                 actor_id="system:risk-detector",
                 actor_name="AIWeLink risk detector",
-            )
-        if target_status == "ban_pending":
-            candidates.append(
-                PreparedBanCandidate(
-                    risk_account_id=risk_account_id,
-                    evaluation=evaluation,
-                )
             )
     return candidates
 

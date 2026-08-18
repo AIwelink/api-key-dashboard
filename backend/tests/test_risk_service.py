@@ -146,7 +146,7 @@ class RiskServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(evaluation.decision, RiskDecision.HIGH_RISK)
         self.assertEqual(evaluation.email_rules, ())
 
-    def test_auto_ban_pause_downgrades_ban_candidate_to_review(self) -> None:
+    def test_risk_ban_candidate_always_requires_manual_review(self) -> None:
         from app.modules.risk.service import desired_risk_status, evaluate_account_input
 
         evaluation = evaluate_account_input({
@@ -164,7 +164,7 @@ class RiskServiceTests(unittest.IsolatedAsyncioTestCase):
         })
 
         self.assertEqual(desired_risk_status(evaluation, auto_ban_enabled=False), "high_risk")
-        self.assertEqual(desired_risk_status(evaluation, auto_ban_enabled=True), "ban_pending")
+        self.assertEqual(desired_risk_status(evaluation, auto_ban_enabled=True), "high_risk")
 
     def test_paid_account_is_never_planned_for_auto_ban(self) -> None:
         from app.modules.risk.domain import RiskDecision
@@ -281,7 +281,7 @@ class RiskServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         append.assert_awaited_once()
 
-    async def test_reconciliation_prepares_only_unpaid_dual_signal_account(self) -> None:
+    async def test_reconciliation_records_unpaid_dual_signal_account_for_manual_review(self) -> None:
         from app.modules.risk import service
 
         row = {
@@ -301,7 +301,7 @@ class RiskServiceTests(unittest.IsolatedAsyncioTestCase):
         }
         account = {
             "risk_account_id": "00000000-0000-0000-0000-000000000042",
-            "risk_status": "ban_pending",
+            "risk_status": "high_risk",
         }
         with (
             patch.object(service.repository, "upsert_risk_account", AsyncMock(return_value=account)) as upsert,
@@ -315,9 +315,8 @@ class RiskServiceTests(unittest.IsolatedAsyncioTestCase):
                 source_payment_checker=AsyncMock(return_value=False),
             )
 
-        self.assertEqual(len(candidates), 1)
-        self.assertEqual(candidates[0].evaluation.external_user_id, "42")
-        self.assertEqual(upsert.await_args.kwargs["risk_status"], "ban_pending")
+        self.assertEqual(candidates, [])
+        self.assertEqual(upsert.await_args.kwargs["risk_status"], "high_risk")
 
     async def test_reconciliation_keeps_confirmed_ban_as_a_terminal_state(self) -> None:
         from app.modules.risk import service
