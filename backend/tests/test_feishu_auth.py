@@ -399,6 +399,42 @@ class FeishuIdentityResolutionTests(unittest.IsolatedAsyncioTestCase):
             target["_id"],
         )
 
+    async def test_repeated_same_target_binding_preserves_original_bound_at(self) -> None:
+        original_bound_at = datetime(2026, 8, 18, 14, 30, tzinfo=UTC)
+        source = {
+            "_id": "feishu-pending",
+            "status": "disabled",
+            "merged_into_user_id": "owner@example.com",
+            "feishu_identity": {"identity_key": "tenant-a:union:union-1"},
+        }
+        target = {
+            "_id": "owner@example.com",
+            "status": "active",
+            "role": "owner",
+            "feishu_identity": {
+                "source_user_id": source["_id"],
+                "bound_at": original_bound_at,
+            },
+        }
+        users = SimpleNamespace(
+            find_one=AsyncMock(side_effect=[source, target]),
+            update_one=AsyncMock(return_value=SimpleNamespace(matched_count=1)),
+            find_one_and_update=AsyncMock(),
+            insert_one=AsyncMock(),
+        )
+
+        result = await feishu.resolve_feishu_user(
+            SimpleNamespace(users=users),
+            identity=identity(email=None),
+            purpose="bind",
+            target_user_id=target["_id"],
+        )
+
+        self.assertEqual(result["_id"], target["_id"])
+        updates = users.update_one.await_args.args[1]["$set"]
+        self.assertNotIn("feishu_identity.bound_at", updates)
+        users.find_one_and_update.assert_not_awaited()
+
     async def test_password_binding_does_not_take_over_nonrecoverable_identity(self) -> None:
         base_source = {
             "_id": "feishu-pending",

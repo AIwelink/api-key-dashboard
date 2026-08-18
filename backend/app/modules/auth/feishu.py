@@ -133,7 +133,6 @@ async def resolve_feishu_user(
                 source=current,
                 identity=identity,
                 target_user_id=merged_target_user_id,
-                complete_binding=purpose == "bind",
             )
         if purpose == "bind" and target_user_id and current.get("_id") != target_user_id:
             if _is_recoverable_pending_identity_source(current):
@@ -302,7 +301,6 @@ async def _resolve_identity_proxy(
     source: dict[str, Any],
     identity: FeishuIdentity,
     target_user_id: str,
-    complete_binding: bool,
 ) -> dict[str, Any]:
     target = await db.users.find_one({"_id": target_user_id})
     if target is None:
@@ -311,7 +309,7 @@ async def _resolve_identity_proxy(
     _require_available_proxy_target(target, source_user_id=str(source["_id"]))
     timestamp = now_utc()
 
-    if complete_binding or not (target.get("feishu_identity") or {}).get("source_user_id"):
+    if not (target.get("feishu_identity") or {}).get("source_user_id"):
         return await _attach_identity_proxy(
             db,
             target=target,

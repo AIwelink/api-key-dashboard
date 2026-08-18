@@ -28,7 +28,7 @@
 - Modify: `backend/tests/test_feishu_auth.py`
 - Modify: `backend/app/modules/auth/feishu.py`
 
-- [ ] **Step 1: Write failing recovery tests**
+- [x] **Step 1: Write failing recovery tests**
 
 Add tests that arrange an identity source with `created_by="feishu"`, `authorization_status="pending"`, `email_is_placeholder=True`, `role="viewer"`, and a different target local user. Assert `resolve_feishu_user(... purpose="bind")` returns the target, conditionally disables the source with `merged_into_user_id`, writes a target `feishu_identity.source_user_id` reference without an `identity_key`, and records `auth.feishu.pending_identity_merged`.
 
@@ -47,7 +47,7 @@ self.assertNotIn("feishu_identity.identity_key", target_write["$set"])
 
 Also add separate tests rejecting active, non-placeholder, non-viewer, already-merged-to-another-target, disabled-target, and already-bound-target cases. Add an idempotency test where the source already points to the requested target but the target reference is missing.
 
-- [ ] **Step 2: Run the focused tests and verify RED**
+- [x] **Step 2: Run the focused tests and verify RED**
 
 Run from `backend`:
 
@@ -57,7 +57,7 @@ Run from `backend`:
 
 Expected: the eligible recovery test fails with `identity_already_bound`; proxy-resolution helpers do not exist.
 
-- [ ] **Step 3: Implement binding detection and proxy merge**
+- [x] **Step 3: Implement binding detection and proxy merge**
 
 Add:
 
@@ -86,11 +86,11 @@ Use these target fields:
 
 Audit only local IDs and safe result codes.
 
-- [ ] **Step 4: Run focused tests and verify GREEN**
+- [x] **Step 4: Run focused tests and verify GREEN**
 
 Run the same unittest command. Expected: all `FeishuIdentityResolutionTests` pass.
 
-- [ ] **Step 5: Commit the service change**
+- [x] **Step 5: Commit the service change**
 
 ```powershell
 git add backend/app/modules/auth/feishu.py backend/tests/test_feishu_auth.py
@@ -106,11 +106,11 @@ git commit -m "fix: recover pending Feishu identities"
 - Modify: `backend/app/modules/system/user_projection.py`
 - Modify: `backend/app/routers/users.py`
 
-- [ ] **Step 1: Write failing integration-boundary tests**
+- [x] **Step 1: Write failing integration-boundary tests**
 
 Add a password-login test with `feishu_identity={"source_user_id": "feishu-pending"}` and assert no binding session is created. Add a projection test asserting `feishu_bound=True` while `source_user_id` remains absent from the response. Add a user-list test asserting the database query is `{"merged_into_user_id": {"$exists": False}}`.
 
-- [ ] **Step 2: Run boundary tests and verify RED**
+- [x] **Step 2: Run boundary tests and verify RED**
 
 ```powershell
 .venv\Scripts\python.exe -m unittest tests.test_auth_routes.PasswordLoginBindingTests tests.test_users_dynamic_roles.DynamicUserRoleTests -v
@@ -118,7 +118,7 @@ Add a password-login test with `feishu_identity={"source_user_id": "feishu-pendi
 
 Expected: proxy-backed password login requests another binding, projection reports unbound, and list query is `{}`.
 
-- [ ] **Step 3: Implement boundary changes**
+- [x] **Step 3: Implement boundary changes**
 
 Import and use `has_feishu_binding(user)` in the password login route. In `public_user`, compute bound state from `identity_key` or `source_user_id` before discarding `feishu_identity`. Change the list query to:
 
@@ -126,11 +126,11 @@ Import and use `has_feishu_binding(user)` in the password login route. In `publi
 db.users.find({"merged_into_user_id": {"$exists": False}})
 ```
 
-- [ ] **Step 4: Run boundary tests and verify GREEN**
+- [x] **Step 4: Run boundary tests and verify GREEN**
 
 Run the same unittest command. Expected: all selected tests pass.
 
-- [ ] **Step 5: Commit boundary changes**
+- [x] **Step 5: Commit boundary changes**
 
 ```powershell
 git add backend/app/routers/auth.py backend/app/modules/system/user_projection.py backend/app/routers/users.py backend/tests/test_auth_routes.py backend/tests/test_users_dynamic_roles.py
@@ -143,11 +143,11 @@ git commit -m "fix: recognize Feishu identity proxies"
 - Create: `backend/scripts/recover_feishu_pending_identity.py`
 - Create: `backend/tests/test_recover_feishu_pending_identity.py`
 
-- [ ] **Step 1: Write failing command tests**
+- [x] **Step 1: Write failing command tests**
 
 Test a pure `safe_summary(user)` helper and an async `recover(db, source_user_id, target_user_id)` function. The latter must load the exact source, reconstruct `FeishuIdentity` from stored fields, call `resolve_feishu_user(... purpose="bind")`, and reject source/target ambiguity. Assert summaries contain local IDs and state flags but no identity key or external IDs.
 
-- [ ] **Step 2: Run command tests and verify RED**
+- [x] **Step 2: Run command tests and verify RED**
 
 ```powershell
 .venv\Scripts\python.exe -m unittest tests.test_recover_feishu_pending_identity -v
@@ -155,15 +155,15 @@ Test a pure `safe_summary(user)` helper and an async `recover(db, source_user_id
 
 Expected: import failure because the command module does not exist.
 
-- [ ] **Step 3: Implement preview-first command**
+- [x] **Step 3: Implement preview-first command**
 
 Create an argparse command requiring exact `--source-user-id` and `--target-user-id`. Without `--yes`, print a redacted preview and exit without writes. With `--yes`, call `recover`, print the redacted final target summary, and never print `identity_key`, `open_id`, `union_id`, `user_id`, credentials, or tokens.
 
-- [ ] **Step 4: Run command tests and verify GREEN**
+- [x] **Step 4: Run command tests and verify GREEN**
 
 Run the same unittest command. Expected: all command tests pass.
 
-- [ ] **Step 5: Commit the repair command**
+- [x] **Step 5: Commit the repair command**
 
 ```powershell
 git add backend/scripts/recover_feishu_pending_identity.py backend/tests/test_recover_feishu_pending_identity.py
@@ -175,15 +175,15 @@ git commit -m "ops: add Feishu identity recovery command"
 **Files:**
 - Modify only MongoDB records selected by exact local IDs.
 
-- [ ] **Step 1: Preview the current repair**
+- [x] **Step 1: Preview the current repair**
 
 ```powershell
-.venv\Scripts\python.exe scripts/recover_feishu_pending_identity.py --source-user-id feishu-9a8ae544e3494cfc9b168e856711458c --target-user-id 1020290137@qq.com
+.venv\Scripts\python.exe -m scripts.recover_feishu_pending_identity --source-user-id feishu-9a8ae544e3494cfc9b168e856711458c --target-user-id 1020290137@qq.com
 ```
 
 Expected: a redacted preview showing a qualifying pending source and active unbound Owner target, with no external identity values.
 
-- [ ] **Step 2: Execute and re-run idempotently**
+- [x] **Step 2: Execute and re-run idempotently**
 
 Run the same command with `--yes`, then run it a second time with `--yes`. Expected: both runs resolve to the Owner; the second run reports the already-completed relationship without creating another user or audit conflict.
 

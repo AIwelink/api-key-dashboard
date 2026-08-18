@@ -17,6 +17,7 @@
 - `authorization_status=pending`；
 - `email_is_placeholder=true`；
 - `role=viewer`；
+- `status=active`；
 - 未设置 `merged_into_user_id`；
 - 飞书身份唯一键与本次扫码身份完全一致；
 - 目标用户存在、未禁用且尚未绑定其他飞书身份；
