@@ -167,20 +167,20 @@ export function UsersPage({ canManageOwners, token, showToast }: Props) {
           <h3>用户列表</h3>
           <div className="list">
             {users.map((item) => (
-              <div className={`list-item user-list-item ${item.authorization_status === "pending" ? "pending-authorization" : ""} ${editingUser && userIdentity(editingUser) === userIdentity(item) ? "selected" : ""}`} key={item.id || item.email}>
+              <div className={`list-item user-list-item ${item.authorization_status === "pending" ? "pending-authorization" : ""} ${editingUser && userIdentity(editingUser) === userIdentity(item) ? "selected" : ""}`} key={item.id || item.email || item.feishu_name || "user"}>
                 <div className="user-card-main">
                   <div className="user-card-identity">
                     <span className="user-feishu-avatar" aria-hidden={!item.feishu_avatar_url}>
                       {item.feishu_avatar_url
                         ? <img src={item.feishu_avatar_url} alt="" />
-                        : (item.name || item.email).slice(0, 1).toUpperCase()}
+                        : (item.name || item.email || "飞").slice(0, 1).toUpperCase()}
                     </span>
                     <div className="user-card-copy">
                       <div className="user-card-head">
                         <strong>{item.name || "未命名用户"}</strong>
                         <span className={`status-pill ${statusTone(item.status)}`}>{statusLabel(item.status)}</span>
                       </div>
-                      <div className="muted">{item.email}</div>
+                      <div className="muted">{userEmailLabel(item)}</div>
                     </div>
                   </div>
                   <div className="user-feishu-meta">
@@ -211,7 +211,7 @@ export function UsersPage({ canManageOwners, token, showToast }: Props) {
           <div className="panel-header">
             <div>
               <h3>{isEditing ? userManagementActionLabel(editingUser as User) : "添加用户"}</h3>
-              <p>{isEditing ? editingUser?.email : "创建后可在这里调整角色、状态或重置密码。"}</p>
+              <p>{isEditing && editingUser ? userEmailLabel(editingUser) : "创建后可在这里调整角色、状态或重置密码。"}</p>
             </div>
             {isEditing && (
               <button className="ghost compact-button" disabled={busy} onClick={cancelEditing} type="button">
@@ -228,7 +228,7 @@ export function UsersPage({ canManageOwners, token, showToast }: Props) {
                 </div>
               )}
               <label>
-                邮箱 <input value={editingUser?.email || ""} disabled readOnly />
+                邮箱 <input value={editingUser ? userEmailLabel(editingUser) : ""} disabled readOnly />
               </label>
               <label>
                 名称 <input value={editForm.name} onChange={(event) => setEditField("name", event.target.value)} required />
@@ -257,7 +257,7 @@ export function UsersPage({ canManageOwners, token, showToast }: Props) {
                   ))}
                 </select>
               </label>
-              {editingUser?.authorization_status !== "pending" && (
+              {editingUser?.authorization_status !== "pending" && !editingUser?.email_is_placeholder && (
                 <label>
                   重置密码 <input minLength={8} value={editForm.password} onChange={(event) => setEditField("password", event.target.value)} placeholder="留空则不修改密码" type="password" />
                 </label>
@@ -310,6 +310,11 @@ export function UsersPage({ canManageOwners, token, showToast }: Props) {
 
 function userIdentity(user: User) {
   return user.id || user.email;
+}
+
+export function userEmailLabel(user: Pick<User, "email" | "email_is_placeholder">) {
+  if (user.email_is_placeholder || !user.email) return "飞书未提供邮箱";
+  return user.email;
 }
 
 function normalizeRole(value: string): UserRole {

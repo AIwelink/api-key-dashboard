@@ -48,6 +48,38 @@ def auth_db(stored_user: dict | None = None):
 
 
 class PasswordLoginBindingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_placeholder_email_cannot_use_password_login(self) -> None:
+        placeholder = {
+            **user(bound=True),
+            "_id": "feishu-user",
+            "email": "feishu-user@identity.invalid",
+            "email_is_placeholder": True,
+        }
+        db = auth_db(placeholder)
+
+        with (
+            patch.object(auth_router, "verify_password", return_value=True) as verify_mock,
+            patch.object(auth_router, "create_access_token", return_value="must-not-be-issued") as token_mock,
+            patch.object(auth_router, "write_audit_log", AsyncMock()) as audit_mock,
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await auth_router.login(
+                    SimpleNamespace(
+                        email="feishu-user@identity.invalid",
+                        password="password123",
+                    ),
+                    db=db,
+                )
+
+        self.assertEqual(raised.exception.status_code, 401)
+        verify_mock.assert_not_called()
+        token_mock.assert_not_called()
+        self.assertEqual(audit_mock.await_args.kwargs["action"], "auth.login_failed")
+        self.assertEqual(
+            audit_mock.await_args.kwargs["after"],
+            {"result_code": "password_login_unavailable"},
+        )
+
     async def test_finish_login_rejects_user_disabled_during_token_issuance(self) -> None:
         authenticated = user(bound=True)
         disabled = {**authenticated, "status": "disabled"}

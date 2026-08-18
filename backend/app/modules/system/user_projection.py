@@ -4,6 +4,8 @@ from app.utils import serialize_doc
 def public_user(user: dict) -> dict:
     data = serialize_doc(user)
     data.pop("password_hash", None)
+    if data.get("email_is_placeholder"):
+        data["email"] = None
     identity = data.pop("feishu_identity", None) or {}
     data.update(
         {

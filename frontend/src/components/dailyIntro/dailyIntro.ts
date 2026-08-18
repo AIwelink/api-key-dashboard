@@ -5,7 +5,7 @@ export interface DailyIntroStorage {
 
 export type DailyIntroMember = {
   id?: string;
-  email: string;
+  email: string | null;
 };
 
 const DAILY_INTRO_STORAGE_PREFIX = "aiwelink.daily-team-intro.v1";
@@ -25,7 +25,7 @@ export function shanghaiDateKey(now: Date): string {
 }
 
 export function dailyIntroIdentity(member: DailyIntroMember): string {
-  return member.id?.trim() || member.email.trim().toLowerCase();
+  return member.id?.trim() || member.email?.trim().toLowerCase() || "anonymous";
 }
 
 function dailyIntroStorageKey(member: DailyIntroMember): string {

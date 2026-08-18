@@ -24,7 +24,7 @@ export function PendingAuthorizationPage({ user, refreshing, onRefresh, onLogout
         </div>
         <span className="pending-auth-label">飞书身份已确认</span>
         <h1 id="pending-auth-title">尚未分配系统权限，请联系管理员</h1>
-        <p>{user.feishu_name || user.name || user.email}</p>
+        <p>{user.feishu_name || user.name || user.email || "飞书用户"}</p>
         <div className="pending-auth-actions">
           <button disabled={refreshing} onClick={onRefresh} type="button">
             <RefreshCw aria-hidden="true" className={refreshing ? "auth-spinner" : ""} />

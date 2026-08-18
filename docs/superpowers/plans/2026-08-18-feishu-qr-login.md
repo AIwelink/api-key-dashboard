@@ -328,19 +328,19 @@ Commit: `feat: surface Feishu authorization status`
 
 Document the enterprise self-built app requirement, callback URI, user-info/email permissions, tenant allowlist, `accounts.feishu.cn` authorization base, and `open.feishu.cn` API base. Mark every plan checkbox completed as its task finishes.
 
-- [ ] **Step 2: Run complete backend verification**
+- [x] **Step 2: Run complete backend verification**
 
 Run from `backend`: `.venv/Scripts/python.exe -m unittest discover -s tests`
 
 Expected: all tests PASS.
 
-- [ ] **Step 3: Run complete frontend verification**
+- [x] **Step 3: Run complete frontend verification**
 
 Run from `frontend`: `npm test` then `npm run build`.
 
 Expected: all tests PASS and build succeeds.
 
-- [ ] **Step 4: Run repository checks**
+- [x] **Step 4: Run repository checks**
 
 Run: `git diff --check` and `git status --short --branch`.
 

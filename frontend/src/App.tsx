@@ -260,7 +260,7 @@ function App() {
         </nav>
 
         <div className="session-box">
-          <div className="session-user">{user ? `${user.name || user.email} (${user.role})` : "未登录"}</div>
+          <div className="session-user">{user ? `${user.name || user.email || "飞书用户"} (${user.role})` : "未登录"}</div>
           {token && (
             <button className="ghost" onClick={logout} type="button">
               <span className="session-logout-full">退出</span>

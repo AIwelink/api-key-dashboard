@@ -104,4 +104,48 @@ describe("Feishu authorization helpers", () => {
       vi.useRealTimers();
     }
   });
+
+  it("stops polling immediately when the authorization popup is closed", async () => {
+    vi.useFakeTimers();
+    try {
+      const storage = memoryStorage();
+      storage.setItem(FEISHU_SESSION_STORAGE_KEY, JSON.stringify(session));
+      const popup = { closed: false };
+      const request = vi.fn().mockResolvedValue({ ...session, status: "pending" });
+      const onError = vi.fn();
+
+      startFeishuSessionPolling(
+        session,
+        { onLogin: vi.fn(), onPhase: vi.fn(), onError },
+        { request, popup, storage },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      popup.closed = true;
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(onError).toHaveBeenCalledWith("授权窗口已关闭，请重新发起飞书登录");
+      expect(storage.getItem(FEISHU_SESSION_STORAGE_KEY)).toBeNull();
+      expect(request).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows the tenant rejection message returned by the backend", async () => {
+    const onError = vi.fn();
+    const request = vi.fn().mockResolvedValue({
+      ...session,
+      status: "failed",
+      error_code: "tenant_forbidden",
+    });
+
+    startFeishuSessionPolling(
+      session,
+      { onLogin: vi.fn(), onPhase: vi.fn(), onError },
+      { request },
+    );
+    await vi.waitFor(() => {
+      expect(onError).toHaveBeenCalledWith("当前飞书组织未获准登录");
+    });
+  });
 });

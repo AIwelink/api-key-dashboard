@@ -81,7 +81,8 @@ export type UserPermissions = {
 
 export type User = {
   id?: string;
-  email: string;
+  email: string | null;
+  email_is_placeholder?: boolean;
   name?: string;
   role: UserRole;
   status?: UserStatus;

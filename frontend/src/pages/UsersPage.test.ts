@@ -6,6 +6,7 @@ import {
   canEditUser,
   roleOptionsFromCatalog,
   sortUsersForManagement,
+  userEmailLabel,
   userManagementActionLabel,
 } from "./UsersPage";
 
@@ -73,5 +74,10 @@ describe("Feishu user authorization presentation", () => {
     expect(authorizationLabel({ ...active, feishu_bound: false })).toBe("未绑定飞书");
     expect(userManagementActionLabel(pending)).toBe("分配权限");
     expect(userManagementActionLabel(active)).toBe("编辑");
+  });
+
+  it("labels an internal placeholder without exposing its value", () => {
+    expect(userEmailLabel({ email: null, email_is_placeholder: true })).toBe("飞书未提供邮箱");
+    expect(userEmailLabel(active)).toBe("active@example.com");
   });
 });

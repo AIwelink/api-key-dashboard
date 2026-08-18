@@ -67,6 +67,31 @@ class DynamicUserRoleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["feishu_bound_at"], "2026-08-18T08:00:00+00:00")
         self.assertEqual(result["last_feishu_login_at"], "2026-08-18T09:00:00+00:00")
 
+    async def test_placeholder_email_user_password_cannot_be_reset(self) -> None:
+        db = fake_user_db(
+            existing={
+                "_id": "feishu-user",
+                "email": "feishu-user@identity.invalid",
+                "email_is_placeholder": True,
+                "role": "viewer",
+            }
+        )
+
+        with patch.object(users_router, "write_audit_log", AsyncMock()) as audit_mock:
+            with self.assertRaises(HTTPException) as raised:
+                await users_router.reset_password(
+                    "feishu-user",
+                    PasswordResetRequest(password="password123"),
+                    actor={"_id": "admin@example.com", "role": "admin"},
+                    db=db,
+                )
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(raised.exception.detail, "飞书用户没有本地密码，请使用飞书登录")
+        db.users.update_one.assert_not_awaited()
+        audit_mock.assert_not_awaited()
+
+
     async def test_list_users_places_pending_authorization_first(self) -> None:
         active = {
             "_id": "active@example.com",

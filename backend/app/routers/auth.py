@@ -45,6 +45,16 @@ async def login(
     user = await db.users.find_one({"email": payload.email.lower()})
     if user is None or user.get("status") == "disabled":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    if user.get("email_is_placeholder"):
+        await write_audit_log(
+            db,
+            actor=None,
+            action="auth.login_failed",
+            resource_type="user",
+            resource_id=user.get("_id"),
+            after={"result_code": "password_login_unavailable"},
+        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not verify_password(payload.password, user.get("password_hash", "")):
         await write_audit_log(
             db,

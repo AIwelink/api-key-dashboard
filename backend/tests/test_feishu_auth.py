@@ -15,6 +15,7 @@ from app.config import Settings
 from app.logging_config import SENSITIVE_KEYS, _redact_mapping
 from app.modules.auth import feishu
 from app.modules.system import bootstrap
+from app.modules.system.user_projection import public_user
 
 
 class FeishuConfigurationTests(unittest.TestCase):
@@ -189,17 +190,24 @@ class FeishuIdentityResolutionTests(unittest.IsolatedAsyncioTestCase):
             insert_one=AsyncMock(),
         )
 
-        result = await feishu.resolve_feishu_user(
-            SimpleNamespace(users=users),
-            identity=identity(email=" Member@Example.com "),
-            purpose="login",
-            target_user_id=None,
-        )
+        with patch.object(feishu, "write_audit_log", AsyncMock(), create=True) as audit_mock:
+            result = await feishu.resolve_feishu_user(
+                SimpleNamespace(users=users),
+                identity=identity(email=" Member@Example.com "),
+                purpose="login",
+                target_user_id=None,
+            )
 
         self.assertEqual(result["_id"], "member@example.com")
         write_filter = users.find_one_and_update.await_args.args[0]
         self.assertEqual(write_filter["_id"], "member@example.com")
         self.assertEqual(write_filter["feishu_identity.identity_key"], {"$exists": False})
+        self.assertEqual(audit_mock.await_args.kwargs["action"], "auth.feishu.user_bound")
+        self.assertEqual(audit_mock.await_args.kwargs["resource_id"], "member@example.com")
+        self.assertEqual(
+            audit_mock.await_args.kwargs["after"],
+            {"result_code": "bound", "bound_via": "feishu_email"},
+        )
 
     async def test_password_binding_targets_authenticated_user_even_when_email_differs(self) -> None:
         self.assertTrue(hasattr(feishu, "resolve_feishu_user"))
@@ -220,15 +228,21 @@ class FeishuIdentityResolutionTests(unittest.IsolatedAsyncioTestCase):
             insert_one=AsyncMock(),
         )
 
-        result = await feishu.resolve_feishu_user(
-            SimpleNamespace(users=users),
-            identity=identity(email="different@example.com"),
-            purpose="bind",
-            target_user_id="local@example.com",
-        )
+        with patch.object(feishu, "write_audit_log", AsyncMock()) as audit_mock:
+            result = await feishu.resolve_feishu_user(
+                SimpleNamespace(users=users),
+                identity=identity(email="different@example.com"),
+                purpose="bind",
+                target_user_id="local@example.com",
+            )
 
         self.assertEqual(result["_id"], "local@example.com")
         self.assertEqual(users.find_one.await_args_list[1].args[0], {"_id": "local@example.com"})
+        self.assertEqual(audit_mock.await_args.kwargs["action"], "auth.feishu.user_bound")
+        self.assertEqual(
+            audit_mock.await_args.kwargs["after"],
+            {"result_code": "bound", "bound_via": "password_binding"},
+        )
 
     async def test_unknown_identity_creates_pending_user(self) -> None:
         self.assertTrue(hasattr(feishu, "resolve_feishu_user"))
@@ -239,6 +253,41 @@ class FeishuIdentityResolutionTests(unittest.IsolatedAsyncioTestCase):
             insert_one=AsyncMock(),
         )
 
+        with patch.object(feishu, "write_audit_log", AsyncMock(), create=True) as audit_mock:
+            result = await feishu.resolve_feishu_user(
+                SimpleNamespace(users=users),
+                identity=identity(email=None),
+                purpose="login",
+                target_user_id=None,
+            )
+
+        self.assertEqual(result["authorization_status"], "pending")
+        self.assertEqual(result["role"], "viewer")
+        self.assertTrue(result["email"].endswith("@identity.invalid"))
+        self.assertTrue(result["email_is_placeholder"])
+        users.insert_one.assert_awaited_once()
+        self.assertEqual(audit_mock.await_args.kwargs["action"], "auth.feishu.user_auto_created")
+        self.assertEqual(
+            audit_mock.await_args.kwargs["after"],
+            {"result_code": "pending_authorization"},
+        )
+
+    async def test_concurrent_pending_user_creation_returns_unique_identity_winner(self) -> None:
+        concurrent = {
+            "_id": "feishu-existing",
+            "email": "feishu-existing@identity.invalid",
+            "email_is_placeholder": True,
+            "status": "active",
+            "authorization_status": "pending",
+            "feishu_identity": {"identity_key": "tenant-a:union:union-1"},
+        }
+        users = SimpleNamespace(
+            find_one=AsyncMock(side_effect=[None, concurrent]),
+            update_one=AsyncMock(),
+            find_one_and_update=AsyncMock(),
+            insert_one=AsyncMock(side_effect=feishu.DuplicateKeyError("duplicate identity")),
+        )
+
         result = await feishu.resolve_feishu_user(
             SimpleNamespace(users=users),
             identity=identity(email=None),
@@ -246,10 +295,7 @@ class FeishuIdentityResolutionTests(unittest.IsolatedAsyncioTestCase):
             target_user_id=None,
         )
 
-        self.assertEqual(result["authorization_status"], "pending")
-        self.assertEqual(result["role"], "viewer")
-        self.assertTrue(result["email"].endswith("@identity.invalid"))
-        users.insert_one.assert_awaited_once()
+        self.assertEqual(result["_id"], "feishu-existing")
 
     async def test_disabled_identity_is_rejected(self) -> None:
         self.assertTrue(hasattr(feishu, "resolve_feishu_user"))
@@ -290,6 +336,44 @@ class FeishuTicketTests(unittest.IsolatedAsyncioTestCase):
         consume_filter = auth_sessions.find_one_and_update.await_args.args[0]
         self.assertEqual(consume_filter["status"], "completed")
         self.assertEqual(consume_filter["consumed_at"], {"$exists": False})
+
+    async def test_replayed_ticket_emits_redacted_security_audits(self) -> None:
+        auth_sessions = SimpleNamespace(
+            find_one_and_update=AsyncMock(return_value=None),
+            find_one=AsyncMock(
+                return_value={
+                    "_id": "session-1",
+                    "result_user_id": "member@example.com",
+                    "consumed_at": datetime(2026, 8, 18, 12, tzinfo=UTC),
+                }
+            ),
+        )
+        db = SimpleNamespace(feishu_auth_sessions=auth_sessions, users=SimpleNamespace())
+
+        with patch.object(feishu, "write_audit_log", AsyncMock(), create=True) as audit_mock:
+            with self.assertRaisesRegex(feishu.FeishuAuthError, "已使用"):
+                await feishu.consume_login_ticket(db, ticket="secret-ticket-value")
+
+        actions = [call.kwargs["action"] for call in audit_mock.await_args_list]
+        self.assertEqual(actions, ["auth.feishu.ticket_replayed", "auth.feishu.login_failed"])
+        for call in audit_mock.await_args_list:
+            self.assertEqual(call.kwargs["resource_id"], "member@example.com")
+            self.assertEqual(call.kwargs["after"]["session_id"], "session-1")
+            self.assertIn("session-1", call.kwargs["dedupe_key"])
+            self.assertNotIn("secret-ticket-value", repr(call.kwargs))
+
+    async def test_unknown_ticket_is_rejected_without_persisting_unbounded_audit(self) -> None:
+        auth_sessions = SimpleNamespace(
+            find_one_and_update=AsyncMock(return_value=None),
+            find_one=AsyncMock(return_value=None),
+        )
+        db = SimpleNamespace(feishu_auth_sessions=auth_sessions, users=SimpleNamespace())
+
+        with patch.object(feishu, "write_audit_log", AsyncMock()) as audit_mock:
+            with self.assertRaisesRegex(feishu.FeishuAuthError, "无效"):
+                await feishu.consume_login_ticket(db, ticket="random-unknown-ticket")
+
+        audit_mock.assert_not_awaited()
 
 
 class _FakeHttpResponse:
@@ -407,6 +491,54 @@ class FeishuCallbackCompletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(completion["result_user_id"], "member@example.com")
         self.assertEqual(completion["ticket_expires_at"], datetime(2026, 8, 18, 12, 1, tzinfo=UTC))
 
+    async def test_binding_conflict_emits_conflict_and_failed_audits_without_identity_secrets(self) -> None:
+        session = {
+            "_id": "session-1",
+            "purpose": "bind",
+            "target_user_id": "member@example.com",
+            "status": "processing",
+        }
+        auth_sessions = SimpleNamespace(
+            find_one_and_update=AsyncMock(return_value=session),
+            update_one=AsyncMock(),
+        )
+        db = SimpleNamespace(feishu_auth_sessions=auth_sessions)
+
+        with (
+            patch.object(feishu, "fetch_feishu_identity", AsyncMock(return_value=identity())),
+            patch.object(
+                feishu,
+                "resolve_feishu_user",
+                AsyncMock(
+                    side_effect=feishu.FeishuBindingConflictError(
+                        "binding conflict",
+                        code="identity_already_bound",
+                    )
+                ),
+            ),
+            patch.object(feishu, "write_audit_log", AsyncMock(), create=True) as audit_mock,
+        ):
+            with self.assertRaises(feishu.FeishuBindingConflictError):
+                await feishu.complete_authorization_session(
+                    db,
+                    state="secret-state",
+                    code="secret-code",
+                    settings=feishu_settings(),
+                    http_client=SimpleNamespace(),
+                )
+
+        actions = [call.kwargs["action"] for call in audit_mock.await_args_list]
+        self.assertEqual(actions, ["auth.feishu.binding_conflict", "auth.feishu.login_failed"])
+        for call in audit_mock.await_args_list:
+            self.assertEqual(call.kwargs["resource_id"], "member@example.com")
+            self.assertEqual(
+                call.kwargs["after"],
+                {"result_code": "identity_already_bound", "session_id": "session-1"},
+            )
+            serialized = repr(call.kwargs)
+            for secret in ("secret-state", "secret-code", "open-1", "union-1"):
+                self.assertNotIn(secret, serialized)
+
     async def test_replayed_callback_state_is_rejected(self) -> None:
         self.assertTrue(hasattr(feishu, "complete_authorization_session"))
         db = SimpleNamespace(
@@ -456,16 +588,46 @@ class FeishuCallbackCompletionTests(unittest.IsolatedAsyncioTestCase):
             find_one_and_update=AsyncMock(return_value={"_id": "session-1", "status": "failed"})
         )
 
-        result = await feishu.fail_authorization_session(
-            SimpleNamespace(feishu_auth_sessions=auth_sessions),
-            state="state-1",
-            error_code="access_denied",
-        )
+        with patch.object(feishu, "write_audit_log", AsyncMock()) as audit_mock:
+            result = await feishu.fail_authorization_session(
+                SimpleNamespace(feishu_auth_sessions=auth_sessions),
+                state="state-1",
+                error_code="access_denied",
+            )
 
         self.assertEqual(result, "session-1")
         update = auth_sessions.find_one_and_update.await_args.args[1]["$set"]
         self.assertEqual(update["status"], "failed")
         self.assertEqual(update["error_code"], "access_denied")
+        self.assertEqual(audit_mock.await_args.kwargs["action"], "auth.feishu.login_failed")
+        self.assertEqual(
+            audit_mock.await_args.kwargs["after"],
+            {"result_code": "access_denied", "session_id": "session-1"},
+        )
+
+    async def test_untrusted_callback_error_is_normalized_before_storage_and_audit(self) -> None:
+        malicious_error = "code=secret&state=secret&ticket=secret&open_id=secret&union_id=secret"
+        auth_sessions = SimpleNamespace(
+            find_one_and_update=AsyncMock(
+                return_value={"_id": "session-1", "status": "failed"}
+            )
+        )
+
+        with patch.object(feishu, "write_audit_log", AsyncMock()) as audit_mock:
+            result = await feishu.fail_authorization_session(
+                SimpleNamespace(feishu_auth_sessions=auth_sessions),
+                state="state-1",
+                error_code=malicious_error,
+            )
+
+        self.assertEqual(result, "session-1")
+        update = auth_sessions.find_one_and_update.await_args.args[1]["$set"]
+        self.assertEqual(update["error_code"], "oauth_error")
+        self.assertEqual(
+            audit_mock.await_args.kwargs["after"],
+            {"result_code": "oauth_error", "session_id": "session-1"},
+        )
+        self.assertNotIn(malicious_error, repr(audit_mock.await_args.kwargs))
 
 
 class PendingAuthorizationBoundaryTests(unittest.IsolatedAsyncioTestCase):
@@ -528,6 +690,19 @@ class PendingAuthorizationBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class FeishuStorageAndRedactionTests(unittest.IsolatedAsyncioTestCase):
+    def test_placeholder_email_is_hidden_from_public_user_projection(self) -> None:
+        result = public_user(
+            {
+                "_id": "feishu-user",
+                "email": "feishu-user@identity.invalid",
+                "email_is_placeholder": True,
+                "feishu_identity": {"identity_key": "tenant-a:union:union-1"},
+            }
+        )
+
+        self.assertIsNone(result["email"])
+        self.assertTrue(result["email_is_placeholder"])
+
     async def test_storage_backfills_legacy_users_and_creates_partial_unique_indexes(self) -> None:
         self.assertTrue(hasattr(bootstrap, "ensure_feishu_auth_storage"))
         users = SimpleNamespace(update_many=AsyncMock(), create_index=AsyncMock())

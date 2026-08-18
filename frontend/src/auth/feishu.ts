@@ -42,6 +42,7 @@ type PollOptions = {
   intervalMs?: number;
   expectedOrigin?: string;
   storage?: Storage;
+  popup?: Pick<PopupWindow, "closed"> | null;
 };
 
 export function openFeishuPopup(): PopupWindow | null {
@@ -151,6 +152,10 @@ export function startFeishuSessionPolling(
         return;
       }
       if (status.status !== "completed") {
+        if (options.popup?.closed) {
+          fail("授权窗口已关闭，请重新发起飞书登录");
+          return;
+        }
         callbacks.onPhase(session.flow === "binding" ? "binding" : "waiting");
         schedule();
         return;
@@ -201,7 +206,7 @@ function storeFeishuSession(session: FeishuAuthorizationSession, storage: Storag
 
 function feishuErrorMessage(code?: string | null) {
   if (code === "access_denied") return "飞书授权已取消，请重新扫码";
-  if (code === "tenant_not_allowed") return "当前飞书组织未获准登录";
+  if (code === "tenant_forbidden") return "当前飞书组织未获准登录";
   if (code === "user_disabled") return "当前系统账号已停用";
   return "飞书授权已失效，请重新扫码";
 }

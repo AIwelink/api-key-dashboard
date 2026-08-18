@@ -162,6 +162,11 @@ async def reset_password(
     user = await db.users.find_one({"_id": user_id})
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if user.get("email_is_placeholder"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="飞书用户没有本地密码，请使用飞书登录",
+        )
     _require_owner_for_roles(actor, user.get("role"))
     result = await db.users.update_one(
         _user_write_filter(user_id, actor),

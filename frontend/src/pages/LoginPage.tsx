@@ -37,7 +37,11 @@ export function LoginPage({ onLogin, showToast }: Props) {
   const copy = PHASE_COPY[phase];
   const busy = phase === "starting" || phase === "waiting" || phase === "exchanging" || phase === "binding";
 
-  const beginPolling = (session: FeishuAuthorizationSession, nextFlow: FeishuAuthFlow) => {
+  const beginPolling = (
+    session: FeishuAuthorizationSession,
+    nextFlow: FeishuAuthFlow,
+    popup: ReturnType<typeof openFeishuPopup> = null,
+  ) => {
     stopPolling.current?.();
     stopPolling.current = startFeishuSessionPolling(
       { ...session, flow: nextFlow },
@@ -49,6 +53,7 @@ export function LoginPage({ onLogin, showToast }: Props) {
           showToast(message, true);
         },
       },
+      { popup },
     );
   };
 
@@ -60,7 +65,7 @@ export function LoginPage({ onLogin, showToast }: Props) {
     setFlow(nextFlow);
     setInlineError("");
     const mode = launchFeishuAuthorization(session, { popup, flow: nextFlow });
-    if (mode === "popup") beginPolling(session, nextFlow);
+    if (mode === "popup") beginPolling(session, nextFlow, popup);
   };
 
   useEffect(() => {

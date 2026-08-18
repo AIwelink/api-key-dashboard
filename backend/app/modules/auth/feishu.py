@@ -16,12 +16,14 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from app.config import Settings, get_settings
+from app.modules.system.audit import write_audit_log
 from app.utils import now_utc
 
 
 AuthPurpose = Literal["login", "bind"]
 SESSION_TTL = timedelta(minutes=5)
 TICKET_TTL = timedelta(seconds=60)
+SAFE_CALLBACK_ERROR_CODES = frozenset({"access_denied", "code_missing", "oauth_error"})
 
 
 class FeishuAuthError(RuntimeError):
@@ -168,6 +170,14 @@ async def resolve_feishu_user(
             return_document=ReturnDocument.AFTER,
         )
         if bound is not None:
+            await write_audit_log(
+                db,
+                actor=None,
+                action="auth.feishu.user_bound",
+                resource_type="user",
+                resource_id=str(bound["_id"]),
+                after={"result_code": "bound", "bound_via": bound_via},
+            )
             return bound
         concurrent = await db.users.find_one({"feishu_identity.identity_key": identity.identity_key})
         if concurrent is not None and concurrent.get("_id") == candidate.get("_id"):
@@ -188,9 +198,10 @@ async def consume_login_ticket(
     ticket: str,
 ) -> dict[str, Any]:
     consumed_at = now_utc()
+    ticket_hash = _secret_hash(ticket)
     session = await db.feishu_auth_sessions.find_one_and_update(
         {
-            "ticket_hash": _secret_hash(ticket),
+            "ticket_hash": ticket_hash,
             "status": "completed",
             "consumed_at": {"$exists": False},
             "ticket_expires_at": {"$gt": consumed_at},
@@ -199,11 +210,43 @@ async def consume_login_ticket(
         return_document=ReturnDocument.AFTER,
     )
     if session is None:
+        existing = await db.feishu_auth_sessions.find_one({"ticket_hash": ticket_hash})
+        if existing is None:
+            raise FeishuAuthError("登录票据无效或已使用", code="ticket_invalid")
+        replayed = existing is not None and existing.get("consumed_at") is not None
+        result_code = "ticket_replayed" if replayed else "ticket_invalid"
+        session_id = str(existing["_id"])
+        context = {"result_code": result_code, "session_id": session_id}
+        resource_id = existing.get("result_user_id")
+        if replayed:
+            await write_audit_log(
+                db,
+                actor=None,
+                action="auth.feishu.ticket_replayed",
+                resource_type="user",
+                resource_id=resource_id,
+                after=context,
+                dedupe_key=f"auth.feishu.ticket_replayed:{session_id}",
+            )
+        await write_audit_log(
+            db,
+            actor=None,
+            action="auth.feishu.login_failed",
+            resource_type="user",
+            resource_id=resource_id,
+            after=context,
+            dedupe_key=f"auth.feishu.login_failed:{result_code}:{session_id}",
+        )
         raise FeishuAuthError("登录票据无效或已使用", code="ticket_invalid")
     user = await db.users.find_one({"_id": session.get("result_user_id")})
     if user is None:
+        await _audit_login_failure(db, session=session, result_code="user_not_found")
         raise FeishuAuthError("登录用户不存在", code="user_not_found")
-    _require_enabled_user(user)
+    try:
+        _require_enabled_user(user)
+    except FeishuAuthError as exc:
+        await _audit_login_failure(db, session=session, result_code=exc.code)
+        raise
     return user
 
 
@@ -268,6 +311,25 @@ async def complete_authorization_session(
                 }
             },
         )
+        context = {"result_code": error_code, "session_id": str(session["_id"])}
+        resource_id = session.get("target_user_id")
+        if isinstance(exc, FeishuBindingConflictError):
+            await write_audit_log(
+                db,
+                actor=None,
+                action="auth.feishu.binding_conflict",
+                resource_type="user",
+                resource_id=resource_id,
+                after=context,
+            )
+        await write_audit_log(
+            db,
+            actor=None,
+            action="auth.feishu.login_failed",
+            resource_type="user",
+            resource_id=resource_id,
+            after=context,
+        )
         if isinstance(exc, FeishuAuthError):
             raise
         raise FeishuAuthError("飞书授权失败，请重试", code=error_code) from exc
@@ -321,6 +383,7 @@ async def fail_authorization_session(
     state: str,
     error_code: str,
 ) -> str:
+    normalized_error_code = _normalize_callback_error_code(error_code)
     failed_at = now_utc()
     session = await db.feishu_auth_sessions.find_one_and_update(
         {
@@ -331,7 +394,7 @@ async def fail_authorization_session(
         {
             "$set": {
                 "status": "failed",
-                "error_code": error_code,
+                "error_code": normalized_error_code,
                 "completed_at": failed_at,
             }
         },
@@ -339,6 +402,7 @@ async def fail_authorization_session(
     )
     if session is None:
         raise FeishuAuthError("授权状态已过期或已使用", code="state_invalid")
+    await _audit_login_failure(db, session=session, result_code=normalized_error_code)
     return str(session["_id"])
 
 
@@ -418,6 +482,7 @@ async def _create_pending_user(
     document = {
         "_id": generated_id,
         "email": normalized_email or f"{generated_id}@identity.invalid",
+        "email_is_placeholder": normalized_email is None,
         "name": identity.name or "飞书用户",
         "role": "viewer",
         "status": "active",
@@ -443,6 +508,14 @@ async def _create_pending_user(
     }
     try:
         await db.users.insert_one(document)
+        await write_audit_log(
+            db,
+            actor=None,
+            action="auth.feishu.user_auto_created",
+            resource_type="user",
+            resource_id=generated_id,
+            after={"result_code": "pending_authorization"},
+        )
         return document
     except DuplicateKeyError:
         existing = await db.users.find_one({"feishu_identity.identity_key": identity.identity_key})
@@ -458,6 +531,26 @@ async def _create_pending_user(
 def _normalize_email(value: str | None) -> str | None:
     normalized = (value or "").strip().lower()
     return normalized or None
+
+
+def _normalize_callback_error_code(value: str) -> str:
+    return value if value in SAFE_CALLBACK_ERROR_CODES else "oauth_error"
+
+
+async def _audit_login_failure(
+    db: AsyncIOMotorDatabase,
+    *,
+    session: dict[str, Any],
+    result_code: str,
+) -> None:
+    await write_audit_log(
+        db,
+        actor=None,
+        action="auth.feishu.login_failed",
+        resource_type="user",
+        resource_id=session.get("result_user_id") or session.get("target_user_id"),
+        after={"result_code": result_code, "session_id": str(session["_id"])},
+    )
 
 
 def _successful_payload(value: Any, *, operation: str) -> dict[str, Any]:
