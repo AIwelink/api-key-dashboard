@@ -258,6 +258,27 @@ class RiskRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ON CONFLICT (site_id, external_user_id) DO UPDATE", sql)
         self.assertNotIn("manual_override_active = EXCLUDED", sql)
 
+    async def test_risk_account_upsert_casts_detected_at_as_timestamptz(self) -> None:
+        from app.modules.risk.repository import upsert_risk_account
+
+        connection = _FakeConnection([[{
+            "risk_account_id": uuid4(),
+            "risk_status": "high_risk",
+        }]])
+
+        await upsert_risk_account(
+            connection,
+            site_id="aiwelink",
+            external_user_id="42",
+            email="a.b@example.com",
+            risk_status="high_risk",
+            risk_reasons={"email_rules": ["email_local_part_dot"]},
+            detected_at=NOW,
+        )
+
+        sql, _ = connection.calls[0]
+        self.assertEqual(sql.count("CAST(:detected_at AS TIMESTAMPTZ)"), 4)
+
     async def test_action_creation_uses_deterministic_idempotency_key(self) -> None:
         from app.modules.risk.repository import create_action
 
