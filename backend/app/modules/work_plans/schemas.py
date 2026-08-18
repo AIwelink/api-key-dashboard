@@ -81,6 +81,25 @@ class WorkPlanOperationCreate(BaseModel):
         return self
 
 
+class WorkPlanForceCancel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_at: datetime
+    end_at: datetime
+    idempotency_key: UUID
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> "WorkPlanForceCancel":
+        for value in (self.start_at, self.end_at):
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError("强制取消时间必须包含时区")
+            if value.second or value.microsecond or value.minute not in {0, 30}:
+                raise ValueError("强制取消时间必须以 30 分钟为间隔")
+        if self.end_at <= self.start_at:
+            raise ValueError("强制取消结束时间必须晚于开始时间")
+        return self
+
+
 class WorkPlanOperationUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
