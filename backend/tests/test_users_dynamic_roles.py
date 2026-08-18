@@ -67,6 +67,24 @@ class DynamicUserRoleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["feishu_bound_at"], "2026-08-18T08:00:00+00:00")
         self.assertEqual(result["last_feishu_login_at"], "2026-08-18T09:00:00+00:00")
 
+    def test_public_user_exposes_proxy_binding_without_source_id(self) -> None:
+        result = users_router.public_user(
+            {
+                "_id": "owner@example.com",
+                "email": "owner@example.com",
+                "feishu_identity": {
+                    "source_user_id": "feishu-pending",
+                    "name": "飞书成员",
+                    "bound_at": "2026-08-18T14:30:00+00:00",
+                },
+            }
+        )
+
+        self.assertTrue(result["feishu_bound"])
+        self.assertEqual(result["feishu_name"], "飞书成员")
+        self.assertNotIn("source_user_id", result)
+        self.assertNotIn("feishu_identity", result)
+
     async def test_placeholder_email_user_password_cannot_be_reset(self) -> None:
         db = fake_user_db(
             existing={
@@ -108,6 +126,7 @@ class DynamicUserRoleTests(unittest.IsolatedAsyncioTestCase):
         result = await users_router.list_users(_={}, db=db)
 
         self.assertEqual([item["id"] for item in result["items"]], ["pending@example.com", "active@example.com"])
+        db.users.find.assert_called_once_with({"merged_into_user_id": {"$exists": False}})
 
     async def test_assigning_role_atomically_activates_pending_user(self) -> None:
         pending = {

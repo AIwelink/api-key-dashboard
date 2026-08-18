@@ -156,6 +156,36 @@ class PasswordLoginBindingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.access_token, "local-jwt")
         db.users.update_one.assert_awaited_once()
 
+    async def test_proxy_bound_user_keeps_direct_password_login(self) -> None:
+        proxy_bound = user(bound=False)
+        proxy_bound["feishu_identity"] = {"source_user_id": "feishu-pending"}
+        db = auth_db(proxy_bound)
+        db.users.update_one.return_value = SimpleNamespace(matched_count=1, modified_count=1)
+        safe_user = {
+            "id": "member@example.com",
+            "email": "member@example.com",
+            "role": "maintainer",
+            "feishu_bound": True,
+            "permissions": {"allowed_views": ["work-plans"], "default_view": "work-plans"},
+        }
+
+        with (
+            patch.object(auth_router, "verify_password", return_value=True),
+            patch.object(auth_router, "get_settings", return_value=enabled_settings(), create=True),
+            patch.object(auth_router, "create_authorization_session", AsyncMock()) as create_session,
+            patch.object(auth_router, "create_access_token", return_value="local-jwt"),
+            patch.object(auth_router, "user_with_permissions", AsyncMock(return_value=safe_user)),
+            patch.object(auth_router, "write_audit_log", AsyncMock()),
+        ):
+            result = await auth_router.login(
+                schemas.LoginRequest(email="member@example.com", password="password123"),
+                db=db,
+            )
+
+        self.assertIsInstance(result, schemas.LoginResponse)
+        self.assertEqual(result.access_token, "local-jwt")
+        create_session.assert_not_awaited()
+
     async def test_disabled_feishu_configuration_keeps_password_fallback(self) -> None:
         db = auth_db(user(bound=False))
         fallback_settings = Settings(feishu_auth_enabled=False)

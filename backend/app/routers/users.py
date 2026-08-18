@@ -20,7 +20,10 @@ async def list_users(
     _: dict = Depends(require_view_permission("users")),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
-    users = [public_user(user) async for user in db.users.find({}).sort("created_at", -1)]
+    users = [
+        public_user(user)
+        async for user in db.users.find({"merged_into_user_id": {"$exists": False}}).sort("created_at", -1)
+    ]
     users.sort(key=lambda user: user.get("authorization_status") != "pending")
     return {"items": users, "total": len(users)}
 

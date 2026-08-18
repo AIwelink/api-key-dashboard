@@ -9,7 +9,7 @@ def public_user(user: dict) -> dict:
     identity = data.pop("feishu_identity", None) or {}
     data.update(
         {
-            "feishu_bound": bool(identity.get("identity_key")),
+            "feishu_bound": bool(identity.get("identity_key") or identity.get("source_user_id")),
             "feishu_name": identity.get("name"),
             "feishu_avatar_url": identity.get("avatar_url"),
             "feishu_email": identity.get("email"),
