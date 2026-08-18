@@ -233,6 +233,25 @@ class FeishuAuthRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.access_token, "local-jwt")
         self.assertEqual(result.user["authorization_status"], "pending")
 
+    async def test_auth_user_projection_does_not_expose_feishu_identity_ids(self) -> None:
+        raw_user = user(bound=True)
+        raw_user["feishu_identity"].update(
+            {
+                "tenant_key": "tenant-a",
+                "union_id": "union-1",
+                "open_id": "open-1",
+                "user_id": "user-1",
+                "name": "飞书成员",
+                "email": "member@feishu.example",
+            }
+        )
+        with patch.object(auth_router, "permissions_for_user", AsyncMock(return_value={"allowed_views": []})):
+            result = await auth_router.user_with_permissions(SimpleNamespace(), raw_user)
+
+        self.assertNotIn("feishu_identity", result)
+        self.assertTrue(result["feishu_bound"])
+        self.assertEqual(result["feishu_name"], "飞书成员")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,10 +26,11 @@ from app.modules.auth.feishu import (
     get_authorization_session_status,
 )
 from app.modules.system.permissions import permissions_for_user
+from app.modules.system.user_projection import public_user
 from app.modules.operations.site_permissions import normalize_operations_site_ids
 from app.security import create_access_token, get_authenticated_user, get_current_user, hash_password, verify_password
 from app.modules.system.audit import write_audit_log
-from app.utils import now_utc, serialize_doc
+from app.utils import now_utc
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -251,8 +252,7 @@ else {{ window.setTimeout(() => window.location.replace({json.dumps(fallback_url
 
 
 async def user_with_permissions(db: AsyncIOMotorDatabase, user: dict) -> dict:
-    safe_user = serialize_doc(user)
-    safe_user.pop("password_hash", None)
+    safe_user = public_user(user)
     safe_user["operations_site_ids"] = normalize_operations_site_ids(user.get("operations_site_ids"))
     safe_user["permissions"] = await permissions_for_user(db, user)
     return safe_user

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import HTTPException
 
@@ -10,8 +10,24 @@ from app.routers import users as users_router
 from app.schemas import PasswordResetRequest, UserCreate, UserUpdate
 
 
-def fake_user_db(*, existing: dict | None = None):
+class FakeUserCursor:
+    def __init__(self, items: list[dict]) -> None:
+        self.items = items
+
+    def sort(self, *_args, **_kwargs):
+        return self
+
+    def __aiter__(self):
+        async def iterate():
+            for item in self.items:
+                yield item
+
+        return iterate()
+
+
+def fake_user_db(*, existing: dict | None = None, listed: list[dict] | None = None):
     users = SimpleNamespace(
+        find=MagicMock(return_value=FakeUserCursor(listed or [])),
         find_one=AsyncMock(return_value=existing),
         insert_one=AsyncMock(),
         update_one=AsyncMock(),
@@ -21,6 +37,102 @@ def fake_user_db(*, existing: dict | None = None):
 
 
 class DynamicUserRoleTests(unittest.IsolatedAsyncioTestCase):
+    def test_public_user_exposes_only_safe_feishu_metadata(self) -> None:
+        result = users_router.public_user(
+            {
+                "_id": "member@example.com",
+                "email": "member@example.com",
+                "password_hash": "secret",
+                "feishu_identity": {
+                    "identity_key": "tenant-a:union:union-1",
+                    "tenant_key": "tenant-a",
+                    "union_id": "union-1",
+                    "open_id": "open-1",
+                    "user_id": "user-1",
+                    "name": "飞书成员",
+                    "email": "member@feishu.example",
+                    "avatar_url": "https://example.com/avatar.png",
+                    "bound_at": "2026-08-18T08:00:00+00:00",
+                },
+                "last_feishu_login_at": "2026-08-18T09:00:00+00:00",
+            }
+        )
+
+        self.assertNotIn("password_hash", result)
+        self.assertNotIn("feishu_identity", result)
+        self.assertTrue(result["feishu_bound"])
+        self.assertEqual(result["feishu_name"], "飞书成员")
+        self.assertEqual(result["feishu_email"], "member@feishu.example")
+        self.assertEqual(result["feishu_avatar_url"], "https://example.com/avatar.png")
+        self.assertEqual(result["feishu_bound_at"], "2026-08-18T08:00:00+00:00")
+        self.assertEqual(result["last_feishu_login_at"], "2026-08-18T09:00:00+00:00")
+
+    async def test_list_users_places_pending_authorization_first(self) -> None:
+        active = {
+            "_id": "active@example.com",
+            "created_at": "2026-08-18T09:00:00+00:00",
+            "authorization_status": "active",
+        }
+        pending = {
+            "_id": "pending@example.com",
+            "created_at": "2026-08-18T08:00:00+00:00",
+            "authorization_status": "pending",
+        }
+        db = fake_user_db(listed=[active, pending])
+
+        result = await users_router.list_users(_={}, db=db)
+
+        self.assertEqual([item["id"] for item in result["items"]], ["pending@example.com", "active@example.com"])
+
+    async def test_assigning_role_atomically_activates_pending_user(self) -> None:
+        pending = {
+            "_id": "pending@example.com",
+            "email": "pending@example.com",
+            "role": "viewer",
+            "authorization_status": "pending",
+        }
+        db = fake_user_db(existing=pending)
+        db.users.update_one.return_value = SimpleNamespace(matched_count=1, modified_count=1)
+        with (
+            patch.object(users_router, "role_exists", AsyncMock(side_effect=[True, True])),
+            patch.object(users_router, "write_audit_log", AsyncMock()) as audit_mock,
+        ):
+            await users_router.update_user(
+                "pending@example.com",
+                UserUpdate(role="maintainer"),
+                actor={"_id": "admin@example.com", "role": "admin"},
+                db=db,
+            )
+
+        role_write = db.users.update_one.await_args_list[0]
+        self.assertEqual(role_write.args[1]["$set"]["role"], "maintainer")
+        self.assertEqual(role_write.args[1]["$set"]["authorization_status"], "active")
+        self.assertEqual(audit_mock.await_args.kwargs["action"], "user.authorization_activated")
+
+    async def test_failed_pending_role_assignment_rolls_back_authorization(self) -> None:
+        pending = {
+            "_id": "pending@example.com",
+            "email": "pending@example.com",
+            "role": "viewer",
+            "authorization_status": "pending",
+        }
+        db = fake_user_db(existing=pending)
+        db.users.update_one.return_value = SimpleNamespace(matched_count=1, modified_count=1)
+        with (
+            patch.object(users_router, "role_exists", AsyncMock(side_effect=[True, False])),
+            patch.object(users_router, "write_audit_log", AsyncMock()),
+        ):
+            with self.assertRaises(HTTPException):
+                await users_router.update_user(
+                    "pending@example.com",
+                    UserUpdate(role="maintainer"),
+                    actor={"_id": "admin@example.com", "role": "admin"},
+                    db=db,
+                )
+
+        rollback = db.users.update_one.await_args_list[1].args[1]["$set"]
+        self.assertEqual(rollback["authorization_status"], "pending")
+
     async def test_all_users_routes_use_database_view_permission(self) -> None:
         app_settings = SimpleNamespace(
             find_one=AsyncMock(

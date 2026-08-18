@@ -8,16 +8,11 @@ from app.schemas import PasswordResetRequest, UserCreate, UserUpdate
 from app.security import hash_password
 from app.modules.system.audit import write_audit_log
 from app.modules.system.permissions import require_view_permission, role_exists
-from app.utils import now_utc, serialize_doc
+from app.modules.system.user_projection import public_user
+from app.utils import now_utc
 
 
 router = APIRouter(prefix="/users", tags=["users"])
-
-
-def public_user(user: dict) -> dict:
-    data = serialize_doc(user)
-    data.pop("password_hash", None)
-    return data
 
 
 @router.get("")
@@ -26,6 +21,7 @@ async def list_users(
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict:
     users = [public_user(user) async for user in db.users.find({}).sort("created_at", -1)]
+    users.sort(key=lambda user: user.get("authorization_status") != "pending")
     return {"items": users, "total": len(users)}
 
 
@@ -90,6 +86,7 @@ async def update_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     update = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
     requested_role = update.pop("role", None)
+    activating_authorization = user.get("authorization_status") == "pending" and requested_role is not None
     _require_owner_for_roles(actor, user.get("role"), requested_role)
     if requested_role is not None:
         await _require_existing_role(db, requested_role)
@@ -98,10 +95,14 @@ async def update_user(
             "updated_by": actor["_id"],
             "updated_at": now_utc(),
         }
+        if activating_authorization:
+            role_update["authorization_status"] = "active"
         result = await db.users.update_one(_user_write_filter(user_id, actor), {"$set": role_update})
         _require_matched_user_write(result, actor)
         if not await role_exists(db, requested_role):
             rollback_set = {"role": user.get("role") or "viewer"}
+            if activating_authorization:
+                rollback_set["authorization_status"] = "pending"
             rollback_unset: dict[str, str] = {}
             for key in ("updated_by", "updated_at"):
                 if key in user:
@@ -111,14 +112,18 @@ async def update_user(
             rollback: dict[str, dict[str, object]] = {"$set": rollback_set}
             if rollback_unset:
                 rollback["$unset"] = rollback_unset
-            await db.users.update_one({"_id": user_id, "role": requested_role}, rollback)
+            rollback_filter = {"_id": user_id, "role": requested_role}
+            if activating_authorization:
+                rollback_filter["authorization_status"] = "active"
+            await db.users.update_one(rollback_filter, rollback)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User role does not exist")
     if update:
         update["updated_by"] = actor["_id"]
         update["updated_at"] = now_utc()
         result = await db.users.update_one(_user_write_filter(user_id, actor), {"$set": update})
         _require_matched_user_write(result, actor)
-    await write_audit_log(db, actor=actor, action="user.update", resource_type="user", resource_id=user_id)
+    audit_action = "user.authorization_activated" if activating_authorization else "user.update"
+    await write_audit_log(db, actor=actor, action=audit_action, resource_type="user", resource_id=user_id)
     return public_user(await db.users.find_one({"_id": user_id}))
 
 

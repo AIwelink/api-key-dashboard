@@ -225,21 +225,21 @@ Commit: `feat: expose Feishu QR authentication routes`
 - Modify: `backend/app/schemas.py`
 - Test: `backend/tests/test_users_dynamic_roles.py`
 
-- [ ] **Step 1: Write failing pending-user administration tests**
+- [x] **Step 1: Write failing pending-user administration tests**
 
 Verify list responses contain safe Feishu binding metadata but no identity IDs, pending users sort before active users, role assignment atomically sets `authorization_status=active`, and non-owner users still cannot manage owner records.
 
-- [ ] **Step 2: Run focused tests and verify failures**
+- [x] **Step 2: Run focused tests and verify failures**
 
 Run from `backend`: `.venv/Scripts/python.exe -m unittest tests.test_users_dynamic_roles -v`
 
 Expected: no activation/status fields and creation-order sorting.
 
-- [ ] **Step 3: Implement safe public-user projection and activation**
+- [x] **Step 3: Implement safe public-user projection and activation**
 
 Return only `feishu_bound`, `feishu_name`, `feishu_avatar_url`, `feishu_email`, `feishu_bound_at`, and `last_feishu_login_at`. On a pending user, a valid role update must set both role and `authorization_status=active` in the same guarded write.
 
-- [ ] **Step 4: Run user tests and commit**
+- [x] **Step 4: Run user tests and commit**
 
 Run from `backend`: `.venv/Scripts/python.exe -m unittest tests.test_users_dynamic_roles -v`
 
