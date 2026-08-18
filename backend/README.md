@@ -52,6 +52,34 @@ INITIAL_OWNER_PASSWORD=change-me
 
 如果 `users` 为空且配置了初始 Owner，启动时会创建必须修改密码的 Owner。sub2api 和客户端站点后续通过管理页面写入 MongoDB；不要在代码或文档中固定生产 URL 和 API Key。
 
+### 飞书扫码登录
+
+飞书登录必须使用当前企业租户下的自建应用，机器人 Webhook 不能用于 OAuth 登录。先在飞书开放平台启用网页登录，并为应用开通用户基本信息与组织邮箱读取权限（`contact:user.base:readonly`、`contact:user.email:readonly`）。
+
+回调地址必须与服务端地址完全一致，例如：
+
+```text
+https://account.example.com/api/auth/feishu/callback
+```
+
+生产环境配置：
+
+```text
+FRONTEND_ORIGIN=https://account.example.com
+FEISHU_AUTH_ENABLED=false
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
+FEISHU_REDIRECT_URI=https://account.example.com/api/auth/feishu/callback
+FEISHU_ALLOWED_TENANT_KEYS=tenant_key_a
+FEISHU_AUTHORIZE_BASE_URL=https://accounts.feishu.cn
+FEISHU_OPEN_API_BASE_URL=https://open.feishu.cn
+FEISHU_REQUEST_TIMEOUT_SECONDS=8
+```
+
+`FEISHU_ALLOWED_TENANT_KEYS` 支持逗号分隔多个租户；生产环境不得留空。`FEISHU_AUTHORIZE_BASE_URL` 只用于浏览器授权，`FEISHU_OPEN_API_BASE_URL` 只用于服务端换取用户身份，不要互换。
+
+上线时先保持 `FEISHU_AUTH_ENABLED=false` 完成后端迁移和前端部署，再填写 App ID、App Secret、固定回调地址及租户白名单，最后开启认证。开启后，未绑定用户使用密码验证成功也必须继续完成飞书绑定；已经绑定的用户仍可使用密码作为应急入口。
+
 ## 代码结构
 
 ```text
@@ -162,3 +190,4 @@ python -m compileall app
 - `account_json` 是外部 JSON，`metadata` 是本地管理层；不要互相替代。
 - 账号身份匹配使用规范化邮箱或明确远端绑定，不使用展示名称。
 - API Key、Webhook 密钥、access token、refresh token 和邮箱授权 token 不得出现在接口列表响应、审计详情或测试快照中。
+- 飞书 App Secret、授权码、OAuth access token、本地登录票据和 JWT 不得出现在 URL、日志或审计详情中。

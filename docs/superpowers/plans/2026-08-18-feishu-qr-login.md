@@ -324,7 +324,7 @@ Commit: `feat: surface Feishu authorization status`
 - Modify: `docs/superpowers/specs/2026-08-18-feishu-qr-login-design.md`
 - Modify: `docs/superpowers/plans/2026-08-18-feishu-qr-login.md`
 
-- [ ] **Step 1: Document exact Feishu deployment configuration**
+- [x] **Step 1: Document exact Feishu deployment configuration**
 
 Document the enterprise self-built app requirement, callback URI, user-info/email permissions, tenant allowlist, `accounts.feishu.cn` authorization base, and `open.feishu.cn` API base. Mark every plan checkbox completed as its task finishes.
 
