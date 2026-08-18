@@ -37,13 +37,21 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, listed)
         self.assertEqual(read.await_args.kwargs["actor_id"], "operator-1")
 
-    async def test_operator_cannot_reveal_or_delete_redemption_codes(self) -> None:
+    async def test_operator_can_reveal_but_unsupported_deletes_remain_disabled(self) -> None:
         from app.routers import operations
         from app.modules.operations.schemas import RedemptionCodeBatchDelete
 
         actor = {"_id": "operator-1", "role": "operator", "operations_site_ids": ["aiwelink"]}
-        with self.assertRaises(HTTPException) as reveal_error:
-            await operations.get_redemption_code_reveal(
+        revealed = {"code_id": 101, "code": "redeem-secret", "code_mask": "rede...cret"}
+        with (
+            patch.object(
+                operations.service,
+                "reveal_redemption_code",
+                AsyncMock(return_value=revealed),
+            ),
+            patch.object(operations, "write_audit_log", AsyncMock()) as audit,
+        ):
+            result = await operations.get_redemption_code_reveal(
                 site_id="aiwelink",
                 code_id=101,
                 response=Response(),
@@ -64,9 +72,10 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
                 db=object(),
             )
 
-        self.assertEqual(reveal_error.exception.status_code, 403)
-        self.assertEqual(delete_error.exception.status_code, 403)
-        self.assertEqual(batch_error.exception.status_code, 403)
+        self.assertEqual(result, revealed)
+        audit.assert_awaited_once()
+        self.assertEqual(delete_error.exception.status_code, 409)
+        self.assertEqual(batch_error.exception.status_code, 409)
 
     async def test_admin_reveal_is_no_store_and_audit_excludes_plaintext(self) -> None:
         from app.routers import operations
@@ -254,6 +263,25 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refresh.await_args.kwargs["allowed_site_ids"], ("aiwelink",))
         audit.assert_awaited_once()
 
+    async def test_viewer_cannot_trigger_refresh(self) -> None:
+        from app.routers import operations
+        from app.modules.operations.schemas import RefreshRequest
+
+        with (
+            patch.object(operations.service, "refresh_operations", AsyncMock()) as refresh,
+            patch.object(operations, "write_audit_log", AsyncMock()) as audit,
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await operations.post_operations_refresh(
+                    payload=RefreshRequest(site_ids=["aiwelink"]),
+                    actor={"_id": "viewer-1", "role": "viewer", "operations_site_ids": ["aiwelink"]},
+                    db=object(),
+                )
+
+        self.assertEqual(raised.exception.status_code, 403)
+        refresh.assert_not_awaited()
+        audit.assert_not_awaited()
+
     async def test_refresh_rejects_any_unauthorized_requested_site(self) -> None:
         from app.routers import operations
         from app.modules.operations.schemas import RefreshRequest
@@ -267,30 +295,59 @@ class OperationsRoutePermissionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(raised.exception.status_code, 403)
 
-    async def test_operator_cannot_create_internal_user(self) -> None:
+    async def test_operator_can_create_internal_user(self) -> None:
         from app.routers import operations
         from app.modules.operations.schemas import InternalUserCreate
 
-        with self.assertRaises(HTTPException) as raised:
-            await operations.post_internal_user(
+        created = {
+            "internal_user_id": "internal-operator",
+            "site_id": "aiwelink",
+            "email": "staff@example.com",
+        }
+        with (
+            patch.object(
+                operations.service,
+                "create_internal_user_config",
+                AsyncMock(return_value=created),
+            ) as create,
+            patch.object(operations, "write_audit_log", AsyncMock()) as audit,
+        ):
+            result = await operations.post_internal_user(
                 payload=InternalUserCreate(site_id="aiwelink", email="staff@example.com"),
                 actor={"_id": "operator-1", "role": "operator", "operations_site_ids": ["aiwelink"]},
                 db=object(),
             )
 
-        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(result, created)
+        self.assertEqual(create.await_args.kwargs["actor_id"], "operator-1")
+        audit.assert_awaited_once()
 
-    async def test_operator_cannot_delete_internal_user(self) -> None:
+    async def test_operator_can_delete_internal_user(self) -> None:
         from app.routers import operations
 
-        with self.assertRaises(HTTPException) as raised:
-            await operations.delete_internal_user(
-                internal_user_id=uuid4(),
+        internal_user_id = uuid4()
+        deleted = {
+            "internal_user_id": str(internal_user_id),
+            "site_id": "aiwelink",
+            "email": "staff@example.com",
+        }
+        with (
+            patch.object(
+                operations.service,
+                "delete_internal_user_config",
+                AsyncMock(return_value=deleted),
+            ) as delete,
+            patch.object(operations, "write_audit_log", AsyncMock()) as audit,
+        ):
+            result = await operations.delete_internal_user(
+                internal_user_id=internal_user_id,
                 actor={"_id": "operator-1", "role": "operator", "operations_site_ids": ["aiwelink"]},
                 db=object(),
             )
 
-        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(result, deleted)
+        self.assertEqual(delete.await_args.kwargs["allowed_site_ids"], ("aiwelink",))
+        audit.assert_awaited_once()
 
     async def test_admin_internal_user_write_is_audited(self) -> None:
         from app.routers import operations

@@ -146,7 +146,7 @@ class RiskServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(evaluation.decision, RiskDecision.HIGH_RISK)
         self.assertEqual(evaluation.email_rules, ())
 
-    def test_auto_ban_pause_downgrades_ban_candidate_to_review(self) -> None:
+    def test_risk_ban_candidate_always_requires_manual_review(self) -> None:
         from app.modules.risk.service import desired_risk_status, evaluate_account_input
 
         evaluation = evaluate_account_input({
@@ -164,7 +164,7 @@ class RiskServiceTests(unittest.IsolatedAsyncioTestCase):
         })
 
         self.assertEqual(desired_risk_status(evaluation, auto_ban_enabled=False), "high_risk")
-        self.assertEqual(desired_risk_status(evaluation, auto_ban_enabled=True), "ban_pending")
+        self.assertEqual(desired_risk_status(evaluation, auto_ban_enabled=True), "high_risk")
 
     def test_paid_account_is_never_planned_for_auto_ban(self) -> None:
         from app.modules.risk.domain import RiskDecision
@@ -281,7 +281,7 @@ class RiskServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         append.assert_awaited_once()
 
-    async def test_reconciliation_prepares_only_unpaid_dual_signal_account(self) -> None:
+    async def test_reconciliation_records_unpaid_dual_signal_account_for_manual_review(self) -> None:
         from app.modules.risk import service
 
         row = {
@@ -301,7 +301,7 @@ class RiskServiceTests(unittest.IsolatedAsyncioTestCase):
         }
         account = {
             "risk_account_id": "00000000-0000-0000-0000-000000000042",
-            "risk_status": "ban_pending",
+            "risk_status": "high_risk",
         }
         with (
             patch.object(service.repository, "upsert_risk_account", AsyncMock(return_value=account)) as upsert,
@@ -315,9 +315,8 @@ class RiskServiceTests(unittest.IsolatedAsyncioTestCase):
                 source_payment_checker=AsyncMock(return_value=False),
             )
 
-        self.assertEqual(len(candidates), 1)
-        self.assertEqual(candidates[0].evaluation.external_user_id, "42")
-        self.assertEqual(upsert.await_args.kwargs["risk_status"], "ban_pending")
+        self.assertEqual(candidates, [])
+        self.assertEqual(upsert.await_args.kwargs["risk_status"], "high_risk")
 
     async def test_reconciliation_keeps_confirmed_ban_as_a_terminal_state(self) -> None:
         from app.modules.risk import service
@@ -430,6 +429,54 @@ class RiskServiceTests(unittest.IsolatedAsyncioTestCase):
             )
 
         append.assert_not_awaited()
+
+    async def test_settings_reject_reenabling_automatic_bans(self) -> None:
+        from contextlib import asynccontextmanager
+        from app.modules.risk import service
+
+        @asynccontextmanager
+        async def connection(*args, **kwargs):
+            yield object()
+
+        with (
+            patch.object(service, "growth_connection", connection),
+            patch.object(service.repository, "update_settings", AsyncMock()) as update,
+        ):
+            with self.assertRaisesRegex(ValueError, "Automatic bans require manual approval"):
+                await service.update_risk_settings(
+                    object(),
+                    detector_enabled=None,
+                    auto_ban_enabled=True,
+                    actor_id="operator-1",
+                )
+
+        update.assert_not_awaited()
+
+    async def test_settings_force_automatic_bans_off_for_stale_clients(self) -> None:
+        from contextlib import asynccontextmanager
+        from app.modules.risk import service
+
+        @asynccontextmanager
+        async def connection(*args, **kwargs):
+            yield object()
+
+        with (
+            patch.object(service, "growth_connection", connection),
+            patch.object(
+                service.repository,
+                "update_settings",
+                AsyncMock(return_value={"detector_enabled": True, "auto_ban_enabled": False}),
+            ) as update,
+        ):
+            result = await service.update_risk_settings(
+                object(),
+                detector_enabled=True,
+                auto_ban_enabled=None,
+                actor_id="operator-1",
+            )
+
+        self.assertFalse(result["auto_ban_enabled"])
+        self.assertIs(update.await_args.kwargs["auto_ban_enabled"], False)
 
 
 if __name__ == "__main__":

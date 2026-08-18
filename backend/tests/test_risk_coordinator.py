@@ -230,7 +230,7 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
 
         clear.assert_not_awaited()
 
-    async def test_enabled_cycle_rebuilds_operations_once_for_all_recovered_actions(self) -> None:
+    async def test_enabled_cycle_recovers_only_manual_actions(self) -> None:
         from app.modules.risk import coordinator
         from app.modules.risk.adapters.sub2api import SourcePage
 
@@ -249,7 +249,7 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
                 "succeeded": 3,
                 "conflicted": 0,
                 "failed": 0,
-            })),
+            })) as auto_recovery,
             patch.object(coordinator.repository, "get_cursor", AsyncMock(return_value={"last_source_id": 0})),
             patch.object(coordinator.repository, "upsert_observations", AsyncMock(return_value=0)),
             patch.object(coordinator.repository, "save_cursor_success", AsyncMock()),
@@ -275,7 +275,8 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result["manual_recovery"]["succeeded"], 2)
-        self.assertEqual(result["recovery"]["succeeded"], 3)
+        self.assertNotIn("recovery", result)
+        auto_recovery.assert_not_awaited()
         aggregate.assert_awaited_once()
 
     async def test_source_connection_failure_marks_both_stream_cursors_failed(self) -> None:
@@ -322,7 +323,7 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             for call in save_error.await_args_list
         ))
 
-    async def test_auto_ban_commits_action_before_source_mutation_and_then_excludes_stats(self) -> None:
+    async def test_enabled_cycle_never_creates_or_executes_auto_ban_candidate(self) -> None:
         from app.modules.risk import coordinator
         from app.modules.risk.adapters.sub2api import (
             ApiKeyState,
@@ -432,15 +433,15 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
                 adapter_factory=Mock(return_value=adapter),
             )
 
-        self.assertEqual(call_order, ["action_committed", "source_disabled"])
-        self.assertEqual(result["actions_succeeded"], 1)
-        self.assertEqual(complete.await_args.kwargs["status"], "succeeded")
-        self.assertEqual(account_upsert.await_args.kwargs["risk_status"], "banned")
-        exclude.assert_awaited_once()
+        self.assertEqual(call_order, [])
+        self.assertEqual(result["actions_succeeded"], 0)
+        complete.assert_not_awaited()
+        account_upsert.assert_not_awaited()
+        exclude.assert_not_awaited()
         aggregate.assert_awaited_once()
         source.dispose.assert_awaited_once()
 
-    async def test_growth_finalize_failure_keeps_source_committed_action_pending(self) -> None:
+    async def test_enabled_cycle_ignores_legacy_candidate_finalize_path(self) -> None:
         from app.modules.risk import coordinator
         from app.modules.risk.adapters.sub2api import (
             EnforcementResult,
@@ -498,24 +499,29 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             })),
             patch.object(coordinator, "_finalize_success", AsyncMock(side_effect=RuntimeError("growth write failed"))),
             patch.object(coordinator, "_finalize_failure", AsyncMock()) as finalize_failure,
+            patch.object(
+                coordinator,
+                "_refresh_dirty_operations_aggregates",
+                AsyncMock(return_value=False),
+            ),
         ):
-            with self.assertRaisesRegex(RuntimeError, "growth write failed"):
-                await coordinator._run_enabled_cycle(
-                    growth,
-                    source_engine=source,
-                    adapter=adapter,
-                    settings={
-                        "auto_ban_enabled": True,
-                        "ip_window_days": 7,
-                        "shared_ip_min_accounts": 3,
-                    },
-                    detected_at=NOW,
-                )
+            result = await coordinator._run_enabled_cycle(
+                growth,
+                source_engine=source,
+                adapter=adapter,
+                settings={
+                    "auto_ban_enabled": True,
+                    "ip_window_days": 7,
+                    "shared_ip_min_accounts": 3,
+                },
+                detected_at=NOW,
+            )
 
-        adapter.disable_account.assert_awaited_once()
+        self.assertEqual(result["actions_succeeded"], 0)
+        adapter.disable_account.assert_not_awaited()
         finalize_failure.assert_not_awaited()
 
-    async def test_pending_auto_ban_retries_when_source_is_unchanged(self) -> None:
+    async def test_pending_auto_ban_never_retries_when_source_is_unchanged(self) -> None:
         from app.modules.risk import coordinator
         from app.modules.risk.adapters.sub2api import (
             ApiKeyState,
@@ -562,12 +568,11 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
                 recovered_at=NOW + timedelta(minutes=2),
             )
 
-        self.assertEqual(result, {"succeeded": 1, "conflicted": 0, "failed": 0})
-        adapter.disable_account.assert_awaited_once()
-        self.assertEqual(adapter.disable_account.await_args.kwargs["changed_at"], NOW)
-        self.assertEqual(complete.await_args.kwargs["status"], "succeeded")
+        self.assertEqual(result, {"succeeded": 0, "conflicted": 0, "failed": 0})
+        adapter.disable_account.assert_not_awaited()
+        complete.assert_not_awaited()
 
-    async def test_pending_auto_ban_does_not_run_while_auto_ban_is_paused(self) -> None:
+    async def test_pending_auto_ban_recovery_is_permanently_disabled(self) -> None:
         from app.modules.risk import coordinator
         from app.modules.risk.adapters.sub2api import SourceAccountState
 
@@ -587,15 +592,15 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
                 source_engine=source,
                 adapter=adapter,
                 recovered_at=NOW,
-                auto_ban_enabled=False,
+                auto_ban_enabled=True,
             )
 
         self.assertEqual(result, {"succeeded": 0, "conflicted": 0, "failed": 0})
-        pending.assert_awaited_once()
-        adapter.capture_account_state.assert_awaited_once()
+        pending.assert_not_awaited()
+        adapter.capture_account_state.assert_not_awaited()
         adapter.disable_account.assert_not_awaited()
 
-    async def test_paused_auto_ban_finalizes_an_already_committed_source_mutation(self) -> None:
+    async def test_auto_ban_recovery_does_not_finalize_committed_source_mutation(self) -> None:
         from app.modules.risk import coordinator
         from app.modules.risk.adapters.sub2api import ApiKeyState, SourceAccountState
 
@@ -625,9 +630,10 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
                 auto_ban_enabled=False,
             )
 
-        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(result["succeeded"], 0)
+        adapter.capture_account_state.assert_not_awaited()
         adapter.disable_account.assert_not_awaited()
-        finalize.assert_awaited_once()
+        finalize.assert_not_awaited()
 
     async def test_pending_auto_ban_respects_a_current_manual_override(self) -> None:
         from app.modules.risk import coordinator
@@ -655,7 +661,7 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result, {"succeeded": 0, "conflicted": 0, "failed": 0})
-        adapter.capture_account_state.assert_awaited_once()
+        adapter.capture_account_state.assert_not_awaited()
         adapter.disable_account.assert_not_awaited()
 
     async def test_pending_auto_ban_does_not_use_expired_ip_evidence(self) -> None:
@@ -694,10 +700,10 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result, {"succeeded": 0, "conflicted": 0, "failed": 0})
-        adapter.capture_account_state.assert_awaited_once()
+        adapter.capture_account_state.assert_not_awaited()
         adapter.disable_account.assert_not_awaited()
 
-    async def test_pending_auto_ban_finalizes_when_source_mutation_already_committed(self) -> None:
+    async def test_pending_auto_ban_does_not_finalize_existing_source_mutation(self) -> None:
         from app.modules.risk import coordinator
         from app.modules.risk.adapters.sub2api import ApiKeyState, SourceAccountState
 
@@ -733,11 +739,12 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
                 recovered_at=NOW,
             )
 
-        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(result["succeeded"], 0)
+        adapter.capture_account_state.assert_not_awaited()
         adapter.disable_account.assert_not_awaited()
-        self.assertEqual(complete.await_args.kwargs["status"], "succeeded")
+        complete.assert_not_awaited()
 
-    async def test_pending_recovery_keeps_action_pending_when_growth_finalize_fails(self) -> None:
+    async def test_disabled_auto_recovery_never_enters_finalize_path(self) -> None:
         from app.modules.risk import coordinator
         from app.modules.risk.adapters.sub2api import ApiKeyState, SourceAccountState
 
@@ -760,15 +767,16 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             patch.object(coordinator, "_finalize_success", AsyncMock(side_effect=RuntimeError("growth write failed"))),
             patch.object(coordinator, "_finalize_failure", AsyncMock()) as finalize_failure,
         ):
-            with self.assertRaisesRegex(RuntimeError, "growth write failed"):
-                await coordinator.recover_pending_auto_bans(
-                    growth,
-                    source_engine=source,
-                    adapter=adapter,
-                    recovered_at=NOW,
-                    auto_ban_enabled=True,
-                )
+            result = await coordinator.recover_pending_auto_bans(
+                growth,
+                source_engine=source,
+                adapter=adapter,
+                recovered_at=NOW,
+                auto_ban_enabled=True,
+            )
 
+        self.assertEqual(result, {"succeeded": 0, "conflicted": 0, "failed": 0})
+        adapter.capture_account_state.assert_not_awaited()
         finalize_failure.assert_not_awaited()
 
     async def test_pending_manual_ban_recovers_after_source_commit(self) -> None:
@@ -1053,7 +1061,7 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         success.assert_not_awaited()
         self.assertIsInstance(failure.await_args.kwargs["error"], ValueError)
 
-    async def test_pending_auto_ban_marks_unexpected_source_state_conflicted(self) -> None:
+    async def test_pending_auto_ban_does_not_inspect_unexpected_source_state(self) -> None:
         from app.modules.risk import coordinator
         from app.modules.risk.adapters.sub2api import ApiKeyState, SourceAccountState
 
@@ -1086,11 +1094,12 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
                 recovered_at=NOW,
             )
 
-        self.assertEqual(result["conflicted"], 1)
+        self.assertEqual(result["conflicted"], 0)
+        adapter.capture_account_state.assert_not_awaited()
         adapter.disable_account.assert_not_awaited()
-        self.assertEqual(complete.await_args.kwargs["status"], "conflicted")
-        self.assertEqual(upsert.await_args.kwargs["risk_status"], "high_risk")
-        self.assertEqual(event.await_args.kwargs["event_type"], "auto_ban_conflicted")
+        complete.assert_not_awaited()
+        upsert.assert_not_awaited()
+        event.assert_not_awaited()
 
     def test_stale_suspicious_email_cannot_ban_a_current_normal_email(self) -> None:
         from app.modules.risk import coordinator
@@ -1156,7 +1165,7 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state, "conflicted")
         self.assertIsNone(result)
 
-    async def test_auto_recovery_source_error_leaves_action_pending(self) -> None:
+    async def test_disabled_auto_recovery_does_not_open_source_on_error(self) -> None:
         from app.modules.risk import coordinator
 
         growth = _TransactionConnection()
@@ -1177,7 +1186,8 @@ class RiskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
                 recovered_at=NOW,
             )
 
-        self.assertEqual(result["failed"], 1)
+        self.assertEqual(result["failed"], 0)
+        adapter.capture_account_state.assert_not_awaited()
         finalize.assert_not_awaited()
 
     async def test_manual_recovery_source_error_leaves_action_pending(self) -> None:

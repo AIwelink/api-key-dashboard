@@ -36,10 +36,10 @@ def _actor_id(actor: dict[str, Any]) -> str:
 
 
 def _require_operations_writer(actor: dict[str, Any]) -> None:
-    if actor.get("role") not in {"owner", "admin"}:
+    if actor.get("role") not in {"owner", "admin", "operator"}:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only owner or admin can change operations configuration",
+            detail="Only owner, admin, or operator can change operations configuration",
         )
 
 
@@ -196,6 +196,7 @@ async def post_operations_refresh(
     actor: dict = Depends(require_view_permission(OPERATIONS_PERMISSION)),
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
+    _require_operations_writer(actor)
     allowed_site_ids = _resolve_operations_site_ids(actor, payload.site_ids)
     try:
         result = await service.refresh_operations(

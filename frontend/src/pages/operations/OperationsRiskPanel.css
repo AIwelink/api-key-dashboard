@@ -44,6 +44,34 @@
   gap: 22px;
 }
 
+.risk-approval-mode {
+  align-items: center;
+  border-left: 1px solid #dce3df;
+  display: flex;
+  gap: 8px;
+  min-height: 34px;
+  padding-left: 18px;
+}
+
+.risk-approval-mode > svg {
+  color: #0b776b;
+}
+
+.risk-approval-mode > span {
+  display: grid;
+  gap: 2px;
+}
+
+.risk-approval-mode strong {
+  font-size: 11px;
+}
+
+.risk-approval-mode small {
+  color: #7d8883;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
 .risk-toggle {
   align-items: center;
   cursor: pointer;
@@ -794,6 +822,11 @@
 
   .risk-setting-list {
     gap: 10px;
+  }
+
+  .risk-approval-mode {
+    border-left: 0;
+    padding-left: 0;
   }
 
   .risk-toggle {

@@ -142,7 +142,7 @@ def desired_risk_status(
     auto_ban_enabled: bool,
 ) -> str:
     if evaluation.decision == RiskDecision.BAN:
-        return "ban_pending" if auto_ban_enabled else "high_risk"
+        return "high_risk"
     if evaluation.decision == RiskDecision.HIGH_RISK:
         return "high_risk"
     return "cleared"
@@ -255,13 +255,6 @@ async def reconcile_risk_inputs(
                 created_at=detected_at,
                 actor_id="system:risk-detector",
                 actor_name="AIWeLink risk detector",
-            )
-        if target_status == "ban_pending":
-            candidates.append(
-                PreparedBanCandidate(
-                    risk_account_id=risk_account_id,
-                    evaluation=evaluation,
-                )
             )
     return candidates
 
@@ -392,12 +385,14 @@ async def update_risk_settings(
     auto_ban_enabled: bool | None,
     actor_id: str,
 ) -> dict[str, Any]:
+    if auto_ban_enabled is True:
+        raise ValueError("Automatic bans require manual approval")
     async with growth_connection(mongo_db, write=True) as connection:
         return await repository.update_settings(
             connection,
             site_id="aiwelink",
             detector_enabled=detector_enabled,
-            auto_ban_enabled=auto_ban_enabled,
+            auto_ban_enabled=False,
             actor_id=actor_id,
         )
 
