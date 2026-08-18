@@ -24,8 +24,11 @@ OPERATIONS_PERMISSION = "operations-management"
 def _authorize(actor: dict[str, Any], *, write: bool = False) -> None:
     if "aiwelink" not in normalize_operations_site_ids(actor.get("operations_site_ids")):
         raise HTTPException(status_code=403, detail="AIWeLink operations access is required")
-    if write and actor.get("role") not in {"owner", "admin"}:
-        raise HTTPException(status_code=403, detail="Only owner or admin can change risk controls")
+    if write and actor.get("role") not in {"owner", "admin", "operator"}:
+        raise HTTPException(
+            status_code=403,
+            detail="Only owner, admin, or operator can change risk controls",
+        )
 
 
 def _actor_id(actor: dict[str, Any]) -> str:

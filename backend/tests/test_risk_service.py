@@ -430,6 +430,54 @@ class RiskServiceTests(unittest.IsolatedAsyncioTestCase):
 
         append.assert_not_awaited()
 
+    async def test_settings_reject_reenabling_automatic_bans(self) -> None:
+        from contextlib import asynccontextmanager
+        from app.modules.risk import service
+
+        @asynccontextmanager
+        async def connection(*args, **kwargs):
+            yield object()
+
+        with (
+            patch.object(service, "growth_connection", connection),
+            patch.object(service.repository, "update_settings", AsyncMock()) as update,
+        ):
+            with self.assertRaisesRegex(ValueError, "Automatic bans require manual approval"):
+                await service.update_risk_settings(
+                    object(),
+                    detector_enabled=None,
+                    auto_ban_enabled=True,
+                    actor_id="operator-1",
+                )
+
+        update.assert_not_awaited()
+
+    async def test_settings_force_automatic_bans_off_for_stale_clients(self) -> None:
+        from contextlib import asynccontextmanager
+        from app.modules.risk import service
+
+        @asynccontextmanager
+        async def connection(*args, **kwargs):
+            yield object()
+
+        with (
+            patch.object(service, "growth_connection", connection),
+            patch.object(
+                service.repository,
+                "update_settings",
+                AsyncMock(return_value={"detector_enabled": True, "auto_ban_enabled": False}),
+            ) as update,
+        ):
+            result = await service.update_risk_settings(
+                object(),
+                detector_enabled=True,
+                auto_ban_enabled=None,
+                actor_id="operator-1",
+            )
+
+        self.assertFalse(result["auto_ban_enabled"])
+        self.assertIs(update.await_args.kwargs["auto_ban_enabled"], False)
+
 
 if __name__ == "__main__":
     unittest.main()

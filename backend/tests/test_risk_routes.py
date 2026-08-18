@@ -37,15 +37,57 @@ class RiskRouteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(error.exception.status_code, 403)
 
-    async def test_operator_cannot_change_risk_settings(self) -> None:
+    async def test_operator_can_change_risk_settings(self) -> None:
         from app.modules.risk.schemas import RiskSettingsUpdate
         from app.routers import risk
 
-        with self.assertRaises(HTTPException) as error:
-            await risk.patch_risk_settings(
+        updated = {"detector_enabled": True, "auto_ban_enabled": False}
+        with (
+            patch.object(risk.service, "update_risk_settings", AsyncMock(return_value=updated)) as update,
+            patch.object(risk, "write_audit_log", AsyncMock()) as audit,
+        ):
+            result = await risk.patch_risk_settings(
                 payload=RiskSettingsUpdate(detector_enabled=True),
                 actor={"_id": "operator-1", "role": "operator", "operations_site_ids": ["aiwelink"]},
                 db=object(),
+            )
+
+        self.assertEqual(result, updated)
+        self.assertEqual(update.await_args.kwargs["actor_id"], "operator-1")
+        audit.assert_awaited_once()
+
+    async def test_operator_can_execute_all_risk_account_actions(self) -> None:
+        from app.modules.risk.schemas import RiskActionRequest
+        from app.routers import risk
+
+        actor = {"_id": "operator-1", "role": "operator", "operations_site_ids": ["aiwelink"]}
+        payload = RiskActionRequest(reason="运营人工复核")
+        with (
+            patch.object(risk.service, "manual_ban", AsyncMock(return_value={"status": "banned"})) as ban,
+            patch.object(risk.service, "manual_release", AsyncMock(return_value={"status": "released"})) as release,
+            patch.object(risk.service, "set_false_positive", AsyncMock(return_value={"status": "cleared"})) as clear,
+            patch.object(risk.service, "remove_manual_override", AsyncMock(return_value={"status": "high_risk"})) as restore,
+            patch.object(risk, "write_audit_log", AsyncMock()),
+        ):
+            await risk.post_manual_ban(RISK_ACCOUNT_ID, payload, actor, object())
+            await risk.post_manual_release(RISK_ACCOUNT_ID, payload, actor, object())
+            await risk.post_false_positive(RISK_ACCOUNT_ID, payload, actor, object())
+            await risk.post_remove_override(RISK_ACCOUNT_ID, payload, actor, object())
+
+        for handler in (ban, release, clear, restore):
+            handler.assert_awaited_once()
+            self.assertEqual(handler.await_args.kwargs["actor_id"], "operator-1")
+
+    async def test_viewer_cannot_execute_risk_account_action(self) -> None:
+        from app.modules.risk.schemas import RiskActionRequest
+        from app.routers import risk
+
+        with self.assertRaises(HTTPException) as error:
+            await risk.post_manual_ban(
+                RISK_ACCOUNT_ID,
+                RiskActionRequest(reason="无权限操作"),
+                {"_id": "viewer-1", "role": "viewer", "operations_site_ids": ["aiwelink"]},
+                object(),
             )
 
         self.assertEqual(error.exception.status_code, 403)

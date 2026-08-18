@@ -385,12 +385,14 @@ async def update_risk_settings(
     auto_ban_enabled: bool | None,
     actor_id: str,
 ) -> dict[str, Any]:
+    if auto_ban_enabled is True:
+        raise ValueError("Automatic bans require manual approval")
     async with growth_connection(mongo_db, write=True) as connection:
         return await repository.update_settings(
             connection,
             site_id="aiwelink",
             detector_enabled=detector_enabled,
-            auto_ban_enabled=auto_ban_enabled,
+            auto_ban_enabled=False,
             actor_id=actor_id,
         )
 
