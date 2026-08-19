@@ -1741,6 +1741,33 @@ class WorkPlanScheduleServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["members"], [])
         self.assertEqual(response["plans"], [])
 
+    async def test_schedule_hides_users_merged_into_another_account(self) -> None:
+        db = fake_db(
+            users=[
+                {"_id": "target", "name": "张可真", "status": "active"},
+                {
+                    "_id": "feishu-source",
+                    "name": "张可真",
+                    "status": "disabled",
+                    "merged_into_user_id": "target",
+                },
+            ]
+        )
+
+        with patch(
+            "app.modules.work_plans.service.list_member_presence_summaries",
+            new=AsyncMock(return_value={}),
+        ):
+            response = await list_work_plan_schedule(
+                db,
+                range_name="7d",
+                member_ids=None,
+                include_cancelled=False,
+                observed_at=OBSERVED_AT,
+            )
+
+        self.assertEqual([member["member_id"] for member in response["members"]], ["target"])
+
 
 class WorkPlanHistoryServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_history_serializes_naive_mongodb_datetimes_with_utc_offset(self) -> None:

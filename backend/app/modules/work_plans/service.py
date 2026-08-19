@@ -1166,7 +1166,7 @@ async def list_work_plan_schedule(
     if selected_member_ids:
         projection_query["member_id"] = {"$in": selected_member_ids}
     projection_cursor = db.work_plans.find(projection_query).limit(MAX_SCHEDULE_PLANS)
-    user_cursor = db.users.find({})
+    user_cursor = db.users.find({"merged_into_user_id": {"$exists": False}})
     plan_results = await asyncio.gather(
         _collect_documents(plan_cursor),
         _collect_documents(active_cursor),
