@@ -4,7 +4,7 @@ import unittest
 from datetime import UTC, datetime
 from importlib.util import find_spec
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
 from fastapi import HTTPException
@@ -97,16 +97,28 @@ def feishu_settings() -> Settings:
     )
 
 
-def identity(*, email: str | None = "member@example.com"):
+def identity(*, email: str | None = "member@example.com", name: str | None = "Member"):
     return feishu.FeishuIdentity(
         tenant_key="tenant-a",
         open_id="open-1",
         union_id="union-1",
         user_id="user-1",
-        name="Member",
+        name=name,
         email=email,
         avatar_url="https://example.com/avatar.png",
     )
+
+
+class _NameCandidateCursor:
+    def __init__(self, documents: list[dict]) -> None:
+        self.documents = documents
+
+    def limit(self, count: int) -> "_NameCandidateCursor":
+        self.documents = self.documents[:count]
+        return self
+
+    async def to_list(self, *, length: int) -> list[dict]:
+        return self.documents[:length]
 
 
 class FeishuAuthorizationSessionTests(unittest.IsolatedAsyncioTestCase):
@@ -171,11 +183,12 @@ class FeishuIdentityResolutionTests(unittest.IsolatedAsyncioTestCase):
         users.find_one_and_update.assert_not_awaited()
         users.insert_one.assert_not_awaited()
 
-    async def test_login_binds_existing_unbound_user_by_normalized_email(self) -> None:
+    async def test_login_binds_unique_unbound_user_by_trimmed_name(self) -> None:
         self.assertTrue(hasattr(feishu, "resolve_feishu_user"))
         existing = {
-            "_id": "member@example.com",
-            "email": "member@example.com",
+            "_id": "zhangkezhen@example.com",
+            "email": "local@example.com",
+            "name": "张可真",
             "role": "maintainer",
             "status": "active",
         }
@@ -184,7 +197,8 @@ class FeishuIdentityResolutionTests(unittest.IsolatedAsyncioTestCase):
             "feishu_identity": {"identity_key": "tenant-a:union:union-1"},
         }
         users = SimpleNamespace(
-            find_one=AsyncMock(side_effect=[None, existing]),
+            find_one=AsyncMock(return_value=None),
+            find=MagicMock(return_value=_NameCandidateCursor([existing])),
             update_one=AsyncMock(),
             find_one_and_update=AsyncMock(return_value=bound),
             insert_one=AsyncMock(),
@@ -193,21 +207,91 @@ class FeishuIdentityResolutionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(feishu, "write_audit_log", AsyncMock(), create=True) as audit_mock:
             result = await feishu.resolve_feishu_user(
                 SimpleNamespace(users=users),
-                identity=identity(email=" Member@Example.com "),
+                identity=identity(email="different@feishu.example", name=" 张可真 "),
                 purpose="login",
                 target_user_id=None,
             )
 
-        self.assertEqual(result["_id"], "member@example.com")
+        self.assertEqual(result["_id"], "zhangkezhen@example.com")
         write_filter = users.find_one_and_update.await_args.args[0]
-        self.assertEqual(write_filter["_id"], "member@example.com")
+        self.assertEqual(write_filter["_id"], "zhangkezhen@example.com")
         self.assertEqual(write_filter["feishu_identity.identity_key"], {"$exists": False})
         self.assertEqual(audit_mock.await_args.kwargs["action"], "auth.feishu.user_bound")
-        self.assertEqual(audit_mock.await_args.kwargs["resource_id"], "member@example.com")
+        self.assertEqual(audit_mock.await_args.kwargs["resource_id"], "zhangkezhen@example.com")
         self.assertEqual(
             audit_mock.await_args.kwargs["after"],
-            {"result_code": "bound", "bound_via": "feishu_email"},
+            {"result_code": "bound", "bound_via": "feishu_name"},
         )
+
+    async def test_login_does_not_bind_by_email_when_name_differs(self) -> None:
+        same_email_user = {
+            "_id": "member@example.com",
+            "email": "member@example.com",
+            "name": "另一位成员",
+            "role": "maintainer",
+            "status": "active",
+        }
+        users = SimpleNamespace(
+            find_one=AsyncMock(side_effect=[None, same_email_user]),
+            find=MagicMock(return_value=_NameCandidateCursor([])),
+            update_one=AsyncMock(),
+            find_one_and_update=AsyncMock(),
+            insert_one=AsyncMock(),
+        )
+
+        with patch.object(feishu, "write_audit_log", AsyncMock()):
+            result = await feishu.resolve_feishu_user(
+                SimpleNamespace(users=users),
+                identity=identity(email="member@example.com", name="张可真"),
+                purpose="login",
+                target_user_id=None,
+            )
+
+        self.assertNotEqual(result["_id"], same_email_user["_id"])
+        self.assertEqual(result["authorization_status"], "pending")
+        users.find_one_and_update.assert_not_awaited()
+
+    async def test_login_keeps_pending_user_when_name_match_is_ambiguous(self) -> None:
+        candidates = [
+            {"_id": "first", "name": "张可真", "status": "active"},
+            {"_id": "second", "name": "张可真", "status": "active"},
+        ]
+        users = SimpleNamespace(
+            find_one=AsyncMock(return_value=None),
+            find=MagicMock(return_value=_NameCandidateCursor(candidates)),
+            update_one=AsyncMock(),
+            find_one_and_update=AsyncMock(),
+            insert_one=AsyncMock(),
+        )
+
+        with patch.object(feishu, "write_audit_log", AsyncMock()) as audit_mock:
+            result = await feishu.resolve_feishu_user(
+                SimpleNamespace(users=users),
+                identity=identity(email=None, name="张可真"),
+                purpose="login",
+                target_user_id=None,
+            )
+
+        self.assertEqual(result["authorization_status"], "pending")
+        users.find_one_and_update.assert_not_awaited()
+        self.assertIn(
+            "auth.feishu.name_match_ambiguous",
+            [call.kwargs["action"] for call in audit_mock.await_args_list],
+        )
+
+    async def test_name_lookup_requires_active_local_user_status(self) -> None:
+        users = SimpleNamespace(
+            find=MagicMock(return_value=_NameCandidateCursor([])),
+        )
+
+        candidate, ambiguous = await feishu._find_unique_unbound_user_by_name(
+            SimpleNamespace(users=users),
+            name="张可真",
+        )
+
+        self.assertIsNone(candidate)
+        self.assertFalse(ambiguous)
+        self.assertEqual(users.find.call_args.args[0]["status"], "active")
 
     async def test_password_binding_targets_authenticated_user_even_when_email_differs(self) -> None:
         self.assertTrue(hasattr(feishu, "resolve_feishu_user"))
@@ -279,7 +363,7 @@ class FeishuIdentityResolutionTests(unittest.IsolatedAsyncioTestCase):
         users = SimpleNamespace(
             find_one=AsyncMock(side_effect=[source, target]),
             update_one=AsyncMock(),
-            find_one_and_update=AsyncMock(side_effect=[merged_source, recovered_target]),
+            find_one_and_update=AsyncMock(side_effect=[recovered_target, merged_source]),
             insert_one=AsyncMock(),
         )
         timestamp = datetime(2026, 8, 18, 14, 30, tzinfo=UTC)
@@ -296,7 +380,7 @@ class FeishuIdentityResolutionTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result["_id"], target["_id"])
-        source_call, target_call = users.find_one_and_update.await_args_list
+        target_call, source_call = users.find_one_and_update.await_args_list
         self.assertEqual(
             source_call.args[0],
             {
@@ -325,6 +409,201 @@ class FeishuIdentityResolutionTests(unittest.IsolatedAsyncioTestCase):
                 "bound_via": "password_binding_recovery",
             },
         )
+
+    async def test_pending_identity_login_merges_into_unique_same_name_user(self) -> None:
+        source = {
+            "_id": "feishu-pending",
+            "email": "zhangkezhen@feishu.example",
+            "email_is_placeholder": False,
+            "name": "张可真",
+            "role": "viewer",
+            "status": "active",
+            "authorization_status": "pending",
+            "created_by": "feishu",
+            "feishu_identity": {"identity_key": "tenant-a:union:union-1"},
+        }
+        target = {
+            "_id": "zhangkezhen@example.com",
+            "email": "local@example.com",
+            "name": "张可真",
+            "role": "maintainer",
+            "status": "active",
+            "authorization_status": "active",
+        }
+        merged_source = {
+            **source,
+            "status": "disabled",
+            "merged_into_user_id": target["_id"],
+            "merged_via": "feishu_name_recovery",
+        }
+        recovered_target = {
+            **target,
+            "feishu_identity": {
+                "source_user_id": source["_id"],
+                "bound_via": "feishu_name_recovery",
+            },
+        }
+        users = SimpleNamespace(
+            find_one=AsyncMock(side_effect=[source, None, target]),
+            find=MagicMock(return_value=_NameCandidateCursor([target])),
+            update_one=AsyncMock(),
+            find_one_and_update=AsyncMock(side_effect=[recovered_target, merged_source]),
+            insert_one=AsyncMock(),
+        )
+        timestamp = datetime(2026, 8, 19, 9, 30, tzinfo=UTC)
+
+        with (
+            patch.object(feishu, "now_utc", return_value=timestamp),
+            patch.object(feishu, "write_audit_log", AsyncMock()) as audit_mock,
+        ):
+            result = await feishu.resolve_feishu_user(
+                SimpleNamespace(users=users),
+                identity=identity(email=None, name="张可真"),
+                purpose="login",
+                target_user_id=None,
+            )
+
+        self.assertEqual(result["_id"], target["_id"])
+        target_call, source_call = users.find_one_and_update.await_args_list
+        self.assertNotIn("email_is_placeholder", source_call.args[0])
+        self.assertEqual(source_call.args[1]["$set"]["merged_into_user_id"], target["_id"])
+        self.assertEqual(source_call.args[1]["$set"]["merged_via"], "feishu_name_recovery")
+        self.assertIn("name", target_call.args[0])
+        self.assertEqual(target_call.args[0]["authorization_status"], {"$ne": "pending"})
+        self.assertEqual(target_call.args[0]["merged_into_user_id"], {"$exists": False})
+        self.assertEqual(
+            target_call.args[1]["$set"]["feishu_identity.bound_via"],
+            "feishu_name_recovery",
+        )
+        self.assertEqual(audit_mock.await_args.kwargs["action"], "auth.feishu.pending_identity_merged")
+        self.assertEqual(
+            audit_mock.await_args.kwargs["after"]["bound_via"],
+            "feishu_name_recovery",
+        )
+
+    async def test_name_recovery_does_not_disable_source_when_target_is_claimed(self) -> None:
+        source = {
+            "_id": "feishu-pending-b",
+            "name": "张可真",
+            "role": "viewer",
+            "status": "active",
+            "authorization_status": "pending",
+            "created_by": "feishu",
+            "feishu_identity": {"identity_key": "tenant-a:union:union-b"},
+        }
+        target = {
+            "_id": "zhangkezhen@example.com",
+            "name": "张可真",
+            "role": "maintainer",
+            "status": "active",
+            "authorization_status": "active",
+        }
+        claimed_target = {
+            **target,
+            "feishu_identity": {"source_user_id": "feishu-pending-a"},
+        }
+        users = SimpleNamespace(
+            find_one=AsyncMock(side_effect=[target, claimed_target]),
+            update_one=AsyncMock(),
+            find_one_and_update=AsyncMock(return_value=None),
+        )
+
+        with self.assertRaises(feishu.FeishuBindingConflictError):
+            await feishu._recover_pending_identity(
+                SimpleNamespace(users=users),
+                source=source,
+                identity=identity(email=None, name="张可真"),
+                target_user_id=target["_id"],
+                bound_via="feishu_name_recovery",
+            )
+
+        self.assertFalse(
+            any(call.args[0].get("_id") == source["_id"] for call in users.find_one_and_update.await_args_list)
+        )
+
+    async def test_recovery_reports_conflict_when_source_already_claimed_another_target(self) -> None:
+        source = {
+            "_id": "feishu-pending",
+            "name": "张可真",
+            "role": "viewer",
+            "status": "active",
+            "authorization_status": "pending",
+            "created_by": "feishu",
+            "feishu_identity": {"identity_key": "tenant-a:union:union-1"},
+        }
+        target = {
+            "_id": "second-target@example.com",
+            "name": "张可真",
+            "role": "maintainer",
+            "status": "active",
+            "authorization_status": "active",
+        }
+        users = SimpleNamespace(
+            find_one=AsyncMock(return_value=target),
+            update_one=AsyncMock(),
+            find_one_and_update=AsyncMock(
+                side_effect=feishu.DuplicateKeyError("source identity already claimed")
+            ),
+        )
+
+        with self.assertRaises(feishu.FeishuBindingConflictError) as raised:
+            await feishu._recover_pending_identity(
+                SimpleNamespace(users=users),
+                source=source,
+                identity=identity(email=None, name="张可真"),
+                target_user_id=target["_id"],
+                bound_via="feishu_name_recovery",
+            )
+
+        self.assertEqual(raised.exception.code, "binding_conflict")
+        self.assertEqual(len(users.find_one_and_update.await_args_list), 1)
+        users.update_one.assert_not_awaited()
+
+    async def test_login_resumes_target_claim_before_source_merge(self) -> None:
+        source = {
+            "_id": "feishu-pending",
+            "name": "张可真",
+            "role": "viewer",
+            "status": "active",
+            "authorization_status": "pending",
+            "created_by": "feishu",
+            "feishu_identity": {"identity_key": "tenant-a:union:union-1"},
+        }
+        target = {
+            "_id": "zhangkezhen@example.com",
+            "name": "张可真",
+            "role": "maintainer",
+            "status": "active",
+            "authorization_status": "active",
+            "feishu_identity": {
+                "source_user_id": source["_id"],
+                "bound_via": "feishu_name_recovery",
+            },
+        }
+        merged_source = {
+            **source,
+            "status": "disabled",
+            "merged_into_user_id": target["_id"],
+            "merged_via": "feishu_name_recovery",
+        }
+        users = SimpleNamespace(
+            find_one=AsyncMock(side_effect=[source, target, target]),
+            find=MagicMock(return_value=_NameCandidateCursor([])),
+            update_one=AsyncMock(),
+            find_one_and_update=AsyncMock(side_effect=[target, merged_source]),
+            insert_one=AsyncMock(),
+        )
+
+        with patch.object(feishu, "write_audit_log", AsyncMock()):
+            result = await feishu.resolve_feishu_user(
+                SimpleNamespace(users=users),
+                identity=identity(email=None, name="张可真"),
+                purpose="login",
+                target_user_id=None,
+            )
+
+        self.assertEqual(result["_id"], target["_id"])
+        self.assertEqual(users.find_one_and_update.await_args_list[1].args[0]["_id"], source["_id"])
 
     async def test_merged_identity_login_resolves_active_target(self) -> None:
         source = {
@@ -545,6 +824,7 @@ class FeishuIdentityResolutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(hasattr(feishu, "resolve_feishu_user"))
         users = SimpleNamespace(
             find_one=AsyncMock(side_effect=[None, None]),
+            find=MagicMock(return_value=_NameCandidateCursor([])),
             update_one=AsyncMock(),
             find_one_and_update=AsyncMock(),
             insert_one=AsyncMock(),
@@ -580,6 +860,7 @@ class FeishuIdentityResolutionTests(unittest.IsolatedAsyncioTestCase):
         }
         users = SimpleNamespace(
             find_one=AsyncMock(side_effect=[None, concurrent]),
+            find=MagicMock(return_value=_NameCandidateCursor([])),
             update_one=AsyncMock(),
             find_one_and_update=AsyncMock(),
             insert_one=AsyncMock(side_effect=feishu.DuplicateKeyError("duplicate identity")),
@@ -1038,6 +1319,13 @@ class FeishuStorageAndRedactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             identity_index.kwargs["partialFilterExpression"],
             {"feishu_identity.identity_key": {"$type": "string"}},
+        )
+        proxy_index = users.create_index.await_args_list[1]
+        self.assertEqual(proxy_index.args[0], "feishu_identity.source_user_id")
+        self.assertTrue(proxy_index.kwargs["unique"])
+        self.assertEqual(
+            proxy_index.kwargs["partialFilterExpression"],
+            {"feishu_identity.source_user_id": {"$type": "string"}},
         )
         sessions.create_index.assert_any_await("expires_at", expireAfterSeconds=0)
         sessions.create_index.assert_any_await("state_hash", unique=True)

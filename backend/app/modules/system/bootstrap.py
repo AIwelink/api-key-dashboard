@@ -467,6 +467,11 @@ async def ensure_feishu_auth_storage(db: AsyncIOMotorDatabase) -> None:
         unique=True,
         partialFilterExpression={"feishu_identity.identity_key": {"$type": "string"}},
     )
+    await db.users.create_index(
+        "feishu_identity.source_user_id",
+        unique=True,
+        partialFilterExpression={"feishu_identity.source_user_id": {"$type": "string"}},
+    )
     await db.feishu_auth_sessions.create_index("expires_at", expireAfterSeconds=0)
     await db.feishu_auth_sessions.create_index("state_hash", unique=True)
     await db.feishu_auth_sessions.create_index("ticket_hash", unique=True)
