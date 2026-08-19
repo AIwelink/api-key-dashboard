@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from app.utils import now_utc
 
 
 AuthPurpose = Literal["login", "bind"]
+RecoveryBoundVia = Literal["password_binding_recovery", "feishu_name_recovery"]
 SESSION_TTL = timedelta(minutes=5)
 TICKET_TTL = timedelta(seconds=60)
 SAFE_CALLBACK_ERROR_CODES = frozenset({"access_denied", "code_missing", "oauth_error"})
@@ -134,6 +136,45 @@ async def resolve_feishu_user(
                 identity=identity,
                 target_user_id=merged_target_user_id,
             )
+        if purpose == "login" and _is_auto_provisioned_pending_identity_source(current):
+            claimed_target = await db.users.find_one(
+                {
+                    "status": "active",
+                    "merged_into_user_id": {"$exists": False},
+                    "feishu_identity.source_user_id": str(current["_id"]),
+                    "feishu_identity.bound_via": "feishu_name_recovery",
+                }
+            )
+            if claimed_target is not None:
+                return await _recover_pending_identity(
+                    db,
+                    source=current,
+                    identity=identity,
+                    target_user_id=str(claimed_target["_id"]),
+                    bound_via="feishu_name_recovery",
+                )
+            name_candidate, name_is_ambiguous = await _find_unique_unbound_user_by_name(
+                db,
+                name=identity.name,
+                exclude_user_id=str(current["_id"]),
+            )
+            if name_candidate is not None:
+                return await _recover_pending_identity(
+                    db,
+                    source=current,
+                    identity=identity,
+                    target_user_id=str(name_candidate["_id"]),
+                    bound_via="feishu_name_recovery",
+                )
+            if name_is_ambiguous:
+                await write_audit_log(
+                    db,
+                    actor=None,
+                    action="auth.feishu.name_match_ambiguous",
+                    resource_type="user",
+                    resource_id=str(current["_id"]),
+                    after={"result_code": "ambiguous", "candidate_count_at_least": 2},
+                )
         if purpose == "bind" and target_user_id and current.get("_id") != target_user_id:
             if _is_recoverable_pending_identity_source(current):
                 return await _recover_pending_identity(
@@ -141,6 +182,7 @@ async def resolve_feishu_user(
                     source=current,
                     identity=identity,
                     target_user_id=target_user_id,
+                    bound_via="password_binding_recovery",
                 )
             raise FeishuBindingConflictError(
                 "该飞书账号已绑定其他用户，请联系管理员",
@@ -154,17 +196,26 @@ async def resolve_feishu_user(
         return current
 
     candidate: dict[str, Any] | None = None
-    bound_via: Literal["feishu_email", "password_binding"]
+    bound_via: Literal["feishu_name", "password_binding"]
     if purpose == "bind":
         if not target_user_id:
             raise ValueError("bind authorization requires a target user")
         candidate = await db.users.find_one({"_id": target_user_id})
         bound_via = "password_binding"
     else:
-        email = _normalize_email(identity.email)
-        if email:
-            candidate = await db.users.find_one({"email": email})
-        bound_via = "feishu_email"
+        candidate, name_is_ambiguous = await _find_unique_unbound_user_by_name(
+            db,
+            name=identity.name,
+        )
+        bound_via = "feishu_name"
+        if name_is_ambiguous:
+            await write_audit_log(
+                db,
+                actor=None,
+                action="auth.feishu.name_match_ambiguous",
+                resource_type="user",
+                after={"result_code": "ambiguous", "candidate_count_at_least": 2},
+            )
 
     if candidate is not None:
         _require_enabled_user(candidate)
@@ -180,12 +231,23 @@ async def resolve_feishu_user(
         updates = _identity_login_updates(identity)
         updates["feishu_identity.bound_via"] = bound_via
         updates["feishu_identity.bound_at"] = now_utc()
+        bind_filter: dict[str, Any] = {
+            "_id": candidate["_id"],
+            "status": {"$ne": "disabled"},
+            "feishu_identity.identity_key": {"$exists": False},
+            "feishu_identity.source_user_id": {"$exists": False},
+        }
+        if bound_via == "feishu_name":
+            bind_filter.update(
+                {
+                    "name": _exact_trimmed_name_pattern(identity.name),
+                    "status": "active",
+                    "authorization_status": {"$ne": "pending"},
+                    "merged_into_user_id": {"$exists": False},
+                }
+            )
         bound = await db.users.find_one_and_update(
-            {
-                "_id": candidate["_id"],
-                "status": {"$ne": "disabled"},
-                "feishu_identity.identity_key": {"$exists": False},
-            },
+            bind_filter,
             {"$set": updates},
             return_document=ReturnDocument.AFTER,
         )
@@ -212,6 +274,40 @@ async def resolve_feishu_user(
     return await _create_pending_user(db, identity)
 
 
+async def _find_unique_unbound_user_by_name(
+    db: AsyncIOMotorDatabase,
+    *,
+    name: str | None,
+    exclude_user_id: str | None = None,
+) -> tuple[dict[str, Any] | None, bool]:
+    name_pattern = _exact_trimmed_name_pattern(name)
+    if name_pattern is None:
+        return None, False
+
+    query: dict[str, Any] = {
+        "name": name_pattern,
+        "status": "active",
+        "authorization_status": {"$ne": "pending"},
+        "merged_into_user_id": {"$exists": False},
+        "feishu_identity.identity_key": {"$exists": False},
+        "feishu_identity.source_user_id": {"$exists": False},
+    }
+    if exclude_user_id:
+        query["_id"] = {"$ne": exclude_user_id}
+
+    candidates = await db.users.find(query).limit(2).to_list(length=2)
+    if len(candidates) == 1:
+        return candidates[0], False
+    return None, len(candidates) > 1
+
+
+def _exact_trimmed_name_pattern(name: str | None) -> re.Pattern[str] | None:
+    normalized_name = _text(name)
+    if not normalized_name:
+        return None
+    return re.compile(rf"^\s*{re.escape(normalized_name)}\s*$")
+
+
 def has_feishu_binding(user: dict[str, Any]) -> bool:
     identity = user.get("feishu_identity") or {}
     return bool(identity.get("identity_key") or identity.get("source_user_id"))
@@ -219,9 +315,15 @@ def has_feishu_binding(user: dict[str, Any]) -> bool:
 
 def _is_recoverable_pending_identity_source(user: dict[str, Any]) -> bool:
     return (
+        _is_auto_provisioned_pending_identity_source(user)
+        and user.get("email_is_placeholder") is True
+    )
+
+
+def _is_auto_provisioned_pending_identity_source(user: dict[str, Any]) -> bool:
+    return (
         user.get("created_by") == "feishu"
         and user.get("authorization_status") == "pending"
-        and user.get("email_is_placeholder") is True
         and user.get("role") == "viewer"
         and user.get("status") == "active"
         and not user.get("merged_into_user_id")
@@ -234,6 +336,7 @@ async def _recover_pending_identity(
     source: dict[str, Any],
     identity: FeishuIdentity,
     target_user_id: str,
+    bound_via: RecoveryBoundVia,
 ) -> dict[str, Any]:
     target = await db.users.find_one({"_id": target_user_id})
     if target is None:
@@ -242,44 +345,65 @@ async def _recover_pending_identity(
     _require_available_proxy_target(target, source_user_id=str(source["_id"]))
 
     timestamp = now_utc()
-    merged_source = await db.users.find_one_and_update(
-        {
-            "_id": source["_id"],
-            "feishu_identity.identity_key": identity.identity_key,
-            "created_by": "feishu",
-            "authorization_status": "pending",
-            "email_is_placeholder": True,
-            "role": "viewer",
-            "status": "active",
-            "merged_into_user_id": {"$exists": False},
-        },
-        {
-            "$set": {
-                "merged_into_user_id": target_user_id,
-                "merged_at": timestamp,
-                "status": "disabled",
-                "updated_by": "feishu",
-                "updated_at": timestamp,
-            }
-        },
-        return_document=ReturnDocument.AFTER,
+    recovered_target = await _attach_identity_proxy(
+        db,
+        target=target,
+        source_user_id=str(source["_id"]),
+        identity=identity,
+        timestamp=timestamp,
+        bound_via=bound_via,
     )
+    source_filter: dict[str, Any] = {
+        "_id": source["_id"],
+        "feishu_identity.identity_key": identity.identity_key,
+        "created_by": "feishu",
+        "authorization_status": "pending",
+        "role": "viewer",
+        "status": "active",
+        "merged_into_user_id": {"$exists": False},
+    }
+    if bound_via == "password_binding_recovery":
+        source_filter["email_is_placeholder"] = True
+    try:
+        merged_source = await db.users.find_one_and_update(
+            source_filter,
+            {
+                "$set": {
+                    "merged_into_user_id": target_user_id,
+                    "merged_at": timestamp,
+                    "merged_via": bound_via,
+                    "status": "disabled",
+                    "updated_by": "feishu",
+                    "updated_at": timestamp,
+                }
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+    except Exception:
+        await _rollback_identity_proxy(
+            db,
+            previous_target=target,
+            recovered_target=recovered_target,
+            source_user_id=str(source["_id"]),
+            bound_via=bound_via,
+        )
+        raise
     if merged_source is None:
         latest_source = await db.users.find_one({"_id": source["_id"]})
         if latest_source is None or latest_source.get("merged_into_user_id") != target_user_id:
+            await _rollback_identity_proxy(
+                db,
+                previous_target=target,
+                recovered_target=recovered_target,
+                source_user_id=str(source["_id"]),
+                bound_via=bound_via,
+            )
             raise FeishuBindingConflictError(
                 "飞书账号绑定发生冲突，请联系管理员",
                 code="binding_conflict",
             )
         merged_source = latest_source
 
-    recovered_target = await _attach_identity_proxy(
-        db,
-        target=target,
-        source_user_id=str(merged_source["_id"]),
-        identity=identity,
-        timestamp=timestamp,
-    )
     await write_audit_log(
         db,
         actor=None,
@@ -289,7 +413,7 @@ async def _recover_pending_identity(
         after={
             "result_code": "pending_identity_merged",
             "source_user_id": str(merged_source["_id"]),
-            "bound_via": "password_binding_recovery",
+            "bound_via": bound_via,
         },
     )
     return recovered_target
@@ -316,6 +440,7 @@ async def _resolve_identity_proxy(
             source_user_id=str(source["_id"]),
             identity=identity,
             timestamp=timestamp,
+            bound_via=_stored_recovery_bound_via(source),
         )
 
     updates = _identity_proxy_login_updates(identity, timestamp=timestamp)
@@ -342,27 +467,44 @@ async def _attach_identity_proxy(
     source_user_id: str,
     identity: FeishuIdentity,
     timestamp: datetime,
+    bound_via: RecoveryBoundVia,
 ) -> dict[str, Any]:
-    recovered_target = await db.users.find_one_and_update(
-        {
-            "_id": target["_id"],
-            "status": {"$ne": "disabled"},
-            "feishu_identity.identity_key": {"$exists": False},
-            "$or": [
-                {"feishu_identity.source_user_id": {"$exists": False}},
-                {"feishu_identity.source_user_id": source_user_id},
-            ],
-        },
-        {
-            "$set": {
-                **_identity_proxy_login_updates(identity, timestamp=timestamp),
-                "feishu_identity.source_user_id": source_user_id,
-                "feishu_identity.bound_via": "password_binding_recovery",
-                "feishu_identity.bound_at": timestamp,
+    target_filter: dict[str, Any] = {
+        "_id": target["_id"],
+        "status": {"$ne": "disabled"},
+        "feishu_identity.identity_key": {"$exists": False},
+        "$or": [
+            {"feishu_identity.source_user_id": {"$exists": False}},
+            {"feishu_identity.source_user_id": source_user_id},
+        ],
+    }
+    if bound_via == "feishu_name_recovery":
+        target_filter.update(
+            {
+                "name": _exact_trimmed_name_pattern(identity.name),
+                "status": "active",
+                "authorization_status": {"$ne": "pending"},
+                "merged_into_user_id": {"$exists": False},
             }
-        },
-        return_document=ReturnDocument.AFTER,
-    )
+        )
+    try:
+        recovered_target = await db.users.find_one_and_update(
+            target_filter,
+            {
+                "$set": {
+                    **_identity_proxy_login_updates(identity, timestamp=timestamp),
+                    "feishu_identity.source_user_id": source_user_id,
+                    "feishu_identity.bound_via": bound_via,
+                    "feishu_identity.bound_at": timestamp,
+                }
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError as exc:
+        raise FeishuBindingConflictError(
+            "飞书账号绑定发生冲突，请联系管理员",
+            code="binding_conflict",
+        ) from exc
     if recovered_target is not None:
         return recovered_target
 
@@ -378,6 +520,48 @@ async def _attach_identity_proxy(
         "飞书账号绑定发生冲突，请联系管理员",
         code="binding_conflict",
     )
+
+
+async def _rollback_identity_proxy(
+    db: AsyncIOMotorDatabase,
+    *,
+    previous_target: dict[str, Any],
+    recovered_target: dict[str, Any],
+    source_user_id: str,
+    bound_via: RecoveryBoundVia,
+) -> None:
+    rollback_filter: dict[str, Any] = {
+        "_id": previous_target["_id"],
+        "feishu_identity.source_user_id": source_user_id,
+        "feishu_identity.bound_via": bound_via,
+    }
+    recovered_identity = recovered_target.get("feishu_identity") or {}
+    if recovered_identity.get("bound_at") is not None:
+        rollback_filter["feishu_identity.bound_at"] = recovered_identity["bound_at"]
+
+    set_values: dict[str, Any] = {}
+    unset_values: dict[str, str] = {}
+    for field in ("feishu_identity", "last_feishu_login_at", "updated_at"):
+        if field in previous_target:
+            set_values[field] = previous_target[field]
+        else:
+            unset_values[field] = ""
+    update: dict[str, Any] = {}
+    if set_values:
+        update["$set"] = set_values
+    if unset_values:
+        update["$unset"] = unset_values
+    try:
+        await db.users.update_one(rollback_filter, update)
+    except Exception:
+        # A later login can resume the source merge from the claimed proxy.
+        return
+
+
+def _stored_recovery_bound_via(source: dict[str, Any]) -> RecoveryBoundVia:
+    if source.get("merged_via") == "feishu_name_recovery":
+        return "feishu_name_recovery"
+    return "password_binding_recovery"
 
 
 def _require_available_proxy_target(target: dict[str, Any], *, source_user_id: str) -> None:
