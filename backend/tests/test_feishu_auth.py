@@ -985,6 +985,26 @@ class PendingAuthorizationBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, actor)
 
+    async def test_business_lookup_rejects_active_user_without_feishu_binding(self) -> None:
+        unbound = {
+            "_id": "member@example.com",
+            "status": "active",
+            "authorization_status": "active",
+            "role": "maintainer",
+        }
+        db = SimpleNamespace(users=SimpleNamespace(find_one=AsyncMock(return_value=unbound)))
+        credentials = SimpleNamespace(credentials="jwt-token")
+
+        with (
+            patch.object(security, "decode_access_token", return_value={"sub": "member@example.com"}),
+            patch.object(security, "get_settings", return_value=feishu_settings()),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await security.get_current_user(credentials=credentials, db=db)
+
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(raised.exception.detail, "请先绑定飞书后再使用系统")
+
 
 class FeishuStorageAndRedactionTests(unittest.IsolatedAsyncioTestCase):
     def test_placeholder_email_is_hidden_from_public_user_projection(self) -> None:

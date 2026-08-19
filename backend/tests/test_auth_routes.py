@@ -206,6 +206,30 @@ class PasswordLoginBindingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class FeishuAuthRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_authenticated_binding_route_targets_current_user(self) -> None:
+        self.assertTrue(hasattr(auth_router, "start_feishu_binding_session"))
+        session = feishu.FeishuAuthorizationSession(
+            session_id="session-bind-1",
+            authorization_url="https://accounts.feishu.cn/open-apis/authen/v1/authorize?app_id=cli_example",
+            ticket="ticket-bind-1",
+            expires_at=datetime(2026, 8, 18, 12, 5, tzinfo=UTC),
+        )
+        current = user(bound=False)
+        with (
+            patch.object(auth_router, "get_settings", return_value=enabled_settings(), create=True),
+            patch.object(auth_router, "create_authorization_session", AsyncMock(return_value=session), create=True) as create_session,
+            patch.object(auth_router, "write_audit_log", AsyncMock()),
+        ):
+            result = await auth_router.start_feishu_binding_session(user=current, db=SimpleNamespace())
+
+        self.assertEqual(result.session_id, "session-bind-1")
+        create_session.assert_awaited_once_with(
+            SimpleNamespace(),
+            purpose="bind",
+            target_user_id="member@example.com",
+            settings=enabled_settings(),
+        )
+
     async def test_start_route_returns_ticket_protected_session(self) -> None:
         self.assertTrue(hasattr(auth_router, "start_feishu_session"))
         session = feishu.FeishuAuthorizationSession(
@@ -331,12 +355,26 @@ class FeishuAuthRouteTests(unittest.IsolatedAsyncioTestCase):
                 "email": "member@feishu.example",
             }
         )
-        with patch.object(auth_router, "permissions_for_user", AsyncMock(return_value={"allowed_views": []})):
+        with (
+            patch.object(auth_router, "permissions_for_user", AsyncMock(return_value={"allowed_views": []})),
+            patch.object(auth_router, "get_settings", return_value=enabled_settings()),
+        ):
             result = await auth_router.user_with_permissions(SimpleNamespace(), raw_user)
 
         self.assertNotIn("feishu_identity", result)
         self.assertTrue(result["feishu_bound"])
+        self.assertFalse(result["feishu_binding_required"])
         self.assertEqual(result["feishu_name"], "飞书成员")
+
+    async def test_auth_user_projection_requires_binding_only_when_feishu_is_enabled(self) -> None:
+        raw_user = user(bound=False)
+        with (
+            patch.object(auth_router, "permissions_for_user", AsyncMock(return_value={"allowed_views": []})),
+            patch.object(auth_router, "get_settings", return_value=enabled_settings()),
+        ):
+            result = await auth_router.user_with_permissions(SimpleNamespace(), raw_user)
+
+        self.assertTrue(result["feishu_binding_required"])
 
 
 if __name__ == "__main__":

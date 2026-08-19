@@ -115,6 +115,44 @@ async def start_feishu_session(
     )
 
 
+@router.post("/feishu/bind-session", response_model=FeishuAuthorizationSessionResponse)
+async def start_feishu_binding_session(
+    user: dict = Depends(get_authenticated_user),
+    db: AsyncIOMotorDatabase = Depends(db_dependency),
+) -> FeishuAuthorizationSessionResponse:
+    if user.get("actor_type") == "api_token":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API Token 不能绑定飞书")
+    if user.get("authorization_status", "active") != "active":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="尚未分配系统权限，请联系管理员")
+    if has_feishu_binding(user):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="当前账号已绑定飞书")
+
+    settings = get_settings()
+    try:
+        auth_session = await create_authorization_session(
+            db,
+            purpose="bind",
+            target_user_id=user["_id"],
+            settings=settings,
+        )
+    except FeishuAuthError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    await write_audit_log(
+        db,
+        actor=user,
+        action="auth.feishu.binding_started",
+        resource_type="user",
+        resource_id=user["_id"],
+        after={"session_id": auth_session.session_id},
+    )
+    return FeishuAuthorizationSessionResponse(
+        session_id=auth_session.session_id,
+        authorization_url=auth_session.authorization_url,
+        ticket=auth_session.ticket,
+        expires_at=auth_session.expires_at,
+    )
+
+
 @router.get("/feishu/sessions/{session_id}", response_model=FeishuAuthorizationSessionStatusResponse)
 async def feishu_session_status(
     session_id: str,
@@ -268,6 +306,7 @@ else {{ window.setTimeout(() => window.location.replace({json.dumps(fallback_url
 
 async def user_with_permissions(db: AsyncIOMotorDatabase, user: dict) -> dict:
     safe_user = public_user(user)
+    safe_user["feishu_binding_required"] = get_settings().feishu_auth_enabled and not has_feishu_binding(user)
     safe_user["operations_site_ids"] = normalize_operations_site_ids(user.get("operations_site_ids"))
     safe_user["permissions"] = await permissions_for_user(db, user)
     return safe_user

@@ -33,6 +33,12 @@ const activeUser: User = {
   permissions: { allowed_views: ["work-plans"], default_view: "work-plans" },
 };
 
+const unboundUser: User = {
+  ...activeUser,
+  feishu_bound: false,
+  feishu_binding_required: true,
+};
+
 describe("App pending authorization boundary", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -77,5 +83,18 @@ describe("App pending authorization boundary", () => {
     expect(container.querySelector(".pending-auth-page")).toBeNull();
     expect(container.querySelector(".sidebar")).not.toBeNull();
     expect(container.textContent).toContain("工作计划");
+  });
+
+  it("blocks the application until an active user binds Feishu", async () => {
+    localStorage.setItem("user", JSON.stringify(unboundUser));
+    vi.mocked(api).mockResolvedValueOnce(unboundUser);
+
+    await act(async () => root.render(<App />));
+    await act(async () => undefined);
+
+    expect(container.textContent).toContain("绑定飞书后才能继续使用");
+    expect(container.querySelector("[data-action=feishu-bind]")).not.toBeNull();
+    expect(container.querySelector(".sidebar")).toBeNull();
+    expect(container.querySelector(".app-shell")).toBeNull();
   });
 });

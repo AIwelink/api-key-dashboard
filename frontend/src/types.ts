@@ -90,6 +90,7 @@ export type User = {
   permissions?: UserPermissions;
   operations_site_ids?: OperationsSiteId[];
   feishu_bound?: boolean;
+  feishu_binding_required?: boolean;
   feishu_name?: string | null;
   feishu_avatar_url?: string | null;
   feishu_email?: string | null;

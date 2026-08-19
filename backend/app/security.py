@@ -12,6 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.config import get_settings
 from app.database import db_dependency
+from app.modules.auth.feishu import has_feishu_binding
 from app.utils import now_utc
 
 
@@ -120,10 +121,17 @@ async def get_current_user(
     db: AsyncIOMotorDatabase = Depends(db_dependency),
 ) -> dict[str, Any]:
     user = await get_authenticated_user(credentials=credentials, db=db)
-    if user.get("actor_type") != "api_token" and user.get("authorization_status", "active") != "active":
+    if user.get("actor_type") == "api_token":
+        return user
+    if user.get("authorization_status", "active") != "active":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="尚未分配系统权限，请联系管理员",
+        )
+    if get_settings().feishu_auth_enabled and not has_feishu_binding(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="请先绑定飞书后再使用系统",
         )
     return user
 
