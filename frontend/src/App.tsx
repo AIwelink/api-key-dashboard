@@ -12,6 +12,7 @@ import { AuditPage } from "./pages/AuditPage";
 import { AutoReplenishmentPage } from "./pages/AutoReplenishmentPage";
 import { ClientSitesPage } from "./pages/ClientSitesPage";
 import { EventRecordsPage } from "./pages/EventRecordsPage";
+import { FeishuBindingPage } from "./pages/FeishuBindingPage";
 import { AvailablePoolPage, ReservePoolPage } from "./pages/ManualPoolPage";
 import { PushErrorTodoPage, TodoPage } from "./pages/TodoPage";
 import { LoginPage } from "./pages/LoginPage";
@@ -80,7 +81,13 @@ function App() {
   const [refreshingAuthorization, setRefreshingAuthorization] = useState(false);
   const showToast = useStableToast(setToast);
   const pendingAuthorization = Boolean(token && user?.authorization_status === "pending");
-  useForegroundPresence(pendingAuthorization ? "" : token, view);
+  const mandatoryFeishuBinding = Boolean(
+    token
+      && user?.authorization_status !== "pending"
+      && (user?.feishu_binding_required === true
+        || (user?.feishu_binding_required === undefined && user?.feishu_bound === false)),
+  );
+  useForegroundPresence(pendingAuthorization || mandatoryFeishuBinding ? "" : token, view);
 
   const logout = () => {
     setToken("");
@@ -110,6 +117,17 @@ function App() {
       navigateToView(defaultViewForPermissions(nextUser.permissions));
     }
     showToast("登录成功");
+  };
+
+  const completeFeishuBinding = (nextToken: string, nextUser: User) => {
+    setToken(nextToken);
+    setUser(nextUser);
+    localStorage.setItem("token", nextToken);
+    localStorage.setItem("user", JSON.stringify(nextUser));
+    if (window.location.pathname === "/") {
+      navigateToView(defaultViewForPermissions(nextUser.permissions));
+    }
+    showToast("飞书绑定成功");
   };
 
   const refreshAuthorization = async () => {
@@ -216,6 +234,21 @@ function App() {
           user={user}
           refreshing={refreshingAuthorization}
           onRefresh={() => { void refreshAuthorization(); }}
+          onLogout={logout}
+        />
+        {toast && <div className={`toast ${toast.isError ? "danger" : ""}`}>{toast.message}</div>}
+      </>
+    );
+  }
+
+  if (mandatoryFeishuBinding) {
+    return (
+      <>
+        <DailyTeamIntroGate user={user} />
+        <FeishuBindingPage
+          token={token}
+          user={user}
+          onBound={completeFeishuBinding}
           onLogout={logout}
         />
         {toast && <div className={`toast ${toast.isError ? "danger" : ""}`}>{toast.message}</div>}

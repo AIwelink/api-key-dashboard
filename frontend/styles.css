@@ -392,6 +392,70 @@
   gap: 7px;
 }
 
+.feishu-binding-panel {
+  width: min(560px, 100%);
+}
+
+.feishu-binding-mark {
+  position: relative;
+  overflow: hidden;
+}
+
+.feishu-binding-mark > span {
+  position: absolute;
+  right: 12px;
+  left: 12px;
+  height: 2px;
+  border-radius: 2px;
+  background: #3370ff;
+  box-shadow: 0 0 10px rgba(51, 112, 255, 0.48);
+  opacity: 0;
+}
+
+.feishu-binding-mark.is-scanning > span {
+  animation: feishu-binding-scan 1.6s var(--ease-state) infinite;
+}
+
+.feishu-binding-state {
+  width: min(390px, 100%);
+  margin-top: 10px;
+  text-align: left;
+}
+
+.feishu-binding-actions {
+  width: min(390px, 100%);
+}
+
+.feishu-binding-actions .feishu-login-button {
+  flex: 1 1 240px;
+}
+
+.feishu-binding-actions .ghost {
+  flex: 0 0 auto;
+}
+
+@keyframes feishu-binding-scan {
+  0% {
+    top: 14px;
+    opacity: 0;
+  }
+  18%, 82% {
+    opacity: 0.85;
+  }
+  100% {
+    top: 48px;
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .feishu-binding-mark.is-scanning > span {
+    animation: none;
+    opacity: 0.7;
+    top: 31px;
+  }
+}
+
 .auth-loading-page {
   color: var(--muted);
   font-size: 13px;
