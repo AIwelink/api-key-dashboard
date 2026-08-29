@@ -436,6 +436,7 @@ class GroupObservabilitySettingUpdate(BaseModel):
     detailed_enabled: bool | None = None
     type_priority_enabled: bool | None = None
     quota_acceleration_enabled: bool | None = None
+    auto_recover_429_enabled: bool | None = None
     probe_interval_seconds: int | None = Field(default=None, ge=60, le=3600)
     sample_retention_days: int | None = Field(default=None, ge=1, le=90)
     record_usage_samples: bool | None = None

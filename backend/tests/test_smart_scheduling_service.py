@@ -63,6 +63,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
             "schedulable": schedulable,
             "error_message": error_message,
             "usage_snapshot": {
+                "codex_5h_used_percent": used,
                 "codex_7d_used_percent": used,
                 "codex_7d_reset_at": (self.now + timedelta(days=3)).isoformat(),
                 "codex_usage_synced_at": self.now.isoformat(),
@@ -110,6 +111,232 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
                 update_one=AsyncMock(),
             ),
         )
+
+    async def test_recovers_fresh_429_and_skips_stale_snapshot_scheduling(self) -> None:
+        account = self.account(
+            8531,
+            priority=250,
+            concurrency=20,
+            used=36,
+            error_message="API returned 429",
+        )
+        client = SimpleNamespace(
+            recover_account_state=AsyncMock(return_value={"id": 8531}),
+            get_account=AsyncMock(),
+            bulk_update_accounts_runtime=AsyncMock(),
+        )
+        db = self.db()
+
+        result = await run_smart_scheduling(
+            db,
+            site=self.site(),
+            accounts=[account],
+            group_settings={
+                3: {
+                    "type_priority_enabled": True,
+                    "quota_acceleration_enabled": False,
+                    "auto_recover_429_enabled": True,
+                }
+            },
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=client,
+            now=self.now,
+        )
+
+        client.recover_account_state.assert_awaited_once_with(8531)
+        client.get_account.assert_not_awaited()
+        client.bulk_update_accounts_runtime.assert_not_awaited()
+        self.assertEqual(result["changed"], 1)
+        self.assertEqual(result["failed"], 0)
+        state_filter, state_update = (
+            db.sub2api_smart_scheduling_states.update_one.await_args.args[:2]
+        )
+        self.assertEqual(state_filter, {"_id": "api-5001:8531"})
+        self.assertEqual(
+            state_update["$set"]["last_429_recovery_attempt_at"],
+            self.now,
+        )
+        db.sub2api_smart_scheduling_outcomes.update_one.assert_not_awaited()
+
+    async def test_429_recovery_requires_both_fresh_windows_below_100(self) -> None:
+        cases = {
+            "missing_5h": {"codex_5h_used_percent": None},
+            "missing_7d": {"codex_7d_used_percent": None},
+            "stale": {
+                "codex_usage_synced_at": (
+                    self.now - timedelta(minutes=6)
+                ).isoformat()
+            },
+            "future": {
+                "codex_usage_synced_at": (
+                    self.now + timedelta(days=1)
+                ).isoformat()
+            },
+            "5h_exhausted": {"codex_5h_used_percent": 100},
+            "7d_exhausted": {"codex_7d_used_percent": 100},
+        }
+        for label, usage_updates in cases.items():
+            with self.subTest(label=label):
+                account = self.account(
+                    8531,
+                    used=36,
+                    error_message="API returned 429",
+                )
+                account["usage_snapshot"].update(usage_updates)
+                client = SimpleNamespace(
+                    recover_account_state=AsyncMock(),
+                    get_account=AsyncMock(),
+                    bulk_update_accounts_runtime=AsyncMock(),
+                )
+
+                result = await run_smart_scheduling(
+                    self.db(),
+                    site=self.site(),
+                    accounts=[account],
+                    group_settings={
+                        3: {
+                            "type_priority_enabled": False,
+                            "quota_acceleration_enabled": False,
+                            "auto_recover_429_enabled": True,
+                        }
+                    },
+                    probe_run_id="probe-1",
+                    rules=self.rules,
+                    client=client,
+                    now=self.now,
+                )
+
+                client.recover_account_state.assert_not_awaited()
+                self.assertEqual(result["scanned"], 1)
+                self.assertEqual(result["skipped"], 1)
+
+    async def test_429_recovery_attempt_has_fixed_five_minute_cooldown(self) -> None:
+        db = self.db(
+            states=[
+                {
+                    "remote_account_id": 8531,
+                    "last_429_recovery_attempt_at": self.now
+                    - timedelta(minutes=4, seconds=59),
+                }
+            ]
+        )
+        client = SimpleNamespace(
+            recover_account_state=AsyncMock(),
+            get_account=AsyncMock(),
+            bulk_update_accounts_runtime=AsyncMock(),
+        )
+
+        result = await run_smart_scheduling(
+            db,
+            site=self.site(),
+            accounts=[
+                self.account(8531, used=36, error_message="API returned 429")
+            ],
+            group_settings={3: {"auto_recover_429_enabled": True}},
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=client,
+            now=self.now,
+        )
+
+        client.recover_account_state.assert_not_awaited()
+        self.assertEqual(result["skipped"], 1)
+
+    async def test_multi_account_429_recovery_uses_attempt_time_and_skips_stale_snapshot(self) -> None:
+        client = SimpleNamespace(
+            recover_account_state=AsyncMock(),
+            get_account=AsyncMock(),
+            bulk_update_accounts_runtime=AsyncMock(),
+        )
+        db = self.db()
+        clock_values = [
+            self.now,
+            self.now,
+            self.now + timedelta(minutes=4),
+            self.now + timedelta(minutes=6),
+            self.now + timedelta(minutes=6),
+        ]
+
+        with patch.object(
+            smart_scheduling_service,
+            "now_utc",
+            side_effect=clock_values,
+        ):
+            result = await run_smart_scheduling(
+                db,
+                site=self.site(),
+                accounts=[
+                    self.account(8531, used=36, error_message="429 rate limited"),
+                    self.account(8532, used=36, error_message="429 rate limited"),
+                    self.account(8533, used=36, error_message="429 rate limited"),
+                ],
+                group_settings={3: {"auto_recover_429_enabled": True}},
+                probe_run_id="probe-1",
+                rules=self.rules,
+                client=client,
+            )
+
+        self.assertEqual(
+            [call.args[0] for call in client.recover_account_state.await_args_list],
+            [8531, 8532],
+        )
+        attempt_updates = [
+            call.args[1]["$set"]["last_429_recovery_attempt_at"]
+            for call in db.sub2api_smart_scheduling_states.update_one.await_args_list
+        ]
+        self.assertEqual(
+            attempt_updates,
+            [self.now, self.now + timedelta(minutes=4)],
+        )
+        self.assertEqual(result["changed"], 2)
+        self.assertEqual(result["skipped"], 1)
+
+    async def test_failed_429_recovery_starts_cooldown_and_continues(self) -> None:
+        client = SimpleNamespace(
+            recover_account_state=AsyncMock(
+                side_effect=[
+                    ValueError("request failed with admin-secret"),
+                    {"id": 8532},
+                ]
+            ),
+            get_account=AsyncMock(),
+            bulk_update_accounts_runtime=AsyncMock(),
+        )
+        db = self.db()
+
+        result = await run_smart_scheduling(
+            db,
+            site=self.site(),
+            accounts=[
+                self.account(8531, used=36, error_message="429 rate limited"),
+                self.account(8532, used=36, error_message="429 rate limited"),
+            ],
+            group_settings={3: {"auto_recover_429_enabled": True}},
+            probe_run_id="probe-1",
+            rules=self.rules,
+            client=client,
+            now=self.now,
+        )
+
+        self.assertEqual(
+            [call.args[0] for call in client.recover_account_state.await_args_list],
+            [8531, 8532],
+        )
+        self.assertEqual(result["changed"], 1)
+        self.assertEqual(result["failed"], 1)
+        attempt_updates = [
+            call.args[1]["$set"]["last_429_recovery_attempt_at"]
+            for call in db.sub2api_smart_scheduling_states.update_one.await_args_list
+        ]
+        self.assertEqual(attempt_updates, [self.now, self.now])
+        outcome = (
+            db.sub2api_smart_scheduling_outcomes.update_one.await_args.args[1]["$set"]
+        )
+        self.assertEqual(outcome["event_type"], "account_recovery_failed")
+        self.assertEqual(outcome["error_code"], "auto_recover_429_failed")
+        self.assertEqual(outcome["error_type"], "ValueError")
+        self.assertNotIn("admin-secret", str(outcome))
 
     def site(self) -> dict[str, object]:
         return {
@@ -1176,6 +1403,7 @@ class SmartSchedulingServiceTests(unittest.IsolatedAsyncioTestCase):
                 "last_target": 1,
                 "seven_day_reset_at": 1,
                 "rate_limit_detected_at": 1,
+                "last_429_recovery_attempt_at": 1,
                 "original_load_factor": 1,
                 "original_load_factor_captured_at": 1,
             },

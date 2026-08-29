@@ -78,7 +78,15 @@ class AsyncCursor:
 
 
 class GroupSmartSchedulingSettingsTests(unittest.IsolatedAsyncioTestCase):
-    def test_new_group_defaults_both_strategies_off(self) -> None:
+    def test_update_schema_accepts_429_recovery_flag(self) -> None:
+        payload = GroupObservabilitySettingUpdate(auto_recover_429_enabled=True)
+
+        self.assertEqual(
+            payload.model_dump(exclude_unset=True),
+            {"auto_recover_429_enabled": True},
+        )
+
+    def test_new_group_defaults_all_strategies_off(self) -> None:
         setting = default_group_observability_setting(
             "api-5001",
             3,
@@ -87,6 +95,7 @@ class GroupSmartSchedulingSettingsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(setting["type_priority_enabled"])
         self.assertFalse(setting["quota_acceleration_enabled"])
+        self.assertFalse(setting["auto_recover_429_enabled"])
 
     async def test_old_group_document_returns_explicit_false_flags(self) -> None:
         db = SimpleNamespace(
@@ -122,6 +131,7 @@ class GroupSmartSchedulingSettingsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result["items"][0]["type_priority_enabled"])
         self.assertFalse(result["items"][0]["quota_acceleration_enabled"])
+        self.assertFalse(result["items"][0]["auto_recover_429_enabled"])
 
     async def test_group_strategy_flags_are_persisted(self) -> None:
         groups = SimpleNamespace(
@@ -138,6 +148,7 @@ class GroupSmartSchedulingSettingsTests(unittest.IsolatedAsyncioTestCase):
                     "group_id": 3,
                     "type_priority_enabled": True,
                     "quota_acceleration_enabled": True,
+                    "auto_recover_429_enabled": True,
                 }
             ),
         )
@@ -153,6 +164,7 @@ class GroupSmartSchedulingSettingsTests(unittest.IsolatedAsyncioTestCase):
             payload={
                 "type_priority_enabled": True,
                 "quota_acceleration_enabled": True,
+                "auto_recover_429_enabled": True,
             },
             actor={"_id": "admin@example.com"},
         )
@@ -160,8 +172,10 @@ class GroupSmartSchedulingSettingsTests(unittest.IsolatedAsyncioTestCase):
         updates = settings.update_one.await_args.args[1]["$set"]
         self.assertTrue(updates["type_priority_enabled"])
         self.assertTrue(updates["quota_acceleration_enabled"])
+        self.assertTrue(updates["auto_recover_429_enabled"])
         self.assertTrue(result["type_priority_enabled"])
         self.assertTrue(result["quota_acceleration_enabled"])
+        self.assertTrue(result["auto_recover_429_enabled"])
 
 
 if __name__ == "__main__":

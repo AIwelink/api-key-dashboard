@@ -87,6 +87,7 @@ def default_group_observability_setting(site_id: str, group_id: int, group_name:
         "detailed_enabled": not likely_free,
         "type_priority_enabled": False,
         "quota_acceleration_enabled": False,
+        "auto_recover_429_enabled": False,
         "probe_interval_seconds": DEFAULT_PROBE_INTERVAL_SECONDS,
         "sample_retention_days": 7 if likely_free else DEFAULT_SAMPLE_RETENTION_DAYS,
         "record_usage_samples": not likely_free,
@@ -128,6 +129,7 @@ async def list_group_observability_settings(db: AsyncIOMotorDatabase, site_id: s
         setting["group_name"] = setting.get("group_name") or group_name
         setting.setdefault("type_priority_enabled", False)
         setting.setdefault("quota_acceleration_enabled", False)
+        setting.setdefault("auto_recover_429_enabled", False)
         setting["group_account_count"] = group.get("account_count")
         setting["group_active_account_count"] = group.get("active_account_count")
         meta = notification_meta.get(group_id, {})
@@ -139,6 +141,7 @@ async def list_group_observability_settings(db: AsyncIOMotorDatabase, site_id: s
         if group_id not in seen:
             setting.setdefault("type_priority_enabled", False)
             setting.setdefault("quota_acceleration_enabled", False)
+            setting.setdefault("auto_recover_429_enabled", False)
             items.append(serialize_doc(setting))
     return {"items": items, "total": len(items)}
 
@@ -161,6 +164,7 @@ async def update_group_observability_setting(
         "detailed_enabled",
         "type_priority_enabled",
         "quota_acceleration_enabled",
+        "auto_recover_429_enabled",
         "probe_interval_seconds",
         "sample_retention_days",
         "record_usage_samples",
@@ -185,6 +189,7 @@ async def update_group_observability_setting(
     if doc is not None:
         doc.setdefault("type_priority_enabled", False)
         doc.setdefault("quota_acceleration_enabled", False)
+        doc.setdefault("auto_recover_429_enabled", False)
     return serialize_doc(doc or {})
 
 
@@ -416,6 +421,7 @@ async def _run_site_account_probe(db: AsyncIOMotorDatabase, *, site_id: str, gro
             for group_id, setting in selected_settings.items()
             if setting.get("type_priority_enabled") is True
             or setting.get("quota_acceleration_enabled") is True
+            or setting.get("auto_recover_429_enabled") is True
         }
         checked_group_ids = enabled_group_ids | scheduling_group_ids
         if settings and not checked_group_ids:
@@ -644,6 +650,7 @@ async def _due_group_ids(db: AsyncIOMotorDatabase, site_id: str) -> list[int]:
         scheduling_enabled = (
             setting.get("type_priority_enabled") is True
             or setting.get("quota_acceleration_enabled") is True
+            or setting.get("auto_recover_429_enabled") is True
         )
         if setting.get("enabled") is False and not scheduling_enabled:
             continue

@@ -435,6 +435,38 @@ def _account_is_rate_limited(account: dict[str, Any]) -> bool:
     return bool(_HTTP_429_PATTERN.search(str(account.get("error_message") or "")))
 
 
+def account_eligible_for_429_recovery(
+    account: dict[str, Any],
+    *,
+    now: datetime,
+) -> bool:
+    if not _account_is_rate_limited(account):
+        return False
+    usage = (
+        account.get("usage_snapshot")
+        if isinstance(account.get("usage_snapshot"), dict)
+        else {}
+    )
+    five_hour = _optional_float(usage.get("codex_5h_used_percent"))
+    seven_day = _optional_float(usage.get("codex_7d_used_percent"))
+    if (
+        five_hour is None
+        or seven_day is None
+        or not 0 <= five_hour < 100
+        or not 0 <= seven_day < 100
+    ):
+        return False
+    sampled_at = _parse_datetime(
+        usage.get("codex_usage_synced_at")
+        if usage.get("codex_usage_synced_at") is not None
+        else usage.get("codex_usage_updated_at")
+    )
+    if sampled_at is None:
+        return False
+    source_age = now.astimezone(UTC) - sampled_at
+    return timedelta(0) <= source_age <= MAX_QUOTA_SOURCE_AGE
+
+
 def _result(
     status: str,
     *,

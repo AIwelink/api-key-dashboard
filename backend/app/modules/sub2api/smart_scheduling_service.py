@@ -11,6 +11,7 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from app.modules.sub2api.smart_scheduling import (
+    account_eligible_for_429_recovery,
     build_type_priority_queue,
     default_smart_scheduling_rules,
     evaluate_account,
@@ -26,6 +27,7 @@ SMART_SCHEDULING_LEASE_SECONDS = 300
 SMART_SCHEDULING_LEASE_RENEWAL_SECONDS = SMART_SCHEDULING_LEASE_SECONDS // 2
 RUN_RETENTION = timedelta(days=90)
 OUTCOME_RETENTION = timedelta(days=7)
+AUTO_RECOVER_429_COOLDOWN = timedelta(minutes=5)
 logger = logging.getLogger("app.sub2api_smart_scheduling")
 
 
@@ -184,6 +186,7 @@ async def run_smart_scheduling(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     site_id = str(site.get("id") or site.get("_id") or "").strip()
+    use_live_recovery_clock = now is None
     evaluated_at = _as_utc(now or now_utc())
     eligible = _eligible_accounts(accounts, group_settings)
     if not eligible:
@@ -208,6 +211,7 @@ async def run_smart_scheduling(
             rules=rules,
             client=client,
             now=evaluated_at,
+            use_live_recovery_clock=use_live_recovery_clock,
             lease_owner=owner,
             lease_renewed_monotonic=lease_renewed_monotonic,
         )
@@ -236,6 +240,7 @@ async def _run_smart_scheduling_locked(
     rules: dict[str, Any] | None,
     client: Sub2ApiClient | Any | None,
     now: datetime,
+    use_live_recovery_clock: bool,
     lease_owner: str,
     lease_renewed_monotonic: float,
 ) -> dict[str, Any]:
@@ -338,6 +343,73 @@ async def _run_smart_scheduling_locked(
         event_type: str | None = None
         previous_event_state: dict[str, Any] | None = None
         applied_event_state: dict[str, Any] | None = None
+
+        recovery_checked_at = (
+            _as_utc(now_utc()) if use_live_recovery_clock else now
+        )
+        if (
+            item["auto_recover_429_enabled"]
+            and account_eligible_for_429_recovery(
+                account,
+                now=recovery_checked_at,
+            )
+            and _auto_recover_429_due(state, now=recovery_checked_at)
+        ):
+            recovery_decision = decision | {
+                "status": "change",
+                "strategy": "auto_recover_429",
+                "reason": "rate_limited_account_recovery",
+                "target": None,
+            }
+            try:
+                if not await ensure_live_lease():
+                    raise _SmartSchedulingLeaseLostError
+                if effective_client is None:
+                    effective_client = await _build_site_client(site)
+                await _persist_429_recovery_attempt(
+                    db,
+                    site_id=site_id,
+                    remote_account_id=remote_account_id,
+                    attempted_at=recovery_checked_at,
+                )
+                await effective_client.recover_account_state(remote_account_id)
+            except Exception as exc:  # noqa: BLE001 - isolate recovery failures per account.
+                summary["failed"] += 1
+                error_type = type(exc).__name__
+                logger.warning(
+                    "smart_scheduling_429_recovery_failed site_id=%s remote_account_id=%s error_type=%s",
+                    site_id,
+                    remote_account_id,
+                    error_type,
+                )
+                try:
+                    await _persist_outcome(
+                        db,
+                        site_id=site_id,
+                        run_id=run_id,
+                        probe_run_id=probe_run_id,
+                        item=item,
+                        decision=recovery_decision
+                        | {"status": "failed", "reason": "account_recovery_failed"},
+                        before=before,
+                        status="failed",
+                        error_code="auto_recover_429_failed",
+                        error_type=error_type,
+                        event_type="account_recovery_failed",
+                        evaluated_at=recovery_checked_at,
+                    )
+                except Exception as outcome_exc:  # noqa: BLE001 - reporting must not block other accounts.
+                    logger.warning(
+                        "smart_scheduling_429_recovery_outcome_failed site_id=%s remote_account_id=%s error_type=%s",
+                        site_id,
+                        remote_account_id,
+                        type(outcome_exc).__name__,
+                    )
+                if isinstance(exc, _SmartSchedulingLeaseLostError):
+                    break
+            else:
+                summary["changed"] += 1
+            continue
 
         try:
             if decision["status"] == "change":
@@ -657,7 +729,12 @@ def _eligible_accounts(
             group_settings.get(group_id, {}).get("quota_acceleration_enabled") is True
             for group_id in group_ids
         )
-        if not type_enabled and not quota_enabled:
+        recover_429_enabled = any(
+            group_settings.get(group_id, {}).get("auto_recover_429_enabled")
+            is True
+            for group_id in group_ids
+        )
+        if not type_enabled and not quota_enabled and not recover_429_enabled:
             continue
         key = str(remote_account_id)
         existing = eligible.get(key)
@@ -668,6 +745,7 @@ def _eligible_accounts(
                 "group_ids": sorted(group_ids),
                 "type_priority_enabled": type_enabled,
                 "quota_acceleration_enabled": quota_enabled,
+                "auto_recover_429_enabled": recover_429_enabled,
             }
         else:
             existing["group_ids"] = sorted(set(existing["group_ids"]) | group_ids)
@@ -676,6 +754,9 @@ def _eligible_accounts(
             )
             existing["quota_acceleration_enabled"] = (
                 existing["quota_acceleration_enabled"] or quota_enabled
+            )
+            existing["auto_recover_429_enabled"] = (
+                existing["auto_recover_429_enabled"] or recover_429_enabled
             )
     return eligible
 
@@ -701,6 +782,7 @@ async def _states_for_accounts(
             "last_target": 1,
             "seven_day_reset_at": 1,
             "rate_limit_detected_at": 1,
+            "last_429_recovery_attempt_at": 1,
             "original_load_factor": 1,
             "original_load_factor_captured_at": 1,
         },
@@ -708,6 +790,42 @@ async def _states_for_accounts(
     async for document in cursor:
         states[str(document.get("remote_account_id"))] = document
     return states
+
+
+def _auto_recover_429_due(
+    state: dict[str, Any] | None,
+    *,
+    now: datetime,
+) -> bool:
+    last_attempt_at = _parse_datetime(
+        (state or {}).get("last_429_recovery_attempt_at")
+    )
+    return bool(
+        last_attempt_at is None
+        or now.astimezone(UTC) - last_attempt_at >= AUTO_RECOVER_429_COOLDOWN
+    )
+
+
+async def _persist_429_recovery_attempt(
+    db: AsyncIOMotorDatabase,
+    *,
+    site_id: str,
+    remote_account_id: Any,
+    attempted_at: datetime,
+) -> None:
+    await db.sub2api_smart_scheduling_states.update_one(
+        {"_id": f"{site_id}:{remote_account_id}"},
+        {
+            "$set": {
+                "site_id": site_id,
+                "remote_account_id": remote_account_id,
+                "last_429_recovery_attempt_at": attempted_at,
+                "updated_at": attempted_at,
+            },
+            "$setOnInsert": {"created_at": attempted_at},
+        },
+        upsert=True,
+    )
 
 
 async def _persist_scheduler_state(
@@ -1034,6 +1152,19 @@ def _optional_int(value: Any) -> int | None:
     except (TypeError, ValueError, OverflowError):
         return None
     return parsed if parsed == parsed_float else None
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    return _as_utc(parsed)
 
 
 def _empty_summary(site_id: str, *, status: str) -> dict[str, Any]:
