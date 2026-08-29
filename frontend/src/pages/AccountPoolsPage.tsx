@@ -121,6 +121,7 @@ type GroupObservabilitySetting = {
   detailed_enabled: boolean;
   type_priority_enabled?: boolean;
   quota_acceleration_enabled?: boolean;
+  auto_recover_429_enabled?: boolean;
   probe_interval_seconds?: number;
   record_usage_samples?: boolean;
   record_status_events?: boolean;
@@ -1319,6 +1320,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                 <th>账号</th>
                 <th>账号类型自动归档</th>
                 <th>7d 极限加速</th>
+                <th>429 自动恢复</th>
                 <th>快照间隔</th>
                 <th>配置更新</th>
               </tr>
@@ -1358,6 +1360,18 @@ export function AccountPoolsPage({ token, showToast }: Props) {
                         <span className="switch-copy"><strong>{setting.quota_acceleration_enabled === true ? "开启" : "关闭"}</strong></span>
                       </label>
                     </td>
+                    <td>
+                      <label className="switch-field smart-strategy-switch">
+                        <input
+                          checked={setting.auto_recover_429_enabled === true}
+                          disabled={busy}
+                          type="checkbox"
+                          onChange={(event) => saveObservabilitySetting(setting, { auto_recover_429_enabled: event.target.checked })}
+                        />
+                        <span className="switch-track" aria-hidden="true"><span className="switch-thumb" /></span>
+                        <span className="switch-copy"><strong>{setting.auto_recover_429_enabled === true ? "开启" : "关闭"}</strong></span>
+                      </label>
+                    </td>
                     <td><strong>{formatProbeInterval(setting.probe_interval_seconds)}</strong></td>
                     <td>{formatDateTime(setting.updated_at)}</td>
                   </tr>
@@ -1365,7 +1379,7 @@ export function AccountPoolsPage({ token, showToast }: Props) {
               })}
               {!observabilitySettings.length && (
                 <tr>
-                  <td className="muted" colSpan={6}>请先同步 Sub2API 分组。</td>
+                  <td className="muted" colSpan={7}>请先同步 Sub2API 分组。</td>
                 </tr>
               )}
             </tbody>

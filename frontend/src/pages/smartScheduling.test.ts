@@ -113,8 +113,10 @@ describe("smart scheduling operator controls", () => {
     expect(schedulingSection).toContain("智能调度");
     expect(schedulingSection).toContain("账号类型自动归档");
     expect(schedulingSection).toContain("7d 极限加速");
+    expect(schedulingSection).toContain("429 自动恢复");
     expect(schedulingSection).toContain("type_priority_enabled");
     expect(schedulingSection).toContain("quota_acceleration_enabled");
+    expect(schedulingSection).toContain("auto_recover_429_enabled");
     expect(schedulingSection).toContain("smartSchedulingMeta.lastRun?.scanned");
     expect(schedulingSection).toContain("smartSchedulingMeta.lastRun?.changed");
     expect(schedulingSection).toContain("smartSchedulingMeta.lastRun?.skipped");
